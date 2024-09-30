@@ -166,3 +166,5 @@ log/
 pcap/
 *_p4rt.txt
 *.p4i
+*.json
+p4/*.p4
