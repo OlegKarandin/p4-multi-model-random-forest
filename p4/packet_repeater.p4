@@ -25,7 +25,7 @@ struct metadata {
 	bit<1> class_tree_app_2_is_set;
 	bit<1> class_tree_ddos_0;
 	bit<1> class_tree_ddos_0_is_set;
-	bit<97> codeword;
+	bit<83> codeword;
 
 
     //GENERAL FLOW FEATURES
@@ -345,20 +345,20 @@ control MyIngress(inout headers hdr,
 		}
 	}
     
-    action set_code_flow_iat_mean (bit<31> code) {
-        meta.codeword[96:66] = code;
+    action set_code_bwd_packet_length_total (bit<19> code) {
+        meta.codeword[82:64] = code;
     }
     
-    action set_code_flow_packet_length_mean (bit<19> code) {
-        meta.codeword[65:47] = code;
+    action set_code_flow_packet_length_max (bit<26> code) {
+        meta.codeword[63:38] = code;
+    }
+    
+    action set_code_flow_packet_length_mean (bit<16> code) {
+        meta.codeword[37:22] = code;
     }
     
     action set_code_fwd_packet_length_max (bit<22> code) {
-        meta.codeword[46:25] = code;
-    }
-    
-    action set_code_fwd_packet_length_mean (bit<25> code) {
-        meta.codeword[24:0] = code;
+        meta.codeword[21:0] = code;
     }
 
 
@@ -408,17 +408,27 @@ control MyIngress(inout headers hdr,
         size = 400;
     }   
     
-    table table_0_flow_iat_mean {
+    table table_0_bwd_packet_length_total {
         key = {
-            meta.flow_iat_mean: range;
+            meta.bwd_packet_length_total: range;
         }
         actions = {
-            set_code_flow_iat_mean;        
+            set_code_bwd_packet_length_total;        
         }
         size = 200;
     }   
     
-    table table_1_flow_packet_length_mean {
+    table table_1_flow_packet_length_max {
+        key = {
+            meta.flow_packet_length_max: range;
+        }
+        actions = {
+            set_code_flow_packet_length_max;        
+        }
+        size = 200;
+    }   
+    
+    table table_2_flow_packet_length_mean {
         key = {
             meta.flow_packet_length_mean: range;
         }
@@ -428,22 +438,12 @@ control MyIngress(inout headers hdr,
         size = 200;
     }   
     
-    table table_2_fwd_packet_length_max {
+    table table_3_fwd_packet_length_max {
         key = {
             meta.fwd_packet_length_max: range;
         }
         actions = {
             set_code_fwd_packet_length_max;        
-        }
-        size = 200;
-    }   
-    
-    table table_3_fwd_packet_length_mean {
-        key = {
-            meta.fwd_packet_length_mean: range;
-        }
-        actions = {
-            set_code_fwd_packet_length_mean;        
         }
         size = 200;
     }   
@@ -775,10 +775,10 @@ control MyIngress(inout headers hdr,
             update_current_flow_features();
 
 
-			table_0_flow_iat_mean.apply();
-			table_1_flow_packet_length_mean.apply();
-			table_2_fwd_packet_length_max.apply();
-			table_3_fwd_packet_length_mean.apply();
+			table_0_bwd_packet_length_total.apply();
+			table_1_flow_packet_length_max.apply();
+			table_2_flow_packet_length_mean.apply();
+			table_3_fwd_packet_length_max.apply();
 
 			get_classification_tree_app_0.apply();
 			get_classification_tree_app_1.apply();
@@ -846,13 +846,13 @@ control MyIngress(inout headers hdr,
 				meta.classification_app = 0;
 			}
 			if ((meta.class_tree_app_0 == 2) && (meta.class_tree_app_1 == 0) && (meta.class_tree_app_2 == 1)) {
-				meta.classification_app = 1;
+				meta.classification_app = 0;
 			}
 			if ((meta.class_tree_app_0 == 2) && (meta.class_tree_app_1 == 0) && (meta.class_tree_app_2 == 2)) {
 				meta.classification_app = 2;
 			}
 			if ((meta.class_tree_app_0 == 2) && (meta.class_tree_app_1 == 1) && (meta.class_tree_app_2 == 0)) {
-				meta.classification_app = 1;
+				meta.classification_app = 2;
 			}
 			if ((meta.class_tree_app_0 == 2) && (meta.class_tree_app_1 == 1) && (meta.class_tree_app_2 == 1)) {
 				meta.classification_app = 1;
