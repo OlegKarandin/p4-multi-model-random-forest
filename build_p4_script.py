@@ -3,6 +3,8 @@ from sklearn.tree import export_text
 import csv
 import random
 import json
+from itertools import combinations_with_replacement
+from statistics import mode
 
 INFINITE = 2147483647
 PATH = "resources/"
@@ -11,14 +13,15 @@ OUTPUT_PATH = "p4/"
 PATH_TABLE_ENTRIES_OUTPUT = OUTPUT_PATH + "table_entries.json"
 PATH_TABLE_TEMPLATE_P4  = PATH + 'table.p4'
 PATH_ACTION_TEMPLATE_P4 = PATH + 'action.p4'
-PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'packet_repeater.p4'
-PATH_P4_CODE_TEMPLATE_OUTPUT = OUTPUT_PATH + 'packet_repeater.p4'
+PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
+PATH_P4_CODE_TEMPLATE_OUTPUT = OUTPUT_PATH + 'p4_template.p4'
+
 
 def dt_thresholds_float_to_int(clf):
   # Access the decision thresholds in each tree
   for tree in clf.estimators_:
       for i, threshold in enumerate(tree.tree_.threshold):
-        if threshold != -2:
+        if threshold != -2: # OLEG: ???
             tree.tree_.threshold[i] = int(threshold)
 
   return clf
@@ -37,7 +40,12 @@ def get_tree_textual_representation(clf, feature_names, verbose=False):
 
   return tree_textual_representation
 
+
 def get_nodes(tree_text):
+  '''
+  Inputs: Tree textual representation generated with export_text(tree_classifier, feature_names)
+  Outputs: Dictionary containing the information of the different tree nodes (leaf or internal)
+  '''
 
   nodes = {}
   # Store each of the lines of the tree textual representation in a List
@@ -117,36 +125,46 @@ def get_nodes(tree_text):
 
   return nodes
 
+
 def get_feature_splits(tree_nodes):
+  '''
+  Inputs: Dictionary containing the features of all nodes in the Random Forest
+  Outputs: List of tuples containing the comparison thresholds (i.e. feature splits) each feature goes through over all the trees: (Feature Name, Threshold)
+  '''
 
   nodes = []
-
-  #BUG
   feature_splits = []
 
-  #Gather node features from all Decision Trees
+  #Gather nodes from all Decision Trees
   for tree in tree_nodes:
     for node in tree_nodes[tree]:
       nodes.append(tree_nodes[tree][node])
-  #Join all feature thresholds (splits) that are consulted at each node
+
+  #Join all feature thresholds (splits) used across the nodes
   for node in nodes:
-    try:
+    if node['is_leaf'] == False:
       feature_splits.append((node["feature"],
                             node["threshold"]))
-    except:
-      pass
+
   #Sort feature thresholds by feature
   return sorted(feature_splits, key=lambda x: (x[0], x[1]))
 
+
 def get_feature_intervals(feature_splits):
+  '''
+  Inputs: List of tuples containing the features splits of all features
+  Outputs: Dictionary where each key is the feature name and the associated value is the list of intervals of the given feature
+  '''
+    
   feature_intervals = {}
 
   # Iterate over each feature split
   for feature, threshold in feature_splits:
-      #New Feature, Init interval
+      #New Feature, Initialize interval
       if feature not in feature_intervals:
           feature_intervals[feature] = [[0, threshold]]
-      #Exisiting Feature, Extend Interval
+      
+      #Existing Feature, Extend Interval
       else:
           last_range = feature_intervals[feature][-1]
           if last_range[1] == "infinite":
@@ -161,6 +179,7 @@ def get_feature_intervals(feature_splits):
           ranges.append([ranges[-1][1]+1, "infinite"])
 
   return feature_intervals
+
 
 def feature_intervals_to_csv(feature_intervals):
   rows = []
@@ -183,7 +202,6 @@ def feature_intervals_to_csv(feature_intervals):
 
     rows.append([])
 
-
   # File path
   file_path = INTERMEDIATE + 'feature_intervals.csv'
 
@@ -196,7 +214,25 @@ def feature_intervals_to_csv(feature_intervals):
       for row in rows:
           writer.writerow(row)
 
+
 def get_root_to_leaf_paths(tree_nodes):
+  '''
+  For each leaf node in each Decision Tree, this function maps all the nodes we must traverse to go from the root node of the end leaf nodes, 
+  storing the class label associated to that node, while gathering the following features for each traversed node:
+    Node_ID
+    Feature Name
+    Feature Threshold
+    Condition (≤ or >)
+
+  Inputs: Dictionary containing the features of all nodes in the Random Forest
+  Outputs: Dictionary of dictionaries, including the path and final class of each leaf node in the Random Forest. 
+            First key is the tree_id (0, 1, etc.). Second key is the leaf_node_id (0, 1, etc.).
+
+  Example Output: { "class": "1.0", "path": [ {"node_id": 2, "feature": "Flow_IAT_Max", "threshold": 504078, "condition": "<="}, 
+                                              {"node_id": 1, "feature": "Bwd_Packet_Length_Max", "threshold": 12, "condition": "<="}, 
+                                              {"node_id": 0, "feature": "Bwd_Packet_Length_Max", "threshold": 3513, "condition": "<="} ] }
+  '''
+
   leaf_nodes_per_tree = {}
   paths_leaf_nodes_per_tree = {}
 
@@ -237,9 +273,18 @@ def get_root_to_leaf_paths(tree_nodes):
         child_node = father_node
         father_node = tree_nodes[tree][father_node]["father_node"]
 
-  return(paths_leaf_nodes_per_tree)
+  return paths_leaf_nodes_per_tree
+
 
 def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
+  '''
+    For each leaf node in each Decision Trees, this function generates the corresponding codeword, associated with the leaf node class label.
+
+    Inputs: Dictionary of dictionaries, including the path and final class of each leaf node in the Random Forest
+            List of feature names used to train the RF model
+    Outputs: Dictionary of dictionaries. First key is the tree_id (0, 1, etc.). Second key is the codeword (11*00**). Value is the class label.
+  '''
+    
   codewords = {}
 
   for tree in paths_leaf_nodes_per_tree:
@@ -307,6 +352,7 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
 
   return codewords
 
+
 def get_ternary_match(codeword):
   value = ""
   mask = ""
@@ -326,6 +372,25 @@ def get_ternary_match(codeword):
 
 
 def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset, verbose=False):
+  '''
+  Inputs: feature_intervals [dict]: Dictionary where each key is a tree_id. The values are a list of feature intervals for each tree.
+          codewords [dict]: Dictionary where each key is a tree_id. The values are a list of dictionaries. 
+                            Each key in the dictionary is a codeword corresponding to a leaf node. 
+                            Each value is the class label associated with that codeword (i.e.: to the leaf node). 
+  
+  Outputs: This function writes a JSON file that includes two lists of table entries:
+              Feature codeword bits table entries
+              Codeword-to-LeafNode matching table entries
+
+          Table entry:
+          {
+            "table_name": _,
+            "action": _,
+            "key": _,
+            "action_params": _,
+          }
+  '''
+
   feature_code_length = {}
   # Obtain features involved in RF classification
   features_involved = []
@@ -335,20 +400,6 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
         features_involved.append(step["feature"])
 
   features_involved = sorted(set(features_involved))
-
-  """
-  {
-    "table_name": _,
-    "action": _,
-    "key": _,
-    "action_params": _,
-  }
-  """
-
-  tables = [{
-              "table_name":"feature_"+feature.lower(),
-              "feature": feature
-            } for feature in features_involved]
 
   table_entries = []
   feature_idx = 0
@@ -407,6 +458,7 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
   # Save table entries to JSON
   with open(PATH_TABLE_ENTRIES_OUTPUT, 'w') as output_file:
     output_file.write(json.dumps(table_entries))
+
 
 def generate_P4_actions(feature_intervals, codeword_length, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):
   """
@@ -476,16 +528,10 @@ def generate_P4_actions(feature_intervals, codeword_length, num_trees_app, num_t
     except:
       pass
 
-
-
   return action_templates
 
 
 def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
-  DEFAULT_ACTION          = "NoAction"
-  SIZE_FEATURE_TABLE      = 200
-  SIZE_CLASSIFICATION_TABLE = 400
-
   """
       table <TABLE_NAME> {
           key = {
@@ -497,6 +543,9 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
           size = <SIZE>;
       }
   """
+  
+  SIZE_FEATURE_TABLE = 200
+  SIZE_CLASSIFICATION_TABLE = 400
 
   table_templates = ""
   apply_templates_tmp = "\n"
@@ -542,106 +591,32 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
     feature_idx += 1
 
   apply_templates += apply_templates_tmp
+
   return table_templates, apply_templates
 
 
-# Function to generate all ternary strings for traffic flows classification problem
-def generateAllTernaryStrings(n, arr, i, mat):
-  if i == n:
-    mat.append(arr[:])
-    return
+def generate_voting_code(num_trees, num_classes, task):
 
-  # First, assign "0" at ith position
-  # and try for all other permutations
-  # for remaining positions
-  arr[i] = 0
-  generateAllTernaryStrings(n, arr, i + 1, mat)
+  str = ''
 
-  # Then, assign "1" at ith position
-  # and try for all other permutations
-  # for remaining positions
-  arr[i] = 1
-  generateAllTernaryStrings(n, arr, i + 1, mat)
+  classes_list = [i for i in range(num_classes)]
 
-  # Finally, assign "2" at ith position
-  # and try for all other permutations
-  # for remaining positions
-  arr[i] = 2
-  generateAllTernaryStrings(n, arr, i + 1, mat)
+  for classification_array in combinations_with_replacement(classes_list, num_trees):
+    str += "\t\t\tif ("
+    for i in range(len(classification_array)):
+      if i<len(classification_array)-1:
+        str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ") && "
+      else:
+        str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ")) {\n"
+    winner = mode(classification_array)
+    str += "\t\t\t\tmeta.classification_{} = ".format(task) + str(winner) + ";\n\t\t\t}\n"
 
+    return str
 
-def build_classification_mat_app(num_trees_app):
-  arr = [None] * num_trees_app
-  mat = []
-
-  # Print all binary strings
-  generateAllTernaryStrings(num_trees_app, arr, 0, mat)
-
-  return mat
-
-
-# Function to generate all binary strings for DDOS detection problem
-def generateAllBinaryStrings(n, arr, i, mat):
-  if i == n:
-    mat.append(arr[:])
-    return
-
-    # First, assign "0" at ith position
-  # and try for all other permutations
-  # for remaining positions
-  arr[i] = 0
-  generateAllBinaryStrings(n, arr, i + 1, mat)
-
-  # And then assign "1" at ith position
-  # and try for all other permutations
-  # for remaining positions
-  arr[i] = 1
-  generateAllBinaryStrings(n, arr, i + 1, mat)
-
-
-def build_classification_mat_ddos(num_trees_ddos):
-  arr = [None] * num_trees_ddos
-  mat = []
-
-  # Print all binary strings
-  generateAllBinaryStrings(num_trees_ddos, arr, 0, mat)
-
-  return mat
-
-
-def vote_for_app(num_trees_app, arr):
-  winner = None
-
-  for i in range(num_trees_app):
-    sum = 0
-    for j in range(len(arr)):
-      if arr[j] == i:
-        sum += 1
-    if sum >= int(len(arr)/2) + 1:
-      winner = i
-
-  if winner == None:
-    winner = random.randint(0, num_trees_app-1)
-
-  return winner
-
-
-def vote_for_ddos(num_trees_ddos, arr):
-  #The packet is assumed to be a DDOS attack
-  winner = 1
-
-  for i in range(num_trees_ddos):
-    sum = 0
-    for j in range(len(arr)):
-      if arr[j] == i:
-        sum += 1
-    if sum >= int(len(arr)/2) + 1:
-      winner = i
-
-  return winner
 
 def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, codeword_length, feature_intervals):
-  #Generation of metadata
+  
+  # generate the definition of the bit containers that contain decisions of each tree
   bit_per_classes_app = math.ceil(math.log2(num_class_app))
   bit_per_classes_ddos = math.ceil(math.log2(num_class_ddos))
 
@@ -667,36 +642,12 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, codeword_
   action_templates = generate_P4_actions(feature_intervals, codeword_length, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos)
   table_templates, apply_templates = generate_P4_tables_and_apply(feature_intervals.keys(), num_trees_app, num_trees_ddos)
 
-  #Classification code generation
-  classification_templates = ""
-
-  #Traffic flows classification
-  classification_matrix_app = build_classification_mat_app(num_trees_app)
-  for classification_array_app in classification_matrix_app:
-    classification_templates += "\t\t\tif ("
-    for i in range(len(classification_array_app)):
-      if i<len(classification_array_app)-1:
-        classification_templates += "(meta.class_tree_app_" + str(i) + " == " + str(classification_array_app[i]) + ") && "
-      else:
-        classification_templates += "(meta.class_tree_app_" + str(i) + " == " + str(classification_array_app[i]) + ")) {\n"
-    winner = vote_for_app(num_trees_app, classification_array_app)
-    classification_templates += "\t\t\t\tmeta.classification_app = " + str(winner) + ";\n\t\t\t}\n"
-
+  # generate code to vote between the trees
+  classification_templates = generate_voting_code(num_trees_app, 3, "app")
   classification_templates += "\n"
+  classification_templates += generate_voting_code(num_trees_ddos, 2, "ddos")
 
-  #DDOS detection classification
-  classification_matrix_ddos = build_classification_mat_ddos(num_trees_ddos)
-  for classification_array_ddos in classification_matrix_ddos:
-    classification_templates += "\t\t\tif ("
-    for i in range(len(classification_array_ddos)):
-      if i<len(classification_array_ddos)-1:
-        classification_templates += "(meta.class_tree_ddos_" + str(i) + " == " + str(classification_array_ddos[i]) + ") && "
-      else:
-        classification_templates += "(meta.class_tree_ddos_" + str(i) + " == " + str(classification_array_ddos[i]) + ")) {\n"
-    winner = vote_for_ddos(num_trees_ddos, classification_array_ddos)
-    classification_templates += "\t\t\t\tmeta.classification_ddos = " + str(winner) + ";\n\t\t\t}\n"
-
-
+  # substitute the code in the template
   with open(PATH_P4_CODE_TEMPLATE_INPUT, 'r') as switch_template_file:
     switch_template = switch_template_file.read()
     switch_template = switch_template.replace('/* METADATA */', metadata_code)
