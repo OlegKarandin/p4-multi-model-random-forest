@@ -14,7 +14,7 @@ if __name__ == '__main__':
     num_trees_ddos = 1 # 3
 
     # number of features we want to use in both models
-    num_features = 4 - 1
+    num_features = 3
 
     df_app = load_dataset('apps_flow_features.csv')
     df_ddos = load_dataset('Wednesday-workingHours.pcap_ISCX.csv')

@@ -1,7 +1,6 @@
 import math
 from sklearn.tree import export_text
 import csv
-import random
 import json
 from itertools import combinations_with_replacement
 from statistics import mode
@@ -14,7 +13,7 @@ PATH_TABLE_ENTRIES_OUTPUT = OUTPUT_PATH + "table_entries.json"
 PATH_TABLE_TEMPLATE_P4  = PATH + 'table.p4'
 PATH_ACTION_TEMPLATE_P4 = PATH + 'action.p4'
 PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
-PATH_P4_CODE_TEMPLATE_OUTPUT = OUTPUT_PATH + 'p4_template.p4'
+PATH_P4_CODE_TEMPLATE_OUTPUT = OUTPUT_PATH + 'p4_code_RF_models.p4'
 
 
 def dt_thresholds_float_to_int(clf):
@@ -597,21 +596,23 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
 
 def generate_voting_code(num_trees, num_classes, task):
 
-  str = ''
+  temp_str = ''
 
   classes_list = [i for i in range(num_classes)]
 
   for classification_array in combinations_with_replacement(classes_list, num_trees):
-    str += "\t\t\tif ("
+
+    temp_str += "\t\t\tif ("
     for i in range(len(classification_array)):
       if i<len(classification_array)-1:
-        str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ") && "
+        temp_str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ") && "
       else:
-        str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ")) {\n"
+        temp_str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ")) {\n"
     winner = mode(classification_array)
-    str += "\t\t\t\tmeta.classification_{} = ".format(task) + str(winner) + ";\n\t\t\t}\n"
+    print('Winner in ', classification_array, ' is ', winner, ' \n')
+    temp_str += "\t\t\t\tmeta.classification_{} = ".format(task) + str(winner) + ";\n\t\t\t}\n"
 
-    return str
+  return temp_str
 
 
 def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, codeword_length, feature_intervals):

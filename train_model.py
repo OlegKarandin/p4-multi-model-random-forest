@@ -7,7 +7,6 @@ from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
 from hyperopt.early_stop import no_progress_loss
 import hyperopt
 
-import pandas as pd
 import numpy as np
 
 INTERMEDIATE = "intermediate/"
@@ -87,8 +86,8 @@ def training_and_feature_selection(df_app, df_ddos, required_num_features, num_t
 
     current_num_features = len(list(X_train_ddos.columns))
     with open(INTERMEDIATE + 'training_and_feature_selection_results.txt', 'w') as log_file:
-        log_file.write('Number of features in the dataset: {}\n', current_num_features)
-        log_file.write('Required number of features: {}\n', required_num_features)
+        log_file.write('Number of features in the dataset: {}\n'.format(current_num_features))
+        log_file.write('Required number of features: {}\n'.format(required_num_features))
 
     while current_num_features > required_num_features:
         
@@ -116,7 +115,10 @@ def training_and_feature_selection(df_app, df_ddos, required_num_features, num_t
 
     selected_features = list(X_train_ddos.columns)
     with open(INTERMEDIATE + 'training_and_feature_selection_results.txt', 'a') as log_file:
-        log_file.write('Selected features are: {}\n', selected_features)
+        log_file.write('Selected features are: {}\n'.format(selected_features))
+
+    clf_app = train_classifier_RF(X_train_app, y_train_app, num_trees_app)
+    clf_ddos = train_classifier_RF(X_train_ddos, y_train_ddos, num_trees_ddos)
 
     # predict the label for the test datasets
     y_pred_test_app = clf_app.predict(X_test_app)

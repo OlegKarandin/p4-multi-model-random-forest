@@ -13,33 +13,28 @@ def load_dataset(filename):
 	# Load dataset from .csv"
 	print("Loading Dataset...")
 	df = pd.read_csv("resources/" + filename)
-	cicids2017_df = pd.DataFrame.from_dict(df)
+	dataset_df = pd.DataFrame.from_dict(df)
 
 	# Remove leading spaces from column names
-	print("Changing column names...")
 	if filename == 'Wednesday-workingHours.pcap_ISCX.csv':
-		new_cols = {col: col.strip() for col in cicids2017_df.columns}
+		new_cols = {col: col.strip() for col in dataset_df.columns}
 	elif filename == 'apps_flow_features.csv':
-		new_cols = {col: col.strip().replace('s.s', 's/s').replace('.', ' ') for col in cicids2017_df.columns}
+		new_cols = {col: col.strip().replace('s.s', 's/s').replace('.', ' ') for col in dataset_df.columns}
 	else:
 		return None
-	cicids2017_df.rename(columns=new_cols, inplace=True)
+	dataset_df.rename(columns=new_cols, inplace=True)
 
 	# Check if there are any NaN values in the DataFrame
 	print("Removing rows containing NaN values...")
-	if cicids2017_df.isna().any().any():
-	    print('The DataFrame contains NaN values')
-	else:
-	    print('The DataFrame does not contain NaN values')
 
 	# Count the number of rows in the original DataFrame
-	num_rows_before = cicids2017_df.shape[0]
+	num_rows_before = dataset_df.shape[0]
 
 	# Remove rows with NaN values
-	cicids2017_df.dropna(inplace=True)
+	dataset_df.dropna(inplace=True)
 
 	# Count the number of rows in the new DataFrame
-	num_rows_after = cicids2017_df.shape[0]
+	num_rows_after = dataset_df.shape[0]
 
 	# Calculate the number of rows removed
 	num_rows_removed = num_rows_before - num_rows_after
@@ -50,16 +45,16 @@ def load_dataset(filename):
 	if filename == 'Wednesday-workingHours.pcap_ISCX.csv':
 		# Drop rows belonging to class HEARTBLEED
 		print("Remove 'Heartbleed' attack samples...")
-		cicids2017_df = cicids2017_df.drop(cicids2017_df[cicids2017_df['Label'] == 'Heartbleed'].index)
+		dataset_df = dataset_df.drop(dataset_df[dataset_df['Label'] == 'Heartbleed'].index)
 
-		label_counts = cicids2017_df['Label'].value_counts()
+		label_counts = dataset_df['Label'].value_counts()
 
 		# print the counts of each label
 		print(label_counts)
 
 	#2. FEATURE SELECTION
-	cicids2017_df['Packet Count'] = cicids2017_df['Total Fwd Packets'] + cicids2017_df['Total Backward Packets']
-	cicids2017_df['Packet Length Total'] = cicids2017_df['Total Length of Fwd Packets'] + cicids2017_df['Total Length of Bwd Packets']
+	dataset_df['Packet Count'] = dataset_df['Total Fwd Packets'] + dataset_df['Total Backward Packets']
+	dataset_df['Packet Length Total'] = dataset_df['Total Length of Fwd Packets'] + dataset_df['Total Length of Bwd Packets']
 
 	selected_features = ['Flow Duration',
 	                     'Packet Count',
@@ -100,13 +95,13 @@ def load_dataset(filename):
 
 	num_selected_features = len(selected_features)
 	if filename == 'Wednesday-workingHours.pcap_ISCX.csv':
-		print(f"Selected Features: {num_selected_features-1}")
+		print(f"Dataset Features: {num_selected_features-1}")
 	elif filename == 'apps_flow_features.csv':
-		print(f"Selected Features: {num_selected_features}")
+		print(f"Dataset Features: {num_selected_features}")
 
-	cicids2017_df = cicids2017_df[selected_features]
+	dataset_df = dataset_df[selected_features]
 
-	for col in cicids2017_df.columns:
+	for col in dataset_df.columns:
 	  if col == "Packet Count":
 	    new_cols[col] = "Flow Packet Count"
 	  if col == 'Min Packet Length':
@@ -133,10 +128,10 @@ def load_dataset(filename):
 	    new_cols[col] = "Bwd Packet Length Total"
 
 
-	cicids2017_df.rename(columns=new_cols, inplace=True)
+	dataset_df.rename(columns=new_cols, inplace=True)
 
 	# 3. HANDLE FEAUTRES WITH INVALID VALUES
-	df = cicids2017_df
+	df = dataset_df
 	numeric_columns = df.select_dtypes(include=['number']).columns
 	negative_features = df[numeric_columns].columns[(df[numeric_columns] < 0).any()]
 
@@ -144,16 +139,14 @@ def load_dataset(filename):
 	for feature in negative_features:
 	    print(feature)
 
-	df_negative_values = cicids2017_df[(cicids2017_df[numeric_columns] < 0).any(axis=1)]
-
 	#Delete remaining flow samples with negative values
-	initial_flows = len(cicids2017_df)
+	initial_flows = len(dataset_df)
 
 	#Check only in numeric columns:
-	numeric_columns = cicids2017_df.select_dtypes(include=['number']).columns
-	cicids2017_df = cicids2017_df.drop(cicids2017_df[(cicids2017_df[numeric_columns] < 0).any(axis=1)].index)
+	numeric_columns = dataset_df.select_dtypes(include=['number']).columns
+	dataset_df = dataset_df.drop(dataset_df[(dataset_df[numeric_columns] < 0).any(axis=1)].index)
 
-	print("Deleted flow samples: ",initial_flows-len(cicids2017_df))
+	print("Deleted flow samples with negative features: ",initial_flows-len(dataset_df))
 
 	if filename == 'Wednesday-workingHours.pcap_ISCX.csv':
 		#4. GENERATE CIC-IDS2017 subset: Attack vs No Attack
@@ -162,7 +155,7 @@ def load_dataset(filename):
 		class_label = "Label"
 
 		# Count the number of samples in each class
-		class_counts = cicids2017_df[class_label].value_counts()
+		class_counts = dataset_df[class_label].value_counts()
 
 		# Determine the minimum count among the classes
 		minority_samples = class_counts.min()
@@ -170,53 +163,56 @@ def load_dataset(filename):
 		print("Minority Samples: ", minority_samples)
 
 		# Subsample all classes except BENIGN to the desired number of samples
-		cicids2017_df_subsampled = pd.concat([
-				cicids2017_df[cicids2017_df[class_label] == "BENIGN"],
-				cicids2017_df[cicids2017_df[class_label] != "BENIGN"].groupby(class_label).apply(lambda x: x.sample(minority_samples))
+		dataset_df_subsampled = pd.concat([
+				dataset_df[dataset_df[class_label] == "BENIGN"],
+				dataset_df[dataset_df[class_label] != "BENIGN"].groupby(class_label).apply(lambda x: x.sample(minority_samples))
 		])
 
 
-		cicids2017_df_subsampled.loc[cicids2017_df_subsampled[class_label].isin(["DoS Hulk", "DoS GoldenEye", "DoS slowloris", "DoS Slowhttptest"]), class_label] = "Attack"
-		cicids2017_df_subsampled.loc[cicids2017_df_subsampled[class_label].isin(["BENIGN"]), class_label] = "No Attack"
+		dataset_df_subsampled.loc[dataset_df_subsampled[class_label].isin(["DoS Hulk", "DoS GoldenEye", "DoS slowloris", "DoS Slowhttptest"]), class_label] = class_names[0]
+		dataset_df_subsampled.loc[dataset_df_subsampled[class_label].isin(["BENIGN"]), class_label] = class_names[1]
 
 
-		cicids2017_df_subsampled = pd.concat([
-				cicids2017_df_subsampled[cicids2017_df_subsampled[class_label] == "Attack"],
-				cicids2017_df_subsampled[cicids2017_df_subsampled[class_label] == "No Attack"].sample(4*minority_samples)
+		dataset_df_subsampled = pd.concat([
+				dataset_df_subsampled[dataset_df_subsampled[class_label] == class_names[0]],
+				dataset_df_subsampled[dataset_df_subsampled[class_label] == class_names[1]].sample(4*minority_samples)
 		])
 
 
-		cicids2017_df = cicids2017_df_subsampled
+		dataset_df = dataset_df_subsampled
 
 
 		##### PLOT FINAL CLASS DISTRIBUTION
-		label_counts = cicids2017_df['Label'].value_counts()
+		label_counts = dataset_df[class_label].value_counts()
 
 		# print the counts of each label
 		print(label_counts)
 
 
-		cicids2017_df['Label'] = cicids2017_df['Label'].apply(lambda x: ddos_labels(str(x)))
+		dataset_df[class_label] = dataset_df[class_label].apply(lambda x: ddos_labels(str(x)))
 
 		# Reset the index of the DataFrame after filtering
-		relabelled_df = cicids2017_df.reset_index(drop=True)
+		relabelled_df = dataset_df.reset_index(drop=True)
 		balanced_df = pd.DataFrame()
 
-		class_df = relabelled_df[relabelled_df['Label'] == 1]
+		class_df = relabelled_df[relabelled_df[class_label] == 1]
 		random_indices = np.random.choice(class_df.index, 10000, replace=False)
 		balanced_df = pd.concat([balanced_df, class_df.loc[random_indices]], axis=0)
 
-		class_df = relabelled_df[relabelled_df['Label'] == 0]
+		class_df = relabelled_df[relabelled_df[class_label] == 0]
 		random_indices = np.random.choice(class_df.index, 10000, replace=False)
 		balanced_df = pd.concat([balanced_df, class_df.loc[random_indices]], axis=0)
 
 		balanced_df = balanced_df.sample(frac=1).reset_index(drop=True)
 
-		print(balanced_df['Label'].value_counts())
+		print(balanced_df[class_label].value_counts())
 
 		return balanced_df
 
 	elif filename == 'apps_flow_features.csv':
+
+		class_label = "Label"
+
 		real_time_apps = ['SKYPE']
 		non_real_time_apps = ['DROPBOX']
 		websites = ['WIKIPEDIA']
@@ -232,10 +228,12 @@ def load_dataset(filename):
 			else:
 				label_vect.append(-1)
 
-		cicids2017_df['Label'] = label_vect
-		cicids2017_df = cicids2017_df[cicids2017_df['Label'] >= 0]
+		dataset_df[class_label] = label_vect
+		dataset_df = dataset_df[dataset_df[class_label] >= 0]
 
-		return cicids2017_df
+		print(dataset_df[class_label].value_counts())
+
+		return dataset_df
 
 	else:
 		return None
