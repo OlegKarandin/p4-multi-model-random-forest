@@ -1,3 +1,4 @@
+import os
 import math
 from sklearn.tree import export_text
 import csv
@@ -454,6 +455,9 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
     for entry in table_entries:
       print(entry)
 
+  if not os.path.exists(OUTPUT_PATH):
+      os.makedirs(OUTPUT_PATH)
+
   # Save table entries to JSON
   with open(PATH_TABLE_ENTRIES_OUTPUT, 'w') as output_file:
     output_file.write(json.dumps(table_entries))
@@ -615,7 +619,7 @@ def generate_voting_code(num_trees, num_classes, task):
 
 
 def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, codeword_length, feature_intervals):
-  
+
   # generate the definition of the bit containers that contain decisions of each tree
   bit_per_classes_app = math.ceil(math.log2(num_class_app))
   bit_per_classes_ddos = math.ceil(math.log2(num_class_ddos))
