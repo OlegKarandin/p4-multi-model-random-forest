@@ -9,7 +9,7 @@ import hyperopt
 
 import numpy as np
 
-INTERMEDIATE = "intermediate/"
+INTERMEDIATE = "temp/"
 
 
 def train_classifier_RF(X_train, y_train, n_trees):

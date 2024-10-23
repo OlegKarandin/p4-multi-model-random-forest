@@ -2,12 +2,12 @@ import math
 from sklearn.tree import export_text
 import csv
 import json
-from itertools import combinations_with_replacement
+from itertools import product
 from statistics import mode
 
 INFINITE = 2147483647
 PATH = "resources/"
-INTERMEDIATE = "intermediate/"
+INTERMEDIATE = "temp/"
 OUTPUT_PATH = "p4/"
 PATH_TABLE_ENTRIES_OUTPUT = OUTPUT_PATH + "table_entries.json"
 PATH_TABLE_TEMPLATE_P4  = PATH + 'table.p4'
@@ -600,7 +600,7 @@ def generate_voting_code(num_trees, num_classes, task):
 
   classes_list = [i for i in range(num_classes)]
 
-  for classification_array in combinations_with_replacement(classes_list, num_trees):
+  for classification_array in product(classes_list, repeat=num_trees):
 
     temp_str += "\t\t\tif ("
     for i in range(len(classification_array)):
@@ -609,7 +609,6 @@ def generate_voting_code(num_trees, num_classes, task):
       else:
         temp_str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ")) {\n"
     winner = mode(classification_array)
-    print('Winner in ', classification_array, ' is ', winner, ' \n')
     temp_str += "\t\t\t\tmeta.classification_{} = ".format(task) + str(winner) + ";\n\t\t\t}\n"
 
   return temp_str
