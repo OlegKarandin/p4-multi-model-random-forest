@@ -11,7 +11,7 @@ net.enableCli()
 
 # Network definition
 net.addP4RuntimeSwitch('s1')
-net.setP4Source('s1','packet_repeater.p4')
+net.setP4Source('s1','../p4/p4_code_RF_models.p4')
 #net.setP4SourceAll() --> To set same .p4 to all switches
 net.addHost('h1')
 net.addHost('h2')
