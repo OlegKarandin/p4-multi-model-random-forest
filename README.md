@@ -1,11 +1,11 @@
 # Implementation of Multiple Concurrent Tree-Based Models in P4 Switches using Feature Sharing
 
-Please, check if Git LFS (https://git-lfs.com/) is installed on your machine otherwise you will need to download the two dataset, "Wednesday-workingHours.pcap_ISCX.csv" and "apps_flow_features.csv", manually.
+Please, check if the two dataset, "Wednesday-workingHours.pcap_ISCX.csv" and "apps_flow_features.csv", are automatically cloned on your machine with the proper data inside, otherwise download them manually.
 
 ## Environment Setup
 
 ### python
-Python version 3.13.x (highly recommended)
+Python version 3.11.x (highly recommended)
 
 ### conda
 If you use conda, create the environment as follows (subsitute <env> with the environment name):
