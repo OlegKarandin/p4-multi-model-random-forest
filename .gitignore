@@ -168,3 +168,5 @@ pcap/
 *.p4i
 *.json
 p4/*.p4
+
+results/

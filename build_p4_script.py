@@ -6,7 +6,7 @@ import json
 from itertools import product
 from statistics import mode
 
-INFINITE = 2147483647
+INFINITE = (2**19)-1
 PATH = "resources/"
 INTERMEDIATE = "temp/"
 OUTPUT_PATH = "p4/"
@@ -21,7 +21,7 @@ def dt_thresholds_float_to_int(clf):
   # Access the decision thresholds in each tree
   for tree in clf.estimators_:
       for i, threshold in enumerate(tree.tree_.threshold):
-        if threshold != -2: # OLEG: ???
+        if threshold != -2:
             tree.tree_.threshold[i] = int(threshold)
 
   return clf
@@ -43,9 +43,9 @@ def get_tree_textual_representation(clf, feature_names, verbose=False):
 
 def get_nodes(tree_text):
   '''
-  Inputs: Tree textual representation generated with export_text(tree_classifier, feature_names)
-  Outputs: Dictionary containing the information of the different tree nodes (leaf or internal)
-  '''
+   Inputs: Tree textual representation generated with export_text(tree_classifier, feature_names)
+   Outputs: Dictionary containing the information of the different tree nodes (leaf or internal)
+   '''
 
   nodes = {}
   # Store each of the lines of the tree textual representation in a List
@@ -125,27 +125,26 @@ def get_nodes(tree_text):
 
   return nodes
 
-
 def get_feature_splits(tree_nodes):
   '''
-  Inputs: Dictionary containing the features of all nodes in the Random Forest
-  Outputs: List of tuples containing the comparison thresholds (i.e. feature splits) each feature goes through over all the trees: (Feature Name, Threshold)
-  '''
+   Inputs: Dictionary containing the features of all nodes in the Random Forest
+   Outputs: List of tuples containing the comparison thresholds (i.e. feature splits) each feature goes through over all the trees: (Feature Name, Threshold)
+   '''
 
   nodes = []
   feature_splits = []
 
-  #Gather nodes from all Decision Trees
+  #Gather node features from all Decision Trees
   for tree in tree_nodes:
     for node in tree_nodes[tree]:
       nodes.append(tree_nodes[tree][node])
-
-  #Join all feature thresholds (splits) used across the nodes
+  #Join all feature thresholds (splits) that are consulted at each node
   for node in nodes:
-    if node['is_leaf'] == False:
+    try:
       feature_splits.append((node["feature"],
                             node["threshold"]))
-
+    except:
+      pass
   #Sort feature thresholds by feature
   return sorted(feature_splits, key=lambda x: (x[0], x[1]))
 
@@ -155,16 +154,14 @@ def get_feature_intervals(feature_splits):
   Inputs: List of tuples containing the features splits of all features
   Outputs: Dictionary where each key is the feature name and the associated value is the list of intervals of the given feature
   '''
-    
   feature_intervals = {}
 
   # Iterate over each feature split
   for feature, threshold in feature_splits:
-      #New Feature, Initialize interval
+      #New Feature, Init interval
       if feature not in feature_intervals:
           feature_intervals[feature] = [[0, threshold]]
-      
-      #Existing Feature, Extend Interval
+      #Exisiting Feature, Extend Interval
       else:
           last_range = feature_intervals[feature][-1]
           if last_range[1] == "infinite":
@@ -181,7 +178,7 @@ def get_feature_intervals(feature_splits):
   return feature_intervals
 
 
-def feature_intervals_to_csv(feature_intervals):
+def feature_intervals_to_csv(feature_intervals, path_to_output="results/", output_filename = "feature_intervals.csv"):
   rows = []
 
   for feature_name in feature_intervals:
@@ -202,11 +199,9 @@ def feature_intervals_to_csv(feature_intervals):
 
     rows.append([])
 
-  # File path
-  file_path = INTERMEDIATE + 'feature_intervals.csv'
 
   # Open the file in write mode
-  with open(file_path, 'w', newline='') as csvfile:
+  with open(path_to_output + output_filename, 'w', newline='') as csvfile:
       # Create a CSV writer object
       writer = csv.writer(csvfile, delimiter=";")
 
@@ -217,7 +212,7 @@ def feature_intervals_to_csv(feature_intervals):
 
 def get_root_to_leaf_paths(tree_nodes):
   '''
-  For each leaf node in each Decision Tree, this function maps all the nodes we must traverse to go from the root node of the end leaf nodes, 
+  For each leaf node in each Decision Tree, this function maps all the nodes we must traverse to go from the root node of the end leaf nodes,
   storing the class label associated to that node, while gathering the following features for each traversed node:
     Node_ID
     Feature Name
@@ -225,11 +220,11 @@ def get_root_to_leaf_paths(tree_nodes):
     Condition (≤ or >)
 
   Inputs: Dictionary containing the features of all nodes in the Random Forest
-  Outputs: Dictionary of dictionaries, including the path and final class of each leaf node in the Random Forest. 
+  Outputs: Dictionary of dictionaries, including the path and final class of each leaf node in the Random Forest.
             First key is the tree_id (0, 1, etc.). Second key is the leaf_node_id (0, 1, etc.).
 
-  Example Output: { "class": "1.0", "path": [ {"node_id": 2, "feature": "Flow_IAT_Max", "threshold": 504078, "condition": "<="}, 
-                                              {"node_id": 1, "feature": "Bwd_Packet_Length_Max", "threshold": 12, "condition": "<="}, 
+  Example Output: { "class": "1.0", "path": [ {"node_id": 2, "feature": "Flow_IAT_Max", "threshold": 504078, "condition": "<="},
+                                              {"node_id": 1, "feature": "Bwd_Packet_Length_Max", "threshold": 12, "condition": "<="},
                                               {"node_id": 0, "feature": "Bwd_Packet_Length_Max", "threshold": 3513, "condition": "<="} ] }
   '''
 
@@ -273,7 +268,7 @@ def get_root_to_leaf_paths(tree_nodes):
         child_node = father_node
         father_node = tree_nodes[tree][father_node]["father_node"]
 
-  return paths_leaf_nodes_per_tree
+  return(paths_leaf_nodes_per_tree)
 
 
 def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
@@ -284,7 +279,7 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
             List of feature names used to train the RF model
     Outputs: Dictionary of dictionaries. First key is the tree_id (0, 1, etc.). Second key is the codeword (11*00**). Value is the class label.
   '''
-    
+
   codewords = {}
 
   for tree in paths_leaf_nodes_per_tree:
@@ -299,8 +294,7 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
       features_involved = [step["feature"] for step in current_leaf_node["path"]]
 
       #Iterate over all features
-      feature_names = feature_intervals.keys()
-      for feature in feature_names:
+      for feature in feature_intervals.keys():
         feature_conditions = []
 
         #If feature is not in  the path, we add * to codeword
@@ -365,19 +359,21 @@ def get_ternary_match(codeword):
           value += bit
           mask += '1'
 
-  hex_value = hex(int(value, 2))[2:].upper()
-  hex_mask = hex(int(mask, 2))[2:].upper()
+  bit_length = len(codeword)
+
+  hex_value = hex(int(value, 2))[2:].upper().zfill((bit_length + 3) // 4)
+  hex_mask = hex(int(mask, 2))[2:].upper().zfill((bit_length + 3) // 4)
 
   return f"0x{hex_value}&&&0x{hex_mask}"
 
 
-def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset, verbose=False):
+def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset=None, path_to_output="results/", output_filename="table_entries.json", verbose=False):
   '''
   Inputs: feature_intervals [dict]: Dictionary where each key is a tree_id. The values are a list of feature intervals for each tree.
-          codewords [dict]: Dictionary where each key is a tree_id. The values are a list of dictionaries. 
-                            Each key in the dictionary is a codeword corresponding to a leaf node. 
-                            Each value is the class label associated with that codeword (i.e.: to the leaf node). 
-  
+          codewords [dict]: Dictionary where each key is a tree_id. The values are a list of dictionaries.
+                            Each key in the dictionary is a codeword corresponding to a leaf node.
+                            Each value is the class label associated with that codeword (i.e.: to the leaf node).
+
   Outputs: This function writes a JSON file that includes two lists of table entries:
               Feature codeword bits table entries
               Codeword-to-LeafNode matching table entries
@@ -434,33 +430,43 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
 
     feature_idx +=1
 
+
   # 2. Table entries for getting each tree's classification based on generated codeword
   for tree_idx,tree in enumerate(codewords):
     for codeword in codewords[tree]:
       table_entry={}
-      if tree_idx < offset:
-        table_entry["table_name"] = "get_classification_tree_app_"+str(tree_idx)
-        table_entry["action"] = "classify_flow_codeword_app"
+
+      if offset==None:
+        #One model encoding
+        table_entry["table_name"] = "get_classification_tree_"+str(tree_idx)
+        table_entry["action"] = "classify_flow_codeword"
         table_entry["action_params"] = [str(tree_idx), str(int(float((codewords[tree][codeword]))))]
       else:
-        table_entry["table_name"] = "get_classification_tree_ddos_"+str(tree_idx-offset)
-        table_entry["action"] = "classify_flow_codeword_ddos"
-        table_entry["action_params"] = [str(tree_idx-offset), str(int(float((codewords[tree][codeword]))))]
-      table_entry["key"] = [get_ternary_match(codeword)]
+        #Multiple models encoding
+        if tree_idx < offset:
+          table_entry["table_name"] = "get_classification_tree_app_"+str(tree_idx)
+          table_entry["action"] = "classify_flow_codeword_app"
+          table_entry["action_params"] = [str(tree_idx), str(int(float((codewords[tree][codeword]))))]
+        else:
+          table_entry["table_name"] = "get_classification_tree_ddos_"+str(tree_idx-offset)
+          table_entry["action"] = "classify_flow_codeword_ddos"
+          table_entry["action_params"] = [str(tree_idx-offset), str(int(float((codewords[tree][codeword]))))]
 
+      ternary_match = get_ternary_match(codeword)
+      table_entry["key"] = [ternary_match]
       table_entries.append(table_entry)
+
+
 
   if verbose == True:
     # Show Generated Table Entries
     for entry in table_entries:
       print(entry)
 
-  if not os.path.exists(OUTPUT_PATH):
-      os.makedirs(OUTPUT_PATH)
-
   # Save table entries to JSON
-  with open(PATH_TABLE_ENTRIES_OUTPUT, 'w') as output_file:
+  with open(path_to_output + output_filename, 'w') as output_file:
     output_file.write(json.dumps(table_entries))
+
 
 
 def generate_P4_actions(feature_intervals, codeword_length, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):

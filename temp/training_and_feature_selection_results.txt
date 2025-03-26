@@ -1,15 +1,2 @@
 Number of features in the dataset: 29
 Required number of features: 3
-Selected features are: ['Flow IAT Max', 'Fwd Packet Length Max', 'Fwd IAT Max']
-app
-Accuracy: 0.7813847900113507
-Precision: 0.8243376458267521
-Recall: 0.7813847900113507
-F1score: 0.7458499372521965
-
-ddos
-Accuracy: 0.90375
-Precision: [0.94067344]
-Recall: [0.86529007]
-F1score: [0.90140845]
-
