@@ -13,11 +13,41 @@ df_ddos = load_dataset(datasets_path, 'Wednesday-workingHours.pcap_ISCX.csv', th
 
 
 #511
-features_app = ['Fwd Packet Length Mean', 'Bwd Packet Length Max', 'Bwd IAT Mean',
-                'Flow Packet Length Max', 'Fwd Packet Length Max', 'Bwd IAT Max', 'Fwd IAT Max', 'Flow Packet Length Mean', 'Fwd IAT Mean',
-                'Bwd Packet Length Mean', 'Flow IAT Mean', 'Bwd Packet Length Min', 'Flow IAT Max', 'Label']
-features_ddos = ['Fwd IAT Mean', 'Fwd Packet Length Max', 'Flow Packet Length Mean', 'Flow IAT Max', 'Fwd IAT Max', 'Bwd Packet Length Max', 'Flow Packet Length Max', 'Label']
-features_joint = ['Fwd Packet Length Max', 'Flow Packet Length Mean', 'Flow IAT Max', 'Fwd IAT Max', 'Bwd Packet Length Max', 'Flow Packet Length Max', 'Label']
+features_app = [
+    'Fwd Packet Length Mean',
+    'Bwd Packet Length Max',
+    'Bwd IAT Mean',
+    'Flow Packet Length Max',
+    'Fwd Packet Length Max',
+    'Bwd IAT Max',
+    'Fwd IAT Max',
+    'Flow Packet Length Mean',
+    'Fwd IAT Mean',
+    'Bwd Packet Length Mean',
+    'Flow IAT Mean',
+    'Bwd Packet Length Min',
+    'Flow IAT Max',
+    'Label'
+]
+features_ddos = [
+    'Fwd IAT Mean',
+    'Fwd Packet Length Max',
+    'Flow Packet Length Mean',
+    'Flow IAT Max',
+    'Fwd IAT Max',
+    'Bwd Packet Length Max',
+    'Flow Packet Length Max',
+    'Label'
+]
+features_joint = [
+    'Fwd Packet Length Max',
+    'Flow Packet Length Mean',
+    'Flow IAT Max',
+    'Fwd IAT Max',
+    'Bwd Packet Length Max',
+    'Flow Packet Length Max',
+    'Label'
+]
 n_estimators_app_joint = 1
 n_estimators_ddos_joint = 1
 max_depth_app_joint = 14
@@ -30,9 +60,46 @@ max_depth_ddos = 11
 
 """
 #255
-features_app = ['Flow Packet Length Max', 'Fwd Packet Length Max', 'Bwd IAT Max', 'Fwd IAT Max', 'Flow Packet Length Mean', 'Fwd IAT Mean', 'Bwd Packet Length Mean', 'Flow IAT Mean', 'Bwd Packet Length Min', 'Flow IAT Max', 'Label']
-features_ddos = ['Fwd IAT Mean', 'Fwd Packet Length Max', 'Flow Packet Length Mean', 'Flow IAT Max', 'Fwd IAT Max', 'Bwd Packet Length Max', 'Flow Packet Length Max', 'Label']
-features_joint = ['Fwd Packet Length Mean', 'Bwd IAT Mean', 'Flow Packets/s', 'Bwd IAT Max', 'Bwd Packet Length Mean', 'Fwd IAT Mean', 'Bwd Packet Length Min', 'Flow IAT Mean', 'Fwd Packet Length Max', 'Flow Packet Length Mean', 'Flow IAT Max', 'Fwd IAT Max', 'Bwd Packet Length Max', 'Flow Packet Length Max', 'Label']
+features_app = [
+    'Flow Packet Length Max',
+    'Fwd Packet Length Max',
+    'Bwd IAT Max',
+    'Fwd IAT Max',
+    'Flow Packet Length Mean',
+    'Fwd IAT Mean',
+    'Bwd Packet Length Mean',
+    'Flow IAT Mean',
+    'Bwd Packet Length Min',
+    'Flow IAT Max',
+    'Label'
+]
+features_ddos = [
+    'Fwd IAT Mean',
+    'Fwd Packet Length Max',
+    'Flow Packet Length Mean',
+    'Flow IAT Max',
+    'Fwd IAT Max',
+    'Bwd Packet Length Max',
+    'Flow Packet Length Max',
+    'Label'
+]
+features_joint = [
+    'Fwd Packet Length Mean',
+    'Bwd IAT Mean',
+    #'Flow Packets/s',
+    'Bwd IAT Max',
+    'Bwd Packet Length Mean',
+    'Fwd IAT Mean',
+    'Bwd Packet Length Min',
+    'Flow IAT Mean',
+    'Fwd Packet Length Max',
+    'Flow Packet Length Mean',
+    'Flow IAT Max',
+    'Fwd IAT Max',
+    'Bwd Packet Length Max',
+    'Flow Packet Length Max',
+    'Label'
+]
 n_estimators_app_joint = 5
 n_estimators_ddos_joint = 1
 max_depth_app_joint = 5
@@ -201,19 +268,19 @@ print("Mean accuracy DDOS detector without sharing: ", round(mean_accuracy_ddos_
 print("Mean accuracy DDOS detector with sharing: ", round(mean_accuracy_ddos_joint*100, 2), "%")
 print('---------------------------------------------------------------')
 
+
+import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.ticker as ticker
+
 
 categories_range = ["no feature sharing", "feature sharing"]
 categories_tern = ["no feature sharing ", "feature sharing "]
 
-#512
-import matplotlib.pyplot as plt
-
+#Disagreggated entries
 plt.figure(figsize=(13, 7))
 plt.xticks(fontsize=18)
 plt.yticks(fontsize=18)
-#plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
 
 y_range = [mean_total_range_entries_no_joint,  mean_total_range_entries_joint]
 y_tern = [mean_total_ternary_entries_no_joint, mean_total_ternary_entries_joint]
@@ -222,8 +289,8 @@ y_tern = [mean_total_ternary_entries_no_joint, mean_total_ternary_entries_joint]
 plt.bar(categories_range, y_range)
 plt.bar(categories_tern, y_tern)
 
-#err_range = [std_total_range_entries_no_joint, std_total_range_entries_joint]
-#err_tern = [std_total_ternary_entries_no_joint, std_total_ternary_entries_joint]
+err_range = [std_total_range_entries_no_joint, std_total_range_entries_joint]
+err_tern = [std_total_ternary_entries_no_joint, std_total_ternary_entries_joint]
 plt.xticks(rotation=0)
 legend_patches = [
     mpatches.Patch(color="tab:blue", label="Range-matching entries"),
@@ -231,15 +298,16 @@ legend_patches = [
 ]
 plt.legend(handles=legend_patches, loc="upper right", fontsize=16)
 
-#plt.errorbar(categories_range, y_range, yerr=err_range, fmt="o", color="r")
-#plt.errorbar(categories_tern, y_tern, yerr=err_tern, fmt="o", color="r")
-#plt.title('512-bit codewords', fontsize=20)
+plt.errorbar(categories_range, y_range, yerr=err_range, fmt="o", color="r")
+plt.errorbar(categories_tern, y_tern, yerr=err_tern, fmt="o", color="r")
+plt.title('512-bit codewords', fontsize=20)
+#plt.title('256-bit codewords', fontsize=20)
 plt.ylabel('Average number of entries', fontsize=20)
 plt.ylim(0,1600)
 
 plt.show()
 
-#512
+#Disagreggated TCAMs
 plt.figure(figsize=(13, 7))
 plt.xticks(fontsize=18)
 plt.yticks(fontsize=18)
@@ -252,8 +320,8 @@ y_tern = [mean_total_ternary_TCAM_no_joint, mean_total_ternary_TCAM_joint]
 plt.bar(categories_range, y_range)
 plt.bar(categories_tern, y_tern)
 
-#err_range = [std_total_range_TCAM_no_joint, std_total_range_TCAM_joint]
-#err_tern = [std_total_ternary_TCAM_no_joint, std_total_ternary_TCAM_joint]
+err_range = [std_total_range_TCAM_no_joint, std_total_range_TCAM_joint]
+err_tern = [std_total_ternary_TCAM_no_joint, std_total_ternary_TCAM_joint]
 
 plt.xticks(rotation=0)
 legend_patches = [
@@ -262,14 +330,15 @@ legend_patches = [
 ]
 plt.legend(handles=legend_patches, loc="upper right", fontsize=16)
 
-#plt.errorbar(categories_range, y_range, yerr=err_range, fmt="o", color="r")
-#plt.errorbar(categories_tern, y_tern, yerr=err_tern, fmt="o", color="r")
-#plt.title('512-bit codewords')
+plt.errorbar(categories_range, y_range, yerr=err_range, fmt="o", color="r")
+plt.errorbar(categories_tern, y_tern, yerr=err_tern, fmt="o", color="r")
+plt.title('512-bit codewords', fontsize=20)
+#plt.title('256-bit codewords', fontsize=20)
 plt.ylabel('Average number of TCAMs', fontsize=20)
 plt.ylim(0,100)
 plt.show()
 
-#512
+#Disaggregated stages
 plt.figure(figsize=(13, 7))
 plt.xticks(fontsize=18)
 plt.yticks(fontsize=18)
@@ -282,8 +351,8 @@ y_tern = [mean_total_ternary_stages_no_joint, mean_total_ternary_stages_joint]
 plt.bar(categories_range, y_range)
 plt.bar(categories_tern, y_tern)
 
-#err_range = [std_total_range_stages_no_joint, std_total_range_stages_joint]
-#err_tern = [std_total_ternary_stages_no_joint, std_total_ternary_stages_joint]
+err_range = [std_total_range_stages_no_joint, std_total_range_stages_joint]
+err_tern = [std_total_ternary_stages_no_joint, std_total_ternary_stages_joint]
 
 plt.xticks(rotation=0)
 legend_patches = [
@@ -292,57 +361,61 @@ legend_patches = [
 ]
 plt.legend(handles=legend_patches, loc="upper right", fontsize=20)
 
-#plt.errorbar(categories_range, y_range, yerr=err_range, fmt="o", color="r")
-#plt.errorbar(categories_tern, y_tern, yerr=err_tern, fmt="o", color="r")
-#plt.title('512-bit codewords')
+plt.errorbar(categories_range, y_range, yerr=err_range, fmt="o", color="r")
+plt.errorbar(categories_tern, y_tern, yerr=err_tern, fmt="o", color="r")
+plt.title('512-bit codewords', fontsize=20)
+#plt.title('256-bit codewords', fontsize=20)
 plt.ylabel('Average number of stages',fontsize=20)
 plt.ylim(0,6)
 plt.show()
 
+
 categories = ["no feature sharing", "feature sharing"]
 
-plt.figure(figsize=(7, 6))
+#Aggregated entries
+plt.figure(figsize=(9, 8))
 plt.xticks(fontsize=18)
 plt.yticks(fontsize=18)
 y = [mean_total_range_entries_no_joint + mean_total_ternary_entries_no_joint, mean_total_range_entries_joint + mean_total_ternary_entries_joint]
 plt.bar(categories, y, color="tab:blue")
 
-#err = [std_total_range_entries_no_joint + std_total_ternary_entries_no_joint, std_total_range_entries_joint + std_total_ternary_entries_joint]
+err = [std_total_range_entries_no_joint + std_total_ternary_entries_no_joint, std_total_range_entries_joint + std_total_ternary_entries_joint]
 
-#plt.errorbar(categories, y, yerr=err, fmt="o", color="r")
-#plt.title('512-bit codewords')
-#plt.ylabel('Average number of entries', fontsize=20)
+plt.errorbar(categories, y, yerr=err, fmt="o", color="r")
+plt.title('512-bit codewords', fontsize=20)
+#plt.title('256-bit codewords', fontsize=20)
+plt.ylabel('Average number of entries', fontsize=20)
 plt.ylim(0,1600)
 plt.show()
 
-#512
-plt.figure(figsize=(7, 6))
+#Aggregated TCAMs
+plt.figure(figsize=(9, 8))
 y = [mean_total_range_TCAM_no_joint + mean_total_ternary_TCAM_no_joint, mean_total_range_TCAM_joint + mean_total_ternary_TCAM_joint]
 plt.bar(categories, y, color="tab:blue")
 
 err = [std_total_range_TCAM_no_joint + std_total_ternary_TCAM_no_joint, std_total_range_TCAM_joint + std_total_ternary_TCAM_joint]
 plt.xticks(fontsize=18)
 plt.yticks(fontsize=18)
-#plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
-#plt.errorbar(categories, y, yerr=err, fmt="o", color="r")
-#plt.title('512-bit codewords', fontsize=18)
-#plt.ylabel('Average number of TCAMs', fontsize=18)
+plt.errorbar(categories, y, yerr=err, fmt="o", color="r")
+plt.title('512-bit codewords', fontsize=20)
+#plt.title('256-bit codewords', fontsize=20)
+plt.ylabel('Average number of TCAMs', fontsize=18)
 plt.ylim(0,100)
 plt.show()
 
 
-#512
-plt.figure(figsize=(7, 6))
+#Aggregated stages
+plt.figure(figsize=(9, 8))
 y = [mean_total_range_stages_no_joint + mean_total_ternary_stages_no_joint, mean_total_range_stages_joint + mean_total_ternary_stages_joint]
 plt.bar(categories, y, color="tab:blue")
 
-#err = [std_total_range_stages_no_joint + std_total_ternary_stages_no_joint, std_total_range_stages_joint + std_total_ternary_stages_joint]
+err = [std_total_range_stages_no_joint + std_total_ternary_stages_no_joint, std_total_range_stages_joint + std_total_ternary_stages_joint]
 
-#plt.errorbar(categories, y, yerr=err, fmt="o", color="r")
-#plt.title('512-bit codewords', size=18)
+plt.errorbar(categories, y, yerr=err, fmt="o", color="r")
+plt.title('512-bit codewords', fontsize=20)
+#plt.title('256-bit codewords', fontsize=20)
 plt.xticks(fontsize=18)
 plt.yticks(fontsize=18)
-#plt.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
-#plt.ylabel('Average number of stages', size=18)
+plt.ylabel('Average number of stages', size=18)
 plt.ylim(0,6)
 plt.show()

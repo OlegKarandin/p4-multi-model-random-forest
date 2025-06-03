@@ -1,2 +1,15 @@
 Number of features in the dataset: 29
 Required number of features: 3
+Selected features are: ['Fwd Packet Length Total', 'Fwd Packet Length Max', 'Bwd Packet Length Max']
+app
+Accuracy: 0.7353007945516459
+Precision: 0.772435639015137
+Recall: 0.7353007945516459
+F1score: 0.7014520402293862
+
+ddos
+Accuracy: 0.91075
+Precision: [0.89059501]
+Recall: [0.93501259]
+F1score: [0.91226346]
+

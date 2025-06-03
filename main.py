@@ -16,8 +16,10 @@ if __name__ == '__main__':
     # number of features we want to use in both models
     num_features = 3
 
-    df_app = load_dataset('apps_flow_features.csv')
-    df_ddos = load_dataset('Wednesday-workingHours.pcap_ISCX.csv')
+    datasets_path = "resources/"
+    threshold = (2 ** 19) - 2
+    df_app = load_dataset(datasets_path, 'apps_flow_features.csv', threshold)
+    df_ddos = load_dataset(datasets_path, 'Wednesday-workingHours.pcap_ISCX.csv', threshold)
 
     clf_app, clf_ddos, selected_features = training_and_feature_selection(df_app, df_ddos, num_features, num_trees_app, num_trees_ddos)
 

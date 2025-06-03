@@ -14,7 +14,19 @@ PATH_TABLE_ENTRIES_OUTPUT = OUTPUT_PATH + "table_entries.json"
 PATH_TABLE_TEMPLATE_P4  = PATH + 'table.p4'
 PATH_ACTION_TEMPLATE_P4 = PATH + 'action.p4'
 PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
-PATH_P4_CODE_TEMPLATE_OUTPUT = OUTPUT_PATH + 'p4_code_RF_models.p4'
+
+
+
+def ensure_directory_exists(path):
+  """
+  Creates the directory if it does not exist.
+
+  Parameters:
+      path (str): The path of the directory to check/create.
+  """
+  if not os.path.exists(path):
+    os.makedirs(path)
+
 
 
 def dt_thresholds_float_to_int(clf):
@@ -178,7 +190,7 @@ def get_feature_intervals(feature_splits):
   return feature_intervals
 
 
-def feature_intervals_to_csv(feature_intervals, path_to_output="results/", output_filename = "feature_intervals.csv"):
+def feature_intervals_to_csv(feature_intervals, path_to_output=INTERMEDIATE, output_filename = "feature_intervals.csv"):
   rows = []
 
   for feature_name in feature_intervals:
@@ -367,7 +379,7 @@ def get_ternary_match(codeword):
   return f"0x{hex_value}&&&0x{hex_mask}"
 
 
-def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset=None, path_to_output="results/", output_filename="table_entries.json", verbose=False):
+def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset=None, path_to_output=OUTPUT_PATH, output_filename="table_entries.json", verbose=False):
   '''
   Inputs: feature_intervals [dict]: Dictionary where each key is a tree_id. The values are a list of feature intervals for each tree.
           codewords [dict]: Dictionary where each key is a tree_id. The values are a list of dictionaries.
@@ -464,6 +476,7 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
       print(entry)
 
   # Save table entries to JSON
+  ensure_directory_exists(path_to_output)
   with open(path_to_output + output_filename, 'w') as output_file:
     output_file.write(json.dumps(table_entries))
 
@@ -666,6 +679,6 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, codeword_
     switch_template = switch_template.replace('/* APPLY */', apply_templates)
     switch_template = switch_template.replace('/* CLASSIFICATION */', classification_templates)
 
-
-  with open(PATH_P4_CODE_TEMPLATE_OUTPUT, 'w') as switch_template_file:
+  ensure_directory_exists(OUTPUT_PATH)
+  with open(OUTPUT_PATH + 'p4_code_RF_models.p4', 'w') as switch_template_file:
     switch_template_file.write(switch_template)

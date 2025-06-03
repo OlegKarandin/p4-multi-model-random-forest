@@ -78,8 +78,8 @@ def load_dataset(path, filename, threshold=None, verbose=False):
 	                     'Max Packet Length',
 	                     'Packet Length Mean',
 	                     'Packet Length Total',
-											 'Flow Packets/s',
-												'Flow Bytes/s',
+						 #'Flow Packets/s',
+						 #'Flow Bytes/s',
 	                     ###FORWARD FEATURES
 	                     'Total Fwd Packets',
 	                     'Total Length of Fwd Packets',
@@ -117,30 +117,31 @@ def load_dataset(path, filename, threshold=None, verbose=False):
 	cicids2017_df = cicids2017_df[selected_features]
 
 	for col in cicids2017_df.columns:
-	  if col == "Packet Count":
-	    new_cols[col] = "Flow Packet Count"
-	  if col == 'Min Packet Length':
-	    new_cols[col] = "Flow Packet Length Min"
-	  if col == 'Max Packet Length':
-	    new_cols[col] = "Flow Packet Length Max"
-	  if col == 'Packet Length Mean':
-	    new_cols[col] = "Flow Packet Length Mean"
-	  if col == 'Packet Length Total':
-	    new_cols[col] = "Flow Packet Length Total"
+		if col == "Packet Count":
+			new_cols[col] = "Flow Packet Count"
+		if col == 'Min Packet Length':
+			new_cols[col] = "Flow Packet Length Min"
+		if col == 'Max Packet Length':
+			new_cols[col] = "Flow Packet Length Max"
+		if col == 'Packet Length Mean':
+			new_cols[col] = "Flow Packet Length Mean"
+		if col == 'Packet Length Total':
+			new_cols[col] = "Flow Packet Length Total"
 
-	  if col == "Total Fwd Packets":
-	    new_cols[col] = "Fwd Packet Count"
-	  if col == 'Total Length of Fwd Packets':
-	    new_cols[col] = "Fwd Packet Length Total"
-	  if col == 'act_data_pkt_fwd':
-	    new_cols[col] = "Fwd ACT Data Pkt"
-	  if col == 'min_seg_size_forward':
-	    new_cols[col] = "Fwd Min Segment Size"
 
-	  if col == "Total Backward Packets":
-	    new_cols[col] = "Bwd Packet Count"
-	  if col == 'Total Length of Bwd Packets':
-	    new_cols[col] = "Bwd Packet Length Total"
+		if col == "Total Fwd Packets":
+			new_cols[col] = "Fwd Packet Count"
+		if col == 'Total Length of Fwd Packets':
+			new_cols[col] = "Fwd Packet Length Total"
+		if col == 'act_data_pkt_fwd':
+			new_cols[col] = "Fwd ACT Data Pkt"
+		if col == 'min_seg_size_forward':
+			new_cols[col] = "Fwd Min Segment Size"
+
+		if col == "Total Backward Packets":
+			new_cols[col] = "Bwd Packet Count"
+		if col == 'Total Length of Bwd Packets':
+			new_cols[col] = "Bwd Packet Length Total"
 
 
 	cicids2017_df.rename(columns=new_cols, inplace=True)
