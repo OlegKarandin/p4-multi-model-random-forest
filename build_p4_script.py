@@ -526,11 +526,22 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
 
     classification_action_template_app = "\taction classify_flow_codeword_app(bit<"+str(bit_per_num_trees_app)+"> tree, bit<"+str(bit_per_classes_app)+"> class){\n"
 
-    #Classification actions for traffic flow probem
-    for i in range(num_trees_app):
-      classification_action_template_app += "\t\tif (tree == "+str(i)+"){\n"
-      classification_action_template_app += "\t\t\tmeta.class_tree_app_"+str(i)+" = class;\n"
-      classification_action_template_app += "\t\t}\n"
+    if num_trees_app == 1:
+      # TNA: a single-tree task's classification action must write
+      # unconditionally. A runtime "if (tree == 0) {...}" here lowers to an
+      # IR::Mux that p4c's ActionAnalysis pass rejects outright ("Conditions
+      # in an action must be simple comparisons of an action data
+      # parameter"), even though the condition is always true for a single
+      # tree. Ground truth: every compiled spike's single-tree classify_ddos
+      # action (e.g. p4/tofino_spike/tna_rf_ddos_spike_tier3.p4) writes its
+      # metadata field unconditionally, with no tree-keyed branch at all.
+      classification_action_template_app += "\t\tmeta.class_tree_app_0 = class;\n"
+    else:
+      #Classification actions for traffic flow probem
+      for i in range(num_trees_app):
+        classification_action_template_app += "\t\tif (tree == "+str(i)+"){\n"
+        classification_action_template_app += "\t\t\tmeta.class_tree_app_"+str(i)+" = class;\n"
+        classification_action_template_app += "\t\t}\n"
 
     classification_action_template_app += "\t}\n"
 
@@ -545,10 +556,16 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
 
     classification_action_template_ddos = "\taction classify_flow_codeword_ddos(bit<"+str(bit_per_num_trees_ddos)+"> tree, bit<"+str(bit_per_classes_ddos)+"> class){\n"
 
-    for i in range(num_trees_ddos):
-      classification_action_template_ddos += "\t\tif (tree == "+str(i)+"){\n"
-      classification_action_template_ddos += "\t\t\tmeta.class_tree_ddos_"+str(i)+" = class;\n"
-      classification_action_template_ddos += "\t\t}\n"
+    if num_trees_ddos == 1:
+      # See the matching comment in the num_trees_app branch above: a single
+      # tree must not be wrapped in a runtime "if (tree == 0)" -- p4c's TNA
+      # backend rejects that Mux unconditionally.
+      classification_action_template_ddos += "\t\tmeta.class_tree_ddos_0 = class;\n"
+    else:
+      for i in range(num_trees_ddos):
+        classification_action_template_ddos += "\t\tif (tree == "+str(i)+"){\n"
+        classification_action_template_ddos += "\t\t\tmeta.class_tree_ddos_"+str(i)+" = class;\n"
+        classification_action_template_ddos += "\t\t}\n"
 
     classification_action_template_ddos += "\t}\n"
 
