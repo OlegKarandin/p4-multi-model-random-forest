@@ -645,23 +645,55 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
 
 
 def generate_voting_code(num_trees, num_classes, task):
+  """
+  Returns (table_declaration_text, apply_call_text). Replaces the previous
+  27-branch (for num_trees=3, num_classes=3) if-cascade with a single
+  exact-match table -- validated this session against the real Tofino
+  compiler (p4/tofino_spike/tna_m2_vote_table_spike.p4 and the real-program
+  test p4/tofino_spike/tna_m2_real_with_vote_table.p4, both 0 errors):
+  1 fewer ingress stage and Gateway usage cut from 37 to 10 for M2's real
+  3-tree/3-class case, with identical classification decisions (same
+  statistics.mode() tie-breaking as before -- mechanism change, not a
+  behavior change).
+  """
+  bit_per_classes = math.ceil(math.log2(num_classes)) or 1
 
-  temp_str = ''
+  key_lines = "\n".join(
+      "\t\t\tmeta.class_tree_{}_{} : exact;".format(task, i)
+      for i in range(num_trees)
+  )
 
-  classes_list = [i for i in range(num_classes)]
-
-  for classification_array in product(classes_list, repeat=num_trees):
-
-    temp_str += "\t\t\tif ("
-    for i in range(len(classification_array)):
-      if i<len(classification_array)-1:
-        temp_str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ") && "
-      else:
-        temp_str += "(meta.class_tree_{}_".format(task) + str(i) + " == " + str(classification_array[i]) + ")) {\n"
+  entries_lines = []
+  for classification_array in product(range(num_classes), repeat=num_trees):
     winner = mode(classification_array)
-    temp_str += "\t\t\t\tmeta.classification_{} = ".format(task) + str(winner) + ";\n\t\t\t}\n"
+    key_tuple = ", ".join(str(c) for c in classification_array)
+    entries_lines.append(
+        "\t\t\t({}) : set_classification_{}({});".format(key_tuple, task, winner)
+    )
+  entries_block = "\n".join(entries_lines)
 
-  return temp_str
+  table_decl = (
+      "\taction set_classification_{task}(bit<{bits}> winner) {{\n"
+      "\t\tmeta.classification_{task} = winner;\n"
+      "\t}}\n"
+      "\n"
+      "\ttable vote_{task} {{\n"
+      "\t\tkey = {{\n"
+      "{keys}\n"
+      "\t\t}}\n"
+      "\t\tactions = {{\n"
+      "\t\t\tset_classification_{task};\n"
+      "\t\t}}\n"
+      "\t\tsize = 32;\n"
+      "\t\tconst entries = {{\n"
+      "{entries}\n"
+      "\t\t}}\n"
+      "\t}}\n"
+  ).format(task=task, bits=bit_per_classes, keys=key_lines, entries=entries_block)
+
+  apply_call = "\t\t\tvote_{}.apply();\n".format(task)
+
+  return table_decl, apply_call
 
 
 def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_intervals):
@@ -709,15 +741,19 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
   table_templates, apply_templates = generate_P4_tables_and_apply(feature_intervals.keys(), num_trees_app, num_trees_ddos)
 
   # generate code to vote between the trees -- only for tasks that actually
-  # have trees (generate_voting_code(0, ...) would crash: product(..., repeat=0)
-  # yields one empty tuple, and mode(()) raises StatisticsError).
-  classification_templates = ""
+  # have trees. generate_voting_code now returns (table_decl, apply_call);
+  # the table declaration joins the other TABLES text, the apply call joins
+  # the other APPLY text -- classification now happens via table application
+  # like every other table in this generator, so there is no more separate
+  # CLASSIFICATION content to build.
   if num_trees_app > 0:
-    classification_templates += generate_voting_code(num_trees_app, num_class_app, "app")
+    vote_table_app, vote_apply_app = generate_voting_code(num_trees_app, num_class_app, "app")
+    table_templates += vote_table_app
+    apply_templates += vote_apply_app
   if num_trees_ddos > 0:
-    if num_trees_app > 0:
-      classification_templates += "\n"
-    classification_templates += generate_voting_code(num_trees_ddos, num_class_ddos, "ddos")
+    vote_table_ddos, vote_apply_ddos = generate_voting_code(num_trees_ddos, num_class_ddos, "ddos")
+    table_templates += vote_table_ddos
+    apply_templates += vote_apply_ddos
 
   # substitute the code in the template
   with open(PATH_P4_CODE_TEMPLATE_INPUT, 'r') as switch_template_file:
@@ -729,7 +765,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
     switch_template = switch_template.replace('/* TABLES */', table_templates)
     switch_template = switch_template.replace('/* FEATURE_UPDATE_APPLY */', feature_update_apply_code)
     switch_template = switch_template.replace('/* APPLY */', apply_templates)
-    switch_template = switch_template.replace('/* CLASSIFICATION */', classification_templates)
+    switch_template = switch_template.replace('/* CLASSIFICATION */', "")
 
   ensure_directory_exists(OUTPUT_PATH)
   with open(OUTPUT_PATH + 'p4_code_RF_models.p4', 'w') as switch_template_file:

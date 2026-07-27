@@ -357,46 +357,63 @@ def test_generate_P4_tables_and_apply_each_tree_table_references_its_own_action(
 
 
 # ---------------------------------------------------------------------------
-# generate_voting_code -- safety-net regression test
+# generate_voting_code -- table-based rewrite (Task 2) + regression test
 # ---------------------------------------------------------------------------
 #
-# generate_voting_code currently emits an if-cascade (one `if` block per
-# combination of per-tree class predictions), using statistics.mode() for
-# tie-breaking. Task 2 will rewrite it to emit a decision table instead; this
-# test locks in today's *decisions* (not the string formatting) so the future
-# table-based rewrite can be checked for byte-identical behavior against this
-# baseline. It must pass unchanged against the current if-cascade -- it is
-# not asserting on new behavior.
+# generate_voting_code used to emit an if-cascade (one `if` block per
+# combination of per-tree class predictions). Task 2 replaced it with a
+# single exact-match P4 table: generate_voting_code now returns a 2-tuple
+# (table_declaration_text, apply_call_text) instead of one if-cascade
+# string. Both tests below lock in the table's *decisions* (not the string
+# formatting), using statistics.mode() for tie-breaking, same as before --
+# this is a mechanism change, not a behavior change.
 
-_VOTING_IF_BLOCK_RE = re.compile(
-    r"if \("
-    r"(?P<conditions>(?:\(meta\.class_tree_app_\d+ == \d+\)(?: && )?)+)"
-    r"\) \{\n"
-    r"\t*meta\.classification_app = (?P<winner>\d+);"
+_VOTING_ENTRY_RE = re.compile(
+    r"\((?P<combo>[\d,\s]+)\) : set_classification_app\((?P<winner>\d+)\);"
 )
-_VOTING_CONDITION_RE = re.compile(r"meta\.class_tree_app_(\d+) == (\d+)")
 
 
-def _parse_voting_decisions(voting_code):
-  """Parse generate_voting_code's if-cascade output back into a
-  {(c0, c1, ..., c_{n-1}): winner} dict, keyed by per-tree class tuples in
-  tree-index order."""
+def _parse_voting_table_decisions(table_decl):
+  """Parse generate_voting_code's `const entries` table declaration back
+  into a {(c0, c1, ..., c_{n-1}): winner} dict, keyed by per-tree class
+  tuples in tree-index order (matching the key declaration order)."""
   decisions = {}
-  for block in _VOTING_IF_BLOCK_RE.finditer(voting_code):
-    per_tree = sorted(
-        (int(idx), int(cls))
-        for idx, cls in _VOTING_CONDITION_RE.findall(block.group("conditions"))
-    )
-    combo = tuple(cls for _idx, cls in per_tree)
-    decisions[combo] = int(block.group("winner"))
+  for m in _VOTING_ENTRY_RE.finditer(table_decl):
+    combo = tuple(int(c) for c in m.group("combo").split(","))
+    decisions[combo] = int(m.group("winner"))
   return decisions
+
+
+def test_generate_voting_code_emits_table_not_if_cascade():
+  num_trees, num_classes = 3, 3
+  result = bps.generate_voting_code(num_trees, num_classes, "app")
+
+  assert isinstance(result, tuple) and len(result) == 2
+  table_decl, apply_call = result
+
+  assert "if (" not in table_decl
+  assert "table vote_app {" in table_decl
+  assert "meta.class_tree_app_0 : exact;" in table_decl
+  assert "meta.class_tree_app_1 : exact;" in table_decl
+  assert "meta.class_tree_app_2 : exact;" in table_decl
+  assert "const entries" in table_decl
+
+  decisions = _parse_voting_table_decisions(table_decl)
+  expected = {
+      combo: mode(combo)
+      for combo in product(range(num_classes), repeat=num_trees)
+  }
+  assert len(expected) == num_classes ** num_trees == 27
+  assert decisions == expected
+
+  assert apply_call.strip() == "vote_app.apply();"
 
 
 def test_generate_voting_code_voting_decisions_match_statistics_mode_for_all_combos():
   num_trees, num_classes = 3, 3
-  voting_code = bps.generate_voting_code(num_trees, num_classes, "app")
+  table_decl, _apply_call = bps.generate_voting_code(num_trees, num_classes, "app")
 
-  decisions = _parse_voting_decisions(voting_code)
+  decisions = _parse_voting_table_decisions(table_decl)
 
   expected = {
       combo: mode(combo)
