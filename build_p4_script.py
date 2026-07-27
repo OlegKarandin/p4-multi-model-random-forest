@@ -454,21 +454,24 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
     for codeword in codewords[tree]:
       table_entry={}
 
+      # Task M2-B2: `tree` is no longer a runtime action parameter -- each
+      # tree has its own dedicated action (see generate_P4_actions), so
+      # action_params carries only the class value.
       if offset==None:
         #One model encoding
         table_entry["table_name"] = "get_classification_tree_"+str(tree_idx)
-        table_entry["action"] = "classify_flow_codeword"
-        table_entry["action_params"] = [str(tree_idx), str(int(float((codewords[tree][codeword]))))]
+        table_entry["action"] = "classify_flow_codeword_"+str(tree_idx)
+        table_entry["action_params"] = [str(int(float((codewords[tree][codeword]))))]
       else:
         #Multiple models encoding
         if tree_idx < offset:
           table_entry["table_name"] = "get_classification_tree_app_"+str(tree_idx)
-          table_entry["action"] = "classify_flow_codeword_app"
-          table_entry["action_params"] = [str(tree_idx), str(int(float((codewords[tree][codeword]))))]
+          table_entry["action"] = "classify_flow_codeword_app_"+str(tree_idx)
+          table_entry["action_params"] = [str(int(float((codewords[tree][codeword]))))]
         else:
           table_entry["table_name"] = "get_classification_tree_ddos_"+str(tree_idx-offset)
-          table_entry["action"] = "classify_flow_codeword_ddos"
-          table_entry["action_params"] = [str(tree_idx-offset), str(int(float((codewords[tree][codeword]))))]
+          table_entry["action"] = "classify_flow_codeword_ddos_"+str(tree_idx-offset)
+          table_entry["action_params"] = [str(int(float((codewords[tree][codeword]))))]
 
       # Tier 3: the classification table's key is one ternary field per
       # selected feature, not one combined codeword field. Slice the
@@ -518,62 +521,38 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
 
   action_templates = "" #Stores P4 actions
 
-  #Classification action templates
+  # Classification action templates: one dedicated action per tree.
+  #
+  # TNA rejects a runtime "if (tree == i) {...}" branch inside an action when
+  # the branch decides which of several DIFFERENT metadata fields gets
+  # written (a rejected IR::Mux over an action-data-parameter conditional --
+  # p4c's ActionAnalysis pass: "Conditions in an action must be simple
+  # comparisons of an action data parameter", see af64bc2 and
+  # reviews/t11_tofino_port_and_env.md Part G.2). Since each tree already
+  # gets its own physical classification table
+  # (get_classification_tree_app_0/_1/_2/..., built in
+  # generate_P4_tables_and_apply below), there is no need for a single
+  # shared, tree-parameterized action at all: each tree's table binds to its
+  # own dedicated action that unconditionally writes only its own field. No
+  # `tree` parameter, no conditional, no Mux -- this generalizes uniformly to
+  # any num_trees_app/num_trees_ddos, including 1. Validated against the real
+  # TNA compiler in p4/tofino_spike/tna_m2_numtrees3_spike.p4.
   if num_trees_app > 0:
-    bit_per_num_trees_app = math.ceil(math.log2(num_trees_app))
-    if bit_per_num_trees_app == 0:
-      bit_per_num_trees_app = 1
-
-    classification_action_template_app = "\taction classify_flow_codeword_app(bit<"+str(bit_per_num_trees_app)+"> tree, bit<"+str(bit_per_classes_app)+"> class){\n"
-
-    if num_trees_app == 1:
-      # TNA: a single-tree task's classification action must write
-      # unconditionally. A runtime "if (tree == 0) {...}" here lowers to an
-      # IR::Mux that p4c's ActionAnalysis pass rejects outright ("Conditions
-      # in an action must be simple comparisons of an action data
-      # parameter"), even though the condition is always true for a single
-      # tree. Ground truth: every compiled spike's single-tree classify_ddos
-      # action (e.g. p4/tofino_spike/tna_rf_ddos_spike_tier3.p4) writes its
-      # metadata field unconditionally, with no tree-keyed branch at all.
-      classification_action_template_app += "\t\tmeta.class_tree_app_0 = class;\n"
-    else:
-      # NOT VALIDATED against the real TNA compiler: this if/else-per-tree
-      # body is expected to fail the same way the num_trees==1 case did
-      # (rejected IR::Mux, see af64bc2) until it's redesigned for TNA.
-      #Classification actions for traffic flow probem
-      for i in range(num_trees_app):
-        classification_action_template_app += "\t\tif (tree == "+str(i)+"){\n"
-        classification_action_template_app += "\t\t\tmeta.class_tree_app_"+str(i)+" = class;\n"
-        classification_action_template_app += "\t\t}\n"
-
-    classification_action_template_app += "\t}\n"
+    classification_action_template_app = ""
+    for i in range(num_trees_app):
+      classification_action_template_app += "\taction classify_flow_codeword_app_"+str(i)+"(bit<"+str(bit_per_classes_app)+"> class){\n"
+      classification_action_template_app += "\t\tmeta.class_tree_app_"+str(i)+" = class;\n"
+      classification_action_template_app += "\t}\n\n"
 
     action_templates += classification_action_template_app
-    action_templates += "\n"
 
   #Classification actions for DDOS detection problem
   if num_trees_ddos > 0:
-    bit_per_num_trees_ddos = math.ceil(math.log2(num_trees_ddos))
-    if bit_per_num_trees_ddos == 0:
-      bit_per_num_trees_ddos = 1
-
-    classification_action_template_ddos = "\taction classify_flow_codeword_ddos(bit<"+str(bit_per_num_trees_ddos)+"> tree, bit<"+str(bit_per_classes_ddos)+"> class){\n"
-
-    if num_trees_ddos == 1:
-      # See the matching comment in the num_trees_app branch above: a single
-      # tree must not be wrapped in a runtime "if (tree == 0)" -- p4c's TNA
-      # backend rejects that Mux unconditionally.
-      classification_action_template_ddos += "\t\tmeta.class_tree_ddos_0 = class;\n"
-    else:
-      # NOT VALIDATED against the real TNA compiler: same caveat as the
-      # num_trees_app branch above -- expected to be rejected as an
-      # IR::Mux (see af64bc2) until redesigned for a future >1-tree TNA build.
-      for i in range(num_trees_ddos):
-        classification_action_template_ddos += "\t\tif (tree == "+str(i)+"){\n"
-        classification_action_template_ddos += "\t\t\tmeta.class_tree_ddos_"+str(i)+" = class;\n"
-        classification_action_template_ddos += "\t\t}\n"
-
-    classification_action_template_ddos += "\t}\n"
+    classification_action_template_ddos = ""
+    for i in range(num_trees_ddos):
+      classification_action_template_ddos += "\taction classify_flow_codeword_ddos_"+str(i)+"(bit<"+str(bit_per_classes_ddos)+"> class){\n"
+      classification_action_template_ddos += "\t\tmeta.class_tree_ddos_"+str(i)+" = class;\n"
+      classification_action_template_ddos += "\t}\n\n"
 
     action_templates += classification_action_template_ddos
 
@@ -628,7 +607,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
         table_template = table_template_file.read()
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_app_"+str(i))
         table_template = table_template.replace("<KEYS>", classification_keys)
-        table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_app;")
+        table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_app_"+str(i)+";")
         table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
       table_templates += table_template
       apply_templates_tmp += "\t\t\tget_classification_tree_app_"+str(i)+".apply();\n"
@@ -640,7 +619,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
         table_template = table_template_file.read()
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_ddos_"+str(i))
         table_template = table_template.replace("<KEYS>", classification_keys)
-        table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_ddos;")
+        table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_ddos_"+str(i)+";")
         table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
       table_templates += table_template
       apply_templates_tmp += "\t\t\tget_classification_tree_ddos_"+str(i)+".apply();\n"

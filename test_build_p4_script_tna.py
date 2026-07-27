@@ -94,6 +94,74 @@ def test_generate_P4_actions_both_tasks_present_and_tier3_action_bodies():
 
 
 # ---------------------------------------------------------------------------
+# Task M2-B2: num_trees > 1 classify-action fix (per-tree dedicated actions)
+# ---------------------------------------------------------------------------
+#
+# TNA rejects a runtime "if (tree == i) {...}" branch inside an action when
+# the branch decides which of several DIFFERENT metadata fields gets written
+# (a rejected IR::Mux over an action-data-parameter conditional -- see
+# af64bc2 and reviews/t11_tofino_port_and_env.md Part G.2). M1 special-cased
+# num_trees==1 to skip the branch; M2 (num_trees_app=3) generalizes the fix
+# by giving every tree its own dedicated, unconditional-write action instead
+# -- validated against the real TNA compiler in
+# p4/tofino_spike/tna_m2_numtrees3_spike.p4.
+
+def test_generate_P4_actions_multi_tree_app_emits_one_dedicated_action_per_tree():
+  action_templates = generate_P4_actions(
+      FEATURE_INTERVALS_2F, num_trees_app=3, num_trees_ddos=0,
+      bit_per_classes_app=2, bit_per_classes_ddos=0,
+  )
+
+  # Exactly 3 distinct, unconditional per-tree actions -- no shared,
+  # tree-parameterized action.
+  for i in range(3):
+    assert "action classify_flow_codeword_app_"+str(i)+"(bit<2> class){" in action_templates
+    assert "meta.class_tree_app_"+str(i)+" = class;" in action_templates
+
+  # No `tree` action-data parameter anywhere (the old shared-action
+  # signature took two params, "tree" and "class"; the new per-tree actions
+  # take only "class" -- no comma-separated second parameter at all, and no
+  # feature action takes two params either, so this also holds across the
+  # whole file's action set). Note: "tree" as a substring legitimately
+  # appears in metadata field names (meta.class_tree_app_0), so check for
+  # the removed *parameter*/*branch* forms specifically, not the bare word.
+  assert ", bit<" not in action_templates
+  assert "bit<2> tree" not in action_templates
+  assert "> tree," not in action_templates
+
+  # No conditional/branch of any kind in the classify actions -- the
+  # TNA-rejected pattern this task removes.
+  assert "if (tree ==" not in action_templates
+  assert "if (" not in action_templates
+
+  # The old shared, unsuffixed action name must be gone entirely.
+  assert "action classify_flow_codeword_app(" not in action_templates
+
+
+def test_generate_P4_actions_num_trees_app_1_now_named_with_tree_suffix():
+  # Regenerelizing away the num_trees==1 special case is an intentional
+  # naming change: the single-tree action is now named with an explicit
+  # "_0" suffix (classify_flow_codeword_app_0), not the old unsuffixed
+  # classify_flow_codeword_app used by M1's special-cased branch.
+  action_templates = generate_P4_actions(
+      FEATURE_INTERVALS_2F, num_trees_app=1, num_trees_ddos=1,
+      bit_per_classes_app=1, bit_per_classes_ddos=1,
+  )
+
+  assert "action classify_flow_codeword_app_0(bit<1> class){" in action_templates
+  assert "meta.class_tree_app_0 = class;" in action_templates
+  assert "action classify_flow_codeword_app(" not in action_templates
+
+  assert "action classify_flow_codeword_ddos_0(bit<1> class){" in action_templates
+  assert "meta.class_tree_ddos_0 = class;" in action_templates
+  assert "action classify_flow_codeword_ddos(" not in action_templates
+
+  # Still unconditional -- no if/Mux, matching M1's validated shape.
+  assert "if (" not in action_templates
+  assert "bit<1> tree" not in action_templates
+
+
+# ---------------------------------------------------------------------------
 # get_table_entries
 # ---------------------------------------------------------------------------
 
@@ -136,9 +204,15 @@ def test_get_table_entries_slices_codeword_per_feature_single_model(tmp_path):
   with open(tmp_path / "table_entries.json") as f:
     entries = json.load(f)
 
-  classification_entries = [e for e in entries if e["action"] == "classify_flow_codeword"]
+  # Task M2-B2: per-tree dedicated action name (tree_idx 0 here), not the
+  # old shared unsuffixed "classify_flow_codeword".
+  classification_entries = [e for e in entries if e["action"] == "classify_flow_codeword_0"]
   assert len(classification_entries) == 1
   entry = classification_entries[0]
+
+  # `tree` is no longer a runtime action parameter (it's implicit in which
+  # per-tree action/table is used) -- action_params holds only the class.
+  assert entry["action_params"] == ["1"]
 
   # One ternary key component per feature (2 features -> 2-element list),
   # not a single combined-codeword ternary string.
@@ -172,13 +246,21 @@ def test_get_table_entries_multi_model_offset_still_slices_per_feature(tmp_path)
   with open(tmp_path / "table_entries_offset.json") as f:
     entries = json.load(f)
 
-  app_entries = [e for e in entries if e["action"] == "classify_flow_codeword_app"]
-  ddos_entries = [e for e in entries if e["action"] == "classify_flow_codeword_ddos"]
+  # Task M2-B2: per-tree dedicated action names (tree_idx 0 in both the app
+  # and ddos groups here, since ddos's tree_idx 1 minus offset 1 == 0), not
+  # the old shared unsuffixed "classify_flow_codeword_app"/"_ddos".
+  app_entries = [e for e in entries if e["action"] == "classify_flow_codeword_app_0"]
+  ddos_entries = [e for e in entries if e["action"] == "classify_flow_codeword_ddos_0"]
   assert len(app_entries) == 1
   assert len(ddos_entries) == 1
 
   assert app_entries[0]["table_name"] == "get_classification_tree_app_0"
   assert ddos_entries[0]["table_name"] == "get_classification_tree_ddos_0"
+
+  # `tree` is no longer a runtime action parameter -- action_params holds
+  # only the single class value.
+  assert app_entries[0]["action_params"] == ["0"]
+  assert ddos_entries[0]["action_params"] == ["1"]
 
   for entry, original in ((app_entries[0], codeword_app), (ddos_entries[0], codeword_ddos)):
     assert len(entry["key"]) == 2
@@ -252,6 +334,25 @@ def test_generate_P4_tables_and_apply_zero_ddos_trees_produces_no_ddos_classific
   assert "get_classification_tree_ddos" not in apply_templates
 
 
+def test_generate_P4_tables_and_apply_each_tree_table_references_its_own_action():
+  # Task M2-B2: each per-tree table's <ACTIONS> substitution must reference
+  # THAT tree's dedicated action, not one shared action name copy-pasted
+  # into every table.
+  table_templates, apply_templates = generate_P4_tables_and_apply(
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=3, num_trees_ddos=2,
+  )
+
+  for i in range(3):
+    assert "classify_flow_codeword_app_"+str(i)+";" in table_templates
+  for i in range(2):
+    assert "classify_flow_codeword_ddos_"+str(i)+";" in table_templates
+
+  # The old shared, unsuffixed action names must not appear anywhere in the
+  # generated table text.
+  assert "classify_flow_codeword_app;" not in table_templates
+  assert "classify_flow_codeword_ddos;" not in table_templates
+
+
 # ---------------------------------------------------------------------------
 # generate_P4_code -- end-to-end smoke test
 # ---------------------------------------------------------------------------
@@ -308,3 +409,13 @@ def test_generate_P4_code_ddos_task_artifacts_present(m1_ddos_only_output):
   assert "classification_ddos" in m1_ddos_only_output
   assert "class_tree_ddos_0" in m1_ddos_only_output
   assert "classify_flow_codeword_ddos" in m1_ddos_only_output
+
+
+def test_generate_P4_code_ddos_single_tree_action_now_uses_tree_suffixed_name(m1_ddos_only_output):
+  # Task M2-B2: the num_trees==1 special case is removed in favor of a
+  # uniform per-tree-action loop, so the single DDoS tree's classify action
+  # is now named with an explicit "_0" suffix -- a real, intentional naming
+  # change from M1's already-compiled artifact, which used the old
+  # unsuffixed "classify_flow_codeword_ddos" action name.
+  assert "action classify_flow_codeword_ddos_0(bit<1> class){" in m1_ddos_only_output
+  assert "action classify_flow_codeword_ddos(" not in m1_ddos_only_output
