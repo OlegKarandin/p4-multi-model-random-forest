@@ -6,7 +6,12 @@ import json
 from itertools import product
 from statistics import mode
 
+from feature_registers import FEATURE_REGISTER_CATALOG
+
 INFINITE = (2**19)-1
+MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
+                      # p4/tofino_spike/tna_m1_flows_iat_spike.p4
+
 PATH = "resources/"
 INTERMEDIATE = "temp/"
 OUTPUT_PATH = "p4/"
@@ -682,3 +687,310 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, codeword_
   ensure_directory_exists(OUTPUT_PATH)
   with open(OUTPUT_PATH + 'p4_code_RF_models.p4', 'w') as switch_template_file:
     switch_template_file.write(switch_template)
+
+
+# ---------------------------------------------------------------------------
+# TNA (Tofino Native Architecture) register + apply-block generation.
+#
+# Unlike the rest of this file (which emits v1model P4 for
+# resources/p4_template.p4 via generate_P4_code above), this generator
+# targets the TNA architecture validated in
+# p4/tofino_spike/tna_m1_flows_iat_spike.p4 (compiled successfully this
+# session with the real Tofino compiler: `p4c -b tofino -a tna`, 0 errors).
+# It is standalone, new capability: it is NOT called from generate_P4_code()
+# and does NOT touch resources/p4_template.p4. A later task rewrites the
+# whole template for TNA and wires this function's output into it.
+# ---------------------------------------------------------------------------
+
+# Tofino stateful-ALU limit: the number of distinct RegisterAction
+# `.execute()` call sites that may touch a single register per packet.
+MAX_REGISTER_TOUCHES = 4
+
+# Baseline per-flow bookkeeping register (fwd/bwd/new-flow tracking, "M1-0"
+# in the spike). Needed once, unconditionally, whenever the resolved
+# feature set is non-empty -- see generate_P4_registers_and_apply's
+# docstring for why this lives outside FEATURE_REGISTER_CATALOG.
+_FLOWS_REGISTER_NAME = "flows"
+_FLOWS_REGISTER_WIDTH = 1
+
+# Symbolic RegisterAction body kinds -> exact atomic read-modify-write P4
+# body, transcribed verbatim from the compiled spike
+# (p4/tofino_spike/tna_m1_flows_iat_spike.p4). Do not reword/"clean up"
+# these -- they are the compiler-validated ground truth.
+_REGISTER_ACTION_BODIES = {
+  "iat_delta": (
+      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
+      "\t\t\trv = meta.now_pseudo_us - value;\n"
+      "\t\t\tvalue = meta.now_pseudo_us;\n"
+      "\t\t}}\n"
+  ),
+  "running_max_iat": (
+      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
+      "\t\t\tif (meta.current_iat > value) {{\n"
+      "\t\t\t\tvalue = meta.current_iat;\n"
+      "\t\t\t}}\n"
+      "\t\t\trv = value;\n"
+      "\t\t}}\n"
+  ),
+  "running_max_packet_length": (
+      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
+      "\t\t\tif (hdr.ipv4.total_len > value) {{\n"
+      "\t\t\t\tvalue = hdr.ipv4.total_len;\n"
+      "\t\t\t}}\n"
+      "\t\t\trv = value;\n"
+      "\t\t}}\n"
+  ),
+}
+
+
+def _register_declaration(name, width):
+  return "\tRegister<bit<{width}>, bit<32>>(MAX_NUM_FLOWS) {name}_reg;\n".format(width=width, name=name)
+
+
+def _register_action_declaration(name, width, body_kind):
+  body = _REGISTER_ACTION_BODIES[body_kind].format(width=width)
+  return (
+      "\tRegisterAction<bit<{width}>, bit<32>, bit<{width}>>({name}_reg) {name}_action = {{\n"
+      "{body}"
+      "\t}};\n"
+  ).format(width=width, name=name, body=body)
+
+
+def generate_P4_registers_and_apply(feature_intervals, catalog=None):
+  """
+  Resolve a selected feature set to the TNA registers, RegisterActions, and
+  per-packet update logic needed for Milestone 1's flow- and IAT-tracking
+  design (ground truth: p4/tofino_spike/tna_m1_flows_iat_spike.p4, compiled
+  with the real Tofino p4c). Standalone codegen -- not wired into
+  generate_P4_code()/resources/p4_template.p4 yet; a later task rewrites
+  that template for TNA and consumes this function's output.
+
+  Parameters:
+    feature_intervals: dict whose keys are selected feature names, in the
+      same Title_Case_With_Underscores casing produced elsewhere in this
+      file by get_nodes()/get_feature_intervals() (e.g. "Flow_IAT_Max").
+      Only the keys are consulted; values are ignored. Each key is
+      .lower()'d before being looked up in `catalog`, matching the
+      convention used everywhere else in this file that turns a feature
+      name into a P4 identifier.
+    catalog: feature -> register dependency catalog to resolve against
+      (see feature_registers.FEATURE_REGISTER_CATALOG for the expected
+      shape). Defaults to feature_registers.FEATURE_REGISTER_CATALOG.
+      Exposed as a parameter so tests can exercise the generator against a
+      synthetic catalog without monkeypatching module state.
+
+  Feature names absent from `catalog` are silently skipped (later
+  milestones will call this with a catalog that isn't fully populated yet
+  for every feature they select -- that must not crash).
+
+  Returns a 3-tuple of P4 source strings, one per marker payload a future
+  TNA template will substitute this function's output into:
+    (registers_code, register_actions_code, feature_update_apply_code)
+
+    - registers_code: `Register<bit<W>, bit<32>>(MAX_NUM_FLOWS) <name>_reg;`
+      declarations (TNA syntax), plus the two `Hash<>` instances the
+      apply-block's hash actions need (flow_hash_calc_self/_other -- TNA
+      requires one Hash<> instance per distinct field list, so the fwd- and
+      bwd-ordered hashes can't share one instance).
+    - register_actions_code: the plain calc_flow_hash_self/
+      calc_flow_hash_other actions (and calc_timestamp, only emitted when
+      an included register actually needs meta.now_pseudo_us), plus one
+      `RegisterAction<...> <name>_action = {...};` block per resolved
+      register, using the exact bodies from _REGISTER_ACTION_BODIES. The
+      `flows` register gets two action blocks -- flows_test_other
+      (read-only) and flows_set_self (test-and-set) -- in the corrected
+      2-touch design: always read-only test the *other* direction's slot
+      first; only touch (and only ever write) our *own* hash's slot if
+      that read back 0. This is deliberately not the naive ordering
+      (test-and-set our own hash first) -- see the spike's header comment
+      for the correctness bug that ordering has.
+    - feature_update_apply_code: the per-packet apply-block snippet: the
+      hash-calc and (conditionally) timestamp calls, the flows touch(es),
+      each resolved register's `.execute()` call -- gated inside
+      `if (meta.fwd == 1) { ... }` for features whose catalog entry says
+      `"gated_by": "fwd"` -- and assignment of each "value" register's
+      result into `meta.<feature_lower>_val` (e.g. `meta.flow_iat_max_val`,
+      matching the spike's `metadata_t` field naming; a "dependency"
+      register's result is not itself a feature value, so it is assigned
+      into the shared `meta.current_iat` scratch field instead, exactly
+      like the spike). This is applied consistently to every "value"
+      register, including `fwd_packet_length_max` -- the spike itself
+      discards that one register's `.execute()` result (its classification
+      table reads `hdr.ipv4.total_len` directly instead), a spike-specific
+      shortcut this generator deliberately does not copy. Never emits
+      `update_current_flow_features`: there is no bulk-read phase here --
+      every register's value is captured directly at its `.execute()`
+      call site.
+
+  Raises RuntimeError, at generation time (not left to fail later at `p4c`
+  invocation), if resolving `catalog` against `feature_intervals` would
+  require more than MAX_REGISTER_TOUCHES distinct RegisterAction
+  `.execute()` call sites against any single register.
+  """
+  if catalog is None:
+    catalog = FEATURE_REGISTER_CATALOG
+
+  # feature_intervals keys are Title_Case_With_Underscores (see get_nodes());
+  # normalize to the catalog's lowercase snake_case keys, preserving
+  # feature_intervals' iteration order.
+  matched_features = [f for f in (name.lower() for name in feature_intervals.keys()) if f in catalog]
+
+  if not matched_features:
+    return "", "", ""
+
+  # ---- Resolve the deduplicated, ordered register set + touch counts ----
+
+  register_order = []        # ordered list of register names (first-seen)
+  register_info = {}         # name -> {"width":, "body":}
+  register_touch_count = {}  # name -> number of .execute() call sites
+
+  def _note_touch(name, width=None, body=None, count=1):
+    if name not in register_info:
+      register_order.append(name)
+      register_info[name] = {"width": width, "body": body}
+    register_touch_count[name] = register_touch_count.get(name, 0) + count
+
+  # Baseline bookkeeping register: needed once any per-flow feature register
+  # exists, always exactly 2 touches (flows_test_other + flows_set_self).
+  _note_touch(_FLOWS_REGISTER_NAME, width=_FLOWS_REGISTER_WIDTH, count=2)
+
+  feature_registers = {}  # feature -> ordered list of its catalog register dicts
+  needs_timestamp = False
+
+  for feature in matched_features:
+    entry = catalog[feature]
+    gated_by = entry.get("gated_by")
+    if gated_by not in (None, "fwd"):
+      raise RuntimeError(
+          "Feature '{feature}' has unsupported gated_by={gated_by!r}; "
+          "only None and 'fwd' are implemented.".format(feature=feature, gated_by=gated_by)
+      )
+
+    regs = []
+    for reg in entry["registers"]:
+      _note_touch(reg["name"], width=reg["width"], body=reg["body"])
+      regs.append(reg)
+      if reg["body"] == "iat_delta":
+        needs_timestamp = True
+    feature_registers[feature] = regs
+
+  # ---- Touch-count guard (checked before emitting anything) ----
+
+  for name, count in register_touch_count.items():
+    if count > MAX_REGISTER_TOUCHES:
+      raise RuntimeError(
+          "Register '{name}' would require {count} RegisterAction .execute() "
+          "call sites, exceeding the {limit}-touch Tofino stateful-ALU limit "
+          "per register.".format(name=name, count=count, limit=MAX_REGISTER_TOUCHES)
+      )
+
+  # ---- /* REGISTERS */ ----
+
+  registers_code = (
+      "\tHash<bit<32>>(HashAlgorithm_t.CRC32) flow_hash_calc_self;\n"
+      "\tHash<bit<32>>(HashAlgorithm_t.CRC32) flow_hash_calc_other;\n"
+  )
+  for name in register_order:
+    registers_code += _register_declaration(name, register_info[name]["width"])
+
+  # ---- /* REGISTER_ACTIONS */ ----
+
+  register_actions_code = (
+      "\taction calc_flow_hash_self() {\n"
+      "\t\tmeta.flow_hash_self = flow_hash_calc_self.get({\n"
+      "\t\t\thdr.ipv4.src_addr,\n"
+      "\t\t\thdr.ipv4.dst_addr,\n"
+      "\t\t\thdr.ipv4.protocol,\n"
+      "\t\t\thdr.tcp.src_port,\n"
+      "\t\t\thdr.tcp.dst_port\n"
+      "\t\t}) & 0xFFF;\n"
+      "\t}\n"
+      "\n"
+      "\taction calc_flow_hash_other() {\n"
+      "\t\tmeta.flow_hash_other = flow_hash_calc_other.get({\n"
+      "\t\t\thdr.ipv4.dst_addr,\n"
+      "\t\t\thdr.ipv4.src_addr,\n"
+      "\t\t\thdr.ipv4.protocol,\n"
+      "\t\t\thdr.tcp.dst_port,\n"
+      "\t\t\thdr.tcp.src_port\n"
+      "\t\t}) & 0xFFF;\n"
+      "\t}\n"
+  )
+
+  if needs_timestamp:
+    register_actions_code += (
+        "\n"
+        "\taction calc_timestamp() {\n"
+        "\t\tmeta.now_pseudo_us = (bit<16>)(ig_prsr_md.global_tstamp >> 10);\n"
+        "\t}\n"
+    )
+
+  register_actions_code += (
+      "\n"
+      "\tRegisterAction<bit<1>, bit<32>, bit<1>>(flows_reg) flows_test_other = {\n"
+      "\t\tvoid apply(inout bit<1> value, out bit<1> rv) {\n"
+      "\t\t\trv = value;\n"
+      "\t\t}\n"
+      "\t};\n"
+      "\n"
+      "\tRegisterAction<bit<1>, bit<32>, bit<1>>(flows_reg) flows_set_self = {\n"
+      "\t\tvoid apply(inout bit<1> value, out bit<1> rv) {\n"
+      "\t\t\tvalue = 1;\n"
+      "\t\t\trv = value;\n"
+      "\t\t}\n"
+      "\t};\n"
+  )
+
+  for name in register_order:
+    if name == _FLOWS_REGISTER_NAME:
+      continue
+    info = register_info[name]
+    register_actions_code += "\n" + _register_action_declaration(name, info["width"], info["body"])
+
+  # ---- /* FEATURE_UPDATE_APPLY */ ----
+
+  apply_lines = [
+      "\t\t\tcalc_flow_hash_self();",
+      "\t\t\tcalc_flow_hash_other();",
+  ]
+  if needs_timestamp:
+    apply_lines.append("\t\t\tcalc_timestamp();")
+
+  apply_lines += [
+      "",
+      "\t\t\tbit<1> other_seen = flows_test_other.execute(meta.flow_hash_other);",
+      "",
+      "\t\t\tif (other_seen == 1) {",
+      "\t\t\t\tmeta.fwd = 0;",
+      "\t\t\t\tmeta.flow_hash = meta.flow_hash_other;",
+      "\t\t\t} else {",
+      "\t\t\t\tflows_set_self.execute(meta.flow_hash_self);",
+      "\t\t\t\tmeta.fwd = 1;",
+      "\t\t\t\tmeta.flow_hash = meta.flow_hash_self;",
+      "\t\t\t}",
+      "",
+  ]
+
+  def _execute_lines(features, indent):
+    lines = []
+    for feature in features:
+      for reg in feature_registers[feature]:
+        target = "meta.current_iat" if reg["role"] == "dependency" else "meta." + feature + "_val"
+        lines.append("{indent}{target} = {name}_action.execute(meta.flow_hash);".format(
+            indent=indent, target=target, name=reg["name"]))
+    return lines
+
+  ungated_features = [f for f in matched_features if catalog[f].get("gated_by") is None]
+  fwd_gated_features = [f for f in matched_features if catalog[f].get("gated_by") == "fwd"]
+
+  apply_lines += _execute_lines(ungated_features, "\t\t\t")
+
+  if fwd_gated_features:
+    apply_lines.append("")
+    apply_lines.append("\t\t\tif (meta.fwd == 1) {")
+    apply_lines += _execute_lines(fwd_gated_features, "\t\t\t\t")
+    apply_lines.append("\t\t\t}")
+
+  apply_code = "\n".join(apply_lines) + "\n"
+
+  return registers_code, register_actions_code, apply_code

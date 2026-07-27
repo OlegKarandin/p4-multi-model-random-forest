@@ -1,0 +1,136 @@
+"""
+Feature -> TNA register dependency catalog.
+
+This is a Python-side data catalog (no P4 text lives here) used by
+`generate_P4_registers_and_apply()` in `build_p4_script.py` to figure out
+which Tofino (TNA) `Register<>`s a selected feature set needs, and how to
+wire the atomic read-modify-write logic for each of them. It targets the
+TNA architecture validated in
+`p4/tofino_spike/tna_m1_flows_iat_spike.p4` (compiled successfully this
+session with the real `p4c -b tofino -a tna` compiler) -- read that file's
+header comment before changing anything here.
+
+Key casing
+----------
+Catalog keys are lowercase, underscore-joined feature names (e.g.
+"flow_iat_max", "fwd_iat_max", "fwd_packet_length_max") -- NOT the raw
+casing produced elsewhere in this codebase. `feature_intervals` (built by
+`get_nodes()`/`get_feature_intervals()` in build_p4_script.py) actually has
+Title_Case_With_Underscores keys (e.g. "Flow_IAT_Max"), because
+`get_nodes()`'s feature-name extraction
+(`line...split("<=")[0].strip().replace(" ", "_")`) never calls
+`.lower()`. Every other place in build_p4_script.py that turns a feature
+name into a P4 identifier calls `.lower()` at the point of use (e.g.
+`generate_P4_actions`: `"set_code_" + feature.replace(" ", "_").lower()`).
+Callers of this catalog must follow the same convention: `.lower()` the
+feature name before looking it up here.
+
+Entry shape
+-----------
+FEATURE_REGISTER_CATALOG maps a lowercase feature name to:
+{
+    "registers": [
+        {
+            "name": <str>,           # register base name (P4 identifier
+                                      # will be "<name>_reg" / "<name>_action")
+            "role": "dependency" | "value",
+                # "dependency": this register's value never itself becomes
+                #   a codeword feature value (e.g. a *_last_arrival_time
+                #   register) -- its `.execute()` result feeds
+                #   `meta.current_iat`, consumed by a paired "value"
+                #   register.
+                # "value": this register's `.execute()` result IS the
+                #   feature value later consumed by feature-encoding
+                #   tables, assigned to `meta.<feature>_val` (matching the
+                #   spike's `metadata_t` field naming, e.g.
+                #   `meta.flow_iat_max_val`).
+            "width": <int>,          # register bit width (16 for all M1
+                                      # registers, matching the spike and
+                                      # the original v1model bit<16>).
+            "body": <str>,           # symbolic RegisterAction body kind;
+                                      # see build_p4_script.py's
+                                      # _REGISTER_ACTION_BODIES for the
+                                      # exact P4 text each kind expands to.
+        },
+        ...
+    ],
+    "gated_by": None | "fwd",
+        # None: this feature's registers are touched unconditionally
+        #   (whole-flow feature).
+        # "fwd": this feature's registers are only touched when
+        #   meta.fwd == 1 (forward-direction-only feature). "bwd" gating
+        #   is intentionally not modeled yet -- out of scope until a
+        #   milestone that actually needs it validates the design.
+}
+
+A feature's "registers" list is ordered: a "dependency" register (if any)
+always precedes the "value" register(s) that consume its
+`meta.current_iat` output, matching the order the generator emits them
+into the apply block.
+
+Scope
+-----
+Only Milestone 1's 3 validated features (and their direct register
+dependencies) are populated here: flow_iat_max, fwd_iat_max,
+fwd_packet_length_max -- the M1 DDoS-only feature set traced against
+p4/p4_code_RF_models.p4's apply block and validated by compiling
+p4/tofino_spike/tna_m1_flows_iat_spike.p4. Do not add entries for features
+not yet validated by a real p4c compile (mean/EWMA, bwd_*, other
+candidates) -- resolving those is explicitly deferred to whichever later
+milestone needs them, not guessed up front.
+
+Note: the `flows` bookkeeping register (fwd/bwd/new-flow tracking) is NOT
+a catalog entry. It is a fixed, generator-level requirement whenever the
+resolved feature set is non-empty -- see generate_P4_registers_and_apply's
+docstring in build_p4_script.py -- because it is the only thing that
+produces the canonical, direction-independent flow index (meta.flow_hash)
+every other per-flow register (in this catalog or not) relies on.
+"""
+
+FEATURE_REGISTER_CATALOG = {
+    "flow_iat_max": {
+        "registers": [
+            {
+                "name": "flow_last_arrival_time",
+                "role": "dependency",
+                "width": 16,
+                "body": "iat_delta",
+            },
+            {
+                "name": "flow_iat_max",
+                "role": "value",
+                "width": 16,
+                "body": "running_max_iat",
+            },
+        ],
+        "gated_by": None,
+    },
+    "fwd_iat_max": {
+        "registers": [
+            {
+                "name": "fwd_last_arrival_time",
+                "role": "dependency",
+                "width": 16,
+                "body": "iat_delta",
+            },
+            {
+                "name": "fwd_iat_max",
+                "role": "value",
+                "width": 16,
+                "body": "running_max_iat",
+            },
+        ],
+        "gated_by": "fwd",
+    },
+    "fwd_packet_length_max": {
+        "registers": [
+            {
+                "name": "fwd_packet_length_max",
+                "role": "value",
+                "width": 16,
+                "body": "running_max_packet_length",
+            },
+        ],
+        "gated_by": "fwd",
+    },
+}
