@@ -789,13 +789,6 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
 # `.execute()` call sites that may touch a single register per packet.
 MAX_REGISTER_TOUCHES = 4
 
-# Baseline per-flow bookkeeping register (fwd/bwd/new-flow tracking, "M1-0"
-# in the spike). Needed once, unconditionally, whenever the resolved
-# feature set is non-empty -- see generate_P4_registers_and_apply's
-# docstring for why this lives outside FEATURE_REGISTER_CATALOG.
-_FLOWS_REGISTER_NAME = "flows"
-_FLOWS_REGISTER_WIDTH = 1
-
 # Symbolic RegisterAction body kinds -> exact atomic read-modify-write P4
 # body, transcribed verbatim from the compiled spike
 # (p4/tofino_spike/tna_m1_flows_iat_spike.p4). Do not reword/"clean up"
@@ -898,29 +891,43 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     (registers_code, register_actions_code, feature_update_apply_code)
 
     - registers_code: `Register<bit<W>, bit<32>>(MAX_NUM_FLOWS) <name>_reg;`
-      declarations (TNA syntax), plus the two `Hash<>` instances the
-      apply-block's hash actions need (flow_hash_calc_self/_other -- TNA
-      requires one Hash<> instance per distinct field list, so the fwd- and
-      bwd-ordered hashes can't share one instance).
-    - register_actions_code: the plain calc_flow_hash_self/
-      calc_flow_hash_other actions (and calc_timestamp, only emitted when
-      an included register actually needs meta.now_pseudo_us), plus one
-      `RegisterAction<...> <name>_action = {...};` block per resolved
-      register, using the exact bodies from _REGISTER_ACTION_BODIES. Body
-      kinds listed in _EXTRA_ACTION_DECLARATIONS (currently only
-      "mathunit_ewma") get one extra hardware-primitive declaration line
-      (e.g. `MathUnit<bit<W>>(MathOp_t.MUL, 1, 2) <name>_halve_unit;`)
-      emitted immediately before that register's RegisterAction block. The
-      `flows` register gets two action blocks -- flows_test_other
-      (read-only) and flows_set_self (test-and-set) -- in the corrected
-      2-touch design: always read-only test the *other* direction's slot
-      first; only touch (and only ever write) our *own* hash's slot if
-      that read back 0. This is deliberately not the naive ordering
-      (test-and-set our own hash first) -- see the spike's header comment
-      for the correctness bug that ordering has.
+      declarations (TNA syntax), plus the ONE `Hash<>` instance the
+      apply-block's hash action needs (`flow_hash_calc`) and the fixed
+      `flow_forward_srcaddr_reg` register used for flow-direction
+      bookkeeping (see below) -- both always emitted, unconditionally,
+      whenever the resolved feature set is non-empty; neither is
+      catalog-driven or routed through the touch-count guard.
+    - register_actions_code: the plain calc_flow_hash action (and
+      calc_timestamp, only emitted when an included register actually needs
+      meta.now_pseudo_us), plus one `RegisterAction<...> <name>_action =
+      {...};` block per resolved register, using the exact bodies from
+      _REGISTER_ACTION_BODIES. Body kinds listed in
+      _EXTRA_ACTION_DECLARATIONS (currently only "mathunit_ewma") get one
+      extra hardware-primitive declaration line (e.g.
+      `MathUnit<bit<W>>(MathOp_t.MUL, 1, 2) <name>_halve_unit;`) emitted
+      immediately before that register's RegisterAction block. Flow
+      direction/first-seen bookkeeping (validated against the real Tofino
+      compiler this session: p4/tofino_spike/tna_m2_symmetric_hash_spike.p4,
+      and the real M2 program with this swap,
+      p4/tofino_spike/tna_m2_real_with_symhash.p4, both 0 errors) is now a
+      SINGLE `flow_orientation_action` RegisterAction on
+      `flow_forward_srcaddr_reg`: since `calc_flow_hash` is symmetric
+      (XOR-based -- `src_addr ^ dst_addr`, `src_port ^ dst_port` -- so both
+      directions of a flow hash identically; no min/max comparison needed,
+      since TNA's Gateway hardware can only compare a field against a
+      compile-time constant, not two runtime fields against each other,
+      confirmed as a real compile restriction this session), the register
+      simply stores whichever packet's own srcAddr was seen FIRST for that
+      flow index; a later packet is "fwd" iff its own srcAddr matches the
+      stored value. One touch per packet, not two. CAVEAT: XOR-based
+      symmetry has a different (likely worse) collision profile than true
+      min/max canonical ordering -- not measured, flagged not fixed,
+      consistent with this project's treatment of every other
+      resource-oracle approximation (e.g. the IAT ns->us rescale).
     - feature_update_apply_code: the per-packet apply-block snippet: the
-      hash-calc and (conditionally) timestamp calls, the flows touch(es),
-      then each *distinct register name*'s `.execute()` call -- gated
+      hash-calc and (conditionally) timestamp calls, the single
+      flow_orientation_action touch, then each *distinct register name*'s
+      `.execute()` call -- gated
       inside `if (meta.fwd == 1) { ... }` for features whose catalog entry
       says `"gated_by": "fwd"` -- and assignment of each "value" register's
       result into `meta.<feature_lower>_val` (e.g. `meta.flow_iat_max_val`,
@@ -954,15 +961,18 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       (`register_touch_count`, checked further below, in `_note_touch`) IS
       aligned with this same deduplicated model: a register's counted
       touches equal its real `.execute()` call-site count, not one
-      increment per referencing feature. Concretely: the hardcoded `flows`
-      baseline register (not catalog-driven) is always counted as exactly
-      2 (its two real, always-emitted call sites, `flows_test_other` +
-      `flows_set_self`); every catalog-driven register is counted once,
-      the first time any feature references it, regardless of how many
-      further features also list it as a dependency -- e.g.
-      flow_last_arrival_time reports exactly 1 touch for M2's feature set
-      (flow_iat_max + flow_iat_mean sharing it), matching the single real
-      `.execute()` call site _execute_lines actually emits for it.
+      increment per referencing feature. `flow_forward_srcaddr_reg` (the
+      fixed flow-direction bookkeeping register, always exactly 1 real
+      touch per packet via `flow_orientation_action`) is NOT routed through
+      this catalog-driven touch-count machinery at all -- like
+      `flow_hash_calc`, it is a fixed, always-emitted register outside
+      `register_order`/`_note_touch`'s bookkeeping, not a candidate for the
+      guard below. Every catalog-driven register IS counted once, the
+      first time any feature references it, regardless of how many further
+      features also list it as a dependency -- e.g. flow_last_arrival_time
+      reports exactly 1 touch for M2's feature set (flow_iat_max +
+      flow_iat_mean sharing it), matching the single real `.execute()` call
+      site _execute_lines actually emits for it.
 
   Raises RuntimeError, at generation time (not left to fail later at `p4c`
   invocation), if resolving `catalog` against `feature_intervals` would
@@ -1006,10 +1016,6 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       register_info[name] = {"width": width, "body": body}
       register_touch_count[name] = register_touch_count.get(name, 0) + count
 
-  # Baseline bookkeeping register: needed once any per-flow feature register
-  # exists, always exactly 2 touches (flows_test_other + flows_set_self).
-  _note_touch(_FLOWS_REGISTER_NAME, width=_FLOWS_REGISTER_WIDTH, count=2)
-
   feature_registers = {}  # feature -> ordered list of its catalog register dicts
   needs_timestamp = False
 
@@ -1043,8 +1049,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # ---- /* REGISTERS */ ----
 
   registers_code = (
-      "\tHash<bit<32>>(HashAlgorithm_t.CRC32) flow_hash_calc_self;\n"
-      "\tHash<bit<32>>(HashAlgorithm_t.CRC32) flow_hash_calc_other;\n"
+      "\tHash<bit<32>>(HashAlgorithm_t.CRC32) flow_hash_calc;\n"
+      "\tRegister<bit<32>, bit<32>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;\n"
   )
   for name in register_order:
     registers_code += _register_declaration(name, register_info[name]["width"])
@@ -1052,23 +1058,11 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # ---- /* REGISTER_ACTIONS */ ----
 
   register_actions_code = (
-      "\taction calc_flow_hash_self() {\n"
-      "\t\tmeta.flow_hash_self = flow_hash_calc_self.get({\n"
-      "\t\t\thdr.ipv4.src_addr,\n"
-      "\t\t\thdr.ipv4.dst_addr,\n"
+      "\taction calc_flow_hash() {\n"
+      "\t\tmeta.flow_hash = flow_hash_calc.get({\n"
+      "\t\t\thdr.ipv4.src_addr ^ hdr.ipv4.dst_addr,\n"
       "\t\t\thdr.ipv4.protocol,\n"
-      "\t\t\thdr.tcp.src_port,\n"
-      "\t\t\thdr.tcp.dst_port\n"
-      "\t\t}) & 0xFFF;\n"
-      "\t}\n"
-      "\n"
-      "\taction calc_flow_hash_other() {\n"
-      "\t\tmeta.flow_hash_other = flow_hash_calc_other.get({\n"
-      "\t\t\thdr.ipv4.dst_addr,\n"
-      "\t\t\thdr.ipv4.src_addr,\n"
-      "\t\t\thdr.ipv4.protocol,\n"
-      "\t\t\thdr.tcp.dst_port,\n"
-      "\t\t\thdr.tcp.src_port\n"
+      "\t\t\thdr.tcp.src_port ^ hdr.tcp.dst_port\n"
       "\t\t}) & 0xFFF;\n"
       "\t}\n"
   )
@@ -1081,25 +1075,30 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
         "\t}\n"
     )
 
+  # Symmetric-hash flow bookkeeping (Part G.6 in reviews/t11_tofino_port_and_env.md,
+  # wired in after validation against the real Tofino compiler this session:
+  # p4/tofino_spike/tna_m2_symmetric_hash_spike.p4, and the real M2 program with
+  # this swap, p4/tofino_spike/tna_m2_real_with_symhash.p4, both 0 errors). Since
+  # the hash is now symmetric (XOR-based, both directions of a flow hash
+  # identically), a single register stores the first-seen packet's own
+  # srcAddr; later packets are "fwd" iff their own srcAddr matches it.
+  # CAVEAT: XOR-based symmetry has a different (likely worse) collision
+  # profile than true min/max canonical ordering -- not measured, flagged
+  # not fixed, consistent with this project's treatment of every other
+  # resource-oracle approximation (e.g. the IAT ns->us rescale).
   register_actions_code += (
       "\n"
-      "\tRegisterAction<bit<1>, bit<32>, bit<1>>(flows_reg) flows_test_other = {\n"
-      "\t\tvoid apply(inout bit<1> value, out bit<1> rv) {\n"
-      "\t\t\trv = value;\n"
-      "\t\t}\n"
-      "\t};\n"
-      "\n"
-      "\tRegisterAction<bit<1>, bit<32>, bit<1>>(flows_reg) flows_set_self = {\n"
-      "\t\tvoid apply(inout bit<1> value, out bit<1> rv) {\n"
-      "\t\t\tvalue = 1;\n"
-      "\t\t\trv = value;\n"
+      "\tRegisterAction<bit<32>, bit<32>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {\n"
+      "\t\tvoid apply(inout bit<32> value, out bit<1> rv) {\n"
+      "\t\t\tif (value == 0) {\n"
+      "\t\t\t\tvalue = hdr.ipv4.src_addr;\n"
+      "\t\t\t}\n"
+      "\t\t\trv = (value == hdr.ipv4.src_addr) ? 1w1 : 1w0;\n"
       "\t\t}\n"
       "\t};\n"
   )
 
   for name in register_order:
-    if name == _FLOWS_REGISTER_NAME:
-      continue
     info = register_info[name]
     extra_declaration = _EXTRA_ACTION_DECLARATIONS.get(info["body"])
     if extra_declaration is not None:
@@ -1109,24 +1108,14 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # ---- /* FEATURE_UPDATE_APPLY */ ----
 
   apply_lines = [
-      "\t\t\tcalc_flow_hash_self();",
-      "\t\t\tcalc_flow_hash_other();",
+      "\t\t\tcalc_flow_hash();",
   ]
   if needs_timestamp:
     apply_lines.append("\t\t\tcalc_timestamp();")
 
   apply_lines += [
       "",
-      "\t\t\tbit<1> other_seen = flows_test_other.execute(meta.flow_hash_other);",
-      "",
-      "\t\t\tif (other_seen == 1) {",
-      "\t\t\t\tmeta.fwd = 0;",
-      "\t\t\t\tmeta.flow_hash = meta.flow_hash_other;",
-      "\t\t\t} else {",
-      "\t\t\t\tflows_set_self.execute(meta.flow_hash_self);",
-      "\t\t\t\tmeta.fwd = 1;",
-      "\t\t\t\tmeta.flow_hash = meta.flow_hash_self;",
-      "\t\t\t}",
+      "\t\t\tmeta.fwd = flow_orientation_action.execute(meta.flow_hash);",
       "",
   ]
 

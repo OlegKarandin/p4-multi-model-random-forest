@@ -13,8 +13,6 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 
 struct metadata_t {
     bit<32> flow_hash;
-    bit<32> flow_hash_self;
-    bit<32> flow_hash_other;
     bit<1>  fwd;
     bit<16> now_pseudo_us;
     bit<16> current_iat;

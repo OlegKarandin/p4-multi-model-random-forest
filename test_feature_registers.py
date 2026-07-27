@@ -59,6 +59,23 @@ def _load_m2_mean_spike():
 
 M2_MEAN_SPIKE = _load_m2_mean_spike()
 
+# Task 3: symmetric-hash flow-direction bookkeeping ground truth (compiled
+# clean against the real Tofino compiler this session, 0 errors) -- the
+# spike-comparison source for flow_orientation_action, replacing the M1
+# spike's now-superseded flows_test_other/flows_set_self design.
+M2_SYMMETRIC_HASH_SPIKE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "p4", "tofino_spike", "tna_m2_symmetric_hash_spike.p4",
+)
+
+
+def _load_m2_symmetric_hash_spike():
+  with open(M2_SYMMETRIC_HASH_SPIKE_PATH, "r") as spike_file:
+    return spike_file.read()
+
+
+M2_SYMMETRIC_HASH_SPIKE = _load_m2_symmetric_hash_spike()
+
 # The M1 feature set as generate_P4_registers_and_apply's real caller
 # (build_p4_script.get_nodes()/get_feature_intervals()) actually produces
 # it: Title_Case_With_Underscores keys, values unused.
@@ -198,16 +215,34 @@ def test_flow_iat_mean_catalog_entry():
 # ---------------------------------------------------------------------------
 
 def test_m1_register_declarations_match_spike(m1_generated):
+  # Task 3: the M1 spike (SPIKE_CONTROL) still reflects the OLD two-hash/
+  # flows_reg design, so it is no longer a valid ground truth for the
+  # bookkeeping register's declaration -- only the catalog-driven feature
+  # registers are still compared against it. The bookkeeping register
+  # itself (`flow_forward_srcaddr_reg`, width 32) is checked directly
+  # against the new symmetric-hash design instead of the M1 spike.
   registers_code, _, _ = m1_generated
   generated = _extract_register_declarations(registers_code)
   spike = _extract_register_declarations(SPIKE_CONTROL)
 
-  expected_names = {
-      "flows", "flow_last_arrival_time", "flow_iat_max",
+  feature_expected_names = {
+      "flow_last_arrival_time", "flow_iat_max",
       "fwd_last_arrival_time", "fwd_iat_max", "fwd_packet_length_max",
   }
-  assert set(spike.keys()) == expected_names
-  assert generated == spike
+  spike_expected_names = feature_expected_names | {"flows"}
+  assert set(spike.keys()) == spike_expected_names
+
+  # Catalog-driven feature registers must still match the spike exactly.
+  assert {name: width for name, width in generated.items() if name in feature_expected_names} == {
+      name: width for name, width in spike.items() if name in feature_expected_names
+  }
+
+  # The old "flows" register is gone; the new fixed bookkeeping register
+  # (flow_forward_srcaddr_reg, width 32 -- captured as "flow_forward_srcaddr"
+  # by _extract_register_declarations' `(\w+)_reg;` pattern) replaces it.
+  assert "flows" not in generated
+  assert generated["flow_forward_srcaddr"] == 32
+  assert set(generated.keys()) == feature_expected_names | {"flow_forward_srcaddr"}
 
 
 def test_register_action_bodies_match_spike():
@@ -232,26 +267,59 @@ def test_register_action_bodies_match_spike():
       )
 
 
+def test_symmetric_hash_bookkeeping_design(m1_generated):
+  # Task 3 (Step 2, TDD RED): the new single-hash/single-register design
+  # replaces the old two-Hash<>/flows_reg/flows_test_other/flows_set_self
+  # "test other, then set self" bookkeeping (see
+  # p4/tofino_spike/tna_m2_symmetric_hash_spike.p4 for the validated ground
+  # truth this codegen change transcribes).
+  registers_code, register_actions_code, apply_code = m1_generated
+
+  # Exactly one Hash<> instance now (was two: flow_hash_calc_self/_other).
+  assert registers_code.count("Hash<bit<32>>(HashAlgorithm_t.CRC32)") == 1
+  assert "flow_hash_calc_self" not in registers_code
+  assert "flow_hash_calc_other" not in registers_code
+
+  # The symmetric XOR-based hash fields.
+  assert "hdr.ipv4.src_addr ^ hdr.ipv4.dst_addr" in register_actions_code
+  assert "hdr.tcp.src_port ^ hdr.tcp.dst_port" in register_actions_code
+
+  # The old flows_reg/flows_test_other/flows_set_self design is gone.
+  assert "flows_reg" not in registers_code
+  assert "flows_test_other" not in register_actions_code
+  assert "flows_set_self" not in register_actions_code
+
+  # The new fixed register + RegisterAction are present.
+  assert "flow_forward_srcaddr_reg" in registers_code
+  assert "flow_orientation_action" in register_actions_code
+
+  # Apply-block: calc_flow_hash() exactly once, the new single execute call
+  # site, and no leftover "other_seen" direction-test bookkeeping anywhere.
+  assert apply_code.count("calc_flow_hash()") == 1
+  assert "flow_orientation_action.execute(meta.flow_hash)" in apply_code
+  assert "other_seen" not in apply_code
+
+
 def test_flows_reg_actions_match_spike(m1_generated):
+  # Task 3: the old flows_test_other/flows_set_self design is replaced by a
+  # single flow_orientation_action RegisterAction on flow_forward_srcaddr_reg
+  # -- compare against tna_m2_symmetric_hash_spike.p4 (the validated ground
+  # truth for the new design), not the M1 spike (which still reflects the
+  # old two-hash design).
   _, register_actions_code, _ = m1_generated
-  for action_name in ("flows_test_other", "flows_set_self"):
-    generated_body = _extract_action_body(register_actions_code, action_name)
-    spike_body = _extract_action_body(SPIKE_CONTROL, action_name)
-    assert _normalize(generated_body) == _normalize(spike_body)
+  generated_body = _extract_action_body(register_actions_code, "flow_orientation_action")
+  spike_body = _extract_action_body(M2_SYMMETRIC_HASH_SPIKE, "flow_orientation_action")
+  assert _normalize(generated_body) == _normalize(spike_body)
 
 
 def test_flows_reg_two_touch_pattern_order(m1_generated):
+  # Task 3: renamed in spirit from a two-touch ordering check (old design)
+  # to a single-touch-per-packet check (new design) -- there is only one
+  # call site now, so there is no more "which runs first" ordering to
+  # assert.
   _, _, apply_code = m1_generated
 
-  assert "bit<1> other_seen = flows_test_other.execute(meta.flow_hash_other);" in apply_code
-  other_seen_idx = apply_code.index("flows_test_other.execute(meta.flow_hash_other)")
-  if_other_seen_idx = apply_code.index("if (other_seen == 1) {")
-  set_self_idx = apply_code.index("flows_set_self.execute(meta.flow_hash_self)")
-
-  # Matches the spike (lines 1830-1839): read-only test of the *other*
-  # direction's slot always runs first; the *own*-slot test-and-set only
-  # runs in the "not already seen" (else) branch.
-  assert other_seen_idx < if_other_seen_idx < set_self_idx
+  assert apply_code.count("flow_orientation_action.execute(meta.flow_hash)") == 1
 
 
 def test_calc_timestamp_emitted_and_matches_spike(m1_generated):
@@ -419,14 +487,20 @@ def test_register_touch_limit_raises(monkeypatch):
   #
   # To still exercise the guard's comparison logic (`count > MAX_REGISTER_
   # TOUCHES`) meaningfully, shrink MAX_REGISTER_TOUCHES to 0 for this test
-  # only: with a cap of 0, even the baseline `flows` bookkeeping register's
-  # always-real, always-legitimate 2 touches (present the moment any feature
-  # resolves at all -- not part of this task's bug, see the brief) exceeds
-  # the cap, proving the guard's raise still fires on real, correctly
-  # counted touches rather than having been silently disabled or broken by
-  # this fix. This keeps the guard's actual protective purpose intact -- the
-  # only thing that changed is *how a touch is counted*, not whether an
-  # over-the-limit count still raises.
+  # only: with a cap of 0, even `shared_synthetic_reg`'s single, always-real,
+  # always-legitimate touch (1 touch: the one .execute() call site
+  # `synthetic_feature` resolves to) exceeds the cap, proving the guard's
+  # raise still fires on real, correctly counted touches rather than having
+  # been silently disabled or broken by this fix. (Task 3: the old baseline
+  # `flows` bookkeeping register this comment used to cite here -- always 2
+  # touches -- no longer exists; its replacement, `flow_forward_srcaddr_reg`,
+  # is a fixed register outside the catalog/`_note_touch` machinery
+  # entirely, so it is never a candidate for this guard at all, and can no
+  # longer stand in as the "even the legitimate baseline exceeds a 0 cap"
+  # example -- `shared_synthetic_reg` now serves that role instead.) This
+  # keeps the guard's actual protective purpose intact -- the only thing
+  # that changed is *how a touch is counted*, not whether an over-the-limit
+  # count still raises.
   monkeypatch.setattr(bps, "MAX_REGISTER_TOUCHES", 0)
 
   synthetic_catalog = {

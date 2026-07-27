@@ -470,7 +470,7 @@ def test_generate_P4_code_contains_expected_m1_feature_text(m1_ddos_only_output)
   for expected in (
       "flow_iat_max_val",
       "code_flow_iat_max",
-      "flows_test_other",
+      "flow_orientation_action",
       "set_code_flow_iat_max",
   ):
     assert expected in m1_ddos_only_output, "missing expected text: {0}".format(expected)
