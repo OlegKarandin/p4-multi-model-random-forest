@@ -20,7 +20,7 @@ import re
 import pytest
 
 import build_p4_script as bps
-from build_p4_script import generate_P4_registers_and_apply, MAX_REGISTER_TOUCHES
+from build_p4_script import generate_P4_registers_and_apply
 from feature_registers import FEATURE_REGISTER_CATALOG
 
 
@@ -402,26 +402,81 @@ def test_case_insensitive_feature_lookup(m1_generated):
 # Guardrails (synthetic catalogs only -- never mutate the real M1 catalog)
 # ---------------------------------------------------------------------------
 
-def test_register_touch_limit_raises():
-  # Two synthetic features share one register name; together they touch it
-  # more times than MAX_REGISTER_TOUCHES allows.
+def test_register_touch_limit_raises(monkeypatch):
+  # Post-M2-B1 fix-round-1: register_touch_count now counts each register's
+  # REAL, deduplicated .execute() call-site count (see _note_touch), the
+  # same model _execute_lines uses to emit code. Under that model, a
+  # catalog-driven register referenced by any number of features can only
+  # ever accumulate 1 real touch (whichever feature reaches it first wins
+  # the one call site; every later reference reuses that value instead of
+  # adding another touch) -- so a synthetic catalog can no longer organically
+  # manufacture a >MAX_REGISTER_TOUCHES scenario for a single catalog
+  # register by repeating its name (that was the *old*, buggy, per-reference
+  # accounting this task fixed; see
+  # test_shared_dependency_does_not_trip_touch_guard_even_with_many_sharers
+  # below for that "no longer organically possible" case, tested directly
+  # against the real, unpatched MAX_REGISTER_TOUCHES=4).
+  #
+  # To still exercise the guard's comparison logic (`count > MAX_REGISTER_
+  # TOUCHES`) meaningfully, shrink MAX_REGISTER_TOUCHES to 0 for this test
+  # only: with a cap of 0, even the baseline `flows` bookkeeping register's
+  # always-real, always-legitimate 2 touches (present the moment any feature
+  # resolves at all -- not part of this task's bug, see the brief) exceeds
+  # the cap, proving the guard's raise still fires on real, correctly
+  # counted touches rather than having been silently disabled or broken by
+  # this fix. This keeps the guard's actual protective purpose intact -- the
+  # only thing that changed is *how a touch is counted*, not whether an
+  # over-the-limit count still raises.
+  monkeypatch.setattr(bps, "MAX_REGISTER_TOUCHES", 0)
+
+  synthetic_catalog = {
+      "synthetic_feature": {
+          "registers": [{
+              "name": "shared_synthetic_reg",
+              "role": "value",
+              "width": 16,
+              "body": "running_max_iat",
+          }],
+          "gated_by": None,
+      },
+  }
+  feature_intervals = {"Synthetic_Feature": None}
+
+  with pytest.raises(RuntimeError):
+    generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
+
+
+def test_shared_dependency_does_not_trip_touch_guard_even_with_many_sharers():
+  # The direct, real-world-limit (no monkeypatching MAX_REGISTER_TOUCHES;
+  # this runs against the actual 4-touch Tofino hardware cap) proof of
+  # Finding 1's fix: 5 synthetic features all sharing ONE register name.
+  # Under the OLD (buggy) per-(feature, register-list-entry) accounting,
+  # this would have counted 5 touches for "shared_synthetic_reg" -- exceeding
+  # MAX_REGISTER_TOUCHES=4 and incorrectly raising RuntimeError for a
+  # register that is, in reality, only ever given ONE .execute() call site
+  # (see _execute_lines' dedup). Under the fixed, deduplicated accounting,
+  # this register is counted once no matter how many features reference it,
+  # so resolving all 5 features together must NOT raise.
   shared_register = {
       "name": "shared_synthetic_reg",
       "role": "value",
       "width": 16,
       "body": "running_max_iat",
   }
-  touches_needed = MAX_REGISTER_TOUCHES + 1
-  split_a = touches_needed // 2
-  split_b = touches_needed - split_a
   synthetic_catalog = {
-      "synthetic_feature_a": {"registers": [shared_register] * split_a, "gated_by": None},
-      "synthetic_feature_b": {"registers": [shared_register] * split_b, "gated_by": None},
+      "synthetic_feature_{0}".format(i): {"registers": [shared_register], "gated_by": None}
+      for i in range(5)
   }
-  feature_intervals = {"Synthetic_Feature_A": None, "Synthetic_Feature_B": None}
+  feature_intervals = {"Synthetic_Feature_{0}".format(i): None for i in range(5)}
 
-  with pytest.raises(RuntimeError):
-    generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
+  _, _, apply_code = generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
+
+  # And the emitted code backs up the count: exactly one real .execute()
+  # call site for the shared register, regardless of 5 features referencing
+  # it (mirrors test_shared_dependency_register_executed_exactly_once, here
+  # against a purely synthetic catalog rather than the real flow_iat_mean
+  # scenario).
+  assert apply_code.count("shared_synthetic_reg_action.execute(meta.flow_hash)") == 1
 
 
 def test_unsupported_gated_by_raises():

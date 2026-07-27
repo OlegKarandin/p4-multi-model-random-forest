@@ -935,27 +935,26 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       touching it twice for the same packet would be both semantically
       wrong (the second call would observe the state the first call just
       wrote) and would incorrectly inflate the touch-count guard below if
-      it were derived from call-site counts. NOTE: the touch-count guard
-      itself (`register_touch_count`, checked further below) is NOT
-      recomputed from this deduplicated call-site count -- it is still
-      accumulated once per (feature, catalog register-list entry), exactly
-      as before this fix. For every real (non-synthetic) catalog shape
-      this is a conservative over-count relative to the deduplicated
-      call-site count above (e.g. flow_last_arrival_time reports 2 touches
-      for M2's feature set even though only 1 `.execute()` call site is
-      actually emitted) -- never an under-count, so it cannot let a
-      genuinely-too-many-touches design slip through silently. Fully
-      aligning the guard with the deduplicated count is deliberately not
-      attempted here: doing so would change what
-      test_register_touch_limit_raises (a synthetic guardrail test that
-      simulates ">MAX_REGISTER_TOUCHES touches" via one register name
-      repeated within a single feature's own registers list) exercises,
-      and is out of this task's scope.
+      it were derived from call-site counts. The touch-count guard itself
+      (`register_touch_count`, checked further below, in `_note_touch`) IS
+      aligned with this same deduplicated model: a register's counted
+      touches equal its real `.execute()` call-site count, not one
+      increment per referencing feature. Concretely: the hardcoded `flows`
+      baseline register (not catalog-driven) is always counted as exactly
+      2 (its two real, always-emitted call sites, `flows_test_other` +
+      `flows_set_self`); every catalog-driven register is counted once,
+      the first time any feature references it, regardless of how many
+      further features also list it as a dependency -- e.g.
+      flow_last_arrival_time reports exactly 1 touch for M2's feature set
+      (flow_iat_max + flow_iat_mean sharing it), matching the single real
+      `.execute()` call site _execute_lines actually emits for it.
 
   Raises RuntimeError, at generation time (not left to fail later at `p4c`
   invocation), if resolving `catalog` against `feature_intervals` would
-  require more than MAX_REGISTER_TOUCHES distinct RegisterAction
-  `.execute()` call sites against any single register.
+  require more than MAX_REGISTER_TOUCHES distinct, real (deduplicated)
+  RegisterAction `.execute()` call sites against any single register --
+  i.e. the same count described above, not a raw per-feature-reference
+  tally.
   """
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
@@ -975,10 +974,22 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   register_touch_count = {}  # name -> number of .execute() call sites
 
   def _note_touch(name, width=None, body=None, count=1):
+    # A register's touch count must reflect its REAL, deduplicated
+    # .execute() call-site count -- exactly what _execute_lines (below)
+    # actually emits, not one increment per (feature, register-list-entry)
+    # pair. `register_info` already tracks "have we seen this register
+    # name before" for register_order/declarations; reuse that same
+    # first-seen signal here: the first time a register name is noted, it
+    # gets its real touch count (`count`, e.g. 2 for the hardcoded `flows`
+    # baseline, 1 for every catalog-driven register); every later call for
+    # an already-seen name (e.g. a second feature that also lists the same
+    # dependency register) adds nothing, because _execute_lines will reuse
+    # that first call's already-produced value rather than emitting another
+    # .execute() line for it.
     if name not in register_info:
       register_order.append(name)
       register_info[name] = {"width": width, "body": body}
-    register_touch_count[name] = register_touch_count.get(name, 0) + count
+      register_touch_count[name] = register_touch_count.get(name, 0) + count
 
   # Baseline bookkeeping register: needed once any per-flow feature register
   # exists, always exactly 2 touches (flows_test_other + flows_set_self).
