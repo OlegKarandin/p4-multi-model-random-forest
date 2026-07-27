@@ -808,6 +808,29 @@ _REGISTER_ACTION_BODIES = {
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
+  # M2: mean/EWMA folding via Tofino's MathUnit<> hardware primitive.
+  # Transcribed verbatim from p4/tofino_spike/tna_m2_mean_spike.p4's
+  # flow_iat_mean_ewma_action (the working "take 3" design -- see that
+  # spike's header comment for why the two earlier, simpler-looking designs
+  # both failed against the real Tofino compiler). Computes
+  # new_mean = (old_mean + current_iat) / 2 -- an alpha=0.5 EWMA -- as one
+  # division of a sum, in a single register touch. References
+  # `{name}_halve_unit`, a MathUnit<> instance that _EXTRA_ACTION_DECLARATIONS
+  # (below) causes to be declared immediately before this RegisterAction.
+  "mathunit_ewma": (
+      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
+      "\t\t\tvalue = {name}_halve_unit.execute(value + meta.current_iat);\n"
+      "\t\t\trv = value;\n"
+      "\t\t}}\n"
+  ),
+}
+
+# Register-action body kinds that require an extra hardware-primitive
+# declaration (e.g. a MathUnit<> instance) emitted immediately before their
+# RegisterAction block. Maps body kind -> declaration template, parallel in
+# spirit to _REGISTER_ACTION_BODIES above.
+_EXTRA_ACTION_DECLARATIONS = {
+    "mathunit_ewma": "\tMathUnit<bit<{width}>>(MathOp_t.MUL, 1, 2) {name}_halve_unit;\n",
 }
 
 
@@ -816,7 +839,11 @@ def _register_declaration(name, width):
 
 
 def _register_action_declaration(name, width, body_kind):
-  body = _REGISTER_ACTION_BODIES[body_kind].format(width=width)
+  # `name=name` is only consumed by body kinds that reference an
+  # extra-declaration identifier of their own (e.g. "mathunit_ewma"'s
+  # `{name}_halve_unit`); body kinds that don't reference `{name}` simply
+  # ignore the extra format() kwarg.
+  body = _REGISTER_ACTION_BODIES[body_kind].format(width=width, name=name)
   return (
       "\tRegisterAction<bit<{width}>, bit<32>, bit<{width}>>({name}_reg) {name}_action = {{\n"
       "{body}"
@@ -864,7 +891,11 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       calc_flow_hash_other actions (and calc_timestamp, only emitted when
       an included register actually needs meta.now_pseudo_us), plus one
       `RegisterAction<...> <name>_action = {...};` block per resolved
-      register, using the exact bodies from _REGISTER_ACTION_BODIES. The
+      register, using the exact bodies from _REGISTER_ACTION_BODIES. Body
+      kinds listed in _EXTRA_ACTION_DECLARATIONS (currently only
+      "mathunit_ewma") get one extra hardware-primitive declaration line
+      (e.g. `MathUnit<bit<W>>(MathOp_t.MUL, 1, 2) <name>_halve_unit;`)
+      emitted immediately before that register's RegisterAction block. The
       `flows` register gets two action blocks -- flows_test_other
       (read-only) and flows_set_self (test-and-set) -- in the corrected
       2-touch design: always read-only test the *other* direction's slot
@@ -874,9 +905,9 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       for the correctness bug that ordering has.
     - feature_update_apply_code: the per-packet apply-block snippet: the
       hash-calc and (conditionally) timestamp calls, the flows touch(es),
-      each resolved register's `.execute()` call -- gated inside
-      `if (meta.fwd == 1) { ... }` for features whose catalog entry says
-      `"gated_by": "fwd"` -- and assignment of each "value" register's
+      then each *distinct register name*'s `.execute()` call -- gated
+      inside `if (meta.fwd == 1) { ... }` for features whose catalog entry
+      says `"gated_by": "fwd"` -- and assignment of each "value" register's
       result into `meta.<feature_lower>_val` (e.g. `meta.flow_iat_max_val`,
       matching the spike's `metadata_t` field naming; a "dependency"
       register's result is not itself a feature value, so it is assigned
@@ -889,6 +920,37 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       `update_current_flow_features`: there is no bulk-read phase here --
       every register's value is captured directly at its `.execute()`
       call site.
+
+      Deduplicated by register name, not one call site per (feature,
+      register) pair: when two or more selected features' catalog entries
+      reference the SAME register name (e.g. flow_iat_max and
+      flow_iat_mean both depend on "flow_last_arrival_time"), only the
+      first-encountered feature (in feature_intervals iteration order)
+      gets an `.execute()` call site for that register; every later
+      feature that references the same name reuses the value the first
+      call already produced (e.g. the shared `meta.current_iat`) instead
+      of re-invoking `.execute()` on it. This models the real hardware
+      constraint that a given RegisterAction's call site represents one
+      physical register touch meant to fire (at most) once per packet --
+      touching it twice for the same packet would be both semantically
+      wrong (the second call would observe the state the first call just
+      wrote) and would incorrectly inflate the touch-count guard below if
+      it were derived from call-site counts. NOTE: the touch-count guard
+      itself (`register_touch_count`, checked further below) is NOT
+      recomputed from this deduplicated call-site count -- it is still
+      accumulated once per (feature, catalog register-list entry), exactly
+      as before this fix. For every real (non-synthetic) catalog shape
+      this is a conservative over-count relative to the deduplicated
+      call-site count above (e.g. flow_last_arrival_time reports 2 touches
+      for M2's feature set even though only 1 `.execute()` call site is
+      actually emitted) -- never an under-count, so it cannot let a
+      genuinely-too-many-touches design slip through silently. Fully
+      aligning the guard with the deduplicated count is deliberately not
+      attempted here: doing so would change what
+      test_register_touch_limit_raises (a synthetic guardrail test that
+      simulates ">MAX_REGISTER_TOUCHES touches" via one register name
+      repeated within a single feature's own registers list) exercises,
+      and is out of this task's scope.
 
   Raises RuntimeError, at generation time (not left to fail later at `p4c`
   invocation), if resolving `catalog` against `feature_intervals` would
@@ -1013,6 +1075,9 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     if name == _FLOWS_REGISTER_NAME:
       continue
     info = register_info[name]
+    extra_declaration = _EXTRA_ACTION_DECLARATIONS.get(info["body"])
+    if extra_declaration is not None:
+      register_actions_code += "\n" + extra_declaration.format(width=info["width"], name=name)
     register_actions_code += "\n" + _register_action_declaration(name, info["width"], info["body"])
 
   # ---- /* FEATURE_UPDATE_APPLY */ ----
@@ -1039,13 +1104,30 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       "",
   ]
 
+  # Registers already given an .execute() call site somewhere in the apply
+  # block, tracked across BOTH the ungated and fwd-gated _execute_lines()
+  # calls below (a single shared set, not one per call) -- this is the
+  # shared-dependency dedup fix: a register (e.g. flow_last_arrival_time)
+  # referenced by more than one selected feature's catalog entry (e.g. both
+  # flow_iat_max and flow_iat_mean) must still be .execute()'d exactly once
+  # per packet. Whichever feature reaches that register name first (in
+  # matched_features order) emits its call site and produces the value
+  # (meta.current_iat, for a "dependency" register); every later feature
+  # that lists the same register name reuses that already-produced value
+  # instead of re-invoking .execute() on it.
+  already_executed_registers = set()
+
   def _execute_lines(features, indent):
     lines = []
     for feature in features:
       for reg in feature_registers[feature]:
+        name = reg["name"]
+        if name in already_executed_registers:
+          continue
+        already_executed_registers.add(name)
         target = "meta.current_iat" if reg["role"] == "dependency" else "meta." + feature + "_val"
         lines.append("{indent}{target} = {name}_action.execute(meta.flow_hash);".format(
-            indent=indent, target=target, name=reg["name"]))
+            indent=indent, target=target, name=name))
     return lines
 
   ungated_features = [f for f in matched_features if catalog[f].get("gated_by") is None]

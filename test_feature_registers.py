@@ -43,6 +43,22 @@ def _load_spike_control_block():
 
 SPIKE_CONTROL = _load_spike_control_block()
 
+# M2's mean/EWMA ground truth spike (Task M2-B1) -- a small, standalone,
+# not-preprocessed .p4 file, so no line-range slicing is needed: the whole
+# file is the relevant content.
+M2_MEAN_SPIKE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "p4", "tofino_spike", "tna_m2_mean_spike.p4",
+)
+
+
+def _load_m2_mean_spike():
+  with open(M2_MEAN_SPIKE_PATH, "r") as spike_file:
+    return spike_file.read()
+
+
+M2_MEAN_SPIKE = _load_m2_mean_spike()
+
 # The M1 feature set as generate_P4_registers_and_apply's real caller
 # (build_p4_script.get_nodes()/get_feature_intervals()) actually produces
 # it: Title_Case_With_Underscores keys, values unused.
@@ -50,6 +66,24 @@ M1_FEATURE_INTERVALS = {
     "Flow_IAT_Max": None,
     "Fwd_IAT_Max": None,
     "Fwd_Packet_Length_Max": None,
+}
+
+# M2-B1: flow_iat_max + flow_iat_mean share one dependency register
+# (flow_last_arrival_time) -- the shared-dependency dedup scenario this task
+# fixes.
+M2_MEAN_FEATURE_INTERVALS = {
+    "Flow_IAT_Max": None,
+    "Flow_IAT_Mean": None,
+}
+
+# M2-B1: all three of M1's flow_iat_max, fwd_iat_max, plus M2's flow_iat_mean
+# together -- confirms flow_last_arrival_time (shared by flow_iat_max +
+# flow_iat_mean) and fwd_last_arrival_time (independent, fwd_iat_max only)
+# don't cross-contaminate each other's dedup accounting.
+M2_MEAN_PLUS_FWD_FEATURE_INTERVALS = {
+    "Flow_IAT_Max": None,
+    "Fwd_IAT_Max": None,
+    "Flow_IAT_Mean": None,
 }
 
 # Spike hand-wrote its own RegisterAction names; map each catalog register
@@ -98,13 +132,29 @@ def m1_generated():
   return generate_P4_registers_and_apply(M1_FEATURE_INTERVALS)
 
 
+@pytest.fixture(scope="module")
+def m2_mean_generated():
+  return generate_P4_registers_and_apply(M2_MEAN_FEATURE_INTERVALS)
+
+
+@pytest.fixture(scope="module")
+def m2_mean_plus_fwd_generated():
+  return generate_P4_registers_and_apply(M2_MEAN_PLUS_FWD_FEATURE_INTERVALS)
+
+
 # ---------------------------------------------------------------------------
 # FEATURE_REGISTER_CATALOG shape
 # ---------------------------------------------------------------------------
 
-def test_catalog_has_exactly_the_three_m1_features():
+def test_catalog_has_exactly_the_four_m1_m2_features():
+  # NOTE: this test's assertion is intentionally updated by Task M2-B1 (was
+  # "test_catalog_has_exactly_the_three_m1_features", asserting only M1's 3
+  # keys) -- adding the "flow_iat_mean" catalog entry is this task's own
+  # required deliverable, so the catalog's key set necessarily grows by one.
+  # This is the one pre-existing test whose assertion must change; every
+  # other M1 test/behavior is unaffected (see task report for details).
   assert set(FEATURE_REGISTER_CATALOG.keys()) == {
-      "flow_iat_max", "fwd_iat_max", "fwd_packet_length_max",
+      "flow_iat_max", "fwd_iat_max", "fwd_packet_length_max", "flow_iat_mean",
   }
 
 
@@ -134,6 +184,15 @@ def test_fwd_packet_length_max_catalog_entry():
   ]
 
 
+def test_flow_iat_mean_catalog_entry():
+  entry = FEATURE_REGISTER_CATALOG["flow_iat_mean"]
+  assert entry["gated_by"] is None
+  assert entry["registers"] == [
+      {"name": "flow_last_arrival_time", "role": "dependency", "width": 16, "body": "iat_delta"},
+      {"name": "flow_iat_mean", "role": "value", "width": 16, "body": "mathunit_ewma"},
+  ]
+
+
 # ---------------------------------------------------------------------------
 # generate_P4_registers_and_apply vs. spike ground truth
 # ---------------------------------------------------------------------------
@@ -152,11 +211,17 @@ def test_m1_register_declarations_match_spike(m1_generated):
 
 
 def test_register_action_bodies_match_spike():
-  # Compare each catalog register's symbolic body kind, as expanded by
-  # _REGISTER_ACTION_BODIES, against the spike's hand-written action body
+  # Compare each M1 catalog register's symbolic body kind, as expanded by
+  # _REGISTER_ACTION_BODIES, against the M1 spike's hand-written action body
   # for that same register -- content only, not the (allowed-to-differ)
-  # action name.
-  for feature, entry in FEATURE_REGISTER_CATALOG.items():
+  # action name. Scoped to _SPIKE_ACTION_NAME_BY_REGISTER's own M1 feature
+  # set (not "every FEATURE_REGISTER_CATALOG entry") because M2's
+  # flow_iat_mean is validated against a *different* spike file
+  # (tna_m2_mean_spike.p4, exercised separately by
+  # test_mathunit_ewma_body_matches_spike) -- it has no entry in this M1
+  # spike's SPIKE_CONTROL text.
+  for feature in ("flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"):
+    entry = FEATURE_REGISTER_CATALOG[feature]
     for reg in entry["registers"]:
       spike_action_name = _SPIKE_ACTION_NAME_BY_REGISTER[reg["name"]]
       spike_body = _extract_action_body(SPIKE_CONTROL, spike_action_name)
@@ -241,6 +306,70 @@ def test_value_registers_assigned_with_val_suffix(m1_generated):
     # Must not regress to the old, spike-metadata-struct-mismatched,
     # no-suffix naming.
     assert "meta.{0} = ".format(feature) not in apply_code
+
+
+# ---------------------------------------------------------------------------
+# M2-B1: flow_iat_mean catalog entry, mathunit_ewma body kind, and the
+# shared-dependency-register dedup fix.
+# ---------------------------------------------------------------------------
+
+def test_mathunit_ewma_body_matches_spike(m2_mean_generated):
+  # Transcribed-verbatim check against the compiled ground-truth spike
+  # (p4/tofino_spike/tna_m2_mean_spike.p4, flow_iat_mean_ewma_action). The
+  # spike hand-wrote a single global `halve_unit` identifier; the generator
+  # parametrizes it per-register as `<name>_halve_unit` (so a future second
+  # mathunit_ewma register wouldn't collide on one shared MathUnit instance)
+  # -- substitute that one identifier before comparing body content.
+  spike_body = _extract_action_body(M2_MEAN_SPIKE, "flow_iat_mean_ewma_action")
+  generated_body = bps._REGISTER_ACTION_BODIES["mathunit_ewma"].format(width=16, name="flow_iat_mean")
+  normalized_spike = [line.replace("halve_unit", "flow_iat_mean_halve_unit") for line in _normalize(spike_body)]
+  assert _normalize(generated_body) == normalized_spike
+
+
+def test_shared_dependency_register_executed_exactly_once(m2_mean_generated):
+  # The core dedup fix: flow_iat_max and flow_iat_mean both list
+  # "flow_last_arrival_time" as a dependency register. Before the fix,
+  # _execute_lines emitted one .execute() call per (feature, register)
+  # pair -- two calls for one register. After the fix, exactly one call
+  # site must appear, regardless of how many features reference it.
+  _, _, apply_code = m2_mean_generated
+  assert apply_code.count("flow_last_arrival_time_action.execute(meta.flow_hash)") == 1
+
+  # Both features' own "value" registers must still each get their own
+  # execute call site, both consuming the single shared meta.current_iat
+  # the deduped dependency execution produced.
+  assert "meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);" in apply_code
+  assert "meta.flow_iat_mean_val = flow_iat_mean_action.execute(meta.flow_hash);" in apply_code
+  assert apply_code.count("meta.current_iat = ") == 1
+
+
+def test_mathunit_declaration_emitted_before_register_action(m2_mean_generated):
+  _, register_actions_code, _ = m2_mean_generated
+  mathunit_idx = register_actions_code.index(
+      "MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) flow_iat_mean_halve_unit;")
+  action_idx = register_actions_code.index(
+      "RegisterAction<bit<16>, bit<32>, bit<16>>(flow_iat_mean_reg) flow_iat_mean_action = {")
+  assert mathunit_idx < action_idx
+
+  # The MathUnit<> declaration is specific to "mathunit_ewma"-bodied
+  # registers -- must not leak in front of unrelated RegisterActions.
+  assert register_actions_code.count("MathUnit<bit<16>>(MathOp_t.MUL, 1, 2)") == 1
+
+
+def test_dedup_does_not_cross_contaminate_flow_and_fwd_namespaces(m2_mean_plus_fwd_generated):
+  # Flow_IAT_Max + Fwd_IAT_Max + Flow_IAT_Mean together: flow_last_arrival_time
+  # is shared (flow_iat_max + flow_iat_mean) and deduped to one execute call;
+  # fwd_last_arrival_time is a wholly separate, independently-touched
+  # register (only fwd_iat_max references it) -- confirming the dedup fix
+  # tracks *register names*, not e.g. a blanket "first dependency only" rule
+  # that would incorrectly also swallow fwd's independent dependency.
+  _, _, apply_code = m2_mean_plus_fwd_generated
+  assert apply_code.count("flow_last_arrival_time_action.execute(meta.flow_hash)") == 1
+  assert apply_code.count("fwd_last_arrival_time_action.execute(meta.flow_hash)") == 1
+  # Two distinct dependency registers (flow_*, fwd_*), each executed once =
+  # two meta.current_iat assignments total (not three, which is what the
+  # pre-fix double-execute bug would have produced).
+  assert apply_code.count("meta.current_iat = ") == 2
 
 
 # ---------------------------------------------------------------------------

@@ -70,12 +70,16 @@ into the apply block.
 
 Scope
 -----
-Only Milestone 1's 3 validated features (and their direct register
+Milestone 1's 3 validated features (and their direct register
 dependencies) are populated here: flow_iat_max, fwd_iat_max,
 fwd_packet_length_max -- the M1 DDoS-only feature set traced against
 p4/p4_code_RF_models.p4's apply block and validated by compiling
-p4/tofino_spike/tna_m1_flows_iat_spike.p4. Do not add entries for features
-not yet validated by a real p4c compile (mean/EWMA, bwd_*, other
+p4/tofino_spike/tna_m1_flows_iat_spike.p4. Milestone 2 adds one more
+validated feature, flow_iat_mean (the App task's mean/EWMA feature),
+traced against and validated by compiling
+p4/tofino_spike/tna_m2_mean_spike.p4 -- see that entry's own comment below
+for the dependency-sharing limitation it introduces. Do not add entries
+for features not yet validated by a real p4c compile (bwd_*, other
 candidates) -- resolving those is explicitly deferred to whichever later
 milestone needs them, not guessed up front.
 
@@ -132,5 +136,33 @@ FEATURE_REGISTER_CATALOG = {
             },
         ],
         "gated_by": "fwd",
+    },
+    # Deliberately lists "flow_last_arrival_time" as its dependency -- the
+    # SAME dependency register "flow_iat_max" (above) already declares.
+    # generate_P4_registers_and_apply() dedupes shared dependency registers
+    # so this is safe: whichever selected feature is resolved first
+    # .execute()s flow_last_arrival_time_reg once, and both features'
+    # "value" registers consume that single meta.current_iat result.
+    # Known limitation (not fixed here, flagged per M2-B1 brief point 4):
+    # if a future milestone ever selects "flow_iat_mean" WITHOUT
+    # "flow_iat_max" also selected, this dependency register would never
+    # get executed and meta.current_iat would silently hold garbage.
+    # M2's actual feature set always selects both, so this is not live yet.
+    "flow_iat_mean": {
+        "registers": [
+            {
+                "name": "flow_last_arrival_time",
+                "role": "dependency",
+                "width": 16,
+                "body": "iat_delta",
+            },
+            {
+                "name": "flow_iat_mean",
+                "role": "value",
+                "width": 16,
+                "body": "mathunit_ewma",
+            },
+        ],
+        "gated_by": None,
     },
 }
