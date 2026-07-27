@@ -537,6 +537,9 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
       # metadata field unconditionally, with no tree-keyed branch at all.
       classification_action_template_app += "\t\tmeta.class_tree_app_0 = class;\n"
     else:
+      # NOT VALIDATED against the real TNA compiler: this if/else-per-tree
+      # body is expected to fail the same way the num_trees==1 case did
+      # (rejected IR::Mux, see af64bc2) until it's redesigned for TNA.
       #Classification actions for traffic flow probem
       for i in range(num_trees_app):
         classification_action_template_app += "\t\tif (tree == "+str(i)+"){\n"
@@ -562,6 +565,9 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
       # backend rejects that Mux unconditionally.
       classification_action_template_ddos += "\t\tmeta.class_tree_ddos_0 = class;\n"
     else:
+      # NOT VALIDATED against the real TNA compiler: same caveat as the
+      # num_trees_app branch above -- expected to be rejected as an
+      # IR::Mux (see af64bc2) until redesigned for a future >1-tree TNA build.
       for i in range(num_trees_ddos):
         classification_action_template_ddos += "\t\tif (tree == "+str(i)+"){\n"
         classification_action_template_ddos += "\t\t\tmeta.class_tree_ddos_"+str(i)+" = class;\n"
