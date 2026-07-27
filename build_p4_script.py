@@ -18,6 +18,7 @@ OUTPUT_PATH = "p4/"
 PATH_TABLE_ENTRIES_OUTPUT = OUTPUT_PATH + "table_entries.json"
 PATH_TABLE_TEMPLATE_P4  = PATH + 'table.p4'
 PATH_ACTION_TEMPLATE_P4 = PATH + 'action.p4'
+PATH_TABLE_CLASSIFICATION_TEMPLATE_P4 = PATH + 'table_classification.p4'
 PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
 
 
@@ -469,8 +470,19 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
           table_entry["action"] = "classify_flow_codeword_ddos"
           table_entry["action_params"] = [str(tree_idx-offset), str(int(float((codewords[tree][codeword]))))]
 
-      ternary_match = get_ternary_match(codeword)
-      table_entry["key"] = [ternary_match]
+      # Tier 3: the classification table's key is one ternary field per
+      # selected feature, not one combined codeword field. Slice the
+      # combined codeword string into per-feature chunks, in the same
+      # feature_intervals order generate_codewords used to build it, and
+      # compute a ternary match for each chunk separately.
+      key = []
+      bit_offset = 0
+      for feature_name in feature_intervals:
+        width = feature_code_length[feature_name]
+        chunk = codeword[bit_offset:bit_offset+width]
+        key.append(get_ternary_match(chunk))
+        bit_offset += width
+      table_entry["key"] = key
       table_entries.append(table_entry)
 
 
@@ -487,10 +499,10 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
 
 
 
-def generate_P4_actions(feature_intervals, codeword_length, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):
+def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):
   """
       action <ACTION_NAME> (bit<<ACTION_CODE_LENGTH>> code) {
-          meta.codeword[<END_BIT>:<INIT_BIT>] = code;
+          meta.code_<FEATURE_NAME> = code;
       }
   """
 
@@ -505,40 +517,42 @@ def generate_P4_actions(feature_intervals, codeword_length, num_trees_app, num_t
 
 
   action_templates = "" #Stores P4 actions
-  current_code_bit = codeword_length - 1
 
   #Classification action templates
-  bit_per_num_trees_app = math.ceil(math.log2(num_trees_app))
-  if bit_per_num_trees_app == 0:
-    bit_per_num_trees_app = 1
+  if num_trees_app > 0:
+    bit_per_num_trees_app = math.ceil(math.log2(num_trees_app))
+    if bit_per_num_trees_app == 0:
+      bit_per_num_trees_app = 1
 
-  bit_per_num_trees_ddos = math.ceil(math.log2(num_trees_ddos))
-  if bit_per_num_trees_ddos == 0:
-    bit_per_num_trees_ddos = 1
+    classification_action_template_app = "\taction classify_flow_codeword_app(bit<"+str(bit_per_num_trees_app)+"> tree, bit<"+str(bit_per_classes_app)+"> class){\n"
 
-  classification_action_template_app = "\taction classify_flow_codeword_app(bit<"+str(bit_per_classes_app)+"> tree, bit<"+str(bit_per_classes_app)+"> class){\n"
-  classification_action_template_ddos = "\taction classify_flow_codeword_ddos(bit<"+str(bit_per_num_trees_ddos)+"> tree, bit<"+str(bit_per_classes_ddos)+"> class){\n"
+    #Classification actions for traffic flow probem
+    for i in range(num_trees_app):
+      classification_action_template_app += "\t\tif (tree == "+str(i)+"){\n"
+      classification_action_template_app += "\t\t\tmeta.class_tree_app_"+str(i)+" = class;\n"
+      classification_action_template_app += "\t\t}\n"
 
-  #Classification actions for traffic flow probem
-  for i in range(num_trees_app):
-    classification_action_template_app += "\t\tif (tree == "+str(i)+"){\n"
-    classification_action_template_app += "\t\t\tmeta.class_tree_app_"+str(i)+" = class;\n"
-    classification_action_template_app += "\t\t}\n"
+    classification_action_template_app += "\t}\n"
 
-  classification_action_template_app += "\t}\n"
-
-  action_templates += classification_action_template_app
-  action_templates += "\n"
+    action_templates += classification_action_template_app
+    action_templates += "\n"
 
   #Classification actions for DDOS detection problem
-  for i in range(num_trees_ddos):
-    classification_action_template_ddos += "\t\tif (tree == "+str(i)+"){\n"
-    classification_action_template_ddos += "\t\t\tmeta.class_tree_ddos_"+str(i)+" = class;\n"
-    classification_action_template_ddos += "\t\t}\n"
+  if num_trees_ddos > 0:
+    bit_per_num_trees_ddos = math.ceil(math.log2(num_trees_ddos))
+    if bit_per_num_trees_ddos == 0:
+      bit_per_num_trees_ddos = 1
 
-  classification_action_template_ddos += "\t}\n"
+    classification_action_template_ddos = "\taction classify_flow_codeword_ddos(bit<"+str(bit_per_num_trees_ddos)+"> tree, bit<"+str(bit_per_classes_ddos)+"> class){\n"
 
-  action_templates += classification_action_template_ddos
+    for i in range(num_trees_ddos):
+      classification_action_template_ddos += "\t\tif (tree == "+str(i)+"){\n"
+      classification_action_template_ddos += "\t\t\tmeta.class_tree_ddos_"+str(i)+" = class;\n"
+      classification_action_template_ddos += "\t\t}\n"
+
+    classification_action_template_ddos += "\t}\n"
+
+    action_templates += classification_action_template_ddos
 
 
   for feature in feature_names:
@@ -547,11 +561,8 @@ def generate_P4_actions(feature_intervals, codeword_length, num_trees_app, num_t
         action_template = action_template_file.read()
         action_template = action_template.replace("<ACTION_NAME>","set_code_"+feature.replace(" ","_").lower())
         action_template = action_template.replace("<ACTION_CODE_LENGTH>", str(codeword_bits_per_feature[feature]))
-        action_template = action_template.replace("<END_BIT>", str(current_code_bit))
-        action_template = action_template.replace("<INIT_BIT>", str(current_code_bit-codeword_bits_per_feature[feature]+1))
+        action_template = action_template.replace("<FEATURE_NAME>", feature.replace(" ","_").lower())
         action_templates += action_template
-
-      current_code_bit -= codeword_bits_per_feature[feature]
     except:
       pass
 
@@ -570,7 +581,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
           size = <SIZE>;
       }
   """
-  
+
   SIZE_FEATURE_TABLE = 200
   SIZE_CLASSIFICATION_TABLE = 400
 
@@ -578,29 +589,38 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
   apply_templates_tmp = "\n"
   apply_templates = ""
 
-  #Classification tables
-  for i in range(num_trees_app):
-    with open(PATH_TABLE_TEMPLATE_P4, 'r') as table_template_file:
-      table_template = table_template_file.read()
-      table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_app_"+str(i))
-      table_template = table_template.replace("<FEATURE_NAME>", "codeword")
-      table_template = table_template.replace("<MATCH_TYPE>", "ternary")
-      table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_app;")
-      table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
-    table_templates += table_template
-    apply_templates_tmp += "\t\t\tget_classification_tree_app_"+str(i)+".apply();\n"
-  apply_templates_tmp += "\n"
+  feature_names = list(feature_names)
 
-  for i in range(num_trees_ddos):
-    with open(PATH_TABLE_TEMPLATE_P4, 'r') as table_template_file:
-      table_template = table_template_file.read()
-      table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_ddos_"+str(i))
-      table_template = table_template.replace("<FEATURE_NAME>", "codeword")
-      table_template = table_template.replace("<MATCH_TYPE>", "ternary")
-      table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_ddos;")
-      table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
-    table_templates += table_template
-    apply_templates_tmp += "\t\t\tget_classification_tree_ddos_"+str(i)+".apply();\n"
+  # Tier 3: the classification tables key on one ternary field per selected
+  # feature (meta.code_<feature>), not a single combined meta.codeword field.
+  classification_keys = "\n".join(
+      "            meta.code_"+feature.replace(" ","_").lower()+" : ternary;"
+      for feature in feature_names
+  )
+
+  #Classification tables
+  if num_trees_app > 0:
+    for i in range(num_trees_app):
+      with open(PATH_TABLE_CLASSIFICATION_TEMPLATE_P4, 'r') as table_template_file:
+        table_template = table_template_file.read()
+        table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_app_"+str(i))
+        table_template = table_template.replace("<KEYS>", classification_keys)
+        table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_app;")
+        table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
+      table_templates += table_template
+      apply_templates_tmp += "\t\t\tget_classification_tree_app_"+str(i)+".apply();\n"
+    apply_templates_tmp += "\n"
+
+  if num_trees_ddos > 0:
+    for i in range(num_trees_ddos):
+      with open(PATH_TABLE_CLASSIFICATION_TEMPLATE_P4, 'r') as table_template_file:
+        table_template = table_template_file.read()
+        table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_ddos_"+str(i))
+        table_template = table_template.replace("<KEYS>", classification_keys)
+        table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_ddos;")
+        table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
+      table_templates += table_template
+      apply_templates_tmp += "\t\t\tget_classification_tree_ddos_"+str(i)+".apply();\n"
 
 
   feature_idx = 0
@@ -608,7 +628,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
     with open(PATH_TABLE_TEMPLATE_P4, 'r') as table_template_file:
       table_template = table_template_file.read()
       table_template = table_template.replace("<TABLE_NAME>","table_"+str(feature_idx)+"_"+feature.replace(" ","_").lower())
-      table_template = table_template.replace("<FEATURE_NAME>", feature.replace(" ","_").lower())
+      table_template = table_template.replace("<FEATURE_NAME>", feature.replace(" ","_").lower()+"_val")
       table_template = table_template.replace("<MATCH_TYPE>", "range")
       table_template = table_template.replace("<ACTIONS>", str("set_code_"+feature.replace(" ","_").lower())+";")
       table_template = table_template.replace("<SIZE>", str(SIZE_FEATURE_TABLE))
@@ -642,45 +662,70 @@ def generate_voting_code(num_trees, num_classes, task):
   return temp_str
 
 
-def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, codeword_length, feature_intervals):
+def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_intervals):
 
-  # generate the definition of the bit containers that contain decisions of each tree
-  bit_per_classes_app = math.ceil(math.log2(num_class_app))
-  bit_per_classes_ddos = math.ceil(math.log2(num_class_ddos))
+  # clf_app/clf_ddos may be None -- meaning "no task at all" (e.g. M1 is
+  # DDoS-only: clf_app is None, clf_ddos is a trained model).
+  num_trees_app = len(clf_app.estimators_) if clf_app is not None else 0
+  num_trees_ddos = len(clf_ddos.estimators_) if clf_ddos is not None else 0
 
-  num_trees_app = len(clf_app.estimators_)
-  num_trees_ddos = len(clf_ddos.estimators_)
+  # generate the definition of the bit containers that contain decisions of
+  # each tree -- only meaningful (and only computed) when the corresponding
+  # task actually has trees, so a missing task's num_class_* is never
+  # consulted and never raises on log2(0)/log2(1 task with 1 class), etc.
+  bit_per_classes_app = math.ceil(math.log2(num_class_app)) if num_trees_app > 0 else 0
+  bit_per_classes_ddos = math.ceil(math.log2(num_class_ddos)) if num_trees_ddos > 0 else 0
 
   metadata_code = ""
-  for i in range(num_trees_app):
-    metadata_code += "\tbit<"+str(bit_per_classes_app)+"> class_tree_app_"+str(i)+";\n"
-    metadata_code += "\tbit<1> class_tree_app_"+str(i)+"_is_set;\n"
+  if num_trees_app > 0:
+    for i in range(num_trees_app):
+      metadata_code += "\tbit<"+str(bit_per_classes_app)+"> class_tree_app_"+str(i)+";\n"
+      metadata_code += "\tbit<1> class_tree_app_"+str(i)+"_is_set;\n"
+    # generate_voting_code (below) writes to meta.classification_app; the
+    # TNA template no longer declares this field itself (it doesn't know
+    # bit_per_classes_app ahead of time), so it must be declared here.
+    metadata_code += "\tbit<"+str(bit_per_classes_app)+"> classification_app;\n"
 
-  for i in range(num_trees_ddos):
-    metadata_code += "\tbit<"+str(bit_per_classes_ddos)+"> class_tree_ddos_"+str(i)+";\n"
-    metadata_code += "\tbit<1> class_tree_ddos_"+str(i)+"_is_set;\n"
+  if num_trees_ddos > 0:
+    for i in range(num_trees_ddos):
+      metadata_code += "\tbit<"+str(bit_per_classes_ddos)+"> class_tree_ddos_"+str(i)+";\n"
+      metadata_code += "\tbit<1> class_tree_ddos_"+str(i)+"_is_set;\n"
+    metadata_code += "\tbit<"+str(bit_per_classes_ddos)+"> classification_ddos;\n"
 
-  metadata_code += "\tbit<"+str(codeword_length)+"> codeword;\n"
+  # Tier 3: every selected feature gets its own tracked-value field and its
+  # own codeword field, instead of all features sharing bit-slices of one
+  # combined meta.codeword field.
+  for feature in feature_intervals:
+    feature_id = feature.replace(" ","_").lower()
+    codeword_width = len(feature_intervals[feature]) - 1
+    metadata_code += "\tbit<16> "+feature_id+"_val;\n"
+    metadata_code += "\tbit<"+str(codeword_width)+"> code_"+feature_id+";\n"
 
+  registers_code, register_actions_code, feature_update_apply_code = generate_P4_registers_and_apply(feature_intervals)
 
-  action_templates = ""
-  table_templates = ""
-  apply_templates = ""
-
-  action_templates = generate_P4_actions(feature_intervals, codeword_length, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos)
+  action_templates = generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos)
   table_templates, apply_templates = generate_P4_tables_and_apply(feature_intervals.keys(), num_trees_app, num_trees_ddos)
 
-  # generate code to vote between the trees
-  classification_templates = generate_voting_code(num_trees_app, 3, "app")
-  classification_templates += "\n"
-  classification_templates += generate_voting_code(num_trees_ddos, 2, "ddos")
+  # generate code to vote between the trees -- only for tasks that actually
+  # have trees (generate_voting_code(0, ...) would crash: product(..., repeat=0)
+  # yields one empty tuple, and mode(()) raises StatisticsError).
+  classification_templates = ""
+  if num_trees_app > 0:
+    classification_templates += generate_voting_code(num_trees_app, num_class_app, "app")
+  if num_trees_ddos > 0:
+    if num_trees_app > 0:
+      classification_templates += "\n"
+    classification_templates += generate_voting_code(num_trees_ddos, num_class_ddos, "ddos")
 
   # substitute the code in the template
   with open(PATH_P4_CODE_TEMPLATE_INPUT, 'r') as switch_template_file:
     switch_template = switch_template_file.read()
     switch_template = switch_template.replace('/* METADATA */', metadata_code)
+    switch_template = switch_template.replace('/* REGISTERS */', registers_code)
+    switch_template = switch_template.replace('/* REGISTER_ACTIONS */', register_actions_code)
     switch_template = switch_template.replace('/* ACTIONS */', action_templates)
     switch_template = switch_template.replace('/* TABLES */', table_templates)
+    switch_template = switch_template.replace('/* FEATURE_UPDATE_APPLY */', feature_update_apply_code)
     switch_template = switch_template.replace('/* APPLY */', apply_templates)
     switch_template = switch_template.replace('/* CLASSIFICATION */', classification_templates)
 
