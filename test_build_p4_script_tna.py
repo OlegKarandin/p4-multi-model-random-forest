@@ -409,6 +409,23 @@ def test_generate_voting_code_emits_table_not_if_cascade():
   assert apply_call.strip() == "vote_app.apply();"
 
 
+def test_generate_voting_code_table_size_scales_with_entry_count():
+  # Final-review fix: table size used to be hardcoded to 32, which would
+  # silently undersize the table once num_classes ** num_trees exceeds 32
+  # (e.g. 5 trees x 3 classes = 243 entries). size must now scale as
+  # max(32, num_classes ** num_trees).
+
+  # Already-validated 3-tree/3-class config: 27 < 32, floor still applies,
+  # so this must NOT change output for this config.
+  table_decl_small, _ = bps.generate_voting_code(3, 3, "app")
+  assert "size = 32;" in table_decl_small
+
+  # 5 trees x 3 classes = 243 > 32: size must scale up.
+  table_decl_large, _ = bps.generate_voting_code(5, 3, "app")
+  assert "size = 243;" in table_decl_large
+  assert "size = 32;" not in table_decl_large
+
+
 def test_generate_voting_code_voting_decisions_match_statistics_mode_for_all_combos():
   num_trees, num_classes = 3, 3
   table_decl, _apply_call = bps.generate_voting_code(num_trees, num_classes, "app")

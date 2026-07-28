@@ -657,6 +657,12 @@ def generate_voting_code(num_trees, num_classes, task):
   behavior change).
   """
   bit_per_classes = math.ceil(math.log2(num_classes)) or 1
+  # Table emits exactly num_classes ** num_trees const entries (see the
+  # product() loop below); size must scale with that, with 32 as a floor
+  # matching the two configs validated this session (3-tree/3-class = 27,
+  # 1-tree/2-class = 2) so this fix doesn't shrink the table for a
+  # degenerate config and doesn't change output for the already-tested ones.
+  size = max(32, num_classes ** num_trees)
 
   key_lines = "\n".join(
       "\t\t\tmeta.class_tree_{}_{} : exact;".format(task, i)
@@ -684,12 +690,12 @@ def generate_voting_code(num_trees, num_classes, task):
       "\t\tactions = {{\n"
       "\t\t\tset_classification_{task};\n"
       "\t\t}}\n"
-      "\t\tsize = 32;\n"
+      "\t\tsize = {size};\n"
       "\t\tconst entries = {{\n"
       "{entries}\n"
       "\t\t}}\n"
       "\t}}\n"
-  ).format(task=task, bits=bit_per_classes, keys=key_lines, entries=entries_block)
+  ).format(task=task, bits=bit_per_classes, keys=key_lines, entries=entries_block, size=size)
 
   apply_call = "\t\t\tvote_{}.apply();\n".format(task)
 
@@ -979,7 +985,12 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   require more than MAX_REGISTER_TOUCHES distinct, real (deduplicated)
   RegisterAction `.execute()` call sites against any single register --
   i.e. the same count described above, not a raw per-feature-reference
-  tally.
+  tally. Under the current catalog, every resolved register gets exactly
+  one such call site (see _note_touch below), so this guard is presently
+  dormant -- it cannot actually fire against any real catalog configuration
+  today -- but it is retained as a general safety net for any future
+  register (catalog-driven or hardcoded) that might legitimately need more
+  than one touch.
   """
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
@@ -1005,12 +1016,18 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     # pair. `register_info` already tracks "have we seen this register
     # name before" for register_order/declarations; reuse that same
     # first-seen signal here: the first time a register name is noted, it
-    # gets its real touch count (`count`, e.g. 2 for the hardcoded `flows`
-    # baseline, 1 for every catalog-driven register); every later call for
-    # an already-seen name (e.g. a second feature that also lists the same
+    # gets its real touch count (`count`); every later call for an
+    # already-seen name (e.g. a second feature that also lists the same
     # dependency register) adds nothing, because _execute_lines will reuse
     # that first call's already-produced value rather than emitting another
-    # .execute() line for it.
+    # .execute() line for it. Every current call site below passes the
+    # default count=1 -- the old hardcoded `flows` register's count=2 call
+    # site was removed along with that register -- so register_touch_count
+    # is currently always exactly 1 per register and the guard just below
+    # can't fire under any real catalog configuration today. The `count`
+    # parameter and the guard are kept anyway as a general mechanism: a
+    # future catalog entry, or a future fixed/hardcoded register, could
+    # still legitimately need more than 1 real touch.
     if name not in register_info:
       register_order.append(name)
       register_info[name] = {"width": width, "body": body}
