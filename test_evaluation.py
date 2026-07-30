@@ -138,3 +138,27 @@ def test_ternary_matching_resource_usage_returns_codeword_length():
     codewords = _codewords_of_length(41)
     entries, blocks, length = ev.ternary_matching_resource_usage(codewords)
     assert length == 41
+
+
+import inspect
+from pathlib import Path
+
+
+def test_main_py_threshold_is_16_bit():
+    source_file = Path(__file__).parent / "main.py"
+    with open(source_file) as f:
+        source = f.read()
+    assert "threshold = (2 ** 16) - 2" in source
+    assert "(2 ** 19) - 2" not in source
+
+
+def test_build_p4_script_infinite_is_16_bit_sentinel():
+    assert bps.INFINITE == (2 ** 16) - 1
+
+
+def test_dataset_py_clips_outliers_to_threshold_not_hardcoded_19bit_value():
+    source_file = Path(__file__).parent / "dataset.py"
+    with open(source_file) as f:
+        source = f.read()
+    assert "(2**19)-2" not in source.replace(" ", "")
+    assert source.count("threshold if x > threshold else x") == 2

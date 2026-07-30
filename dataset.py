@@ -318,7 +318,7 @@ def load_dataset(path, filename, threshold=None, verbose=False):
 			print("DDOS, percentage of upperbounded data point: ", round(ot*100/total_ddos, 2))
 			print()
 
-			balanced_df = balanced_df.map(lambda x: (2**19)-2 if x > threshold else x)
+			balanced_df = balanced_df.map(lambda x: threshold if x > threshold else x)
 
 		return balanced_df
 
@@ -348,7 +348,7 @@ def load_dataset(path, filename, threshold=None, verbose=False):
 			print("App, percentage of upperbounded data point: ", round(ot*100/total_app, 2))
 			print()
 
-			cicids2017_df = cicids2017_df.map(lambda x: (2**19)-2 if x > threshold else x)
+			cicids2017_df = cicids2017_df.map(lambda x: threshold if x > threshold else x)
 
 		return cicids2017_df
 

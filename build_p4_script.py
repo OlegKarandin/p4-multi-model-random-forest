@@ -8,7 +8,7 @@ from statistics import mode
 
 from feature_registers import FEATURE_REGISTER_CATALOG
 
-INFINITE = (2**19)-1
+INFINITE = (2**16)-1
 MAX_CODEWORD_LENGTH = 512
 TCAM_BLOCKS_PER_STAGE = 24
 TCAM_BLOCK_KEY_LENGTH = 44

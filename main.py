@@ -23,7 +23,7 @@ def implement_tree_models_in_P4():
     num_features = 3
 
     datasets_path = "resources/"
-    threshold = (2 ** 19) - 2
+    threshold = (2 ** 16) - 2
     df_app = load_dataset(datasets_path, 'apps_flow_features.csv', threshold)
     df_ddos = load_dataset(datasets_path, 'Wednesday-workingHours.pcap_ISCX.csv', threshold)
 
