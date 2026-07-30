@@ -69,3 +69,35 @@ def test_range_matching_entries_per_block_constant_removed():
     # directly. Confirms it was actually removed rather than left as
     # dead code.
     assert not hasattr(bps, "RANGE_MATCHING_ENTRIES_PER_BLOCK")
+
+
+def _codewords_of_length(width, n_entries=1):
+    codeword = "0" * width
+    return {0: {codeword: 0}}
+
+
+def test_ternary_matching_resource_usage_off_by_one_at_41_bits():
+    # RM-3 Design A: every ternary key reports width+4 TCAM bits
+    # requested. At 41 bits, the missing +4 previously under-counted by
+    # exactly one block: ceil(41/44)=1 (buggy) vs ceil(45/44)=2 (correct).
+    codewords = _codewords_of_length(41)
+    entries, blocks = ev.ternary_matching_resource_usage(codewords)
+    assert entries == 1
+    assert blocks == 2
+
+
+def test_ternary_matching_resource_usage_off_by_one_at_88_bits():
+    # Same off-by-one, reconfirmed at 88 bits: ceil(88/44)=2 (buggy) vs
+    # ceil(92/44)=3 (correct).
+    codewords = _codewords_of_length(88)
+    _, blocks = ev.ternary_matching_resource_usage(codewords)
+    assert blocks == 3
+
+
+def test_ternary_matching_resource_usage_unaffected_at_168_bits():
+    # RM-3 Design A also found widths where +4 doesn't change the block
+    # count: 168 bits needs ceil(168/44)=4 and ceil(172/44)=4 either way
+    # -- confirms the fix doesn't regress widths where it shouldn't matter.
+    codewords = _codewords_of_length(168)
+    _, blocks = ev.ternary_matching_resource_usage(codewords)
+    assert blocks == 4

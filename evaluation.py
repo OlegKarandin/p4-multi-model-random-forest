@@ -91,8 +91,8 @@ def ternary_matching_resource_usage(codewords):
 
   if codeword_length > MAX_CODEWORD_LENGTH:
     raise RuntimeError("Codewords are too long", codeword_length)
-  
-  factor = math.ceil(codeword_length / TCAM_BLOCK_KEY_LENGTH)
+
+  factor = math.ceil((codeword_length + 4) / TCAM_BLOCK_KEY_LENGTH)
   for tree in codewords:
     ternary_entries += len(codewords[tree])
     ternary_blocks += math.ceil(len(codewords[tree]) / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor
