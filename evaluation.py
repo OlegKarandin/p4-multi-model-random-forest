@@ -99,7 +99,31 @@ def ternary_matching_resource_usage(codewords):
 
     #print('{} TCAM entries for {} codewords of length {}'.format(math.ceil(len(codewords[tree]) / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor, len(codewords[tree]), codeword_length))
 
-  return ternary_entries, ternary_blocks
+  return ternary_entries, ternary_blocks, codeword_length
+
+
+def ternary_crossbar_stages_needed(table_byte_widths):
+  """Packs independent ternary classification tables (one per tree, per
+  build_p4_script.py's generate_P4_tables_and_apply) into pipeline stages
+  under the Ternary Match Input crossbar's two per-stage limits, confirmed
+  by RM-5/RM-6/RM-7 (reviews/t12_required_changes.md Section 1.3) across
+  key widths 8-512 bits: at most TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
+  independent tables per stage, and at most TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+  total key bytes per stage -- whichever binds first. Uses first-fit-decreasing
+  bin packing so tables of different widths (app vs. ddos trees, under
+  disjoint encoding) can share a stage."""
+  stages = []  # each entry: [bytes_used, tables_used]
+  for width in sorted(table_byte_widths, reverse=True):
+    for stage in stages:
+      if (stage[1] + 1 <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE and
+          stage[0] + width <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE):
+        stage[0] += width
+        stage[1] += 1
+        break
+    else:
+      stages.append([width, 1])
+
+  return len(stages)
 
 
 def single_model_memory_evaluation(clf, selected_features):
@@ -115,9 +139,9 @@ def single_model_memory_evaluation(clf, selected_features):
   
   paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
   codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
-  ternary_entries, ternary_blocks = ternary_matching_resource_usage(codewords)
-  
-  return (range_entries, range_blocks, ternary_entries, ternary_blocks)
+  ternary_entries, ternary_blocks, codeword_length = ternary_matching_resource_usage(codewords)
+
+  return (range_entries, range_blocks, ternary_entries, ternary_blocks, codewords, codeword_length)
 
 
 def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding):
@@ -141,12 +165,14 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
 
     paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
     codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
-    ternary_entries, ternary_blocks = ternary_matching_resource_usage(codewords)
+    ternary_entries, ternary_blocks, codeword_length = ternary_matching_resource_usage(codewords)
+
+    table_byte_widths = [math.ceil(codeword_length / 8)] * len(codewords)
 
   elif encoding == 'disjoint':
 
-    range_entries_app, range_blocks_app, ternary_entries_app, ternary_blocks_app = single_model_memory_evaluation(clf_app, selected_features_app)
-    range_entries_ddos, range_blocks_ddos, ternary_entries_ddos, ternary_blocks_ddos = single_model_memory_evaluation(clf_ddos, selected_features_ddos)
+    range_entries_app, range_blocks_app, ternary_entries_app, ternary_blocks_app, codewords_app, codeword_length_app = single_model_memory_evaluation(clf_app, selected_features_app)
+    range_entries_ddos, range_blocks_ddos, ternary_entries_ddos, ternary_blocks_ddos, codewords_ddos, codeword_length_ddos = single_model_memory_evaluation(clf_ddos, selected_features_ddos)
 
     range_blocks = range_blocks_app + range_blocks_ddos
     range_entries = range_entries_app + range_entries_ddos
@@ -155,7 +181,15 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
     ternary_blocks = ternary_blocks_app + ternary_blocks_ddos
     ternary_entries = ternary_entries_app + ternary_entries_ddos
 
+    table_byte_widths = (
+        [math.ceil(codeword_length_app / 8)] * len(codewords_app) +
+        [math.ceil(codeword_length_ddos / 8)] * len(codewords_ddos)
+    )
+
   range_stages = math.ceil(range_blocks / TCAM_BLOCKS_PER_STAGE)
-  ternary_stages = math.ceil(ternary_blocks / TCAM_BLOCKS_PER_STAGE)
+  ternary_stages = max(
+      math.ceil(ternary_blocks / TCAM_BLOCKS_PER_STAGE),
+      ternary_crossbar_stages_needed(table_byte_widths),
+  )
 
   return range_stages + ternary_stages, range_blocks + ternary_blocks
