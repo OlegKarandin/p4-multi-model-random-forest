@@ -20,23 +20,66 @@ def accuracy_metrics(y_true, y_pred, task):
     return accuracy, f1score
 
 
+def range_entry_count(lo, hi, nibble_widths=(4, 4, 4, 4)):
+  """Exact port of expand_range() (bf-drivers/src/pipe_mgr/pipe_mgr_entry_format.c,
+  the real Tofino P4 driver source) -- computes the true number of physical
+  TCAM rows the control plane needs to install a single range key [lo, hi],
+  decomposed into consecutive 4-bit nibble segments (LSB-first). Verified by
+  hand-trace against reviews/cited_papers/tofino_results_2.odt.pdf slide 11's
+  worked example ([10,300] on 16 bits -> exactly 4 entries, matching the
+  slide's exact sub-range boundaries, not just the count)."""
+  n = len(nibble_widths)
+  start_vals, end_vals = [], []
+  shift = 0
+  for w in nibble_widths:
+    start_vals.append(1 << shift)
+    end_vals.append((1 << (w + shift)) - 1)
+    shift += w
+
+  if hi < lo:
+    raise ValueError("hi < lo")
+
+  range_start, end, count = lo, hi, 0
+  while True:
+    if range_start == 0:
+      start_nibble = n - 1
+    else:
+      zeroes = (range_start & -range_start).bit_length() - 1
+      cum, start_nibble = 0, n - 1
+      for j in range(n):
+        cum += nibble_widths[j]
+        if cum > zeroes:
+          start_nibble = j
+          break
+
+    range_end = None
+    for i in range(start_nibble + 1, 0, -1):
+      candidate = range_start | end_vals[i - 1]
+      while (candidate >= range_start and candidate > end and
+             candidate >= start_vals[i - 1]):
+        candidate -= start_vals[i - 1]
+      if candidate >= range_start and candidate <= end:
+        range_end = candidate
+        break
+
+    count += 1
+    range_start = range_end + 1
+    if range_end >= end:
+      break
+
+  return count
+
+
 def range_matching_resource_usage(feature_intervals):
   range_entries, range_blocks = 0, 0
 
   for feature in feature_intervals:
-    range_entries_feature = 0
+    total_rows = 0
+    for lo, hi in feature_intervals[feature]:
+      total_rows += range_entry_count(lo, hi)
 
-    for interv in feature_intervals[feature]:
-      width = interv[1] - interv[0] + 1
-
-      if width > 1:
-        range_entries_feature += 2 * math.floor(math.log2(width))
-        #print('{} TCAM entries for range {}-{}'.format(2 * math.floor(math.log2(width)), interv[0], interv[1]))
-      else:
-        range_entries_feature += 1
-
-    range_entries += range_entries_feature
-    range_blocks += math.ceil(range_entries_feature / RANGE_MATCHING_ENTRIES_PER_BLOCK)
+    range_entries += len(feature_intervals[feature])
+    range_blocks += math.ceil(total_rows / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
 
   return range_entries, range_blocks
   
