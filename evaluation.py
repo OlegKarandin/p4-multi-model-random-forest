@@ -181,9 +181,16 @@ def crossbar_stages_needed(table_specs):
   table_specs is one (block_count, byte_width) pair per independent P4
   table -- one per tree for the ternary classification tables
   (build_p4_script.py:636-659), one per feature for the range-matching
-  tables (build_p4_script.py:663-674). Both pools go through the same kind
-  of match input crossbar, so both use this one packer (they are packed
-  separately, since they are physically distinct table pools).
+  tables (build_p4_script.py:663-674). RM-5/RM-6/RM-7 measured these limits
+  on the Ternary Match Input crossbar specifically; applying the same
+  model to range-matching tables is an unmeasured extrapolation by
+  analogy, not a separately confirmed finding -- but it is the
+  conservative direction (it can only raise range_stages, never lower it),
+  consistent with never under-counting. Both pools are packed separately
+  with this one function, since they are physically distinct table pools.
+  Range tables may also have their own, still-unmodelled per-stage limit
+  (distinct from this crossbar analogy) -- a residual gap, not something
+  this function claims to close.
 
   Every stage must satisfy at once:
     * <= TCAM_BLOCKS_PER_STAGE                 TCAM blocks
