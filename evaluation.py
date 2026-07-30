@@ -1,15 +1,89 @@
 import math
+import sklearn.metrics as mt
 from build_p4_script import *
 
-def memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding):
+def accuracy_metrics(y_true, y_pred, task):
 
-  #P4 encoding
+    if task == 'app':
+        lab = [0, 1, 2]
+        av = 'weighted'
+
+    elif task == 'ddos':
+        lab = [-1, 1]
+        av = 'weighted'
+
+    accuracy = mt.accuracy_score(y_true, y_pred)
+    #precision = mt.precision_score(y_true, y_pred, labels=lab, average=av) #F: average=None gives per-class results
+    #recall = mt.recall_score(y_true, y_pred, labels=lab, average=av)
+    f1score = mt.f1_score(y_true, y_pred, labels=lab, average=av)
+
+    return accuracy, f1score
+
+
+def range_matching_resource_usage(feature_intervals):
+  range_entries, range_blocks = 0, 0
+
+  for feature in feature_intervals:
+    range_entries_feature = 0
+
+    for interv in feature_intervals[feature]:
+      width = interv[1] - interv[0] + 1
+
+      if width > 1:
+        range_entries_feature += 2 * math.floor(math.log2(width))
+        #print('{} TCAM entries for range {}-{}'.format(2 * math.floor(math.log2(width)), interv[0], interv[1]))
+      else:
+        range_entries_feature += 1
+
+    range_entries += range_entries_feature
+    range_blocks += math.ceil(range_entries_feature / RANGE_MATCHING_ENTRIES_PER_BLOCK)
+
+  return range_entries, range_blocks
+  
+
+def ternary_matching_resource_usage(codewords):
+
+  ternary_entries, ternary_blocks = 0, 0
+  codeword_length = len(next(iter(codewords[0].items()))[0])
+
+  if codeword_length > MAX_CODEWORD_LENGTH:
+    raise RuntimeError("Codewords are too long", codeword_length)
+  
+  factor = math.ceil(codeword_length / TCAM_BLOCK_KEY_LENGTH)
+  for tree in codewords:
+    ternary_entries += len(codewords[tree])
+    ternary_blocks += math.ceil(len(codewords[tree]) / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor
+
+    #print('{} TCAM entries for {} codewords of length {}'.format(math.ceil(len(codewords[tree]) / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor, len(codewords[tree]), codeword_length))
+
+  return ternary_entries, ternary_blocks
+
+
+def single_model_memory_evaluation(clf, selected_features):
+  trees = get_tree_textual_representation(clf, selected_features)
+
+  tree_nodes = {}
+  for tree in trees:
+    tree_nodes[tree] = get_nodes(trees[tree])
+
+  feature_thresholds = get_feature_thresholds(tree_nodes)
+  feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
+  range_entries, range_blocks = range_matching_resource_usage(feature_intervals)
+  
+  paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
+  codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
+  ternary_entries, ternary_blocks = ternary_matching_resource_usage(codewords)
+  
+  return (range_entries, range_blocks, ternary_entries, ternary_blocks)
+
+
+def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding):
+
   if encoding == 'joint':
     trees_app = get_tree_textual_representation(clf_app, selected_features_app)
     trees_ddos = get_tree_textual_representation(clf_ddos, selected_features_ddos)
 
     tree_nodes = {}
-
     for tree_app in trees_app:
       tree_nodes[tree_app] = get_nodes(trees_app[tree_app])
 
@@ -18,139 +92,27 @@ def memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_feature
     for tree_ddos in trees_ddos:
       tree_nodes[tree_ddos+offset] = get_nodes(trees_ddos[tree_ddos])
 
-    feature_splits = get_feature_splits(tree_nodes)
+    feature_thresholds = get_feature_thresholds(tree_nodes)
+    feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
+    range_entries, range_blocks = range_matching_resource_usage(feature_intervals)
+
     paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
-    feature_intervals = get_feature_intervals(feature_splits)
     codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
-
-
-    #Range-matching tables computation
-    total_range_entries = 0
-    total_range_TCAM_blocks = 0
-    for key in feature_intervals:
-      total_range_entries_block = 0
-      for interv in feature_intervals[key]:
-        total_range_entries+=1
-        if interv[1]!='infinite':
-          width = interv[1]-interv[0]
-        else:
-          width= (2**19)-1-interv[0]
-        if width>1:
-          total_range_entries_block+= 2*math.floor(math.log2(width))
-        else:
-          total_range_entries_block+= 2*1
-      total_range_TCAM_blocks+= math.ceil(total_range_entries_block/207)
-
-
-
-    #Ternary-matching tables computation
-    total_ternary_blocks = 0
-    total_ternary_entries = 0
-    codeword_length = len(next(iter(codewords[0].items()))[0])
-    max_joint = math.ceil(codeword_length/44)
-    for tree in codewords:
-      total_ternary_entries+=len(codewords[tree])
-      total_ternary_blocks+= math.ceil(len(codewords[tree])/512)*max_joint
-
+    ternary_entries, ternary_blocks = ternary_matching_resource_usage(codewords)
 
   elif encoding == 'disjoint':
-    #P4 encoding
-    trees_app = get_tree_textual_representation(clf_app, selected_features_app)
-    trees_ddos = get_tree_textual_representation(clf_ddos, selected_features_ddos)
 
-    tree_nodes_app = {}
-    tree_nodes_ddos = {}
+    range_entries_app, range_blocks_app, ternary_entries_app, ternary_blocks_app = single_model_memory_evaluation(clf_app, selected_features_app)
+    range_entries_ddos, range_blocks_ddos, ternary_entries_ddos, ternary_blocks_ddos = single_model_memory_evaluation(clf_ddos, selected_features_ddos)
 
-    for tree_app in trees_app:
-      tree_nodes_app[tree_app] = get_nodes(trees_app[tree_app])
-
-    for tree_ddos in trees_ddos:
-      tree_nodes_ddos[tree_ddos] = get_nodes(trees_ddos[tree_ddos])
-
-
-
-    feature_splits_app = get_feature_splits(tree_nodes_app)
-    paths_leaf_nodes_per_tree_app = get_root_to_leaf_paths(tree_nodes_app)
-    feature_intervals_app = get_feature_intervals(feature_splits_app)
-    codewords_app = generate_codewords(paths_leaf_nodes_per_tree_app, feature_intervals_app)
-
-
-    feature_splits_ddos = get_feature_splits(tree_nodes_ddos)
-    paths_leaf_nodes_per_tree_ddos = get_root_to_leaf_paths(tree_nodes_ddos)
-    feature_intervals_ddos = get_feature_intervals(feature_splits_ddos)
-    codewords_ddos = generate_codewords(paths_leaf_nodes_per_tree_ddos, feature_intervals_ddos)
-
-
-    #Range-matching tables computation for traffic flows classifier
-    total_range_entries_app = 0
-    total_range_TCAM_blocks_app = 0
-    for key in feature_intervals_app:
-      total_range_entries_block_app = 0
-      for interv in feature_intervals_app[key]:
-        total_range_entries_app+=1
-        if interv[1]!='infinite':
-          width = interv[1]-interv[0]
-        else:
-          width= (2**19)-1-interv[0]
-        if width>1:
-          total_range_entries_block_app+= 2*math.floor(math.log2(width))
-        else:
-          total_range_entries_block_app+= 2*1
-      total_range_TCAM_blocks_app+= math.ceil(total_range_entries_block_app/207)
-
-
-
-    #Range-matching tables computation for DDOS detector
-    total_range_entries_ddos= 0
-    total_range_TCAM_blocks_ddos = 0
-    for key in feature_intervals_ddos:
-      total_range_entries_block_ddos = 0
-      for interv in feature_intervals_ddos[key]:
-        total_range_entries_ddos+=1
-        if interv[1]!='infinite':
-          width = interv[1]-interv[0]
-        else:
-          width= (2**19)-1-interv[0]
-        if width>1:
-          total_range_entries_block_ddos+= 2*math.floor(math.log2(width))
-        else:
-          total_range_entries_block_ddos+= 2*1
-      total_range_TCAM_blocks_ddos+= math.ceil(total_range_entries_block_ddos/207)
-
-
-
-    #Range-matching tables final summation
-    total_range_TCAM_blocks = total_range_TCAM_blocks_app + total_range_TCAM_blocks_ddos
-    total_range_entries = total_range_entries_app + total_range_entries_ddos
-
-
-    #Ternary-matching tables computation for traffic flows classifier
-    total_ternary_blocks_app = 0
-    total_ternary_entries_app = 0
-    codeword_length_app = len(next(iter(codewords_app[0].items()))[0])
-    max_app = math.ceil(codeword_length_app/44)
-    for tree in codewords_app:
-      total_ternary_entries_app+=len(codewords_app[tree])
-      total_ternary_blocks_app+= math.ceil(len(codewords_app[tree])/512)*max_app
-
-
-    #Ternary-matching tables computation for traffic flows classifier
-    total_ternary_blocks_ddos = 0
-    total_ternary_entries_ddos = 0
-    codeword_length_ddos = len(next(iter(codewords_ddos[0].items()))[0])
-    max_ddos = math.ceil(codeword_length_ddos/44)
-    for tree in codewords_ddos:
-      total_ternary_entries_ddos+=len(codewords_ddos[tree])
-      total_ternary_blocks_ddos+= math.ceil(len(codewords_ddos[tree])/512)*max_ddos
-
-
+    range_blocks = range_blocks_app + range_blocks_ddos
+    range_entries = range_entries_app + range_entries_ddos
 
     #Ternary-matching tables final summation
-    total_ternary_blocks = total_ternary_blocks_app + total_ternary_blocks_ddos
-    total_ternary_entries = total_ternary_entries_app + total_ternary_entries_ddos
+    ternary_blocks = ternary_blocks_app + ternary_blocks_ddos
+    ternary_entries = ternary_entries_app + ternary_entries_ddos
 
+  range_stages = math.ceil(range_blocks / TCAM_BLOCKS_PER_STAGE)
+  ternary_stages = math.ceil(ternary_blocks / TCAM_BLOCKS_PER_STAGE)
 
-  total_range_stages = math.ceil(total_range_TCAM_blocks/24)
-  total_ternary_stages = math.ceil(total_ternary_blocks/24)
-
-  return total_range_entries, total_range_TCAM_blocks, total_range_stages, total_ternary_entries, total_ternary_blocks, total_ternary_stages
+  return range_stages + ternary_stages, range_blocks + ternary_blocks

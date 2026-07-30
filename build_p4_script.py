@@ -9,6 +9,11 @@ from statistics import mode
 from feature_registers import FEATURE_REGISTER_CATALOG
 
 INFINITE = (2**19)-1
+MAX_CODEWORD_LENGTH = 512
+TCAM_BLOCKS_PER_STAGE = 24
+TCAM_BLOCK_KEY_LENGTH = 44
+TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
+RANGE_MATCHING_ENTRIES_PER_BLOCK = 207
 MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
                       # p4/tofino_spike/tna_m1_flows_iat_spike.p4
 
@@ -36,12 +41,12 @@ def ensure_directory_exists(path):
 
 
 def dt_thresholds_float_to_int(clf):
-  # Access the decision thresholds in each tree
   for tree in clf.estimators_:
-      for i, threshold in enumerate(tree.tree_.threshold):
-        if threshold != -2:
-            tree.tree_.threshold[i] = int(threshold)
-
+    tree_obj = tree.tree_
+    # Only process internal nodes (feature != -2 means it's not a leaf)
+    for i in range(tree_obj.node_count):
+        if tree_obj.feature[i] != -2:
+            tree_obj.threshold[i] = int(round(tree_obj.threshold[i]))
   return clf
 
 
@@ -59,7 +64,7 @@ def get_tree_textual_representation(clf, feature_names, verbose=False):
   return tree_textual_representation
 
 
-def get_nodes(tree_text):
+def get_nodes(tree_text, tree_idx = -1):
   '''
    Inputs: Tree textual representation generated with export_text(tree_classifier, feature_names)
    Outputs: Dictionary containing the information of the different tree nodes (leaf or internal)
@@ -73,18 +78,26 @@ def get_nodes(tree_text):
   node_id                  = 0
   previous_depth           = 1
   previous_node_was_leaf   = False
-  father_node_id           = -1
+  #father_node_id           = -1
+  parent_stack = [-1]  # stack of parent node IDs at each depth
   ##########################
 
   for line in tree_lines:
     # Calculate Current Node's Depth based on number of "|" ocurrences in the line
     depth = line.count("|")
 
+    # Trim stack to current depth
+    while len(parent_stack) > depth:
+        parent_stack.pop()
+
+    father_node_id = parent_stack[-1] if parent_stack else -1
+
     # A) Node is Internal (Not Leaf)
     if "class" in line:
 
       #New Leaf Node
       nodes[node_id]={"node": node_id,
+                      "tree": tree_idx,
                       "father_node": father_node_id,
                       "class": line.split("class: ")[-1],
                       "depth": depth,
@@ -105,7 +118,7 @@ def get_nodes(tree_text):
       previous_node_was_leaf = True
       previous_depth = depth
       node_id += 1
-      father_node_id += 1
+      #father_node_id += 1
 
     # B) Node is Child
     else:
@@ -116,6 +129,7 @@ def get_nodes(tree_text):
       if "<=" in line:
         # New Internal Node
         nodes[node_id]={"node": node_id,
+                        "tree": tree_idx,
                         "father_node": father_node_id,
                         "feature": feature_name,
                         "depth": depth,
@@ -138,19 +152,22 @@ def get_nodes(tree_text):
         # Update Parameters
         previous_node_was_leaf = False
         previous_depth = depth
+
+        parent_stack.append(node_id)
         node_id += 1
-        father_node_id += 1
+        #father_node_id += 1
 
   return nodes
 
-def get_feature_splits(tree_nodes):
+
+def get_feature_thresholds(tree_nodes):
   '''
    Inputs: Dictionary containing the features of all nodes in the Random Forest
    Outputs: List of tuples containing the comparison thresholds (i.e. feature splits) each feature goes through over all the trees: (Feature Name, Threshold)
    '''
 
   nodes = []
-  feature_splits = []
+  feature_thresholds = []
 
   #Gather node features from all Decision Trees
   for tree in tree_nodes:
@@ -159,15 +176,15 @@ def get_feature_splits(tree_nodes):
   #Join all feature thresholds (splits) that are consulted at each node
   for node in nodes:
     try:
-      feature_splits.append((node["feature"],
+      feature_thresholds.append((node["feature"],
                             node["threshold"]))
     except:
       pass
   #Sort feature thresholds by feature
-  return sorted(feature_splits, key=lambda x: (x[0], x[1]))
+  return sorted(feature_thresholds, key=lambda x: (x[0], x[1]))
 
 
-def get_feature_intervals(feature_splits):
+def get_feature_intervals_from_thresholds(feature_thresholds):
   '''
   Inputs: List of tuples containing the features splits of all features
   Outputs: Dictionary where each key is the feature name and the associated value is the list of intervals of the given feature
@@ -175,23 +192,40 @@ def get_feature_intervals(feature_splits):
   feature_intervals = {}
 
   # Iterate over each feature split
-  for feature, threshold in feature_splits:
+  for feature, threshold in feature_thresholds:
       #New Feature, Init interval
+
+      # avoid creating a [0, 0] interval (remember that all features are positive)
+      if threshold == 0:
+        continue
+
       if feature not in feature_intervals:
-          feature_intervals[feature] = [[0, threshold]]
-      #Exisiting Feature, Extend Interval
-      else:
+          feature_intervals[feature] = [(0, threshold)]
+
+      else: # exisiting feature - extend interval
           last_range = feature_intervals[feature][-1]
-          if last_range[1] == "infinite":
-              continue
           if threshold == last_range[1]:
               continue
-          feature_intervals[feature].append([last_range[1]+1, threshold])
+          else:
+            feature_intervals[feature].append((last_range[1] + 1, threshold))
 
   # Add last interval (higher threshold, infinite)
   for feature, ranges in feature_intervals.items():
-      if ranges[-1][1] != "infinite":
-          ranges.append([ranges[-1][1]+1, "infinite"])
+      if ranges[-1][1] != INFINITE:
+          ranges.append((ranges[-1][1]+1, INFINITE))
+
+  return feature_intervals
+
+
+def get_feature_intervals(model, selected_features):
+  trees = get_tree_textual_representation(model, selected_features)
+
+  tree_nodes = {}
+  for tree in trees:
+    tree_nodes[tree] = get_nodes(trees[tree], tree)
+
+  feature_thresholds = get_feature_thresholds(tree_nodes)
+  feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
 
   return feature_intervals
 
@@ -439,7 +473,7 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
         code.append('1')
 
       minimum = str(interval[0])
-      maximum = str(INFINITE) if interval[1] == 'infinite' else str(interval[1])
+      maximum = str(interval[1])
 
       table_entry["key"] = [minimum+".."+maximum]
       table_entry["action_params"] = [str(int("".join(code),2))]
@@ -499,7 +533,6 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
   ensure_directory_exists(path_to_output)
   with open(path_to_output + output_filename, 'w') as output_file:
     output_file.write(json.dumps(table_entries))
-
 
 
 def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):
