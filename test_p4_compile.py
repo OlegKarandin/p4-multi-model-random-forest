@@ -1,0 +1,139 @@
+"""Tests for p4_compile.py, the reusable P4 compile + parse harness.
+
+The parser tests below are unit-tested against fixture text captured from a
+real p4c compile (Task 1 of the P4-validation plan, reviews/t11_tofino_port_
+and_env.md Part K) -- not invented text -- so they exercise the actual
+column layout of mau.resources.log (20 columns, of which only 4 are used).
+
+The single pytest.mark.slow test at the bottom drives the real WSL2 Tofino
+toolchain end to end and is not run by the default `pytest` invocation.
+"""
+
+import os
+
+import pytest
+
+import p4_compile as pc
+
+
+def _write_fixture_logs(tmp_path, table_summary_text, mau_resources_text, table_placement_text):
+    log_dir = tmp_path / "pipe" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "table_summary.log").write_text(table_summary_text)
+    (log_dir / "mau.resources.log").write_text(mau_resources_text)
+    (log_dir / "table_placement_1.log").write_text(table_placement_text)
+    return str(tmp_path)
+
+
+# Real header + Totals row copied verbatim from Task 1's actual compile,
+# .superpowers/sdd/timing_probe_logs/pipe/logs/mau.resources.log (line 10 and
+# line 25 there). This is a markdown-style pipe table: one header row naming
+# 20 columns, then exactly one "Totals" data row -- NOT the brief's
+# placeholder "Totals  9  22  14  16" shape, and NOT in a fixed
+# Gateway-SRAM-MapRAM-TCAM-first column order (there are 4 columns before
+# Gateway: Exact Match Input xbar, Ternary Match Input xbar, Hash Bit, Hash
+# Dist Unit). Keeping all 20 columns here (not trimming to just the 4 we
+# need) is deliberate: a parser that only worked because the fixture was
+# artificially shrunk to 4 columns would not catch a column-order bug.
+REAL_MAU_RESOURCES_TEXT = (
+    "| Stage Number | Exact Match Input xbar | Ternary Match Input xbar | Hash Bit | Hash Dist Unit | Gateway | SRAM | Map RAM | TCAM | VLIW Instr | Meter ALU | Stats ALU | Stash | Exact Match Search Bus | Exact Match Result Bus | Tind Result Bus | Action Data Bus Bytes | 8-bit Action Slots | 16-bit Action Slots | 32-bit Action Slots | Logical TableID |\n"
+    "|    Totals    |           5            |            28            |    20    |       0        |    1    |  11  |    0    |  16  |     8      |     0     |     0     |   2   |           3            |           2            |        2        |           20          |         0          |          0          |          0          |        11       |\n"
+)
+
+
+def test_parse_compile_logs_extracts_stages_and_tables(tmp_path):
+    log_dir = _write_fixture_logs(
+        tmp_path,
+        table_summary_text="Number of stages in table allocation: 9\nNumber of tables allocated: 20\n",
+        mau_resources_text=REAL_MAU_RESOURCES_TEXT,
+        table_placement_text="Placement error(s):0 stages required:9\n",
+    )
+    result = pc.parse_compile_logs(log_dir)
+    assert result.stages == 9
+    assert result.tables == 20
+
+
+def test_parse_compile_logs_extracts_resource_totals_by_column_name(tmp_path):
+    # Confirms the parser reads Gateway/SRAM/Map RAM/TCAM by column NAME,
+    # not by fixed position -- the real file has 20 columns and the 4
+    # needed ones are not first, so a fixed-position regex (the brief's
+    # original r"Totals\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)" draft) would read
+    # the wrong values here (it would read 5, 28, 20, 0 -- the first four
+    # numeric cells -- instead of the real Gateway=1, SRAM=11, Map RAM=0,
+    # TCAM=16).
+    log_dir = _write_fixture_logs(
+        tmp_path,
+        table_summary_text="Number of stages in table allocation: 3\nNumber of tables allocated: 11\n",
+        mau_resources_text=REAL_MAU_RESOURCES_TEXT,
+        table_placement_text="Placement error(s):0 stages required:3\n",
+    )
+    result = pc.parse_compile_logs(log_dir)
+    assert result.gateway == 1
+    assert result.sram == 11
+    assert result.map_ram == 0
+    assert result.tcam == 16
+
+
+def test_parse_compile_logs_returns_none_fields_when_logs_absent(tmp_path):
+    # a failed compile leaves no pipe/logs/ directory at all
+    result = pc.parse_compile_logs(str(tmp_path))
+    assert result.stages is None
+    assert result.tables is None
+    assert result.errors is None
+    assert result.gateway is None
+    assert result.sram is None
+    assert result.map_ram is None
+    assert result.tcam is None
+
+
+def test_parse_compile_logs_accepts_logs_dir_directly(tmp_path):
+    # Callers may pass either the compile's top-level output_dir (which
+    # contains pipe/logs/...) or the pipe/logs directory itself.
+    log_dir = tmp_path / "pipe" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "table_summary.log").write_text(
+        "Number of stages in table allocation: 3\nNumber of tables allocated: 11\n"
+    )
+    result = pc.parse_compile_logs(str(log_dir))
+    assert result.stages == 3
+    assert result.tables == 11
+
+
+@pytest.mark.slow
+def test_compile_p4_against_real_toolchain(tmp_path):
+    """Requires WSL2 + a built open-p4studio (reviews/t11_tofino_port_and_env.md Part B/K).
+    Not run by the default `pytest` invocation -- run explicitly with
+    `pytest test_p4_compile.py -m slow -v` when you want to confirm the real
+    invocation path still works end to end. This is the test that proves the
+    `wsl bash -lc '...'` invocation fix (Correction 2) actually works --
+    the naive `["wsl", p4c_path, ...]` form silently fails to expand `~`.
+    """
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+
+    import build_p4_script as bps
+
+    rng = np.random.RandomState(0)
+    X = rng.randint(0, 65535, size=(100, 2))
+    y_app = rng.randint(0, 3, size=100)
+    y_ddos = rng.choice([-1, 1], size=100)
+
+    clf_app = bps.dt_thresholds_float_to_int(
+        RandomForestClassifier(n_estimators=1, max_depth=3, random_state=0).fit(X, y_app))
+    clf_ddos = bps.dt_thresholds_float_to_int(
+        RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X, y_ddos))
+
+    feature_names = ["f0", "f1"]
+    trees_app = bps.get_tree_textual_representation(clf_app, feature_names)
+    trees_ddos = bps.get_tree_textual_representation(clf_ddos, feature_names)
+    tree_nodes = {i: bps.get_nodes(t, i) for i, t in trees_app.items()}
+    offset = len(tree_nodes)
+    tree_nodes.update({i + offset: bps.get_nodes(t, i + offset) for i, t in trees_ddos.items()})
+    feature_intervals = bps.get_feature_intervals_from_thresholds(bps.get_feature_thresholds(tree_nodes))
+
+    bps.generate_P4_code(3, 2, clf_app, clf_ddos, feature_intervals,
+                          output_dir=str(tmp_path) + os.sep, output_filename="probe.p4")
+
+    result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
+    assert result.errors == 0
+    assert result.stages is not None
