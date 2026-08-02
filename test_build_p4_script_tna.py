@@ -507,3 +507,37 @@ def test_generate_P4_code_ddos_single_tree_action_now_uses_tree_suffixed_name(m1
   # unsuffixed "classify_flow_codeword_ddos" action name.
   assert "action classify_flow_codeword_ddos_0(bit<1> class){" in m1_ddos_only_output
   assert "action classify_flow_codeword_ddos(" not in m1_ddos_only_output
+
+
+# ---------------------------------------------------------------------------
+# Task 0: Injectable output path
+# ---------------------------------------------------------------------------
+
+def _tiny_ddos_forest():
+  """Minimal stand-in for a trained DDoS classifier: single tree."""
+  return _StubClassifier(1)
+
+
+def test_generate_P4_code_writes_to_injectable_path(tmp_path):
+  clf_ddos = _tiny_ddos_forest()  # reuse this file's existing tiny-forest fixture helper
+  feature_intervals = {"F": [(0, 100), (101, 65535)]}
+  out_dir = str(tmp_path) + os.sep
+  written_path = bps.generate_P4_code(
+      num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
+      feature_intervals=feature_intervals,
+      output_dir=out_dir, output_filename="custom_name.p4",
+  )
+  assert written_path == out_dir + "custom_name.p4"
+  assert os.path.exists(written_path)
+  # default path must NOT have been touched by this call
+  assert not os.path.exists(bps.OUTPUT_PATH + "custom_name.p4")
+
+
+def test_generate_P4_code_default_path_unchanged():
+  clf_ddos = _tiny_ddos_forest()
+  feature_intervals = {"F": [(0, 100), (101, 65535)]}
+  written_path = bps.generate_P4_code(
+      num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
+      feature_intervals=feature_intervals,
+  )
+  assert written_path == bps.OUTPUT_PATH + "p4_code_RF_models.p4"

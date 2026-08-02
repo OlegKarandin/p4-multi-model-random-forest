@@ -736,7 +736,8 @@ def generate_voting_code(num_trees, num_classes, task):
   return table_decl, apply_call
 
 
-def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_intervals):
+def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_intervals,
+                      output_dir=OUTPUT_PATH, output_filename='p4_code_RF_models.p4'):
 
   # clf_app/clf_ddos may be None -- meaning "no task at all" (e.g. M1 is
   # DDoS-only: clf_app is None, clf_ddos is a trained model).
@@ -807,9 +808,12 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
     switch_template = switch_template.replace('/* APPLY */', apply_templates)
     switch_template = switch_template.replace('/* CLASSIFICATION */', "")
 
-  ensure_directory_exists(OUTPUT_PATH)
-  with open(OUTPUT_PATH + 'p4_code_RF_models.p4', 'w') as switch_template_file:
+  ensure_directory_exists(output_dir)
+  written_path = output_dir + output_filename
+  with open(written_path, 'w') as switch_template_file:
     switch_template_file.write(switch_template)
+
+  return written_path
 
 
 # ---------------------------------------------------------------------------
