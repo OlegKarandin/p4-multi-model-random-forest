@@ -10,6 +10,8 @@ toolchain end to end and is not run by the default `pytest` invocation.
 """
 
 import os
+import shlex
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -97,6 +99,123 @@ def test_parse_compile_logs_accepts_logs_dir_directly(tmp_path):
     result = pc.parse_compile_logs(str(log_dir))
     assert result.stages == 3
     assert result.tables == 11
+
+
+def _fake_completed_process(stdout="", stderr=""):
+    proc = MagicMock()
+    proc.stdout = stdout
+    proc.stderr = stderr
+    return proc
+
+
+def test_compile_p4_builds_login_shell_command_with_correct_quoting(tmp_path):
+    """Guards Correction 2 (the `wsl bash -lc '...'` login-shell fix) without
+    requiring a real WSL2 + Tofino toolchain: mocks subprocess.run so
+    compile_p4 never actually shells out, then inspects the constructed
+    command itself.
+
+    Specifically proves:
+    - the command is `["wsl", "bash", "-lc", <single string>]`, a login
+      shell -- NOT the naive `["wsl", p4c_path, ...]` form, which silently
+      fails to expand `~` or source PATH (the bug this module's docstring
+      says was found and fixed once already).
+    - p4c_path appears UNQUOTED in the command string, so bash's own `~`
+      expansion still applies (shlex.quote() would wrap a `~`-containing
+      string in quotes, since `~` is not in shlex's "safe" character set --
+      quoting it would silently break expansion again).
+    - output_dir/p4_path/include_path are each individually shell-quoted so
+      a path containing a space and non-ASCII characters survives intact --
+      proven by round-tripping the built command string through
+      shlex.split() and confirming the exact converted path segments come
+      back out unmangled.
+    """
+    fake_proc = _fake_completed_process(stdout="0 errors, 10 warnings generated.\n")
+
+    p4_path = str(tmp_path / "probe.p4")
+    # Deliberately includes a space and a non-ASCII (Cyrillic) path
+    # component, mirroring this repo's own path (reviews/t11_tofino_port_
+    # and_env.md Part K / G) -- exactly the kind of path that a broken
+    # quoting scheme would mangle.
+    output_dir = str(tmp_path / "some path" / "Документы")
+
+    with patch("p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+        result = pc.compile_p4(p4_path, output_dir)
+
+    assert mock_run.call_count == 1
+    cmd = mock_run.call_args[0][0]
+    assert cmd[:3] == ["wsl", "bash", "-lc"]
+    assert len(cmd) == 4
+    full_command = cmd[3]
+    assert isinstance(full_command, str)
+
+    default_p4c_path = "~/open-p4studio/install/bin/p4c"
+    # Unquoted: appears as a bare token, not wrapped by shlex.quote (which
+    # would produce "'~/open-p4studio/install/bin/p4c'" since `~` is not a
+    # shlex-safe character).
+    assert full_command.startswith(default_p4c_path + " ")
+    assert shlex.quote(default_p4c_path) not in full_command
+
+    # Quoted path arguments must round-trip intact through shlex.split(),
+    # proving the space/non-ASCII path components survive shell parsing.
+    tokens = shlex.split(full_command)
+    expected_wsl_output_dir = pc._to_wsl_path(output_dir)
+    expected_wsl_p4_path = pc._to_wsl_path(p4_path)
+    expected_wsl_include_path = pc._to_wsl_path(pc._resolve_repo_relative("resources"))
+
+    assert expected_wsl_output_dir in tokens
+    assert expected_wsl_p4_path in tokens
+    assert expected_wsl_include_path in tokens
+
+    # Sanity: the mocked compile still completes and parses the summary line
+    # (proves the mock's fake stdout is realistic enough not to crash parsing).
+    assert result.errors == 0
+    assert result.warnings == 10
+
+
+def test_errors_warnings_regex_matches_real_captured_summary_line():
+    # Verbatim line captured from this session's actual compile
+    # (task-1-report.md / reviews/t11_tofino_port_and_env.md Part K).
+    m = pc._ERRORS_WARNINGS_RE.search(
+        "... some p4c verbose output ...\n0 errors, 10 warnings generated.\n"
+    )
+    assert m is not None
+    assert m.group(1) == "0"
+    assert m.group(2) == "10"
+
+
+def test_errors_warnings_regex_handles_singular_error_and_warning():
+    # The `s?` in `errors?`/`warnings?` must handle both the plural form
+    # (captured above: "0 errors, 10 warnings") and the singular form a
+    # real compile could plausibly emit for count == 1.
+    m = pc._ERRORS_WARNINGS_RE.search("1 error, 0 warnings generated.")
+    assert m is not None
+    assert m.group(1) == "1"
+    assert m.group(2) == "0"
+
+    m2 = pc._ERRORS_WARNINGS_RE.search("1 error, 1 warning generated.")
+    assert m2 is not None
+    assert m2.group(1) == "1"
+    assert m2.group(2) == "1"
+
+
+def test_errors_warnings_regex_no_match_when_summary_line_absent():
+    assert pc._ERRORS_WARNINGS_RE.search(
+        "some unrelated p4c chatter\nwith no summary line at all\n"
+    ) is None
+
+
+def test_compile_p4_errors_and_warnings_degrade_to_none_when_summary_absent(tmp_path):
+    # Per CompileResult's None-means-unknown convention (see module
+    # docstring / parse_compile_logs docstring): if p4c's stdout+stderr
+    # never contain the summary line (e.g. a hard crash before it could
+    # print), errors/warnings must stay None, not silently become 0.
+    fake_proc = _fake_completed_process(stdout="a hard crash before any summary line\n")
+
+    with patch("p4_compile.subprocess.run", return_value=fake_proc):
+        result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
+
+    assert result.errors is None
+    assert result.warnings is None
 
 
 @pytest.mark.slow
