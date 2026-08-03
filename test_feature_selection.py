@@ -184,6 +184,101 @@ def test_process_single_split_disjoint_rows_sum_two_merged_compiles(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Fast exercise of _process_single_split's real overlap/splicing mechanics
+# (pending_previous / results[-2] indexing across iterations), without
+# paying Optuna's >15-minutes-per-call cost like the three `slow` tests
+# above. `train_multi_RF_Optuna_multi_constrained` is mocked with a fake
+# that fits real (instant) tiny RandomForestClassifiers instead of running
+# the real hyperparameter search; `p4_compile.compile_p4_async` is mocked
+# the same way the four direct unit tests below already do.
+# ---------------------------------------------------------------------------
+
+def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp_path):
+    """Verifies each result row's `stages_real` is attributed to ITS OWN
+    iteration's compile result -- not a neighboring iteration's -- across
+    the full range of splicing cases in one run: the first iteration (no
+    `pending_previous` yet, so the row is initially marked None and only
+    filled in when joined during the NEXT iteration), a middle iteration,
+    and the last iteration (filled in by the post-loop final join, since
+    there is no next iteration to overlap with).
+
+    Uses 4 starting features so both the disjoint ('single') and joint
+    ('multi') loops each run exactly 4 iterations (k=4,3,2,1), touching all
+    three cases. `p4_compile.compile_p4_async` is faked to encode the k it
+    was called for (parsed back out of the .p4 filename
+    `_kickoff_hardware_validation` builds) into its returned CompileResult,
+    so each row can be checked against the specific compile result that
+    belongs to it.
+    """
+    import re
+    from sklearn.ensemble import RandomForestClassifier
+    import build_p4_script as bps
+
+    X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=40, n_features=4)
+
+    def _fake_train(X_A, y_A, X_B, y_B, x_val_A, y_val_A, x_val_B, y_val_B,
+                     features_A, features_B, n_trees, max_depth, max_blocks,
+                     encoding, warm_start_params=None):
+        # Real (tiny, instantly-fit) models -- not mocked -- so the
+        # downstream real code (accuracy_metrics, permutation_importance,
+        # and _kickoff_hardware_validation's real generate_P4_code /
+        # feature-interval derivation) all run for real on something
+        # shaped like an actual trained model. Only the expensive Optuna
+        # search itself is skipped.
+        model_A = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
+        model_B = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
+        return model_A, model_B, 1, 1, {}
+
+    def _fake_compile_async(p4_path, log_dir, **kwargs):
+        k = int(re.search(r'_k(\d+)', p4_path).group(1))
+        if p4_path.endswith('_app.p4'):
+            stages = 100 + k  # disjoint loop's app-only leg
+        elif p4_path.endswith('_ddos.p4'):
+            stages = 200 + k  # disjoint loop's ddos-only leg
+        else:
+            stages = 1000 + k  # joint loop's single combined program
+        return type("F", (), {"result": lambda self, timeout=None, s=stages: pc.CompileResult(
+            errors=0, warnings=0, stages=s, tables=s, tcam=s)})()
+
+    with patch("train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
+         patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+        result = fs._process_single_split(
+            split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+            n_trees=1, max_depth=3, max_blocks=50,
+            feature_names=["f0", "f1", "f2", "f3"], random_state=42, verbose=False,
+            validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
+        )
+
+    assert result.error is None
+
+    single_rows = sorted((r for r in result.results if r['method'] == 'single'),
+                          key=lambda r: -r['k'])
+    multi_rows = sorted((r for r in result.results if r['method'] == 'multi'),
+                         key=lambda r: -r['k'])
+
+    # 4 starting features -> k=4,3,2,1 for each loop: first iteration,
+    # (at least one) middle iteration, and the last (post-loop-join)
+    # iteration are all exercised.
+    assert [r['k'] for r in single_rows] == [4, 3, 2, 1]
+    assert [r['k'] for r in multi_rows] == [4, 3, 2, 1]
+
+    # Disjoint ('single') rows merge an app-leg and a ddos-leg compile, both
+    # keyed by the SAME k as the row itself: (100+k)+(200+k) = 300+2k.
+    for row in single_rows:
+        assert row['stages_real'] == 300 + 2 * row['k']
+        assert row['tcam_real'] == (100 + row['k']) + (200 + row['k'])
+        assert row['compile_errors'] == 0
+
+    # Joint ('multi') rows come from one combined program per k: 1000+k.
+    for row in multi_rows:
+        assert row['stages_real'] == 1000 + row['k']
+        assert row['tcam_real'] == 1000 + row['k']
+        assert row['compile_errors'] == 0
+
+
+# ---------------------------------------------------------------------------
 # Direct unit tests for _kickoff_hardware_validation / _MergedCompileHandle,
 # isolated from the (slow) real Optuna training pipeline above.
 # ---------------------------------------------------------------------------

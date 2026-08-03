@@ -436,6 +436,51 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
         raise ValueError(f"Unknown encoding for hardware validation: {encoding!r}")
 
 
+def _advance_pending_compile(results, pending_previous, pending_next):
+    """Joins the PREVIOUS iteration's still-pending hardware-validation handle
+    -- which has now had one full training step's wall time to finish in the
+    background -- attaching its numbers to that earlier row (`results[-2]`).
+    The just-appended row (`results[-1]`) gets its own numbers only once
+    `pending_next` is itself joined on a later call; on the very first
+    iteration (`pending_previous` is None, nothing to join yet) that row's
+    three fields are marked None directly instead.
+
+    Shared by both the disjoint ('single') and joint ('multi') loops in
+    `_process_single_split`, which differ only in how `pending_next` itself
+    was produced (each calls `_kickoff_hardware_validation` with its own
+    args) -- the splicing logic that follows is identical.
+
+    Returns the new `pending_previous` value (i.e. `pending_next`) for the
+    loop to carry into its next iteration.
+    """
+    if pending_previous is not None:
+        compile_result = pending_previous.result(timeout=600)
+        results[-2]['stages_real'] = compile_result.stages
+        results[-2]['tcam_real'] = compile_result.tcam
+        results[-2]['compile_errors'] = compile_result.errors
+    else:
+        results[-1]['stages_real'] = None
+        results[-1]['tcam_real'] = None
+        results[-1]['compile_errors'] = None
+    return pending_next
+
+
+def _join_final_pending_compile(results, pending_previous):
+    """Post-loop counterpart to `_advance_pending_compile`: the final
+    iteration has no "next" iteration to overlap with, so whatever compile is
+    still outstanding is joined directly here and attached to the last row
+    appended (`results[-1]`). No-op when `pending_previous` is None (either
+    validate_on_hardware was False throughout, or -- impossible in practice,
+    since every iteration kicks off a new pending compile -- there simply was
+    none left outstanding).
+    """
+    if pending_previous is not None:
+        compile_result = pending_previous.result(timeout=600)
+        results[-1]['stages_real'] = compile_result.stages
+        results[-1]['tcam_real'] = compile_result.tcam
+        results[-1]['compile_errors'] = compile_result.errors
+
+
 def _process_single_split(
     split_idx: int,
     X_app: np.ndarray,
@@ -581,16 +626,8 @@ def _process_single_split(
             pending_next_single = _kickoff_hardware_validation(
                 validate_on_hardware, hardware_output_dir, split_idx, 'single', k_app,
                 model_app, model_ddos, feature_names_app, feature_names_ddos, 'disjoint')
-            if pending_previous_single is not None:
-                compile_result = pending_previous_single.result(timeout=600)
-                results[-2]['stages_real'] = compile_result.stages
-                results[-2]['tcam_real'] = compile_result.tcam
-                results[-2]['compile_errors'] = compile_result.errors
-            else:
-                results[-1]['stages_real'] = None
-                results[-1]['tcam_real'] = None
-                results[-1]['compile_errors'] = None
-            pending_previous_single = pending_next_single
+            pending_previous_single = _advance_pending_compile(
+                results, pending_previous_single, pending_next_single)
 
             if len(remaining_features_app) == 1 and len(remaining_features_ddos) == 1:
                 break
@@ -612,13 +649,7 @@ def _process_single_split(
             del remaining_features_ddos[lowest_importance_idx_ddos]
             del feature_names_ddos[lowest_importance_idx_ddos]
 
-        # Final iteration has no "next" iteration to overlap with -- join
-        # whatever compile is still outstanding directly.
-        if pending_previous_single is not None:
-            compile_result = pending_previous_single.result(timeout=600)
-            results[-1]['stages_real'] = compile_result.stages
-            results[-1]['tcam_real'] = compile_result.tcam
-            results[-1]['compile_errors'] = compile_result.errors
+        _join_final_pending_compile(results, pending_previous_single)
 
         warm_start_params_multi = None
         # Same overlap handle as the disjoint loop above, tracked separately
@@ -680,16 +711,8 @@ def _process_single_split(
             pending_next_multi = _kickoff_hardware_validation(
                 validate_on_hardware, hardware_output_dir, split_idx, 'multi', k,
                 model_app, model_ddos, feature_names_shared, feature_names_shared, 'joint')
-            if pending_previous_multi is not None:
-                compile_result = pending_previous_multi.result(timeout=600)
-                results[-2]['stages_real'] = compile_result.stages
-                results[-2]['tcam_real'] = compile_result.tcam
-                results[-2]['compile_errors'] = compile_result.errors
-            else:
-                results[-1]['stages_real'] = None
-                results[-1]['tcam_real'] = None
-                results[-1]['compile_errors'] = None
-            pending_previous_multi = pending_next_multi
+            pending_previous_multi = _advance_pending_compile(
+                results, pending_previous_multi, pending_next_multi)
 
             if len(remaining_features_shared) == 1:
                 break
@@ -712,13 +735,7 @@ def _process_single_split(
             del remaining_features_shared[lowest_importance_idx]
             del feature_names_shared[lowest_importance_idx]
 
-        # Final iteration has no "next" iteration to overlap with -- join
-        # whatever compile is still outstanding directly.
-        if pending_previous_multi is not None:
-            compile_result = pending_previous_multi.result(timeout=600)
-            results[-1]['stages_real'] = compile_result.stages
-            results[-1]['tcam_real'] = compile_result.tcam
-            results[-1]['compile_errors'] = compile_result.errors
+        _join_final_pending_compile(results, pending_previous_multi)
 
         return SplitResult(split_idx=split_idx, results=results)
 
