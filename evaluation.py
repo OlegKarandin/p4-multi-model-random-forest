@@ -170,6 +170,56 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   return ternary_entries, ternary_blocks, codeword_length, ternary_table_specs
 
 
+def exact_match_resource_usage(codewords, feature_intervals):
+  """Planter RF_EB-style accounting: code/decision tables move from ternary
+  TCAM to exact-match SRAM (overlap.md's code-verified match-type table).
+  Exact match cannot express the wildcarded ('*') bits a leaf's tree path
+  never tests, so each wildcarded bit must be enumerated into concrete
+  entries -- this is a real entry-count multiplier, not hidden here.
+  Charges SRAM, not TCAM -- a distinct, far larger resource (overlap.md:
+  ~6.2MB TCAM vs ~120MB SRAM on Tofino 1), so this is a separate accounting,
+  reported alongside ternary_matching_resource_usage rather than replacing
+  it.
+
+  Confirmed against build_p4_script.generate_codewords (build_p4_script.py:
+  328-401) by direct call on a tiny synthetic tree this session: a
+  wildcarded bit really is a literal '*' character, one substring-of-bits
+  per feature, concatenated in feature_intervals iteration order -- exactly
+  what this function's codeword.count('*') relies on. feature_intervals is
+  accepted (parallel to ternary_matching_resource_usage's signature) but
+  unused here: the wildcard count already comes straight out of each
+  codeword string, so no per-feature interval lookup is needed to know how
+  many concrete values a wildcarded bit stands in for -- '*' is always a
+  single BIT position (one binary choice), regardless of how many decimal
+  intervals that feature's whole codeword segment enumerates.
+
+  Returns (sram_entries, sram_blocks). sram_blocks is deliberately None:
+  the SRAM per-block *entry capacity* for a plain exact-match key table is
+  not yet an established constant in this project. Direct investigation
+  this session (~/open-p4studio/pkgsrc/p4-compilers/p4c/backends/tofino/
+  bf-p4c/mau/memories.h:54, Memories::SRAM_DEPTH = 1024) confirms the same
+  1024-entries-per-SRAM base resource_estimate.cpp uses for attached
+  tables (counters/registers/action-data, resource_estimate.cpp:863,1323,
+  1558: `entries_per_sram = 1024 * per_word`) also holds for match-key
+  tables specifically (asm_output.cpp:2379: `tbl_entries = rams *
+  table_format.match_groups.size() * 1024`) -- but unlike TCAM's per-block
+  formula, `match_groups.size()` (how many independent match entries pack
+  into one 1024-row SRAM) is not a closed-form function of key width alone:
+  it comes out of table_format.cpp's LayoutOption/"ways" search (packing
+  entries against RAM row width, overhead/version bits, and hash-way
+  constraints jointly), not a documented formula. That search is out of
+  scope for this task's time-box; SRAM block-count conversion is left as a
+  flagged follow-up rather than an invented per_word/width assumption."""
+  sram_entries = 0
+  for tree in codewords:
+    for codeword in codewords[tree]:
+      wildcard_count = codeword.count('*')
+      sram_entries += 2 ** wildcard_count
+
+  sram_blocks = None
+  return sram_entries, sram_blocks
+
+
 def _stage_shards(block_count, byte_width):
   """Splits one logical table that cannot fit inside a single stage into the
   minimum number of per-stage shards, so the packer never reports a stage

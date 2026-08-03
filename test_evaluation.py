@@ -364,3 +364,64 @@ def test_dataset_py_clips_outliers_to_threshold_not_hardcoded_19bit_value():
         source = f.read()
     assert "(2**19)-2" not in source.replace(" ", "")
     assert source.count("threshold if x > threshold else x") == 2
+
+
+# ---------------------------------------------------------------------------
+# Task 8: Planter RF_EB-style exact-match resource accounting
+# ---------------------------------------------------------------------------
+#
+# Confirmed directly against build_p4_script.generate_codewords (called on a
+# tiny real synthetic tree this session): a wildcarded bit really is a
+# literal '*' character in the codeword string (generate_codewords appends
+# '*' at build_p4_script.py:358/365), one substring-of-bits per feature,
+# concatenated in feature_intervals iteration order. Exact match cannot
+# express '*', so each wildcarded bit must be enumerated into 2 concrete
+# entries -- a real, reported entry-count multiplier, not hidden.
+
+def test_exact_match_resource_usage_enumerates_wildcarded_features():
+    # tree with 2 features (A: 3 intervals -> 2 codeword bits, B: 2 intervals
+    # -> 1 codeword bit); one leaf's path only tests feature A, leaving B
+    # wildcarded under ternary -- under exact match this one leaf must
+    # expand into 2 concrete entries (one per B interval).
+    feature_intervals = {"A": [(0, 10), (11, 20), (21, 65535)], "B": [(0, 100), (101, 65535)]}
+    codewords = {0: {"00*": 0, "01": 1, "10": 1}}  # confirmed '*' representation
+    sram_entries, sram_blocks = ev.exact_match_resource_usage(codewords, feature_intervals)
+    # 1 (no wildcard, "01") + 1 (no wildcard, "10") + 2 (one wildcarded bit in
+    # "00*" expands x2) == 4. Note: the task brief's own worked example
+    # asserted "== 3" here, but its own breakdown comment (1 + 1 + 2) sums to
+    # 4, not 3 -- a genuine arithmetic bug in the brief, not a wildcard-
+    # representation mismatch (confirmed separately by calling
+    # generate_codewords on a real tiny tree this session). Corrected to the
+    # value the stated semantics actually produce.
+    assert sram_entries == 4
+
+
+def test_exact_match_resource_usage_no_wildcards_matches_ternary_entry_count():
+    # a tree where every leaf tests every feature has nothing to expand --
+    # exact and ternary entry counts must be identical in this case
+    feature_intervals = {"A": [(0, 10), (11, 65535)]}
+    codewords = {0: {"0": 0, "1": 1}}
+    sram_entries, _ = ev.exact_match_resource_usage(codewords, feature_intervals)
+    ternary_entries, _, _, _ = ev.ternary_matching_resource_usage(codewords, feature_intervals)
+    assert sram_entries == ternary_entries
+
+
+def test_exact_match_resource_usage_multiple_wildcards_multiply():
+    # 2 wildcarded bits in one codeword -> 2**2 = 4 concrete entries for
+    # that one leaf, confirming the multiplier is 2**(count of '*'), not a
+    # flat "+1 wildcard present" bump.
+    feature_intervals = {"A": [(0, 10), (11, 20), (21, 65535)], "B": [(0, 100), (101, 65535)]}
+    codewords = {0: {"**": 0}}
+    sram_entries, sram_blocks = ev.exact_match_resource_usage(codewords, feature_intervals)
+    assert sram_entries == 4
+    assert sram_blocks is None  # SRAM per-block capacity not yet established (see evaluation.py)
+
+
+def test_exact_match_resource_usage_sums_across_multiple_trees():
+    feature_intervals = {"A": [(0, 10), (11, 65535)]}
+    codewords = {
+        0: {"0": 0, "1": 1},
+        1: {"*": 0},
+    }
+    sram_entries, _ = ev.exact_match_resource_usage(codewords, feature_intervals)
+    assert sram_entries == 1 + 1 + 2  # tree 0: 2 concrete leaves; tree 1: 1 leaf x 2**1

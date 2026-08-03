@@ -26,6 +26,16 @@ PATH_TABLE_ENTRIES_OUTPUT = OUTPUT_PATH + "table_entries.json"
 PATH_TABLE_TEMPLATE_P4  = PATH + 'table.p4'
 PATH_ACTION_TEMPLATE_P4 = PATH + 'action.p4'
 PATH_TABLE_CLASSIFICATION_TEMPLATE_P4 = PATH + 'table_classification.p4'
+# Task 8: Planter RF_EB-style exact-match code/decision tables. The two
+# templates are currently byte-identical -- table_classification.p4 has no
+# <MATCH_TYPE>-style marker of its own; match type is baked into <KEYS>,
+# which generate_P4_tables_and_apply builds directly in Python (see
+# classification_keys below), not read from either template file. A
+# separate file still exists (rather than reusing one path for both modes)
+# so the two modes have independent templates to diverge from later, and so
+# match_type's file-selection story matches the interface both templates
+# are meant to express.
+PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4 = PATH + 'table_classification_exact.p4'
 PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
 
 
@@ -651,7 +661,8 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
 
 
 def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
-                                  codewords=None, use_default_action_discount=False):
+                                  codewords=None, use_default_action_discount=False,
+                                  match_type='ternary'):
   """
       table <TABLE_NAME> {
           key = {
@@ -675,10 +686,31 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   line (resources/table_classification.p4's new <DEFAULT_ACTION> marker);
   otherwise (the default) that marker resolves to nothing, so the
   generated table text is byte-identical to before this task.
+
+  match_type: Task 8 -- Planter RF_EB-style exact-match code/decision
+  tables. 'ternary' (the default) is byte-identical to every caller before
+  this task. 'exact' selects resources/table_classification_exact.p4
+  instead of resources/table_classification.p4 for the CLASSIFICATION
+  tables only, and keys them on `: exact;` instead of `: ternary;`. The
+  feature-range tables below are unaffected either way -- Planter's RF_EB
+  scheme keeps ternary/range feature tables, only the code/decision
+  (classification) tables move to exact match. Callers are responsible for
+  actually enumerating wildcarded codewords into concrete exact-match
+  entries first (see evaluation.exact_match_resource_usage for the
+  analytical accounting of that multiplier); this function only emits the
+  table declarations' match kind, not the table_entries.json rows.
   """
 
   SIZE_FEATURE_TABLE = 200
   SIZE_CLASSIFICATION_TABLE = 400
+
+  if match_type not in ('ternary', 'exact'):
+    raise ValueError("match_type must be 'ternary' or 'exact', got {!r}".format(match_type))
+
+  classification_table_template_path = (
+      PATH_TABLE_CLASSIFICATION_TEMPLATE_P4 if match_type == 'ternary'
+      else PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4
+  )
 
   table_templates = ""
   apply_templates_tmp = "\n"
@@ -686,10 +718,15 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
 
   feature_names = list(feature_names)
 
-  # Tier 3: the classification tables key on one ternary field per selected
-  # feature (meta.code_<feature>), not a single combined meta.codeword field.
+  # Tier 3: the classification tables key on one field per selected feature
+  # (meta.code_<feature>), not a single combined meta.codeword field. Task 8:
+  # the match kind itself (ternary vs exact) is decided by match_type, not
+  # hardcoded -- this is the only place "ternary"/"exact" actually lands in
+  # the generated key text, since neither template file declares its own
+  # <MATCH_TYPE> marker (match type is baked into <KEYS> here, not read from
+  # the template).
   classification_keys = "\n".join(
-      "            meta.code_"+feature.replace(" ","_").lower()+" : ternary;"
+      "            meta.code_"+feature.replace(" ","_").lower()+" : "+match_type+";"
       for feature in feature_names
   )
 
@@ -707,7 +744,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   #Classification tables
   if num_trees_app > 0:
     for i in range(num_trees_app):
-      with open(PATH_TABLE_CLASSIFICATION_TEMPLATE_P4, 'r') as table_template_file:
+      with open(classification_table_template_path, 'r') as table_template_file:
         table_template = table_template_file.read()
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_app_"+str(i))
         table_template = table_template.replace("<KEYS>", classification_keys)
@@ -723,7 +760,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
 
   if num_trees_ddos > 0:
     for i in range(num_trees_ddos):
-      with open(PATH_TABLE_CLASSIFICATION_TEMPLATE_P4, 'r') as table_template_file:
+      with open(classification_table_template_path, 'r') as table_template_file:
         table_template = table_template_file.read()
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_ddos_"+str(i))
         table_template = table_template.replace("<KEYS>", classification_keys)
@@ -815,7 +852,13 @@ def generate_voting_code(num_trees, num_classes, task):
 
 
 def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_intervals,
-                      output_dir=OUTPUT_PATH, output_filename='p4_code_RF_models.p4'):
+                      output_dir=OUTPUT_PATH, output_filename='p4_code_RF_models.p4',
+                      match_type='ternary'):
+  """match_type: Task 8 -- passed straight through to
+  generate_P4_tables_and_apply. 'ternary' (the default) is byte-identical
+  to every caller before this task; 'exact' switches only the
+  classification tables to resources/table_classification_exact.p4 /
+  `: exact;` keys (feature-range tables stay ternary/range either way)."""
 
   # clf_app/clf_ddos may be None -- meaning "no task at all" (e.g. M1 is
   # DDoS-only: clf_app is None, clf_ddos is a trained model).
@@ -857,7 +900,8 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
   registers_code, register_actions_code, feature_update_apply_code = generate_P4_registers_and_apply(feature_intervals)
 
   action_templates = generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos)
-  table_templates, apply_templates = generate_P4_tables_and_apply(feature_intervals.keys(), num_trees_app, num_trees_ddos)
+  table_templates, apply_templates = generate_P4_tables_and_apply(
+      feature_intervals.keys(), num_trees_app, num_trees_ddos, match_type=match_type)
 
   # generate code to vote between the trees -- only for tasks that actually
   # have trees. generate_voting_code now returns (table_decl, apply_call);
