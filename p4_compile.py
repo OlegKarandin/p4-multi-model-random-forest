@@ -208,6 +208,7 @@ _ERRORS_WARNINGS_RE = re.compile(r"(\d+)\s+errors?,\s*(\d+)\s+warnings?\s+genera
 
 
 def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
+                target: str = "tofino",
                 include_path: str = "resources",
                 p4c_path: str = "~/open-p4studio/install/bin/p4c",
                 timeout_seconds: int = 300) -> CompileResult:
@@ -224,6 +225,13 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     survive intact. p4c_path itself is left unquoted/unresolved in Python --
     bash expands the `~` once inside the login shell, which is exactly the
     fix.
+
+    `target` selects the `-b` flag (default "tofino", matching every prior
+    compile in this project's history). Passing target="tofino2" alongside
+    architecture="t2na" targets Tofino-2 -- confirmed accepted by this
+    installed compiler's own `--help-targets` output (reviews/
+    t11_tofino_port_and_env.md Part L). `p4c` internally defines
+    `__TARGET_TOFINO__` from `-b`, so no extra `-D` flag is needed here.
     """
     # Deliberately NOT pre-creating output_dir here (neither via os.makedirs
     # nor a WSL-side `mkdir -p`): p4c behaves differently -- and fails its
@@ -239,7 +247,7 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     wsl_include_path = _to_wsl_path(_resolve_repo_relative(include_path))
 
     full_command = (
-        f"{p4c_path} -b tofino -a {architecture} -I {shlex.quote(wsl_include_path)} "
+        f"{p4c_path} -b {target} -a {architecture} -I {shlex.quote(wsl_include_path)} "
         f"-g --verbose 2 -o {shlex.quote(wsl_output_dir)} {shlex.quote(wsl_p4_path)}"
     )
     cmd = ["wsl", "bash", "-lc", full_command]

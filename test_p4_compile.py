@@ -257,6 +257,29 @@ def test_compile_p4_builds_login_shell_command_with_correct_quoting(tmp_path):
     assert result.warnings == 10
 
 
+def test_compile_p4_target_parameter_selects_the_b_flag(tmp_path):
+    """Guards the `target` parameter added for Task 5 (Tofino-2 portability,
+    reviews/t11_tofino_port_and_env.md Part L): compile_p4 used to hardcode
+    `-b tofino` in full_command, which would have made a Tofino-2 compile
+    (`-b tofino2 -a t2na`) impossible without editing this module. Proves
+    both that the default still produces `-b tofino` (no regression for
+    every prior Tofino-1 call site) and that passing target="tofino2"
+    actually changes the `-b` flag rather than being silently ignored.
+    """
+    fake_proc = _fake_completed_process(stdout="0 errors, 10 warnings generated.\n")
+
+    with patch("p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+        pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
+    default_command = mock_run.call_args[0][0][3]
+    assert "-b tofino -a tna" in default_command
+
+    with patch("p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+        pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"),
+                       architecture="t2na", target="tofino2")
+    tofino2_command = mock_run.call_args[0][0][3]
+    assert "-b tofino2 -a t2na" in tofino2_command
+
+
 def test_errors_warnings_regex_matches_real_captured_summary_line():
     # Verbatim line captured from this session's actual compile
     # (task-1-report.md / reviews/t11_tofino_port_and_env.md Part K).
