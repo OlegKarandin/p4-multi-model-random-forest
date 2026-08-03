@@ -29,6 +29,7 @@ from build_p4_script import (
     generate_voting_code,
     get_table_entries,
     get_ternary_match,
+    most_common_leaf_codeword,
     OUTPUT_PATH,
 )
 
@@ -290,6 +291,78 @@ def test_get_table_entries_feature_range_entries_unaffected(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Task 7: Planter-style default-action discount
+# ---------------------------------------------------------------------------
+#
+# Planter RF_EB's table_generator.py drops the single most common leaf/class
+# from each tree's classification table, relying on the table's
+# default_action instead (default_vote = max(collect_votes,
+# key=collect_votes.count), table_generator.py:408-431). use_default_action_discount
+# ports the same discount into this project's own get_table_entries/
+# generate_P4_tables_and_apply, opt-in (default False, byte-identical to
+# the pre-Task-7 output confirmed by every test above still passing
+# unmodified).
+
+def test_most_common_leaf_codeword_picks_majority_class():
+  # Two leaves vote class 0, one votes class 1 -- the majority CLASS
+  # VALUE wins, not literal codeword-string frequency (every codeword
+  # string here is already unique).
+  tree_codewords = {"101*": 0, "010*": 1, "111*": 0}
+  codeword, class_value = most_common_leaf_codeword(tree_codewords)
+  assert class_value == 0
+  # Deterministic tie-break: first codeword in dict order matching the
+  # majority class.
+  assert codeword == "101*"
+
+
+def test_get_table_entries_default_action_discount_omits_most_common_leaf_entry(tmp_path):
+  # 3 leaves for tree 0: class 0 wins (two leaves: "101*" and "111*"),
+  # class 1 has one ("010*"). The discount must omit exactly the ONE leaf
+  # most_common_leaf_codeword picks as default_action, leaving 2 explicit
+  # classification entries (down from 3) -- the OTHER class-0 leaf stays
+  # an explicit entry.
+  codewords = {0: {"101*": 0, "010*": 1, "111*": 0}}
+  default_codeword, _ = most_common_leaf_codeword(codewords[0])
+
+  get_table_entries(
+      GTE_PATHS_LEAF_NODES, GTE_FEATURE_INTERVALS, codewords,
+      offset=None, path_to_output=str(tmp_path) + os.sep,
+      output_filename="table_entries_discount.json",
+      use_default_action_discount=True,
+  )
+
+  with open(tmp_path / "table_entries_discount.json") as f:
+    entries = json.load(f)
+
+  classification_entries = [e for e in entries if e["action"] == "classify_flow_codeword_0"]
+  assert len(classification_entries) == 2   # 3 leaves minus the one default_action leaf
+
+  written_codewords = {
+      _decode_ternary(entry["key"][0], width=3) + _decode_ternary(entry["key"][1], width=1)
+      for entry in classification_entries
+  }
+  assert default_codeword not in written_codewords
+
+
+def test_get_table_entries_discount_off_by_default_writes_every_leaf(tmp_path):
+  # Regression guard: omitting use_default_action_discount entirely must
+  # still write all 3 leaves, matching pre-Task-7 behavior exactly.
+  codewords = {0: {"101*": 0, "010*": 1, "111*": 0}}
+
+  get_table_entries(
+      GTE_PATHS_LEAF_NODES, GTE_FEATURE_INTERVALS, codewords,
+      offset=None, path_to_output=str(tmp_path) + os.sep,
+      output_filename="table_entries_no_discount.json",
+  )
+
+  with open(tmp_path / "table_entries_no_discount.json") as f:
+    entries = json.load(f)
+
+  classification_entries = [e for e in entries if e["action"] == "classify_flow_codeword_0"]
+  assert len(classification_entries) == 3
+
+
+# ---------------------------------------------------------------------------
 # generate_P4_tables_and_apply
 # ---------------------------------------------------------------------------
 
@@ -354,6 +427,59 @@ def test_generate_P4_tables_and_apply_each_tree_table_references_its_own_action(
   # generated table text.
   assert "classify_flow_codeword_app;" not in table_templates
   assert "classify_flow_codeword_ddos;" not in table_templates
+
+
+def test_generate_P4_tables_and_apply_default_action_discount_emits_const_default_action():
+  codewords = {0: {"101*": 0, "010*": 1, "111*": 0}}   # app tree 0: class 0 wins
+  table_templates, _ = generate_P4_tables_and_apply(
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=0,
+      codewords=codewords, use_default_action_discount=True,
+  )
+  assert "const default_action = classify_flow_codeword_app_0(0);" in table_templates
+  assert "<DEFAULT_ACTION>" not in table_templates
+
+
+def test_generate_P4_tables_and_apply_discount_off_by_default_marker_line_fully_stripped():
+  # Task 7's central promise: with the parameter unset/False, generated
+  # text is byte-identical to before this task -- the whole
+  # "<DEFAULT_ACTION>" marker line (added to
+  # resources/table_classification.p4) must vanish entirely, not just the
+  # bare token.
+  codewords = {0: {"101*": 0, "010*": 1, "111*": 0}}
+  table_templates, _ = generate_P4_tables_and_apply(
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=0,
+      codewords=codewords, use_default_action_discount=False,
+  )
+  assert "default_action" not in table_templates
+  assert "<DEFAULT_ACTION>" not in table_templates
+
+
+def test_generate_P4_tables_and_apply_discount_ddos_tree_reads_codewords_at_app_offset():
+  # ddos tree i must read codewords[num_trees_app + i], not codewords[i] --
+  # confirms the ddos branch doesn't accidentally reuse the app tree's slot.
+  codewords = {
+      0: {"000": 2, "001": 2, "010": 1},   # app tree 0 -> majority class 2
+      1: {"100": 1, "101": 0, "110": 1},   # ddos tree 0 (index 1 == num_trees_app + 0) -> majority class 1
+  }
+  table_templates, _ = generate_P4_tables_and_apply(
+      ["Feature_A"], num_trees_app=1, num_trees_ddos=1,
+      codewords=codewords, use_default_action_discount=True,
+  )
+  assert "const default_action = classify_flow_codeword_app_0(2);" in table_templates
+  assert "const default_action = classify_flow_codeword_ddos_0(1);" in table_templates
+
+
+def test_generate_P4_tables_and_apply_discount_true_without_codewords_still_byte_identical():
+  # use_default_action_discount=True with no codewords supplied (e.g. a
+  # caller that hasn't wired codewords through yet) must not crash and
+  # must not emit a default_action line -- there is nothing to compute it
+  # from.
+  table_templates, _ = generate_P4_tables_and_apply(
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=0,
+      use_default_action_discount=True,
+  )
+  assert "default_action" not in table_templates
+  assert "<DEFAULT_ACTION>" not in table_templates
 
 
 # ---------------------------------------------------------------------------

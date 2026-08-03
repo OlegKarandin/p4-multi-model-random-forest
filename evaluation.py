@@ -122,14 +122,27 @@ def ternary_table_key_bytes(feature_intervals):
              for intervals in feature_intervals.values())
 
 
-def ternary_matching_resource_usage(codewords, feature_intervals):
+def ternary_matching_resource_usage(codewords, feature_intervals,
+                                     use_default_action_discount=False):
   """Returns (ternary_entries, ternary_blocks, codeword_length,
   ternary_table_specs).
 
   Each tree gets its own independent classification table
   (build_p4_script.py:636-659), so ternary_table_specs is one
   (block_count, byte_width) pair per tree. All of those tables key on the
-  same set of per-feature fields, so they share one byte width."""
+  same set of per-feature fields, so they share one byte width.
+
+  Task 7: when use_default_action_discount is True, this ports Planter
+  RF_EB's own discount (table_generator.py:408-431's default_vote =
+  max(collect_votes, key=collect_votes.count)) into this accounting: for
+  each tree, the single leaf whose class value is the most common among
+  that tree's codewords[tree].values() (see
+  build_p4_script.most_common_leaf_codeword) becomes the table's
+  default_action instead of an explicit entry, so that one tree's entry
+  count drops by exactly 1 (never more, regardless of how many leaves
+  share the most-common class) before it feeds into the block-count
+  formula below. False (the default) is byte-identical to pre-Task-7
+  behavior -- every existing caller/test is unaffected."""
 
   ternary_entries, ternary_blocks = 0, 0
   ternary_table_specs = []
@@ -142,9 +155,13 @@ def ternary_matching_resource_usage(codewords, feature_intervals):
 
   factor = math.ceil((codeword_length + 4) / TCAM_BLOCK_KEY_LENGTH)
   for tree in codewords:
-    tree_blocks = math.ceil(len(codewords[tree]) / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor
+    tree_entry_count = len(codewords[tree])
+    if use_default_action_discount and tree_entry_count > 0:
+      tree_entry_count -= 1
 
-    ternary_entries += len(codewords[tree])
+    tree_blocks = math.ceil(tree_entry_count / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor
+
+    ternary_entries += tree_entry_count
     ternary_blocks += tree_blocks
     ternary_table_specs.append((tree_blocks, table_bytes))
 

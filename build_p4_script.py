@@ -3,6 +3,7 @@ import math
 from sklearn.tree import export_text
 import csv
 import json
+from collections import Counter
 from itertools import product
 from statistics import mode
 
@@ -400,6 +401,33 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
   return codewords
 
 
+def most_common_leaf_codeword(tree_codewords):
+  '''
+    Task 7: Planter-style default-action discount.
+
+    Given one tree's codeword dict (codeword string -> class value, the
+    same shape as generate_codewords()'s per-tree dict), returns the
+    (codeword, class_value) pair for the single leaf that becomes that
+    tree's table default_action.
+
+    Mirrors Planter RF_EB's own default_vote = max(collect_votes,
+    key=collect_votes.count) (table_generator.py:408-431): the most common
+    CLASS VALUE among tree_codewords.values() is picked via
+    collections.Counter, not the most common codeword string (every
+    codeword string in this dict is already unique -- one leaf per key --
+    so "most common leaf" only makes sense at the class-value level). Ties
+    in vote count are broken deterministically by dict iteration order:
+    Counter.most_common() is a stable sort, so the first-inserted class
+    among tied classes wins; the specific codeword returned is then the
+    first one in tree_codewords whose value equals that class.
+  '''
+  vote_counts = Counter(tree_codewords.values())
+  most_common_class, _ = vote_counts.most_common(1)[0]
+  for codeword, class_value in tree_codewords.items():
+    if class_value == most_common_class:
+      return codeword, class_value
+
+
 def get_ternary_match(codeword):
   value = ""
   mask = ""
@@ -420,12 +448,18 @@ def get_ternary_match(codeword):
   return f"0x{hex_value}&&&0x{hex_mask}"
 
 
-def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset=None, path_to_output=OUTPUT_PATH, output_filename="table_entries.json", verbose=False):
+def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset=None, path_to_output=OUTPUT_PATH, output_filename="table_entries.json", verbose=False, use_default_action_discount=False):
   '''
   Inputs: feature_intervals [dict]: Dictionary where each key is a tree_id. The values are a list of feature intervals for each tree.
           codewords [dict]: Dictionary where each key is a tree_id. The values are a list of dictionaries.
                             Each key in the dictionary is a codeword corresponding to a leaf node.
                             Each value is the class label associated with that codeword (i.e.: to the leaf node).
+          use_default_action_discount [bool]: Task 7 -- Planter-style default-action discount. When
+                            True, each tree's single most-common-class leaf (see
+                            most_common_leaf_codeword) is omitted from the written table entries for
+                            that tree, since it becomes the classification table's default_action
+                            instead (wired in generate_P4_tables_and_apply). False (the default)
+                            preserves today's exact output.
 
   Outputs: This function writes a JSON file that includes two lists of table entries:
               Feature codeword bits table entries
@@ -486,7 +520,18 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
 
   # 2. Table entries for getting each tree's classification based on generated codeword
   for tree_idx,tree in enumerate(codewords):
+    # Task 7: the default-action leaf is excluded from this tree's written
+    # entries -- it becomes the table's default_action instead (see
+    # generate_P4_tables_and_apply). Computed once per tree, up front, so
+    # every other leaf is still written as before.
+    default_codeword = None
+    if use_default_action_discount and len(codewords[tree]) > 0:
+      default_codeword, _ = most_common_leaf_codeword(codewords[tree])
+
     for codeword in codewords[tree]:
+      if use_default_action_discount and codeword == default_codeword:
+        continue
+
       table_entry={}
 
       # Task M2-B2: `tree` is no longer a runtime action parameter -- each
@@ -605,7 +650,8 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
   return action_templates
 
 
-def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
+def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
+                                  codewords=None, use_default_action_discount=False):
   """
       table <TABLE_NAME> {
           key = {
@@ -615,7 +661,20 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
               <ACTIONS>
           }
           size = <SIZE>;
+          <DEFAULT_ACTION>
       }
+
+  codewords, use_default_action_discount: Task 7 -- Planter-style
+  default-action discount. codewords (when given) is the same tree_id ->
+  {codeword: class_value} dict get_table_entries takes, indexed the same
+  way get_table_entries' multi-model branch expects: tree_id 0..num_trees_app-1
+  for the app trees, num_trees_app..num_trees_app+num_trees_ddos-1 for the
+  ddos trees. When use_default_action_discount is True and codewords is
+  given, each classification table gets a real
+  `const default_action = classify_flow_codeword_<task>_<i>(<class>);`
+  line (resources/table_classification.p4's new <DEFAULT_ACTION> marker);
+  otherwise (the default) that marker resolves to nothing, so the
+  generated table text is byte-identical to before this task.
   """
 
   SIZE_FEATURE_TABLE = 200
@@ -634,6 +693,17 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
       for feature in feature_names
   )
 
+  def _default_action_line(action_name, tree_codewords):
+    # "" leaves resources/table_classification.p4's whole
+    # "        <DEFAULT_ACTION>\n" marker line stripped out below, so the
+    # generated table text is byte-identical to pre-Task-7 output whenever
+    # the discount isn't actually in effect for this table.
+    if not use_default_action_discount or not tree_codewords:
+      return ""
+    _, class_value = most_common_leaf_codeword(tree_codewords)
+    return "        const default_action = {}({});\n".format(
+        action_name, str(int(float(class_value))))
+
   #Classification tables
   if num_trees_app > 0:
     for i in range(num_trees_app):
@@ -643,6 +713,10 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
         table_template = table_template.replace("<KEYS>", classification_keys)
         table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_app_"+str(i)+";")
         table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
+        action_name = "classify_flow_codeword_app_"+str(i)
+        tree_codewords = codewords.get(i) if codewords is not None else None
+        table_template = table_template.replace(
+            "        <DEFAULT_ACTION>\n", _default_action_line(action_name, tree_codewords))
       table_templates += table_template
       apply_templates_tmp += "\t\t\tget_classification_tree_app_"+str(i)+".apply();\n"
     apply_templates_tmp += "\n"
@@ -655,6 +729,10 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos):
         table_template = table_template.replace("<KEYS>", classification_keys)
         table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_ddos_"+str(i)+";")
         table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
+        action_name = "classify_flow_codeword_ddos_"+str(i)
+        tree_codewords = codewords.get(num_trees_app + i) if codewords is not None else None
+        table_template = table_template.replace(
+            "        <DEFAULT_ACTION>\n", _default_action_line(action_name, tree_codewords))
       table_templates += table_template
       apply_templates_tmp += "\t\t\tget_classification_tree_ddos_"+str(i)+".apply();\n"
 
