@@ -10,6 +10,7 @@ warnings.filterwarnings('ignore')
 
 from train_model import train_multi_RF_Optuna_multi_constrained
 from evaluation import accuracy_metrics
+import p4_gen_config
 
 
 def compare_feature_selection_approaches(X_app, X_ddos, y_app, y_ddos, n_trees, max_depth, max_blocks,
@@ -445,6 +446,7 @@ def _process_single_split(
     verbose: bool,
     validate_on_hardware: bool = False,
     hardware_output_dir: Optional[str] = None,
+    config: Optional[p4_gen_config.P4GenConfig] = None,
 ) -> SplitResult:
     """
     Process a single train/test split.
@@ -467,10 +469,20 @@ def _process_single_split(
         (matching `generate_P4_code`'s own plain string-concatenation
         convention for output_dir + output_filename) should end with a path
         separator -- one is appended automatically if missing.
+    config : p4_gen_config.P4GenConfig, optional
+        Additive convenience: when given, `config.validate_on_hardware` /
+        `config.hardware_output_dir` take precedence over the individual
+        `validate_on_hardware` / `hardware_output_dir` keyword arguments
+        above (which remain the source of truth when `config` is None, so
+        every existing caller is unaffected).
     """
     # Import inside function to ensure proper pickling in subprocess
     from train_model import train_multi_RF_Optuna_multi_constrained
     from evaluation import accuracy_metrics
+
+    if config is not None:
+        validate_on_hardware = config.validate_on_hardware
+        hardware_output_dir = config.hardware_output_dir
 
     if validate_on_hardware and hardware_output_dir and not hardware_output_dir.endswith(('/', '\\')):
         hardware_output_dir = hardware_output_dir + "/"
@@ -703,7 +715,8 @@ def compare_feature_selection_approaches_parallel(
     n_trees, max_depth, max_blocks,
     feature_names,
     n_splits, random_state=42, verbose=False,
-    max_workers=None
+    max_workers=None,
+    config: Optional[p4_gen_config.P4GenConfig] = None,
 ):
     """
     Compare single-task vs multi-task feature selection using parallel processing.
@@ -729,6 +742,12 @@ def compare_feature_selection_approaches_parallel(
         Print progress (default: False)
     max_workers : int, optional
         Maximum number of parallel workers. Defaults to min(n_splits, cpu_count - 1).
+    config : p4_gen_config.P4GenConfig, optional
+        Forwarded as-is to each worker's `_process_single_split` call (its
+        `validate_on_hardware` / `hardware_output_dir` fields take
+        precedence there when given). Defaults to None, so every existing
+        caller's behavior (no hardware validation ever kicked off through
+        this parallel path) is unchanged.
 
     Returns
     -------
@@ -764,7 +783,8 @@ def compare_feature_selection_approaches_parallel(
                 X_app, X_ddos, y_app, y_ddos,
                 n_trees, max_depth, max_blocks,
                 feature_names,
-                random_state, verbose
+                random_state, verbose,
+                config=config,
             ): split_idx
             for split_idx in range(10, 10 + n_splits)
         }

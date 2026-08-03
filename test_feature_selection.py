@@ -298,6 +298,67 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
         assert row['compile_errors'] == 0
 
 
+def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_path):
+    """Task 4: a P4GenConfig passed via `config=` must produce the exact
+    same result as passing its `validate_on_hardware`/`hardware_output_dir`
+    values as the individual keyword arguments directly -- `config` is an
+    additive convenience, not a different code path. Reuses the same fast
+    mocked-training pattern as
+    `test_process_single_split_splices_compile_results_onto_correct_iteration`
+    above (real, instantly-fit tiny RandomForestClassifiers standing in for
+    the expensive Optuna search; `p4_compile.compile_p4_async` faked the
+    same way) rather than a new slow real-Optuna test.
+    """
+    import p4_gen_config
+    from sklearn.ensemble import RandomForestClassifier
+    import build_p4_script as bps
+
+    X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=30, n_features=2)
+
+    def _fake_train(X_A, y_A, X_B, y_B, x_val_A, y_val_A, x_val_B, y_val_B,
+                     features_A, features_B, n_trees, max_depth, max_blocks,
+                     encoding, warm_start_params=None):
+        model_A = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
+        model_B = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
+        return model_A, model_B, 1, 1, {}
+
+    def _fake_compile_async(p4_path, log_dir, **kwargs):
+        return type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
+            errors=0, warnings=0, stages=7, tables=7, tcam=7)})()
+
+    kwargs_dir = str(tmp_path / "kwargs") + "/"
+    config_dir = str(tmp_path / "config") + "/"
+
+    with patch("train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
+         patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+        result_kwargs = fs._process_single_split(
+            split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+            n_trees=1, max_depth=3, max_blocks=50,
+            feature_names=["f0", "f1"], random_state=42, verbose=False,
+            validate_on_hardware=True, hardware_output_dir=kwargs_dir,
+        )
+
+    cfg = p4_gen_config.P4GenConfig(validate_on_hardware=True, hardware_output_dir=config_dir)
+    with patch("train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
+         patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+        result_config = fs._process_single_split(
+            split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+            n_trees=1, max_depth=3, max_blocks=50,
+            feature_names=["f0", "f1"], random_state=42, verbose=False,
+            config=cfg,
+        )
+
+    assert result_kwargs.error is None
+    assert result_config.error is None
+    # Result rows never record the output directory itself, only the
+    # compile numbers the (identically-faked) compiler returned -- so a
+    # direct equality check confirms `config=` and the equivalent individual
+    # kwargs produced byte-identical results.
+    assert result_kwargs.results == result_config.results
+
+
 # ---------------------------------------------------------------------------
 # Direct unit tests for _kickoff_hardware_validation, isolated from the
 # (slow) real Optuna training pipeline above.

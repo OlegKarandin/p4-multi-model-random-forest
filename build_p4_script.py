@@ -8,6 +8,7 @@ from itertools import product
 from statistics import mode
 
 from feature_registers import FEATURE_REGISTER_CATALOG
+import p4_gen_config
 
 INFINITE = (2**16)-1
 MAX_CODEWORD_LENGTH = 512
@@ -765,8 +766,15 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
                                   codewords=None, use_default_action_discount=False,
                                   match_type='ternary',
                                   feature_names_app=None, feature_names_ddos=None,
-                                  raw_feature_names=None):
+                                  raw_feature_names=None,
+                                  config: "p4_gen_config.P4GenConfig" = None):
   """
+  config: Task 4 -- additive convenience. When given, `config.use_default_action_discount`
+  / `config.match_type` take precedence over the individual
+  `use_default_action_discount` / `match_type` keyword arguments above
+  (which remain the source of truth when `config` is None, so every
+  existing caller is unaffected).
+
       table <TABLE_NAME> {
           key = {
               meta.<FEATURE_NAME>: <MATCH_TYPE>;
@@ -829,6 +837,10 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   every pre-Task-3 caller's behavior (which never had this distinction)
   byte-for-byte.
   """
+
+  if config is not None:
+    use_default_action_discount = config.use_default_action_discount
+    match_type = config.match_type
 
   SIZE_FEATURE_TABLE = 200
   SIZE_CLASSIFICATION_TABLE = 400
@@ -1000,12 +1012,22 @@ def generate_voting_code(num_trees, num_classes, task):
 def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
                       feature_intervals_app, feature_intervals_ddos,
                       output_dir=OUTPUT_PATH, output_filename='p4_code_RF_models.p4',
-                      match_type='ternary'):
+                      match_type='ternary',
+                      config: "p4_gen_config.P4GenConfig" = None):
   """match_type: Task 8 -- passed straight through to
   generate_P4_tables_and_apply. 'ternary' (the default) is byte-identical
   to every caller before this task; 'exact' switches only the
   classification tables to resources/table_classification_exact.p4 /
   `: exact;` keys (feature-range tables stay ternary/range either way).
+
+  config: Task 4 -- additive convenience. When given, `config.match_type`
+  takes precedence over the individual `match_type` keyword argument above
+  (which remains the source of truth when `config` is None, so every
+  existing caller is unaffected). NOTE: `config.use_default_action_discount`
+  has no effect here -- this function does not accept a `codewords`/
+  `use_default_action_discount` parameter at all (pre-existing scope, not
+  introduced or changed by this task); that flag is only consumed by
+  `generate_P4_tables_and_apply` and `get_table_entries`, called directly.
 
   CAVEAT: with match_type='exact', the emitted P4 program is NOT yet
   end-to-end compilable/loadable on its own. get_table_entries (writes
@@ -1036,6 +1058,9 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   since a raw counter value is model-independent regardless of who
   discretizes it (see _resolve_disjoint_feature_plan's own docstring for
   the full design)."""
+
+  if config is not None:
+    match_type = config.match_type
 
   # clf_app/clf_ddos may be None -- meaning "no task at all" (e.g. M1 is
   # DDoS-only: clf_app is None, clf_ddos is a trained model).

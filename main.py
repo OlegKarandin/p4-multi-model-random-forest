@@ -5,10 +5,24 @@ from feature_selection import compare_feature_selection_approaches, compare_feat
 
 from analysis import analyze_multi_objective_results
 
+import argparse
 import pandas as pd
 import numpy as np
 
 from pathlib import Path
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Feature selection experiment runner")
+    parser.add_argument(
+        "--mode", choices=["compute", "plot"], default="plot",
+        help="'compute' runs new feature-selection experiments via "
+             "compare_independent_joint_mapping (expensive, real Optuna searches); "
+             "'plot' loads and analyzes already-computed results (default, matches "
+             "today's checked-in new_results=False behavior)")
+    return parser.parse_args(argv)
+
 
 def implement_tree_models_in_P4():
     # we classify traffic of 3 applications and detect if traffic is an attack or is benign
@@ -255,9 +269,9 @@ def load_and_combine_data(folder_path, M_values):
     return combined_df
 
 
-if __name__ == '__main__':
+def run_main():
+    args = parse_args()
 
-    new_results = False
     #M = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
     M = [25, 40, 50, 60, 75, 90, 100]
 
@@ -272,7 +286,7 @@ if __name__ == '__main__':
     parallel = True      # Set to False to use sequential processing
     max_workers = None   # None = auto (cpu_count - 1), or set to specific number
 
-    if new_results:
+    if args.mode == "compute":
         compare_independent_joint_mapping(
             M_values=M,
             eps=eps,
@@ -291,3 +305,7 @@ if __name__ == '__main__':
 
         analysis = analyze_multi_objective_results(df, list(range(17, 0, -2)))
         print(f"\nMulti approach covers {analysis['all_k']['coverage_ratio']['multi_covers_single']:.1%} of Single approach solutions")
+
+
+if __name__ == '__main__':
+    run_main()
