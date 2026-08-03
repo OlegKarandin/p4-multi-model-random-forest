@@ -20,6 +20,7 @@ reviews/t11_tofino_port_and_env.md Part K):
    fails to find the compiler. See `compile_p4`.
 """
 
+import json
 import os
 import re
 import shlex
@@ -94,6 +95,53 @@ def parse_compile_logs(log_dir: str) -> CompileResult:
                     setattr(result, field_name, int(cell))
 
     return result
+
+
+def parse_table_entry_count(log_dir: str, table_name: str) -> Optional[int]:
+    """Reads the real per-table PHYSICAL TCAM row count from resources.json.
+
+    log_dir accepts either a compile's top-level output_dir or the pipe/logs
+    directory itself, mirroring parse_compile_logs's convention.
+
+    resources.json's real structure (confirmed against a real compile, see
+    .superpowers/sdd/timing_probe_logs/pipe/logs/resources.json):
+    resources.mau.mau_stages is a list of per-stage dicts; each stage's
+    tcams.tcams is a list of physical TCAM row entries, each shaped
+    {"column": int, "row": int, "usages": [{"used_by": "SwitchIngress.<table>",
+    "used_for": "..."}, ...]}. A row counts toward table_name if ANY of its
+    usages names it -- used_for is NOT filtered on, since a range-match
+    table is expected to occupy physical TCAM rows the same way a ternary
+    table does.
+
+    Returns None (not 0) both when resources.json doesn't exist (compile
+    failed before resource allocation) and when table_name is never found in
+    it -- these are distinct signals from "found with 0 rows", which a real
+    range-match table with at least one entry should never actually hit.
+    """
+    logs_path = os.path.join(log_dir, "pipe", "logs")
+    if not os.path.isdir(logs_path):
+        logs_path = log_dir  # allow passing the logs dir directly, not just its parent
+
+    resources_path = os.path.join(logs_path, "resources.json")
+    if not os.path.isfile(resources_path):
+        return None
+
+    with open(resources_path) as f:
+        data = json.load(f)
+
+    mau_stages = data.get("resources", {}).get("mau", {}).get("mau_stages", [])
+
+    count = 0
+    found = False
+    for stage in mau_stages:
+        for tcam_row in stage.get("tcams", {}).get("tcams", []):
+            for usage in tcam_row.get("usages", []):
+                if usage.get("used_by") == table_name:
+                    found = True
+                    count += 1
+                    break  # don't double-count one physical row for repeated matches
+
+    return count if found else None
 
 
 def _split_pipe_row(line: str) -> list:

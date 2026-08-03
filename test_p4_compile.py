@@ -9,6 +9,7 @@ The single pytest.mark.slow test at the bottom drives the real WSL2 Tofino
 toolchain end to end and is not run by the default `pytest` invocation.
 """
 
+import json
 import os
 import shlex
 from unittest.mock import MagicMock, patch
@@ -99,6 +100,90 @@ def test_parse_compile_logs_accepts_logs_dir_directly(tmp_path):
     result = pc.parse_compile_logs(str(log_dir))
     assert result.stages == 3
     assert result.tables == 11
+
+
+# Minimal realistic subset of the real resources.json structure, confirmed
+# against Task 1's actual compile at
+# .superpowers/sdd/timing_probe_logs/pipe/logs/resources.json:
+# resources.mau.mau_stages is a list of per-stage dicts, each carrying a
+# "tcams" dict whose "tcams" list holds one entry per PHYSICAL TCAM row; each
+# row entry carries a "usages" list naming which P4 table(s) (by full name,
+# e.g. "SwitchIngress.<table_name>") that physical row serves. The real file
+# only ever saw "ternary_match" for used_for in the fixture we inspected, but
+# parse_table_entry_count must not filter on used_for -- a range-match table
+# is expected to show up the same way.
+REAL_RESOURCES_JSON_SUBSET = {
+    "resources": {
+        "mau": {
+            "mau_stages": [
+                {
+                    "stage_number": 0,
+                    "tcams": {
+                        "nColumns": 2,
+                        "nRows": 4,
+                        "tcams": [
+                            {"column": 0, "row": 0, "usages": [
+                                {"used_by": "SwitchIngress.probe_range_table", "used_for": "ternary_match"}]},
+                            {"column": 0, "row": 1, "usages": [
+                                {"used_by": "SwitchIngress.probe_range_table", "used_for": "ternary_match"}]},
+                            {"column": 0, "row": 2, "usages": [
+                                {"used_by": "SwitchIngress.other_table", "used_for": "ternary_match"}]},
+                            {"column": 1, "row": 0, "usages": []},
+                        ],
+                    },
+                },
+                {
+                    "stage_number": 1,
+                    "tcams": {
+                        "nColumns": 2,
+                        "nRows": 2,
+                        "tcams": [
+                            {"column": 0, "row": 0, "usages": [
+                                {"used_by": "SwitchIngress.probe_range_table", "used_for": "ternary_match"}]},
+                        ],
+                    },
+                },
+            ]
+        }
+    }
+}
+
+
+def _write_resources_json(tmp_path, data):
+    log_dir = tmp_path / "pipe" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "resources.json").write_text(json.dumps(data))
+    return str(tmp_path)
+
+
+def test_parse_table_entry_count_counts_rows_across_stages(tmp_path):
+    # probe_range_table has 2 rows in stage 0 + 1 row in stage 1 = 3 total,
+    # while other_table's 1 row and the unused row must not be counted.
+    log_dir = _write_resources_json(tmp_path, REAL_RESOURCES_JSON_SUBSET)
+    assert pc.parse_table_entry_count(log_dir, "SwitchIngress.probe_range_table") == 3
+
+
+def test_parse_table_entry_count_returns_none_for_missing_table(tmp_path):
+    # A table name never found anywhere in resources.json is a distinct
+    # signal from "found with 0 rows" (which shouldn't happen for a real
+    # range-match table with at least one entry).
+    log_dir = _write_resources_json(tmp_path, REAL_RESOURCES_JSON_SUBSET)
+    assert pc.parse_table_entry_count(log_dir, "SwitchIngress.nonexistent_table") is None
+
+
+def test_parse_table_entry_count_returns_none_when_resources_json_absent(tmp_path):
+    # A compile that failed before resource allocation ran leaves no
+    # resources.json at all.
+    assert pc.parse_table_entry_count(str(tmp_path), "SwitchIngress.probe_range_table") is None
+
+
+def test_parse_table_entry_count_accepts_logs_dir_directly(tmp_path):
+    # Mirrors parse_compile_logs's convention: callers may pass either the
+    # compile's top-level output_dir or the pipe/logs directory itself.
+    log_dir = tmp_path / "pipe" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "resources.json").write_text(json.dumps(REAL_RESOURCES_JSON_SUBSET))
+    assert pc.parse_table_entry_count(str(log_dir), "SwitchIngress.probe_range_table") == 3
 
 
 def _fake_completed_process(stdout="", stderr=""):
