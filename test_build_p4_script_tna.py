@@ -738,9 +738,24 @@ def test_generate_P4_code_disjoint_namespaces_when_intervals_differ():
     assert "set_code_app_flow_iat_max" in text
     assert "set_code_ddos_flow_iat_max" in text
     # exactly one raw-value register/table reading the underlying feature,
-    # shared by both discretizations -- confirm the raw feature name
-    # appears in the metadata/register declarations only once, not twice
-    assert text.count("flow_iat_max_val") >= 1  # both discretizations read the SAME raw field
+    # shared by both discretizations. A plain metadata-field count is NOT
+    # enough to catch the regression this test guards against:
+    # generate_P4_registers_and_apply silently SKIPS any feature name it
+    # can't find in FEATURE_REGISTER_CATALOG (no error raised), so if a
+    # future change fed it NAMESPACED names (e.g. "app_flow_iat_max") in
+    # place of the deduplicated RAW name ("flow_iat_max"), the raw
+    # register declaration and its populating .execute() call site would
+    # both silently vanish from the generated text -- while the
+    # `meta.flow_iat_max_val` FIELD declaration (emitted by a separate,
+    # always-raw-keyed loop in generate_P4_code) would still be present,
+    # keeping a bare substring-count check green. Assert both the field
+    # declaration AND the register-populating call site appear exactly
+    # once each, so either one vanishing (the real regression mode) or
+    # either one being duplicated fails this test.
+    assert text.count("bit<16> flow_iat_max_val;") == 1
+    assert text.count(
+        "meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);"
+    ) == 1
 
 
 def test_generate_P4_code_writes_to_injectable_path(tmp_path):

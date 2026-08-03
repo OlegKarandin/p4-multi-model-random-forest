@@ -490,28 +490,48 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
             "action_params": _,
           }
 
-  Task 3 (disjoint-encoding single-pipeline generator): this function needs
-  NO code change to correctly emit resolved-plan-aware entries -- it never
-  reads/writes anything about the RAW tracked-value field (that's entirely
-  `generate_P4_tables_and_apply`'s and `generate_P4_registers_and_apply`'s
-  concern). It is already agnostic to whether a `feature_intervals` key is
-  a "raw" or "resolved"/namespaced name: `table_name`/`action` are built
-  directly from whatever key is given, and `codewords`' own segment order
-  must already match `feature_intervals`' iteration order (same
-  requirement as always, pre-dating this task -- both must come from the
-  same `generate_codewords(paths, feature_intervals)` call). So per
-  _resolve_disjoint_feature_plan's design, a caller building a genuinely
-  disjoint (namespaced) pipeline's table_entries.json should call both
-  `generate_codewords` and this function with a `feature_intervals` dict
-  keyed by RESOLVED names (e.g. {"app_flow_iat_max": [...], "flow_iat_max":
-  [...]}), each mapped to that entry's own intervals -- exactly reproducing
-  "keyed by resolved_name for the table/field name" automatically, with
-  zero changes needed here. No caller in this task's scope (main.py's
-  pipeline is joint-only; feature_selection.py's real-compile validation
-  only needs `generate_P4_code`'s emitted .p4 SOURCE, not table_entries.json)
-  actually exercises the disjoint-namespaced path through this function
-  yet -- this note documents the convention for the eventual caller that
-  will.
+  Task 3 (disjoint-encoding single-pipeline generator) -- current support
+  for RESOLVED/namespaced `feature_intervals` keys (e.g. "app_flow_iat_max")
+  is PARTIAL, not "zero changes needed" everywhere:
+
+  - Section 1 below (the per-feature codeword-generation table entries,
+    "table_<idx>_<feature_name>" / "set_code_<feature_name>") IS genuinely
+    agnostic to raw vs. resolved names. It only ever reads intervals from
+    `feature_intervals[feature_name]` and never cross-references tree-path
+    step names, so passing it resolved/namespaced keys works correctly
+    as-is.
+
+  - `generate_codewords` (which must be called with the SAME
+    `feature_intervals` before this function, since `codewords`' segment
+    order has to match `feature_intervals`' iteration order) is NOT
+    namespace-aware: it matches each `feature_intervals` key directly
+    against the RAW feature names recorded in each tree path (e.g.
+    "Flow_IAT_Max"). A resolved/namespaced key like "app_flow_iat_max"
+    will never match a real tree-path step name, so that feature is
+    silently treated as absent from every path and wildcarded in every
+    codeword -- wrong codewords, with no error raised.
+
+  - Section 2 below (the per-tree classification-entry loop that slices
+    each codeword across every entry in `feature_intervals`) also assumes
+    `feature_intervals` contains exactly the keys/order used to build the
+    per-model classification table's key fields. After this task, each
+    model's classification table only declares key fields for its own
+    feature subset (see `feature_names_app`/`feature_names_ddos` in
+    `generate_P4_tables_and_apply`), not the full resolved plan. Calling
+    this function with the FULL resolved-name-keyed dict (spanning both
+    models) would slice codewords into the wrong number/width of key
+    chunks for a real per-model table.
+
+  Net effect: a caller wanting genuinely namespaced, per-model exact
+  codewords/table_entries.json would need further changes to
+  `generate_codewords` (to match resolved names back to their underlying
+  raw feature for path-matching) and to how this function is invoked
+  (once per model, with that model's own feature subset) -- this task did
+  not make those changes. No caller in this task's scope exercises the
+  disjoint-namespaced path through `generate_codewords`/this function
+  today (main.py's pipeline is joint-only; feature_selection.py's
+  real-compile validation only needs `generate_P4_code`'s emitted .p4
+  SOURCE, not table_entries.json).
   '''
 
   feature_code_length = {}
