@@ -29,7 +29,7 @@ from build_p4_script import (
     generate_voting_code,
     get_table_entries,
     get_ternary_match,
-    most_common_leaf_codeword,
+    most_common_class_and_dropped_codewords,
     OUTPUT_PATH,
 )
 
@@ -303,26 +303,32 @@ def test_get_table_entries_feature_range_entries_unaffected(tmp_path):
 # the pre-Task-7 output confirmed by every test above still passing
 # unmodified).
 
-def test_most_common_leaf_codeword_picks_majority_class():
-  # Two leaves vote class 0, one votes class 1 -- the majority CLASS
-  # VALUE wins, not literal codeword-string frequency (every codeword
-  # string here is already unique).
-  tree_codewords = {"101*": 0, "010*": 1, "111*": 0}
-  codeword, class_value = most_common_leaf_codeword(tree_codewords)
-  assert class_value == 0
-  # Deterministic tie-break: first codeword in dict order matching the
-  # majority class.
-  assert codeword == "101*"
+def test_most_common_class_and_dropped_codewords_drops_every_matching_leaf():
+    # class 0 has THREE leaves ("000", "010", "100"); class 1 has ONE ("001").
+    # Old (wrong) behavior would return just one of the three class-0 codewords;
+    # the fix must return all three.
+    tree_codewords = {"000": 0, "001": 1, "010": 0, "100": 0}
+    class_value, dropped = bps.most_common_class_and_dropped_codewords(tree_codewords)
+    assert class_value == 0
+    assert set(dropped) == {"000", "010", "100"}
 
 
-def test_get_table_entries_default_action_discount_omits_most_common_leaf_entry(tmp_path):
+def test_most_common_class_and_dropped_codewords_single_leaf_class():
+    # Degenerate case: only one leaf has the majority class -- must still work
+    # (this is the case the OLD implementation already handled correctly).
+    tree_codewords = {"000": 0, "001": 1, "010": 1}
+    class_value, dropped = bps.most_common_class_and_dropped_codewords(tree_codewords)
+    assert class_value == 1
+    assert dropped == ["001", "010"] or set(dropped) == {"001", "010"}
+
+
+def test_get_table_entries_default_action_discount_omits_every_majority_class_leaf(tmp_path):
   # 3 leaves for tree 0: class 0 wins (two leaves: "101*" and "111*"),
-  # class 1 has one ("010*"). The discount must omit exactly the ONE leaf
-  # most_common_leaf_codeword picks as default_action, leaving 2 explicit
-  # classification entries (down from 3) -- the OTHER class-0 leaf stays
-  # an explicit entry.
+  # class 1 has one ("010*"). The corrected discount must omit BOTH
+  # class-0 leaves (not just one), leaving 1 explicit classification
+  # entry (down from 3) -- only the class-1 leaf remains explicit.
   codewords = {0: {"101*": 0, "010*": 1, "111*": 0}}
-  default_codeword, _ = most_common_leaf_codeword(codewords[0])
+  _, dropped_codewords = most_common_class_and_dropped_codewords(codewords[0])
 
   get_table_entries(
       GTE_PATHS_LEAF_NODES, GTE_FEATURE_INTERVALS, codewords,
@@ -335,13 +341,13 @@ def test_get_table_entries_default_action_discount_omits_most_common_leaf_entry(
     entries = json.load(f)
 
   classification_entries = [e for e in entries if e["action"] == "classify_flow_codeword_0"]
-  assert len(classification_entries) == 2   # 3 leaves minus the one default_action leaf
+  assert len(classification_entries) == 1   # 3 leaves minus both class-0 default_action leaves
 
   written_codewords = {
       _decode_ternary(entry["key"][0], width=3) + _decode_ternary(entry["key"][1], width=1)
       for entry in classification_entries
   }
-  assert default_codeword not in written_codewords
+  assert written_codewords.isdisjoint(dropped_codewords)
 
 
 def test_get_table_entries_discount_off_by_default_writes_every_leaf(tmp_path):

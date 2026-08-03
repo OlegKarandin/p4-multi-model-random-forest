@@ -229,21 +229,16 @@ def test_crossbar_stages_needed_output_respects_all_three_limits():
         assert stages >= math.ceil(len(specs) / bps.TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
 
-def test_ternary_matching_resource_usage_default_action_discount_drops_most_common_leaf():
-    # Task 7: Planter-style default-action discount. One tree, 3 leaves:
-    # class 0 has two leaves ("000" and "010"), class 1 has one ("001") --
-    # class 0 is the clear majority CLASS VALUE among
-    # codewords[tree].values(), per generate_codewords' real shape
-    # (codeword string -> class value, each codeword string already
-    # unique). The discount drops exactly ONE of the two class-0 leaves
-    # (the one it picks as default_action), not both -- the other class-0
-    # leaf remains an explicit entry.
-    codewords = {0: {"000": 0, "001": 1, "010": 0}}
+def test_ternary_matching_resource_usage_discount_drops_every_majority_leaf():
+    # 4 leaves for one tree: 3 vote class 0, 1 votes class 1. Old (wrong)
+    # behavior subtracted exactly 1 regardless; corrected behavior must
+    # subtract all 3 majority-class leaves.
+    codewords = {0: {"000": 0, "001": 1, "010": 0, "100": 0}}
     entries_no_discount, _, _, _ = ev.ternary_matching_resource_usage(codewords, {})
     entries_discount, _, _, _ = ev.ternary_matching_resource_usage(
         codewords, {}, use_default_action_discount=True)
-    assert entries_no_discount == 3
-    assert entries_discount == 2  # one leaf (of the two mapping to class 0) becomes default_action
+    assert entries_no_discount == 4
+    assert entries_discount == 1  # only the single class-1 leaf remains explicit
 
 
 def test_ternary_matching_resource_usage_discount_off_by_default_unchanged():
@@ -253,26 +248,26 @@ def test_ternary_matching_resource_usage_discount_off_by_default_unchanged():
     assert entries == 3
 
 
-def test_ternary_matching_resource_usage_discount_never_drops_more_than_one_per_tree():
-    # Even though TWO leaves vote class 0, only one entry is ever dropped
-    # per tree -- the discount is "one default_action per table", not
-    # "deduplicate all leaves sharing the most-common class".
+def test_ternary_matching_resource_usage_discount_drops_all_leaves_sharing_majority_class():
+    # TWO leaves vote class 0 -- the corrected discount drops BOTH, not
+    # just one; the discount is "every leaf sharing the majority class",
+    # not "one default_action per table" (that was the bug this task fixed).
     codewords = {0: {"000": 0, "001": 1, "010": 0}}
     entries_discount, _, _, _ = ev.ternary_matching_resource_usage(
         codewords, {}, use_default_action_discount=True)
-    assert entries_discount == len(codewords[0]) - 1
+    assert entries_discount == len(codewords[0]) - 2
 
 
 def test_ternary_matching_resource_usage_discount_applies_per_tree():
     # Two trees, each with their own majority class -- discount subtracts
-    # exactly one leaf from EACH tree independently.
+    # every leaf sharing that tree's majority class, independently per tree.
     codewords = {
-        0: {"000": 0, "001": 1, "010": 0},          # 3 leaves, class 0 wins
-        1: {"100": 1, "101": 1, "110": 0, "111": 1},  # 4 leaves, class 1 wins
+        0: {"000": 0, "001": 1, "010": 0},          # 3 leaves, class 0 wins (2 leaves)
+        1: {"100": 1, "101": 1, "110": 0, "111": 1},  # 4 leaves, class 1 wins (3 leaves)
     }
     entries_discount, _, _, _ = ev.ternary_matching_resource_usage(
         codewords, {}, use_default_action_discount=True)
-    assert entries_discount == (3 - 1) + (4 - 1)
+    assert entries_discount == (3 - 2) + (4 - 3)
 
 
 def test_ternary_matching_resource_usage_returns_codeword_length():

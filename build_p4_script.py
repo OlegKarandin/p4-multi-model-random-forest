@@ -411,31 +411,38 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
   return codewords
 
 
-def most_common_leaf_codeword(tree_codewords):
+def most_common_class_and_dropped_codewords(tree_codewords):
   '''
-    Task 7: Planter-style default-action discount.
+    Planter-style default-action discount, corrected against Planter's REAL
+    source (In-Network-Machine-Learning/Planter,
+    src/models/RF/Type_EB/table_generator.py -- the RF-specific citation --
+    and src/models/DT/Type_EB/table_generator.py, textually near-identical):
+    `default_vote/default_label = max(collect_votes, key=collect_votes.count)`,
+    then EVERY entry whose leaf equals it is dropped, not just one -- confirmed
+    by both files' own entry-filtering
+    loop this session, not assumed).
 
-    Given one tree's codeword dict (codeword string -> class value, the
-    same shape as generate_codewords()'s per-tree dict), returns the
-    (codeword, class_value) pair for the single leaf that becomes that
-    tree's table default_action.
-
-    Mirrors Planter RF_EB's own default_vote = max(collect_votes,
-    key=collect_votes.count) (table_generator.py:408-431): the most common
-    CLASS VALUE among tree_codewords.values() is picked via
-    collections.Counter, not the most common codeword string (every
-    codeword string in this dict is already unique -- one leaf per key --
-    so "most common leaf" only makes sense at the class-value level). Ties
-    in vote count are broken deterministically by dict iteration order:
-    Counter.most_common() is a stable sort, so the first-inserted class
-    among tied classes wins; the specific codeword returned is then the
-    first one in tree_codewords whose value equals that class.
+    Given one tree's codeword dict (codeword string -> class value, the same
+    shape as generate_codewords()'s per-tree dict), returns (class_value,
+    dropped_codewords): class_value is the single most common class among
+    tree_codewords.values() (ties broken deterministically by Counter's
+    stable most_common() order -- the first-inserted class among tied
+    classes wins); dropped_codewords is a list of EVERY codeword string
+    whose value equals class_value -- all of these become the table's
+    default_action and must be omitted from the table's explicit entries.
+    This is provably safe regardless of Planter's own behavior: a decision
+    tree's leaves partition the input space with zero overlap (every real
+    input reaches exactly one leaf), so any input that would have reached a
+    dropped leaf now matches no explicit entry, falls through to the
+    default action, and gets exactly the class it would have gotten anyway.
   '''
   vote_counts = Counter(tree_codewords.values())
   most_common_class, _ = vote_counts.most_common(1)[0]
-  for codeword, class_value in tree_codewords.items():
-    if class_value == most_common_class:
-      return codeword, class_value
+  dropped_codewords = [
+      codeword for codeword, class_value in tree_codewords.items()
+      if class_value == most_common_class
+  ]
+  return most_common_class, dropped_codewords
 
 
 def get_ternary_match(codeword):
@@ -465,11 +472,11 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
                             Each key in the dictionary is a codeword corresponding to a leaf node.
                             Each value is the class label associated with that codeword (i.e.: to the leaf node).
           use_default_action_discount [bool]: Task 7 -- Planter-style default-action discount. When
-                            True, each tree's single most-common-class leaf (see
-                            most_common_leaf_codeword) is omitted from the written table entries for
-                            that tree, since it becomes the classification table's default_action
-                            instead (wired in generate_P4_tables_and_apply). False (the default)
-                            preserves today's exact output.
+                            True, every one of each tree's leaves sharing the majority class (see
+                            most_common_class_and_dropped_codewords) is omitted from the written table
+                            entries for that tree, since they become the classification table's
+                            default_action instead (wired in generate_P4_tables_and_apply). False (the
+                            default) preserves today's exact output.
 
   Outputs: This function writes a JSON file that includes two lists of table entries:
               Feature codeword bits table entries
@@ -530,16 +537,18 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
 
   # 2. Table entries for getting each tree's classification based on generated codeword
   for tree_idx,tree in enumerate(codewords):
-    # Task 7: the default-action leaf is excluded from this tree's written
-    # entries -- it becomes the table's default_action instead (see
-    # generate_P4_tables_and_apply). Computed once per tree, up front, so
-    # every other leaf is still written as before.
-    default_codeword = None
+    # Task 7: every leaf sharing this tree's majority class is excluded
+    # from this tree's written entries -- they become the table's
+    # default_action instead (see generate_P4_tables_and_apply). Computed
+    # once per tree, up front, so every other leaf is still written as
+    # before.
+    default_class, dropped_codewords = None, set()
     if use_default_action_discount and len(codewords[tree]) > 0:
-      default_codeword, _ = most_common_leaf_codeword(codewords[tree])
+      default_class, dropped_list = most_common_class_and_dropped_codewords(codewords[tree])
+      dropped_codewords = set(dropped_list)
 
     for codeword in codewords[tree]:
-      if use_default_action_discount and codeword == default_codeword:
+      if use_default_action_discount and codeword in dropped_codewords:
         continue
 
       table_entry={}
@@ -737,7 +746,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
     # the discount isn't actually in effect for this table.
     if not use_default_action_discount or not tree_codewords:
       return ""
-    _, class_value = most_common_leaf_codeword(tree_codewords)
+    class_value, _ = most_common_class_and_dropped_codewords(tree_codewords)
     return "        const default_action = {}({});\n".format(
         action_name, str(int(float(class_value))))
 

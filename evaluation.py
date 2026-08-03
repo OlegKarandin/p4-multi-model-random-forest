@@ -135,14 +135,14 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   Task 7: when use_default_action_discount is True, this ports Planter
   RF_EB's own discount (table_generator.py:408-431's default_vote =
   max(collect_votes, key=collect_votes.count)) into this accounting: for
-  each tree, the single leaf whose class value is the most common among
-  that tree's codewords[tree].values() (see
-  build_p4_script.most_common_leaf_codeword) becomes the table's
-  default_action instead of an explicit entry, so that one tree's entry
-  count drops by exactly 1 (never more, regardless of how many leaves
-  share the most-common class) before it feeds into the block-count
-  formula below. False (the default) is byte-identical to pre-Task-7
-  behavior -- every existing caller/test is unaffected."""
+  each tree, EVERY leaf whose class value is the most common among that
+  tree's codewords[tree].values() (see
+  build_p4_script.most_common_class_and_dropped_codewords) becomes the
+  table's default_action instead of an explicit entry, so that one tree's
+  entry count drops by however many leaves share the most-common class
+  (not capped at 1) before it feeds into the block-count formula below.
+  False (the default) is byte-identical to pre-Task-7 behavior -- every
+  existing caller/test is unaffected."""
 
   ternary_entries, ternary_blocks = 0, 0
   ternary_table_specs = []
@@ -157,7 +157,8 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   for tree in codewords:
     tree_entry_count = len(codewords[tree])
     if use_default_action_discount and tree_entry_count > 0:
-      tree_entry_count -= 1
+      _, dropped_codewords = most_common_class_and_dropped_codewords(codewords[tree])
+      tree_entry_count -= len(dropped_codewords)
 
     tree_blocks = math.ceil(tree_entry_count / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor
 
