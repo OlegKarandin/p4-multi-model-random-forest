@@ -569,3 +569,14 @@ def test_unsupported_gated_by_raises():
 
   with pytest.raises(RuntimeError):
     generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
+
+
+def test_generate_P4_registers_raises_when_flow_iat_mean_selected_without_flow_iat_max():
+  """flow_iat_mean shares flow_last_arrival_time dependency with flow_iat_max.
+
+  If flow_iat_mean is selected without flow_iat_max, the shared dependency
+  register would never be executed and meta.current_iat would contain garbage.
+  This guard raises ValueError to prevent that scenario.
+  """
+  with pytest.raises(ValueError, match="flow_iat_max"):
+    generate_P4_registers_and_apply({"Flow_IAT_Mean": None})

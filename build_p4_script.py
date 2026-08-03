@@ -1038,6 +1038,16 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # feature_intervals' iteration order.
   matched_features = [f for f in (name.lower() for name in feature_intervals.keys()) if f in catalog]
 
+  # Guard: flow_iat_mean shares flow_last_arrival_time dependency with
+  # flow_iat_max. If selected without flow_iat_max, the shared dependency
+  # register would never be executed and meta.current_iat would hold garbage.
+  if "flow_iat_mean" in matched_features and "flow_iat_max" not in matched_features:
+    raise ValueError(
+        "flow_iat_mean requires flow_iat_max to also be selected (shared "
+        "flow_last_arrival_time dependency register) -- see "
+        "reviews/t11_tofino_port_and_env.md H.6"
+    )
+
   if not matched_features:
     return "", "", ""
 
