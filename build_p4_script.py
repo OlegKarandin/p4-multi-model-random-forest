@@ -767,6 +767,8 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
                                   match_type='ternary',
                                   feature_names_app=None, feature_names_ddos=None,
                                   raw_feature_names=None,
+                                  feature_table_sizes=None,
+                                  classification_table_sizes=None,
                                   config: "p4_gen_config.P4GenConfig" = None):
   """
   config: Task 4 -- additive convenience. When given, `config.use_default_action_discount`
@@ -836,14 +838,37 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   falls back to using resolved_name itself as the raw name, reproducing
   every pre-Task-3 caller's behavior (which never had this distinction)
   byte-for-byte.
+
+  feature_table_sizes / classification_table_sizes: follow-up to the
+  2026-08-03 plan -- real, per-table `size = ` values, replacing the
+  SIZE_FEATURE_TABLE=200 / SIZE_CLASSIFICATION_TABLE=400 literals below,
+  which were fixed numbers disconnected from how many entries each table can
+  actually receive (so no P4-generation-time entry-count optimization --
+  use_default_action_discount above, in particular -- could ever show up as
+  reduced compiled TCAM/SRAM reservation).
+
+  feature_table_sizes maps RESOLVED feature name -> entry count (one entry
+  per interval; see get_table_entries' range-entry section).
+  classification_table_sizes maps tree_id -> entry count, keyed exactly the
+  way `codewords` is: 0..num_trees_app-1 for the app trees,
+  num_trees_app..num_trees_app+num_trees_ddos-1 for the ddos trees.
+
+  Both are optional and both fall back per-key to the old literal, so any
+  direct caller that doesn't pass them gets byte-identical output --
+  generate_P4_code (which can always derive real counts) is the caller that
+  actually supplies them.
   """
 
   if config is not None:
     use_default_action_discount = config.use_default_action_discount
     match_type = config.match_type
 
+  # Legacy fallbacks only: used per table whenever the caller supplied no real
+  # entry count for it (see feature_table_sizes / classification_table_sizes).
   SIZE_FEATURE_TABLE = 200
   SIZE_CLASSIFICATION_TABLE = 400
+  feature_table_sizes = feature_table_sizes or {}
+  classification_table_sizes = classification_table_sizes or {}
 
   if match_type not in ('ternary', 'exact'):
     raise ValueError("match_type must be 'ternary' or 'exact', got {!r}".format(match_type))
@@ -901,7 +926,8 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_app_"+str(i))
         table_template = table_template.replace("<KEYS>", classification_keys_app)
         table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_app_"+str(i)+";")
-        table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
+        size = classification_table_sizes.get(i, SIZE_CLASSIFICATION_TABLE)
+        table_template = table_template.replace("<SIZE>", str(size))
         action_name = "classify_flow_codeword_app_"+str(i)
         tree_codewords = codewords.get(i) if codewords is not None else None
         table_template = table_template.replace(
@@ -917,7 +943,8 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_ddos_"+str(i))
         table_template = table_template.replace("<KEYS>", classification_keys_ddos)
         table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_ddos_"+str(i)+";")
-        table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
+        size = classification_table_sizes.get(num_trees_app + i, SIZE_CLASSIFICATION_TABLE)
+        table_template = table_template.replace("<SIZE>", str(size))
         action_name = "classify_flow_codeword_ddos_"+str(i)
         tree_codewords = codewords.get(num_trees_app + i) if codewords is not None else None
         table_template = table_template.replace(
@@ -940,7 +967,8 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
       table_template = table_template.replace("<FEATURE_NAME>", raw_name.replace(" ","_").lower()+"_val")
       table_template = table_template.replace("<MATCH_TYPE>", "range")
       table_template = table_template.replace("<ACTIONS>", str("set_code_"+feature.replace(" ","_").lower())+";")
-      table_template = table_template.replace("<SIZE>", str(SIZE_FEATURE_TABLE))
+      size = feature_table_sizes.get(feature, SIZE_FEATURE_TABLE)
+      table_template = table_template.replace("<SIZE>", str(size))
       table_templates += table_template
       apply_templates += "\t\t\ttable_"+str(feature_idx)+"_"+feature.replace(" ","_").lower()+".apply();\n"
 
@@ -1036,8 +1064,10 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   `generate_P4_tables_and_apply`, which turns each tree's most common leaf
   class into that table's `const default_action = ...;` (the exact construct
   Task 1 validated against the real Tofino compiler). When it is False --
-  the default -- no codewords are computed at all and the generated output
-  is byte-identical to before this wiring existed.
+  the default -- no `const default_action` line is emitted at all, exactly as
+  before this wiring existed. (Codewords themselves are now computed whenever
+  `selected_features_*` is supplied, discount or not, because the table
+  sizing below needs them -- see TABLE SIZING.)
 
   Codewords are computed PER MODEL, against that model's OWN
   feature_intervals_app / feature_intervals_ddos: under genuine disjoint
@@ -1055,6 +1085,31 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   training column `i`. Raises ValueError when the flag is True and an active
   model's list is missing -- silently guessing an order would produce
   wrong-but-plausible codewords.
+
+  TABLE SIZING (follow-up to the 2026-08-03 plan): every table this function
+  emits is sized from its REAL entry count, not the fixed
+  SIZE_FEATURE_TABLE=200 / SIZE_CLASSIFICATION_TABLE=400 literals
+  generate_P4_tables_and_apply used to stamp everywhere -- range-matching
+  feature tables from their interval count, classification tables from their
+  codeword count (minus the entries use_default_action_discount folds into
+  the default action). Because computing codewords needs the ordered
+  training-feature-name lists, `selected_features_app`/`selected_features_ddos`
+  are now consulted for SIZING too, not only for the discount; when a model's
+  list is absent, that model's tables fall back to `estimator.get_n_leaves()`
+  -- a real structural count that is always >= the codeword count, so a size
+  is never underestimated. This means callers that pass neither list see
+  their tables' `size = ` values change from the old literals to real
+  (usually much smaller) numbers; nothing else about the generated text
+  changes.
+
+  KNOWN LIMITATION of that sizing: with match_type='exact' it still uses the
+  ternary codeword/leaf count, NOT the real Cartesian-product-expanded
+  exact-match entry count that enumerating each wildcarded codeword would
+  produce (see evaluation.exact_match_resource_usage for the analytical
+  accounting) -- enumerating those entries is deferred, separate work
+  (reviews/todo.md's 2026-08-03 T0 update), so under 'exact' these sizes can
+  be far too small; this is a pre-existing gap this sizing work does not
+  close, not one it introduces.
 
   CAVEAT: with match_type='exact', the emitted P4 program is NOT yet
   end-to-end compilable/loadable on its own. get_table_entries (writes
@@ -1167,42 +1222,77 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   # Follow-up: the discount's live path. Codewords are recomputed per model
   # against that model's OWN intervals (see this function's docstring), and
   # the ddos trees re-keyed by +num_trees_app -- the exact tree_id convention
-  # generate_P4_tables_and_apply reads codewords with. Off by default: no
-  # codewords are computed at all, so the generated output and the cost of
-  # producing it are unchanged for every existing caller.
-  codewords = None
-  if use_default_action_discount:
-    if clf_app is not None and selected_features_app is None:
-      raise ValueError(
-          "selected_features_app is required when use_default_action_discount=True "
-          "and an App model is active -- generate_P4_code cannot recompute codewords "
-          "without the exact ordered training-feature-name list")
-    if clf_ddos is not None and selected_features_ddos is None:
-      raise ValueError(
-          "selected_features_ddos is required when use_default_action_discount=True "
-          "and a DDoS model is active -- generate_P4_code cannot recompute codewords "
-          "without the exact ordered training-feature-name list")
-
-    codewords = {}
-    if clf_app is not None:
+  # generate_P4_tables_and_apply reads codewords with.
+  #
+  # Table-sizing follow-up: codewords are ALSO what makes an exact
+  # classification-table size derivable, so they are now computed whenever
+  # the caller supplied that model's ordered training-feature-name list --
+  # not only when the discount is on. The discount's own requirement (it
+  # cannot function without codewords) is unchanged: still a hard ValueError.
+  codewords = {}
+  if clf_app is not None:
+    if selected_features_app is not None:
       trees_app = get_tree_textual_representation(clf_app, selected_features_app)
       tree_nodes_app = {tree: get_nodes(trees_app[tree]) for tree in trees_app}
       paths_app = get_root_to_leaf_paths(tree_nodes_app)
       codewords.update(generate_codewords(paths_app, feature_intervals_app))
-    if clf_ddos is not None:
+    elif use_default_action_discount:
+      raise ValueError(
+          "selected_features_app is required when use_default_action_discount=True "
+          "and an App model is active -- generate_P4_code cannot recompute codewords "
+          "without the exact ordered training-feature-name list")
+  if clf_ddos is not None:
+    if selected_features_ddos is not None:
       trees_ddos = get_tree_textual_representation(clf_ddos, selected_features_ddos)
       tree_nodes_ddos = {tree: get_nodes(trees_ddos[tree]) for tree in trees_ddos}
       paths_ddos = get_root_to_leaf_paths(tree_nodes_ddos)
       codewords_ddos_0indexed = generate_codewords(paths_ddos, feature_intervals_ddos)
       codewords.update({tree_id + num_trees_app: tree_codewords
                         for tree_id, tree_codewords in codewords_ddos_0indexed.items()})
-    if not codewords:
-      codewords = None
+    elif use_default_action_discount:
+      raise ValueError(
+          "selected_features_ddos is required when use_default_action_discount=True "
+          "and a DDoS model is active -- generate_P4_code cannot recompute codewords "
+          "without the exact ordered training-feature-name list")
+  if not codewords:
+    codewords = None
+
+  # Table-sizing follow-up: every generated table is sized from its REAL
+  # entry count. Range-matching feature tables get exactly one entry per
+  # interval; classification tables get one per distinct codeword (minus the
+  # ones the discount turns into the table's default action), or -- when
+  # codewords are not computable for that model -- the fitted tree's own leaf
+  # count, a real structural number that can only ever be >= the codeword
+  # count (two leaves whose paths round to the same codeword string collapse
+  # into one dict entry in generate_codewords, never two), so it never
+  # underestimates.
+  feature_table_sizes = {
+      resolved_name: max(1, len(intervals))
+      for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items()
+  }
+
+  def _classification_table_size(tree_id, clf, estimator_index):
+    tree_codewords = codewords.get(tree_id) if codewords else None
+    if tree_codewords is None:
+      return max(1, clf.estimators_[estimator_index].get_n_leaves())
+    if use_default_action_discount:
+      _, dropped_codewords = most_common_class_and_dropped_codewords(tree_codewords)
+      return max(1, len(tree_codewords) - len(dropped_codewords))
+    return max(1, len(tree_codewords))
+
+  classification_table_sizes = {}
+  for i in range(num_trees_app):
+    classification_table_sizes[i] = _classification_table_size(i, clf_app, i)
+  for i in range(num_trees_ddos):
+    classification_table_sizes[num_trees_app + i] = _classification_table_size(
+        num_trees_app + i, clf_ddos, i)
 
   table_templates, apply_templates = generate_P4_tables_and_apply(
       resolved_plan.keys(), num_trees_app, num_trees_ddos, match_type=match_type,
       feature_names_app=feature_names_app, feature_names_ddos=feature_names_ddos,
       raw_feature_names=raw_feature_names,
+      feature_table_sizes=feature_table_sizes,
+      classification_table_sizes=classification_table_sizes,
       codewords=codewords, use_default_action_discount=use_default_action_discount)
 
   # generate code to vote between the trees -- only for tasks that actually

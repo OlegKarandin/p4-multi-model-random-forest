@@ -37,12 +37,28 @@ from build_p4_script import (
 INFINITE = bps.INFINITE
 
 
+class _StubTree:
+  """Minimal stand-in for one fitted sklearn DecisionTreeClassifier inside a
+  forest. Only `.get_n_leaves()` is ever read by the code under test (the
+  table-sizing follow-up's structural fallback, used when no
+  `selected_features_*` list is available to recompute real codewords)."""
+
+  DEFAULT_N_LEAVES = 5
+
+  def __init__(self, n_leaves=DEFAULT_N_LEAVES):
+    self._n_leaves = n_leaves
+
+  def get_n_leaves(self):
+    return self._n_leaves
+
+
 class _StubClassifier:
   """Minimal stand-in for a trained sklearn RandomForestClassifier: only
-  `.estimators_`'s length is ever read by the code under test."""
+  `.estimators_`'s length -- and, since the table-sizing follow-up, each
+  estimator's `.get_n_leaves()` -- is ever read by the code under test."""
 
-  def __init__(self, num_trees):
-    self.estimators_ = [object()] * num_trees
+  def __init__(self, num_trees, n_leaves=_StubTree.DEFAULT_N_LEAVES):
+    self.estimators_ = [_StubTree(n_leaves) for _ in range(num_trees)]
 
 
 # ---------------------------------------------------------------------------
@@ -1053,11 +1069,24 @@ def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
 
 
 # Byte-identical regression guard for the default (discount off) path: this
-# sha256 was recorded by running the exact call below against the code as it
-# stood BEFORE the discount was wired into generate_P4_code. It must not
-# change -- if a future task legitimately alters generated output, that task
-# re-records it deliberately rather than this one drifting silently.
-_PRE_DISCOUNT_WIRING_OUTPUT_SHA256 = (
+# sha256 pins the exact call below. It must not change -- if a future task
+# legitimately alters generated output, that task re-records it deliberately
+# rather than this one drifting silently.
+#
+# Re-recorded ONCE, deliberately, by the table-sizing follow-up: that task
+# replaced the fixed `size = 200` / `size = 400` table literals with real,
+# per-table entry counts, which changes this default call's output. The value
+# it replaced is kept below as _PRE_TABLE_SIZING_OUTPUT_SHA256, and
+# test_generate_P4_code_default_call_changes_only_table_sizes proves the size
+# numbers are the ONLY thing that changed between the two.
+_DEFAULT_CALL_OUTPUT_SHA256 = (
+    "017626f4a060cdb2a24f37a0077e79c24cfeb02e6d189ce9891c7382c4b736e6")
+
+# The sha256 the same call produced BEFORE the table-sizing follow-up (when
+# every feature table declared `size = 200;` and every classification table
+# `size = 400;`), originally recorded against the code as it stood before the
+# discount was wired into generate_P4_code.
+_PRE_TABLE_SIZING_OUTPUT_SHA256 = (
     "839a2cbb9753f29546d16b97b5841f14cdd67d7c2b5ece991d891b59cf2820c5")
 
 
@@ -1076,14 +1105,332 @@ def _sha256_of_default_generate_P4_code_call(tmp_path, filename, **extra):
 
 def test_generate_P4_code_default_output_is_byte_identical_to_pre_wiring(tmp_path):
   assert _sha256_of_default_generate_P4_code_call(
-      tmp_path, "baseline.p4") == _PRE_DISCOUNT_WIRING_OUTPUT_SHA256
+      tmp_path, "baseline.p4") == _DEFAULT_CALL_OUTPUT_SHA256
 
 
-def test_generate_P4_code_default_ignores_new_selected_features_parameters(tmp_path):
-  # Passing the new parameters WITHOUT the flag must change nothing at all
-  # (and must not require real fitted models -- nothing reads tree internals
-  # on the default path, which is why _StubClassifier still suffices here).
-  assert _sha256_of_default_generate_P4_code_call(
-      tmp_path, "no_flag.p4",
+# ---------------------------------------------------------------------------
+# Follow-up (post-plan): every generated table sized from its REAL entry count
+# ---------------------------------------------------------------------------
+#
+# generate_P4_tables_and_apply used to stamp two fixed literals into every
+# table it emitted -- `size = 200;` for the range-matching feature tables and
+# `size = 400;` for the classification tables -- completely disconnected from
+# how many entries those tables can actually hold. That made every
+# P4-generation-time entry-count optimization (the Planter-style
+# default-action discount above, in particular) invisible to the real Tofino
+# compiler's TCAM/SRAM reservation, which is what
+# reviews/t12_tcam_model_experiment_plan.md's real before/after compile
+# comparison found.
+
+def _table_sizes(p4_text):
+  """table name -> its declared `size = N;`, for every table in generated P4."""
+  sizes = {}
+  current_table = None
+  for line in p4_text.splitlines():
+    stripped = line.strip()
+    name_match = re.match(r"table\s+(\w+)\s*\{", stripped)
+    if name_match:
+      current_table = name_match.group(1)
+      continue
+    size_match = re.match(r"size\s*=\s*(\d+)\s*;", stripped)
+    if size_match and current_table is not None:
+      sizes[current_table] = int(size_match.group(1))
+      current_table = None
+  return sizes
+
+
+def _codewords_of(clf, intervals):
+  """That model's per-tree {codeword: class} dicts (0-indexed tree ids), via
+  the exact path generate_P4_code recomputes them with."""
+  trees = bps.get_tree_textual_representation(clf, _DISCOUNT_FEATURE_NAMES)
+  tree_nodes = {tree: bps.get_nodes(trees[tree]) for tree in trees}
+  return bps.generate_codewords(bps.get_root_to_leaf_paths(tree_nodes), intervals)
+
+
+# --- Part A: range-matching feature tables ---------------------------------
+
+def test_generate_P4_code_feature_table_size_is_real_interval_count(tmp_path):
+  # Each range-matching table gets exactly one entry per interval
+  # (get_table_entries' section 1), so its size must be that count -- not 200.
+  clf_ddos = _tiny_ddos_forest()
+  intervals = {"Flow_IAT_Max": [(0, 50), (51, 120), (121, 900), (901, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      0, 2, None, clf_ddos,
+      feature_intervals_app={}, feature_intervals_ddos=intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="feature_table_size.p4")
+  with open(written_path) as f:
+    sizes = _table_sizes(f.read())
+
+  assert sizes["table_0_flow_iat_max"] == len(intervals["Flow_IAT_Max"]) == 4
+
+
+def test_generate_P4_code_feature_table_sizes_are_per_feature(tmp_path):
+  # Two features with DIFFERENT interval counts must get different table
+  # sizes -- proving the size really tracks each table's own entry count.
+  clf_ddos = _tiny_ddos_forest()
+  intervals = {
+      "Flow_IAT_Max": [(0, 50), (51, INFINITE)],
+      "Fwd_Packet_Length_Max": [(0, 8), (9, 64), (65, 512), (513, 1024), (1025, INFINITE)],
+  }
+  written_path = bps.generate_P4_code(
+      0, 2, None, clf_ddos,
+      feature_intervals_app={}, feature_intervals_ddos=intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="feature_table_sizes_differ.p4")
+  with open(written_path) as f:
+    sizes = _table_sizes(f.read())
+
+  by_feature = {name: size for name, size in sizes.items() if name.startswith("table_")}
+  assert sorted(by_feature.values()) == [2, 5]
+
+
+def test_generate_P4_tables_and_apply_without_feature_table_sizes_keeps_literal():
+  # Regression guard for DIRECT callers that never pass the new optional
+  # dict: their output must stay byte-identical, i.e. still `size = 200;`.
+  table_templates, _ = generate_P4_tables_and_apply(
+      ["flow_iat_max"], 0, 1)
+  assert _table_sizes(table_templates)["table_0_flow_iat_max"] == 200
+
+
+def test_generate_P4_tables_and_apply_feature_table_sizes_are_used_when_given():
+  table_templates, _ = generate_P4_tables_and_apply(
+      ["flow_iat_max"], 0, 1, feature_table_sizes={"flow_iat_max": 7})
+  assert _table_sizes(table_templates)["table_0_flow_iat_max"] == 7
+
+
+# --- Part B: classification tables -----------------------------------------
+
+def test_generate_P4_code_classification_size_is_real_codeword_count(tmp_path):
+  # Discount OFF but selected_features_app GIVEN: codewords are computable,
+  # so each classification table is sized at its EXACT entry count.
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  intervals_app = _derive_intervals(clf_app)
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, None,
+      feature_intervals_app=intervals_app, feature_intervals_ddos={},
+      output_dir=str(tmp_path) + os.sep, output_filename="clf_size_codewords.p4",
+      selected_features_app=_DISCOUNT_FEATURE_NAMES)
+  with open(written_path) as f:
+    sizes = _table_sizes(f.read())
+
+  codewords = _codewords_of(clf_app, intervals_app)
+  for i in range(len(clf_app.estimators_)):
+    expected = len(codewords[i])
+    assert sizes["get_classification_tree_app_" + str(i)] == expected
+    assert sizes["get_classification_tree_app_" + str(i)] != 400
+    # the structural fallback is a real upper bound on the exact count
+    assert expected <= clf_app.estimators_[i].get_n_leaves()
+
+
+def test_generate_P4_code_classification_size_shrinks_under_discount(tmp_path):
+  # Discount ON: the entries the control plane no longer has to install
+  # (every leaf carrying the tree's majority class) must actually come off
+  # the declared table size -- the whole point of this follow-up.
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  intervals_app = _derive_intervals(clf_app)
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, None,
+      feature_intervals_app=intervals_app, feature_intervals_ddos={},
+      output_dir=str(tmp_path) + os.sep, output_filename="clf_size_discounted.p4",
+      use_default_action_discount=True,
+      selected_features_app=_DISCOUNT_FEATURE_NAMES)
+  with open(written_path) as f:
+    sizes = _table_sizes(f.read())
+
+  codewords = _codewords_of(clf_app, intervals_app)
+  shrank_somewhere = False
+  for i in range(len(clf_app.estimators_)):
+    _, dropped = most_common_class_and_dropped_codewords(codewords[i])
+    expected = max(1, len(codewords[i]) - len(dropped))
+    assert sizes["get_classification_tree_app_" + str(i)] == expected
+    if expected < len(codewords[i]):
+      shrank_somewhere = True
+  # precondition of this fixture: at least one tree really has >1 leaf on its
+  # majority class, so the discount genuinely reduces a table's size.
+  assert shrank_somewhere, "fixture no longer exercises a real discount reduction"
+
+
+def test_generate_P4_code_classification_size_never_drops_below_one(tmp_path):
+  # Degenerate but real case: a tree that splits, yet whose leaves ALL carry
+  # the same class -- the discount then drops every single entry, and a naive
+  # count would declare `size = 0;`, which P4 rejects.
+  import numpy as np
+  from sklearn.ensemble import RandomForestClassifier
+
+  rnd = np.random.RandomState(3)
+  X = rnd.randint(0, 4000, size=(40, len(_DISCOUNT_FEATURE_NAMES)))
+  y = np.zeros(40, dtype=int)
+  y[:2] = 1
+  clf_ddos = bps.dt_thresholds_float_to_int(
+      RandomForestClassifier(n_estimators=1, max_depth=1, random_state=3).fit(X, y))
+  intervals_ddos = _derive_intervals(clf_ddos)
+  codewords = _codewords_of(clf_ddos, intervals_ddos)
+  # precondition: every leaf really does carry the same class
+  _, dropped = most_common_class_and_dropped_codewords(codewords[0])
+  assert len(dropped) == len(codewords[0]) > 0
+
+  written_path = bps.generate_P4_code(
+      3, 2, None, clf_ddos,
+      feature_intervals_app={}, feature_intervals_ddos=intervals_ddos,
+      output_dir=str(tmp_path) + os.sep, output_filename="clf_size_degenerate.p4",
+      use_default_action_discount=True,
+      selected_features_ddos=_DISCOUNT_FEATURE_NAMES)
+  with open(written_path) as f:
+    sizes = _table_sizes(f.read())
+
+  assert sizes["get_classification_tree_ddos_0"] == 1
+
+
+def test_generate_P4_code_classification_size_falls_back_to_leaf_count(tmp_path):
+  # Discount OFF and selected_features_app NOT given at all: codewords are
+  # not computable, so sizing falls back to the fitted tree's REAL leaf count
+  # (a safe, never-underestimating upper bound on the codeword count) --
+  # still a real number, never the old 400 literal.
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  intervals_app = _derive_intervals(clf_app)
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, None,
+      feature_intervals_app=intervals_app, feature_intervals_ddos={},
+      output_dir=str(tmp_path) + os.sep, output_filename="clf_size_fallback.p4")
+  with open(written_path) as f:
+    sizes = _table_sizes(f.read())
+
+  for i in range(len(clf_app.estimators_)):
+    assert sizes["get_classification_tree_app_" + str(i)] == clf_app.estimators_[i].get_n_leaves()
+    assert sizes["get_classification_tree_app_" + str(i)] != 400
+
+
+def test_generate_P4_code_classification_size_ddos_uses_offset_tree_ids(tmp_path):
+  # The DDoS tables must read their sizes at the same tree_id offset
+  # (num_trees_app + i) the codewords dict itself is keyed with -- an
+  # off-by-num_trees_app bug here would silently size a DDoS table from an
+  # App tree.
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
+  intervals_app = _derive_intervals(clf_app)
+  intervals_ddos = _derive_intervals(clf_ddos)
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=intervals_app, feature_intervals_ddos=intervals_ddos,
+      output_dir=str(tmp_path) + os.sep, output_filename="clf_size_both_tasks.p4",
       selected_features_app=_DISCOUNT_FEATURE_NAMES,
-      selected_features_ddos=_DISCOUNT_FEATURE_NAMES) == _PRE_DISCOUNT_WIRING_OUTPUT_SHA256
+      selected_features_ddos=_DISCOUNT_FEATURE_NAMES)
+  with open(written_path) as f:
+    sizes = _table_sizes(f.read())
+
+  codewords_ddos = _codewords_of(clf_ddos, intervals_ddos)
+  assert sizes["get_classification_tree_ddos_0"] == len(codewords_ddos[0])
+  codewords_app = _codewords_of(clf_app, intervals_app)
+  for i in range(len(clf_app.estimators_)):
+    assert sizes["get_classification_tree_app_" + str(i)] == len(codewords_app[i])
+
+
+def test_generate_P4_tables_and_apply_without_classification_sizes_keeps_literal():
+  # The other half of the direct-caller regression guard: no new dicts
+  # passed -> both old literals, exactly as before this follow-up.
+  table_templates, _ = generate_P4_tables_and_apply(
+      ["flow_iat_max"], 1, 1)
+  assert _table_sizes(table_templates) == {
+      "get_classification_tree_app_0": 400,
+      "get_classification_tree_ddos_0": 400,
+      "table_0_flow_iat_max": 200,
+  }
+
+
+def test_generate_P4_tables_and_apply_classification_sizes_are_used_when_given():
+  table_templates, _ = generate_P4_tables_and_apply(
+      ["flow_iat_max"], 2, 1,
+      classification_table_sizes={0: 11, 1: 12, 2: 13})
+  # tree_id 2 is the DDoS tree: keyed at num_trees_app + i, the same
+  # convention codewords.get(...) already uses.
+  assert _table_sizes(table_templates) == {
+      "get_classification_tree_app_0": 11,
+      "get_classification_tree_app_1": 12,
+      "get_classification_tree_ddos_0": 13,
+      "table_0_flow_iat_max": 200,
+  }
+
+
+def _reconstruct_pre_table_sizing_text(p4_text):
+  """Put the OLD fixed literals back into `p4_text`'s table declarations --
+  200 for every range-matching feature table, 400 for every classification
+  table, leaving vote_* (already correctly sized before this follow-up)
+  alone. If the only thing this follow-up changed is the size numbers, the
+  result is byte-identical to the pre-follow-up output."""
+  rebuilt = []
+  current_table = None
+  for line in p4_text.splitlines(keepends=True):
+    stripped = line.strip()
+    name_match = re.match(r"table\s+(\w+)\s*\{", stripped)
+    if name_match:
+      current_table = name_match.group(1)
+      rebuilt.append(line)
+      continue
+    size_match = re.match(r"size\s*=\s*(\d+)\s*;", stripped)
+    if size_match and current_table is not None:
+      old_literal = None
+      if current_table.startswith("get_classification_tree_"):
+        old_literal = "400"
+      elif current_table.startswith("table_"):
+        old_literal = "200"
+      if old_literal is not None:
+        line = line.replace("size = " + size_match.group(1) + ";",
+                            "size = " + old_literal + ";")
+      current_table = None
+    rebuilt.append(line)
+  return "".join(rebuilt)
+
+
+def test_generate_P4_code_default_call_changes_only_table_sizes(tmp_path):
+  # Full regenerate-and-diff regression check: for the exact default call
+  # shape most existing tests use, the ONLY delta this follow-up introduces
+  # is the `size = ` numbers themselves. Putting the old literals back must
+  # reproduce the pre-follow-up output byte for byte.
+  import hashlib
+
+  written_path = bps.generate_P4_code(
+      3, 2, _tiny_app_forest(), _tiny_ddos_forest(),
+      feature_intervals_app={"Flow_IAT_Max": [(0, 50), (51, INFINITE)]},
+      feature_intervals_ddos={"Flow_IAT_Max": [(0, 200), (201, INFINITE)],
+                              "Fwd_Packet_Length_Max": [(0, 64), (65, INFINITE)]},
+      output_dir=str(tmp_path) + os.sep, output_filename="only_sizes_changed.p4")
+  with open(written_path, "rb") as f:
+    raw = f.read()
+
+  # sanity: the sizes really did change (otherwise this test is vacuous)
+  assert hashlib.sha256(raw).hexdigest() != _PRE_TABLE_SIZING_OUTPUT_SHA256
+  reconstructed = _reconstruct_pre_table_sizing_text(raw.decode("utf-8"))
+  assert hashlib.sha256(reconstructed.encode("utf-8")).hexdigest() == \
+      _PRE_TABLE_SIZING_OUTPUT_SHA256
+
+
+def test_generate_P4_code_selected_features_without_flag_only_refines_sizes(tmp_path):
+  # Passing selected_features_* WITHOUT the discount flag is now meaningful:
+  # codewords get computed for SIZING only. Nothing else about the generated
+  # program may change, and the exact codeword count may never exceed the
+  # leaf-count fallback the same call produces without those lists.
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  intervals_app = _derive_intervals(clf_app)
+
+  def _generate(filename, **extra):
+    path = bps.generate_P4_code(
+        3, 2, clf_app, None,
+        feature_intervals_app=intervals_app, feature_intervals_ddos={},
+        output_dir=str(tmp_path) + os.sep, output_filename=filename, **extra)
+    with open(path) as f:
+      return f.read()
+
+  without = _generate("no_selected_features.p4")
+  with_lists = _generate("with_selected_features.p4",
+                         selected_features_app=_DISCOUNT_FEATURE_NAMES)
+
+  sizes_without = _table_sizes(without)
+  sizes_with = _table_sizes(with_lists)
+  for table, size in sizes_with.items():
+    assert size <= sizes_without[table], (
+        "codeword-exact sizing must never exceed the leaf-count fallback")
+  # every non-size line is identical
+  stripped_without = [l for l in without.splitlines()
+                      if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
+  stripped_with = [l for l in with_lists.splitlines()
+                   if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
+  assert stripped_without == stripped_with
