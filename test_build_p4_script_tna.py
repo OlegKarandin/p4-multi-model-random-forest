@@ -872,3 +872,218 @@ def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
   # (generate_voting_code's vote_ddos table legitimately uses ": exact;" on
   # meta.class_tree_ddos_0 regardless of match_type -- see note above.)
   assert "meta.code_f : exact;" not in generated
+
+
+# ---------------------------------------------------------------------------
+# Follow-up (post-plan): use_default_action_discount wired into generate_P4_code
+# ---------------------------------------------------------------------------
+#
+# Task 7 taught generate_P4_tables_and_apply to emit
+# `const default_action = classify_flow_codeword_<task>_<i>(<class>);`, but
+# generate_P4_code -- the real P4-generation entry point -- never computed
+# tree codewords, so it could never produce that construct. These tests pin
+# the new, opt-in end-to-end path: given each model's ORIGINAL ordered
+# training-feature-name list, generate_P4_code recomputes per-model codewords
+# and forwards them.
+#
+# Unlike _tiny_app_forest()/_tiny_ddos_forest() (bare _StubClassifier stand-ins,
+# enough only because nothing read tree internals before), these tests need
+# REAL fitted forests: sklearn's export_text is what turns a model into the
+# tree text the codeword derivation parses.
+
+_DISCOUNT_FEATURE_NAMES = ["Flow_IAT_Max", "Fwd_Packet_Length_Max"]
+
+
+def _fit_real_forest(labels, seed, n_estimators, value_scale):
+  """A really fitted, really splitting RandomForestClassifier over
+  _DISCOUNT_FEATURE_NAMES, with integer thresholds (dt_thresholds_float_to_int,
+  exactly as the production pipeline does before generating P4). value_scale
+  controls the feature value range, so two forests fitted with different
+  scales genuinely discretize the SAME feature name into different intervals
+  -- which is what the disjoint-namespacing composition test below needs."""
+  import numpy as np
+  from sklearn.ensemble import RandomForestClassifier
+
+  rnd = np.random.RandomState(seed)
+  X = rnd.randint(0, value_scale, size=(40, len(_DISCOUNT_FEATURE_NAMES)))
+  y = np.array([labels[i % len(labels)] for i in range(40)])
+  # make the labels learnable so the trees actually split (and so every tree
+  # really has several leaves sharing a majority class)
+  X[:, 0] += np.array([value_scale // 4 * (labels.index(v) + 1) for v in y])
+
+  clf = RandomForestClassifier(n_estimators=n_estimators, max_depth=3,
+                               random_state=seed).fit(X, y)
+  return bps.dt_thresholds_float_to_int(clf)
+
+
+def _derive_intervals(clf):
+  """Each model's OWN feature_intervals, via the same
+  tree_nodes -> thresholds -> intervals path feature_selection and
+  evaluation both use."""
+  trees = bps.get_tree_textual_representation(clf, _DISCOUNT_FEATURE_NAMES)
+  tree_nodes = {tree: bps.get_nodes(trees[tree]) for tree in trees}
+  return bps.get_feature_intervals_from_thresholds(bps.get_feature_thresholds(tree_nodes))
+
+
+def test_generate_P4_code_discount_emits_default_action_for_both_tasks(tmp_path):
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
+
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=_derive_intervals(clf_app),
+      feature_intervals_ddos=_derive_intervals(clf_ddos),
+      output_dir=str(tmp_path) + os.sep, output_filename="discount_on.p4",
+      use_default_action_discount=True,
+      selected_features_app=_DISCOUNT_FEATURE_NAMES,
+      selected_features_ddos=_DISCOUNT_FEATURE_NAMES)
+  with open(written_path) as f:
+    text = f.read()
+
+  # One line per tree: 2 app trees + 1 ddos tree.
+  assert "const default_action = classify_flow_codeword_app_0(" in text
+  assert "const default_action = classify_flow_codeword_app_1(" in text
+  assert "const default_action = classify_flow_codeword_ddos_0(" in text
+
+
+def test_generate_P4_code_discount_via_config_object(tmp_path):
+  # config must take precedence over the individual keyword argument, the
+  # same way it already does for match_type.
+  import p4_gen_config
+
+  clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
+  written_path = bps.generate_P4_code(
+      0, 2, None, clf_ddos,
+      feature_intervals_app={}, feature_intervals_ddos=_derive_intervals(clf_ddos),
+      output_dir=str(tmp_path) + os.sep, output_filename="discount_config.p4",
+      selected_features_ddos=_DISCOUNT_FEATURE_NAMES,
+      config=p4_gen_config.P4GenConfig(use_default_action_discount=True))
+  with open(written_path) as f:
+    text = f.read()
+
+  assert "const default_action = classify_flow_codeword_ddos_0(" in text
+
+
+def test_generate_P4_code_discount_ddos_only_needs_no_app_features(tmp_path):
+  # clf_app is None -- there is no App model to recompute codewords for, so
+  # selected_features_app must NOT be required.
+  clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
+  written_path = bps.generate_P4_code(
+      0, 2, None, clf_ddos,
+      feature_intervals_app={}, feature_intervals_ddos=_derive_intervals(clf_ddos),
+      output_dir=str(tmp_path) + os.sep, output_filename="discount_ddos_only.p4",
+      use_default_action_discount=True,
+      selected_features_ddos=_DISCOUNT_FEATURE_NAMES)
+  with open(written_path) as f:
+    text = f.read()
+
+  assert "const default_action = classify_flow_codeword_ddos_0(" in text
+  assert "classify_flow_codeword_app" not in text
+
+
+def test_generate_P4_code_discount_without_selected_features_app_raises(tmp_path):
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
+
+  with pytest.raises(ValueError) as excinfo:
+    bps.generate_P4_code(
+        3, 2, clf_app, clf_ddos,
+        feature_intervals_app=_derive_intervals(clf_app),
+        feature_intervals_ddos=_derive_intervals(clf_ddos),
+        output_dir=str(tmp_path) + os.sep, output_filename="missing_app_features.p4",
+        use_default_action_discount=True,
+        selected_features_ddos=_DISCOUNT_FEATURE_NAMES)
+  assert "selected_features_app" in str(excinfo.value)
+
+
+def test_generate_P4_code_discount_without_selected_features_ddos_raises(tmp_path):
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
+
+  with pytest.raises(ValueError) as excinfo:
+    bps.generate_P4_code(
+        3, 2, clf_app, clf_ddos,
+        feature_intervals_app=_derive_intervals(clf_app),
+        feature_intervals_ddos=_derive_intervals(clf_ddos),
+        output_dir=str(tmp_path) + os.sep, output_filename="missing_ddos_features.p4",
+        use_default_action_discount=True,
+        selected_features_app=_DISCOUNT_FEATURE_NAMES)
+  assert "selected_features_ddos" in str(excinfo.value)
+
+
+def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
+  # Both models select the SAME two feature names but -- fitted on different
+  # value scales -- genuinely discretize them into DIFFERENT intervals, so
+  # Task 3's namespacing kicks in. Per-model codeword computation must then
+  # run against each model's own intervals; a single combined call would
+  # silently produce wrong codewords for one side.
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
+  intervals_app = _derive_intervals(clf_app)
+  intervals_ddos = _derive_intervals(clf_ddos)
+  # Precondition of this test: the intervals really do differ per model.
+  assert intervals_app["Flow_IAT_Max"] != intervals_ddos["Flow_IAT_Max"]
+
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=intervals_app, feature_intervals_ddos=intervals_ddos,
+      output_dir=str(tmp_path) + os.sep, output_filename="discount_namespaced.p4",
+      use_default_action_discount=True,
+      selected_features_app=_DISCOUNT_FEATURE_NAMES,
+      selected_features_ddos=_DISCOUNT_FEATURE_NAMES)
+  with open(written_path) as f:
+    text = f.read()
+
+  # Namespacing still in force...
+  assert "set_code_app_flow_iat_max" in text
+  assert "set_code_ddos_flow_iat_max" in text
+  # ...and every classification table on BOTH sides still got its discount,
+  # carrying the majority class of THAT model's own per-model codewords --
+  # recomputed here against that model's own intervals, exactly as the
+  # generator must.
+  for clf, intervals, task in ((clf_app, intervals_app, "app"),
+                               (clf_ddos, intervals_ddos, "ddos")):
+    trees = bps.get_tree_textual_representation(clf, _DISCOUNT_FEATURE_NAMES)
+    tree_nodes = {tree: bps.get_nodes(trees[tree]) for tree in trees}
+    codewords = bps.generate_codewords(bps.get_root_to_leaf_paths(tree_nodes), intervals)
+    for tree_id in codewords:
+      class_value, _ = most_common_class_and_dropped_codewords(codewords[tree_id])
+      assert "const default_action = classify_flow_codeword_{}_{}({});".format(
+          task, tree_id, int(float(class_value))) in text
+
+
+# Byte-identical regression guard for the default (discount off) path: this
+# sha256 was recorded by running the exact call below against the code as it
+# stood BEFORE the discount was wired into generate_P4_code. It must not
+# change -- if a future task legitimately alters generated output, that task
+# re-records it deliberately rather than this one drifting silently.
+_PRE_DISCOUNT_WIRING_OUTPUT_SHA256 = (
+    "839a2cbb9753f29546d16b97b5841f14cdd67d7c2b5ece991d891b59cf2820c5")
+
+
+def _sha256_of_default_generate_P4_code_call(tmp_path, filename, **extra):
+  import hashlib
+
+  written_path = bps.generate_P4_code(
+      3, 2, _tiny_app_forest(), _tiny_ddos_forest(),
+      feature_intervals_app={"Flow_IAT_Max": [(0, 50), (51, INFINITE)]},
+      feature_intervals_ddos={"Flow_IAT_Max": [(0, 200), (201, INFINITE)],
+                              "Fwd_Packet_Length_Max": [(0, 64), (65, INFINITE)]},
+      output_dir=str(tmp_path) + os.sep, output_filename=filename, **extra)
+  with open(written_path, "rb") as f:
+    return hashlib.sha256(f.read()).hexdigest()
+
+
+def test_generate_P4_code_default_output_is_byte_identical_to_pre_wiring(tmp_path):
+  assert _sha256_of_default_generate_P4_code_call(
+      tmp_path, "baseline.p4") == _PRE_DISCOUNT_WIRING_OUTPUT_SHA256
+
+
+def test_generate_P4_code_default_ignores_new_selected_features_parameters(tmp_path):
+  # Passing the new parameters WITHOUT the flag must change nothing at all
+  # (and must not require real fitted models -- nothing reads tree internals
+  # on the default path, which is why _StubClassifier still suffices here).
+  assert _sha256_of_default_generate_P4_code_call(
+      tmp_path, "no_flag.p4",
+      selected_features_app=_DISCOUNT_FEATURE_NAMES,
+      selected_features_ddos=_DISCOUNT_FEATURE_NAMES) == _PRE_DISCOUNT_WIRING_OUTPUT_SHA256

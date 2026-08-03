@@ -1013,6 +1013,8 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
                       feature_intervals_app, feature_intervals_ddos,
                       output_dir=OUTPUT_PATH, output_filename='p4_code_RF_models.p4',
                       match_type='ternary',
+                      use_default_action_discount=False,
+                      selected_features_app=None, selected_features_ddos=None,
                       config: "p4_gen_config.P4GenConfig" = None):
   """match_type: Task 8 -- passed straight through to
   generate_P4_tables_and_apply. 'ternary' (the default) is byte-identical
@@ -1021,13 +1023,38 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   `: exact;` keys (feature-range tables stay ternary/range either way).
 
   config: Task 4 -- additive convenience. When given, `config.match_type`
-  takes precedence over the individual `match_type` keyword argument above
-  (which remains the source of truth when `config` is None, so every
-  existing caller is unaffected). NOTE: `config.use_default_action_discount`
-  has no effect here -- this function does not accept a `codewords`/
-  `use_default_action_discount` parameter at all (pre-existing scope, not
-  introduced or changed by this task); that flag is only consumed by
-  `generate_P4_tables_and_apply` and `get_table_entries`, called directly.
+  and `config.use_default_action_discount` take precedence over the
+  individual `match_type` / `use_default_action_discount` keyword arguments
+  above (which remain the source of truth when `config` is None, so every
+  existing caller is unaffected).
+
+  use_default_action_discount, selected_features_app, selected_features_ddos:
+  follow-up to the 2026-08-03 plan -- the live path that actually produces
+  Task 7's Planter-style default-action discount in generated P4. When the
+  flag is True (passed directly or via `config`), this function recomputes
+  each model's codewords internally and forwards them to
+  `generate_P4_tables_and_apply`, which turns each tree's most common leaf
+  class into that table's `const default_action = ...;` (the exact construct
+  Task 1 validated against the real Tofino compiler). When it is False --
+  the default -- no codewords are computed at all and the generated output
+  is byte-identical to before this wiring existed.
+
+  Codewords are computed PER MODEL, against that model's OWN
+  feature_intervals_app / feature_intervals_ddos: under genuine disjoint
+  encoding the two models' intervals for a shared feature name can differ,
+  so one combined call would produce wrong codewords for one side. The ddos
+  trees are re-keyed by +num_trees_app to match the tree_id convention
+  `generate_P4_tables_and_apply` reads codewords with.
+
+  Doing that requires each model's ORIGINAL ORDERED training-feature-name
+  list, which is why `selected_features_app`/`selected_features_ddos` exist
+  and cannot be replaced by `feature_intervals_*.keys()`:
+  `get_feature_thresholds` sorts alphabetically by feature name, whereas
+  `export_text(tree, feature_names=...)` (via
+  `get_tree_textual_representation`) requires `feature_names[i]` to be
+  training column `i`. Raises ValueError when the flag is True and an active
+  model's list is missing -- silently guessing an order would produce
+  wrong-but-plausible codewords.
 
   CAVEAT: with match_type='exact', the emitted P4 program is NOT yet
   end-to-end compilable/loadable on its own. get_table_entries (writes
@@ -1061,6 +1088,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
 
   if config is not None:
     match_type = config.match_type
+    use_default_action_discount = config.use_default_action_discount
 
   # clf_app/clf_ddos may be None -- meaning "no task at all" (e.g. M1 is
   # DDoS-only: clf_app is None, clf_ddos is a trained model).
@@ -1136,10 +1164,46 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   feature_names_ddos = [name for name, (_, _, models) in resolved_plan.items() if "ddos" in models]
   raw_feature_names = {name: raw for name, (raw, _, _) in resolved_plan.items()}
 
+  # Follow-up: the discount's live path. Codewords are recomputed per model
+  # against that model's OWN intervals (see this function's docstring), and
+  # the ddos trees re-keyed by +num_trees_app -- the exact tree_id convention
+  # generate_P4_tables_and_apply reads codewords with. Off by default: no
+  # codewords are computed at all, so the generated output and the cost of
+  # producing it are unchanged for every existing caller.
+  codewords = None
+  if use_default_action_discount:
+    if clf_app is not None and selected_features_app is None:
+      raise ValueError(
+          "selected_features_app is required when use_default_action_discount=True "
+          "and an App model is active -- generate_P4_code cannot recompute codewords "
+          "without the exact ordered training-feature-name list")
+    if clf_ddos is not None and selected_features_ddos is None:
+      raise ValueError(
+          "selected_features_ddos is required when use_default_action_discount=True "
+          "and a DDoS model is active -- generate_P4_code cannot recompute codewords "
+          "without the exact ordered training-feature-name list")
+
+    codewords = {}
+    if clf_app is not None:
+      trees_app = get_tree_textual_representation(clf_app, selected_features_app)
+      tree_nodes_app = {tree: get_nodes(trees_app[tree]) for tree in trees_app}
+      paths_app = get_root_to_leaf_paths(tree_nodes_app)
+      codewords.update(generate_codewords(paths_app, feature_intervals_app))
+    if clf_ddos is not None:
+      trees_ddos = get_tree_textual_representation(clf_ddos, selected_features_ddos)
+      tree_nodes_ddos = {tree: get_nodes(trees_ddos[tree]) for tree in trees_ddos}
+      paths_ddos = get_root_to_leaf_paths(tree_nodes_ddos)
+      codewords_ddos_0indexed = generate_codewords(paths_ddos, feature_intervals_ddos)
+      codewords.update({tree_id + num_trees_app: tree_codewords
+                        for tree_id, tree_codewords in codewords_ddos_0indexed.items()})
+    if not codewords:
+      codewords = None
+
   table_templates, apply_templates = generate_P4_tables_and_apply(
       resolved_plan.keys(), num_trees_app, num_trees_ddos, match_type=match_type,
       feature_names_app=feature_names_app, feature_names_ddos=feature_names_ddos,
-      raw_feature_names=raw_feature_names)
+      raw_feature_names=raw_feature_names,
+      codewords=codewords, use_default_action_discount=use_default_action_discount)
 
   # generate code to vote between the trees -- only for tasks that actually
   # have trees. generate_voting_code now returns (table_decl, apply_call);

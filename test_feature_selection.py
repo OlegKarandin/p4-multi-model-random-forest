@@ -417,3 +417,155 @@ def test_kickoff_hardware_validation_disjoint_makes_one_compile_call_and_writes_
 
     result = handle.result(timeout=1)
     assert result.stages == 5
+
+
+# ---------------------------------------------------------------------------
+# Follow-up (post-plan): _kickoff_hardware_validation must stop dropping the
+# P4GenConfig object.
+#
+# Before this, neither of its two `generate_P4_code(...)` calls received
+# `config` at all, so `P4GenConfig.match_type` / `use_default_action_discount`
+# were silently ignored on the entire real-compiler-validation path -- the one
+# path whose numbers the paper quotes. The `selected_features_*` lists
+# `generate_P4_code` needs to recompute codewords are the same
+# `feature_names_app`/`feature_names_ddos` this function already receives.
+# ---------------------------------------------------------------------------
+
+def _discount_and_exact_config(tmp_path):
+    import p4_gen_config
+    return p4_gen_config.P4GenConfig(
+        validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
+        use_default_action_discount=True, match_type='exact')
+
+
+@pytest.mark.parametrize("encoding,method", [('disjoint', 'single'), ('joint', 'multi')])
+def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
+        tmp_path, encoding, method):
+    """Both branches must forward `config` AND the ordered training-feature-name
+    lists. `generate_P4_code` is spied on but still really runs (side_effect is
+    the real function), so this checks the generated program too: a config
+    carrying use_default_action_discount=True must actually put the
+    `const default_action` construct in the emitted P4, and match_type='exact'
+    must actually reach the classification tables' key kind.
+    """
+    import re
+    import build_p4_script as bps
+
+    X = np.random.RandomState(0).randint(0, 65535, size=(60, 2))
+    y_app = np.random.RandomState(0).randint(0, 3, size=60)
+    y_ddos = np.random.RandomState(1).choice([0, 1], size=60)
+    clf_app = _fit_tiny_rf(X, y_app, seed=0)
+    clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
+
+    cfg = _discount_and_exact_config(tmp_path)
+    real_generate_P4_code = bps.generate_P4_code
+
+    with patch("build_p4_script.generate_P4_code",
+               side_effect=real_generate_P4_code) as spy_generate, \
+         patch("p4_compile.compile_p4_async") as mock_compile:
+        mock_compile.return_value = type("F", (), {
+            "result": lambda self, timeout=None: pc.CompileResult(stages=5, tcam=1)})()
+
+        fs._kickoff_hardware_validation(
+            True, str(tmp_path) + "/", 0, method, 2,
+            clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], encoding, config=cfg)
+
+    assert spy_generate.call_count == 1
+    kwargs = spy_generate.call_args.kwargs
+    assert kwargs["config"] is cfg
+    assert kwargs["selected_features_app"] == ["f0", "f1"]
+    assert kwargs["selected_features_ddos"] == ["f0", "f1"]
+
+    text = (tmp_path / "split0_{}_k2.p4".format(method)).read_text()
+    # use_default_action_discount really landed in the generated program...
+    assert "const default_action = classify_flow_codeword_app_0(" in text
+    assert "const default_action = classify_flow_codeword_ddos_0(" in text
+    # ...and so did match_type.
+    assert re.search(r"meta\.code_\S+ : exact;", text)
+    assert not re.search(r"meta\.code_\S+ : ternary;", text)
+
+
+def test_kickoff_hardware_validation_without_config_is_unchanged(tmp_path):
+    """Regression guard: omitting `config` must leave generate_P4_code on its
+    own defaults -- no discount, ternary keys -- exactly as before this change.
+    """
+    import re
+    X = np.random.RandomState(0).randint(0, 65535, size=(60, 2))
+    y_app = np.random.RandomState(0).randint(0, 3, size=60)
+    y_ddos = np.random.RandomState(1).choice([0, 1], size=60)
+    clf_app = _fit_tiny_rf(X, y_app, seed=0)
+    clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
+
+    with patch("p4_compile.compile_p4_async") as mock_compile:
+        mock_compile.return_value = type("F", (), {
+            "result": lambda self, timeout=None: pc.CompileResult(stages=5, tcam=1)})()
+
+        fs._kickoff_hardware_validation(
+            True, str(tmp_path) + "/", 0, 'single', 2,
+            clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], 'disjoint')
+
+    text = (tmp_path / "split0_single_k2.p4").read_text()
+    assert "const default_action" not in text
+    assert re.search(r"meta\.code_\S+ : ternary;", text)
+
+
+def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp_path):
+    """`_process_single_split` already takes a `config`; it must now forward it
+    one level further, to BOTH of its `_kickoff_hardware_validation` call sites
+    (the disjoint/'single' loop and the joint/'multi' loop). Uses the same fast
+    mocked-training pattern as the tests above; `_kickoff_hardware_validation`
+    itself is spied on but still really runs, so the real generate_P4_code
+    (with the config's discount actually in force) executes for every
+    iteration.
+    """
+    import p4_gen_config
+    from sklearn.ensemble import RandomForestClassifier
+    import build_p4_script as bps
+
+    # Same size/shape/labels as every other _process_single_split test in this
+    # file. In particular y_ddos keeps this codebase's {-1, 1} DDoS label
+    # convention, which evaluation.accuracy_metrics hardcodes (`lab = [-1, 1]`)
+    # -- remapping it to {0, 1} here would leave label -1 with no true and no
+    # predicted samples and emit UndefinedMetricWarning noise.
+    X_app, X_ddos, y_app, y_ddos = _tiny_dataset()
+
+    def _fake_train(X_A, y_A, X_B, y_B, x_val_A, y_val_A, x_val_B, y_val_B,
+                     features_A, features_B, n_trees, max_depth, max_blocks,
+                     encoding, warm_start_params=None):
+        model_A = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
+        model_B = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
+        return model_A, model_B, 1, 1, {}
+
+    def _fake_compile_async(p4_path, log_dir, **kwargs):
+        return type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
+            errors=0, warnings=0, stages=7, tables=7, tcam=7)})()
+
+    cfg = p4_gen_config.P4GenConfig(
+        validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
+        use_default_action_discount=True)
+
+    real_kickoff = fs._kickoff_hardware_validation
+
+    with patch("train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
+         patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async), \
+         patch.object(fs, "_kickoff_hardware_validation",
+                      side_effect=real_kickoff) as spy_kickoff:
+        result = fs._process_single_split(
+            split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+            n_trees=1, max_depth=3, max_blocks=50,
+            feature_names=["f0", "f1", "f2"], random_state=42, verbose=False,
+            config=cfg)
+
+    assert result.error is None
+    # Both loops run to k=1, so both call sites are exercised.
+    methods = {call.args[3] for call in spy_kickoff.call_args_list}
+    assert methods == {'single', 'multi'}
+    assert spy_kickoff.call_count > 0
+    for call in spy_kickoff.call_args_list:
+        assert call.kwargs.get("config") is cfg
+
+    # And the config's discount really reached the generated programs.
+    for p4_file in sorted(tmp_path.glob("*.p4")):
+        assert "const default_action = classify_flow_codeword_" in p4_file.read_text()

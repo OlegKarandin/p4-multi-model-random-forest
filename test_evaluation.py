@@ -440,3 +440,96 @@ def test_exact_match_resource_usage_sums_across_multiple_trees():
     }
     sram_entries, _ = ev.exact_match_resource_usage(codewords, feature_intervals)
     assert sram_entries == 1 + 1 + 2  # tree 0: 2 concrete leaves; tree 1: 1 leaf x len(A intervals)==2
+
+
+# ---------------------------------------------------------------------------
+# Follow-up (post-plan): use_default_action_discount threaded through the
+# TCAM-entry estimators.
+#
+# `ternary_matching_resource_usage` has supported the flag since Task 1, but
+# neither `single_model_memory_evaluation` nor `multi_model_memory_evaluation`
+# ever passed it through -- so no caller of the estimator API could actually
+# obtain discounted numbers. These tests pin both the new opt-in behavior and
+# the unchanged default.
+# ---------------------------------------------------------------------------
+
+# Pre-change values, recorded by running the estimators on these exact
+# fixtures BEFORE this task's edits. Hardcoded on purpose: comparing the new
+# default path against a derived expression would only prove self-consistency,
+# not that nothing moved.
+_PRE_TASK_SINGLE_APP = (13, 4, 11, 2, 9)          # range_entries, range_blocks, ternary_entries, ternary_blocks, codeword_length
+_PRE_TASK_SINGLE_APP_RANGE_SPECS = [(1, 2)] * 4
+_PRE_TASK_SINGLE_APP_TERNARY_SPECS = [(1, 4), (1, 4)]
+_PRE_TASK_MULTI_JOINT = (2, 8)                     # stages, blocks
+_PRE_TASK_MULTI_DISJOINT = (2, 11)
+
+
+def test_single_model_memory_evaluation_default_is_unchanged_by_discount_wiring():
+    features = ["f0", "f1", "f2", "f3"]
+    clf = _tiny_forest([0, 1, 2], seed=0)
+
+    (range_entries, range_blocks, ternary_entries, ternary_blocks,
+     _codewords, codeword_length,
+     range_table_specs, ternary_table_specs) = ev.single_model_memory_evaluation(clf, features)
+
+    assert (range_entries, range_blocks, ternary_entries, ternary_blocks,
+            codeword_length) == _PRE_TASK_SINGLE_APP
+    assert range_table_specs == _PRE_TASK_SINGLE_APP_RANGE_SPECS
+    assert ternary_table_specs == _PRE_TASK_SINGLE_APP_TERNARY_SPECS
+
+
+def test_single_model_memory_evaluation_discount_drops_every_majority_leaf():
+    features = ["f0", "f1", "f2", "f3"]
+    clf = _tiny_forest([0, 1, 2], seed=0)
+
+    (_, _, entries_off, _, codewords, _, _, _) = ev.single_model_memory_evaluation(clf, features)
+    (_, _, entries_on, _, _, _, _, _) = ev.single_model_memory_evaluation(
+        clf, features, use_default_action_discount=True)
+
+    expected_dropped = sum(
+        len(bps.most_common_class_and_dropped_codewords(codewords[tree])[1])
+        for tree in codewords)
+    assert expected_dropped > 0                    # fixture really exercises the discount
+    assert entries_on == entries_off - expected_dropped
+    assert entries_on < entries_off
+
+
+def test_multi_model_memory_evaluation_default_is_unchanged_by_discount_wiring():
+    features = ["f0", "f1", "f2", "f3"]
+    clf_app = _tiny_forest([0, 1, 2], seed=0)
+    clf_ddos = _tiny_forest([-1, 1], seed=7)
+
+    assert ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, features, features, 'joint') == _PRE_TASK_MULTI_JOINT
+    assert ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, features, features, 'disjoint') == _PRE_TASK_MULTI_DISJOINT
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint"])
+def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encoding):
+    # multi_model_memory_evaluation returns only (stages, blocks) -- the
+    # discounted ENTRY count it feeds into the block formula is never
+    # returned, and with these tiny forests every tree still fits in one
+    # 207-entry TCAM block either way, so the discount would be invisible at
+    # the real per-block capacity. Shrinking that one hardware constant for
+    # the duration of the test makes the entry reduction observable in the
+    # returned blocks, so this asserts on REAL returned numbers rather than
+    # on a spy. Both calls run under the same shrunken constant, so the
+    # difference is attributable to the discount alone.
+    #
+    # The 'disjoint' case is the load-bearing one: its ternary accounting
+    # happens entirely inside the two NESTED single_model_memory_evaluation
+    # calls, so it only shrinks if the flag is threaded into those too.
+    monkeypatch.setattr(ev, "TERNARY_MATCHING_ENTRIES_PER_BLOCK", 2)
+
+    features = ["f0", "f1", "f2", "f3"]
+    clf_app = _tiny_forest([0, 1, 2], seed=0)
+    clf_ddos = _tiny_forest([-1, 1], seed=7)
+
+    _, blocks_off = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, features, features, encoding)
+    _, blocks_on = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, features, features, encoding,
+        use_default_action_discount=True)
+
+    assert blocks_on < blocks_off

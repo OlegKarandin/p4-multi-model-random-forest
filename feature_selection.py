@@ -323,7 +323,8 @@ def _derive_joint_feature_intervals(model_app, model_ddos, feature_names_app, fe
 
 
 def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, split_idx, method, k,
-                                  model_app, model_ddos, feature_names_app, feature_names_ddos, encoding):
+                                  model_app, model_ddos, feature_names_app, feature_names_ddos, encoding,
+                                  config: Optional[p4_gen_config.P4GenConfig] = None):
     """Kicks off (non-blocking) real-compiler validation for one iteration's
     trained model(s). Returns None (never a handle) when validate_on_hardware
     is False, preserving today's zero-cost behavior exactly. Otherwise
@@ -351,6 +352,16 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     feature_intervals (`_derive_feature_intervals`) is passed straight
     through as feature_intervals_app/feature_intervals_ddos --
     `generate_P4_code` resolves per-feature sharing vs namespacing itself.
+
+    config: forwarded verbatim to `generate_P4_code` in both branches, so
+    `P4GenConfig.match_type` / `use_default_action_discount` actually take
+    effect on this real-compiler-validation path (they used to be silently
+    dropped here). `feature_names_app`/`feature_names_ddos` are additionally
+    passed as `generate_P4_code`'s `selected_features_app`/
+    `selected_features_ddos`: they ARE the ordered training-feature-name
+    lists it needs to recompute codewords for the default-action discount.
+    None (the default) leaves `generate_P4_code` on its own defaults, exactly
+    as before.
     """
     if not validate_on_hardware:
         return None
@@ -366,7 +377,10 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
         written_path = generate_P4_code(
             3, 2, model_app, model_ddos,
             feature_intervals_app=feature_intervals, feature_intervals_ddos=feature_intervals,
-            output_dir=hardware_output_dir, output_filename=filename)
+            output_dir=hardware_output_dir, output_filename=filename,
+            selected_features_app=feature_names_app,
+            selected_features_ddos=feature_names_ddos,
+            config=config)
         log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
         return compile_p4_async(written_path, log_dir)
 
@@ -379,7 +393,10 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             3, 2, model_app, model_ddos,
             feature_intervals_app=feature_intervals_app,
             feature_intervals_ddos=feature_intervals_ddos,
-            output_dir=hardware_output_dir, output_filename=filename)
+            output_dir=hardware_output_dir, output_filename=filename,
+            selected_features_app=feature_names_app,
+            selected_features_ddos=feature_names_ddos,
+            config=config)
         log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
         return compile_p4_async(written_path, log_dir)
 
@@ -474,7 +491,11 @@ def _process_single_split(
         `config.hardware_output_dir` take precedence over the individual
         `validate_on_hardware` / `hardware_output_dir` keyword arguments
         above (which remain the source of truth when `config` is None, so
-        every existing caller is unaffected).
+        every existing caller is unaffected). The object itself is also
+        forwarded to `_kickoff_hardware_validation` (and from there to
+        `generate_P4_code`), so its `match_type` /
+        `use_default_action_discount` fields reach the real-compiler
+        validation path too instead of being dropped here.
     """
     # Import inside function to ensure proper pickling in subprocess
     from train_model import train_multi_RF_Optuna_multi_constrained
@@ -587,7 +608,8 @@ def _process_single_split(
             # just-appended row's own numbers land one iteration from now.
             pending_next_single = _kickoff_hardware_validation(
                 validate_on_hardware, hardware_output_dir, split_idx, 'single', k_app,
-                model_app, model_ddos, feature_names_app, feature_names_ddos, 'disjoint')
+                model_app, model_ddos, feature_names_app, feature_names_ddos, 'disjoint',
+                config=config)
             pending_previous_single = _advance_pending_compile(
                 results, pending_previous_single, pending_next_single)
 
@@ -672,7 +694,8 @@ def _process_single_split(
 
             pending_next_multi = _kickoff_hardware_validation(
                 validate_on_hardware, hardware_output_dir, split_idx, 'multi', k,
-                model_app, model_ddos, feature_names_shared, feature_names_shared, 'joint')
+                model_app, model_ddos, feature_names_shared, feature_names_shared, 'joint',
+                config=config)
             pending_previous_multi = _advance_pending_compile(
                 results, pending_previous_multi, pending_next_multi)
 

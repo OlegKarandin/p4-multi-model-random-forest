@@ -344,7 +344,11 @@ def crossbar_stages_needed(table_specs):
   return len(stages)
 
 
-def single_model_memory_evaluation(clf, selected_features):
+def single_model_memory_evaluation(clf, selected_features, use_default_action_discount=False):
+  """use_default_action_discount: opt-in, passed straight through to
+  ternary_matching_resource_usage (which has implemented the Planter-style
+  discount since Task 7 but was never reachable from this estimator). False
+  -- the default -- reproduces every pre-existing caller's numbers exactly."""
   trees = get_tree_textual_representation(clf, selected_features)
 
   tree_nodes = {}
@@ -357,13 +361,21 @@ def single_model_memory_evaluation(clf, selected_features):
 
   paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
   codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
-  ternary_entries, ternary_blocks, codeword_length, ternary_table_specs = ternary_matching_resource_usage(codewords, feature_intervals)
+  ternary_entries, ternary_blocks, codeword_length, ternary_table_specs = ternary_matching_resource_usage(
+      codewords, feature_intervals, use_default_action_discount=use_default_action_discount)
 
   return (range_entries, range_blocks, ternary_entries, ternary_blocks, codewords, codeword_length,
           range_table_specs, ternary_table_specs)
 
 
-def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding):
+def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
+                                  use_default_action_discount=False):
+  """use_default_action_discount: opt-in, threaded down to
+  ternary_matching_resource_usage under BOTH encodings -- directly for
+  'joint' (which does its own ternary accounting on the merged tree set),
+  and via both nested single_model_memory_evaluation calls for 'disjoint'.
+  False -- the default -- reproduces every pre-existing caller's numbers
+  exactly."""
 
   if encoding == 'joint':
     trees_app = get_tree_textual_representation(clf_app, selected_features_app)
@@ -384,16 +396,19 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
 
     paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
     codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
-    ternary_entries, ternary_blocks, codeword_length, ternary_table_specs = ternary_matching_resource_usage(codewords, feature_intervals)
+    ternary_entries, ternary_blocks, codeword_length, ternary_table_specs = ternary_matching_resource_usage(
+        codewords, feature_intervals, use_default_action_discount=use_default_action_discount)
 
   elif encoding == 'disjoint':
 
     (range_entries_app, range_blocks_app, ternary_entries_app, ternary_blocks_app,
      codewords_app, codeword_length_app,
-     range_table_specs_app, ternary_table_specs_app) = single_model_memory_evaluation(clf_app, selected_features_app)
+     range_table_specs_app, ternary_table_specs_app) = single_model_memory_evaluation(
+        clf_app, selected_features_app, use_default_action_discount=use_default_action_discount)
     (range_entries_ddos, range_blocks_ddos, ternary_entries_ddos, ternary_blocks_ddos,
      codewords_ddos, codeword_length_ddos,
-     range_table_specs_ddos, ternary_table_specs_ddos) = single_model_memory_evaluation(clf_ddos, selected_features_ddos)
+     range_table_specs_ddos, ternary_table_specs_ddos) = single_model_memory_evaluation(
+        clf_ddos, selected_features_ddos, use_default_action_discount=use_default_action_discount)
 
     range_blocks = range_blocks_app + range_blocks_ddos
     range_entries = range_entries_app + range_entries_ddos
