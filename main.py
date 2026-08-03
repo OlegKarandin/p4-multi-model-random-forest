@@ -57,7 +57,7 @@ def implement_tree_models_in_P4():
     codeword_length = len(next(iter(codewords[0].items()))[0])
     get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset)
 
-    generate_P4_code(num_classes_app, num_classes_ddos, clf_app, clf_ddos, codeword_length, feature_intervals)
+    generate_P4_code(num_classes_app, num_classes_ddos, clf_app, clf_ddos, feature_intervals)
 
 
 def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):

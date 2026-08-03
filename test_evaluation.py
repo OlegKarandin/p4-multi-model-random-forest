@@ -370,30 +370,46 @@ def test_dataset_py_clips_outliers_to_threshold_not_hardcoded_19bit_value():
 # Task 8: Planter RF_EB-style exact-match resource accounting
 # ---------------------------------------------------------------------------
 #
-# Confirmed directly against build_p4_script.generate_codewords (called on a
-# tiny real synthetic tree this session): a wildcarded bit really is a
-# literal '*' character in the codeword string (generate_codewords appends
-# '*' at build_p4_script.py:358/365), one substring-of-bits per feature,
-# concatenated in feature_intervals iteration order. Exact match cannot
-# express '*', so each wildcarded bit must be enumerated into 2 concrete
-# entries -- a real, reported entry-count multiplier, not hidden.
+# Confirmed directly against build_p4_script.generate_codewords: each feature
+# gets its own fixed-width, thermometer/unary-coded segment (width =
+# len(feature_intervals[feature]) - 1), concatenated in feature_intervals
+# iteration order (generate_codewords appends '*' at build_p4_script.py:
+# 368/375, and narrows a leaf-tested feature's segment to a run of '0's
+# followed by a run of '1's). A feature the leaf's path never tests gets its
+# *entire* segment wildcarded, and that segment has exactly
+# len(feature_intervals[feature]) reachable values (one per position of the
+# 0/1 boundary) -- NOT 2**width independent bit choices. The two only
+# coincide when width == 1 (a 2-interval feature), which is why a fixture
+# using only width-1 features can't catch a width > 1 miscount; the fixtures
+# below deliberately include a width-2 (3-interval) feature so an entirely
+# wildcarded segment on it distinguishes the correct len(intervals)==3
+# multiplier from the wrong 2**2==4 one.
 
 def test_exact_match_resource_usage_enumerates_wildcarded_features():
-    # tree with 2 features (A: 3 intervals -> 2 codeword bits, B: 2 intervals
-    # -> 1 codeword bit); one leaf's path only tests feature A, leaving B
-    # wildcarded under ternary -- under exact match this one leaf must
-    # expand into 2 concrete entries (one per B interval).
+    # Real generate_codewords-shaped fixture: feature A has 3 intervals (2
+    # codeword bits, thermometer-coded: "11"/"01"/"00"), feature B has 2
+    # intervals (1 codeword bit: "1"/"0"). Segments concatenate in
+    # feature_intervals iteration order (A then B), so total codeword width
+    # is 2 + 1 = 3 for every leaf, matching what generate_codewords itself
+    # would emit.
     feature_intervals = {"A": [(0, 10), (11, 20), (21, 65535)], "B": [(0, 100), (101, 65535)]}
-    codewords = {0: {"00*": 0, "01": 1, "10": 1}}  # confirmed '*' representation
+    codewords = {
+        0: {
+            "01*": 0,  # A tested (segment "01", one concrete value), B untested (all-'*')
+            "**1": 1,  # A untested (all-'*', width 2 -> 3 reachable values), B tested
+            "110": 1,  # both tested, no wildcards at all
+        }
+    }
     sram_entries, sram_blocks = ev.exact_match_resource_usage(codewords, feature_intervals)
-    # 1 (no wildcard, "01") + 1 (no wildcard, "10") + 2 (one wildcarded bit in
-    # "00*" expands x2) == 4. Note: the task brief's own worked example
-    # asserted "== 3" here, but its own breakdown comment (1 + 1 + 2) sums to
-    # 4, not 3 -- a genuine arithmetic bug in the brief, not a wildcard-
-    # representation mismatch (confirmed separately by calling
-    # generate_codewords on a real tiny tree this session). Corrected to the
-    # value the stated semantics actually produce.
-    assert sram_entries == 4
+    # "01*": A concrete (x1) * B all-wildcard width-1 segment -> len(B intervals)==2 => 2
+    # "**1": A all-wildcard width-2 segment -> len(A intervals)==3 * B concrete (x1) => 3
+    # "110": no wildcards -> 1
+    # total = 2 + 3 + 1 == 6. The old `2 ** codeword.count('*')` formula
+    # would instead give 2 + 4 + 1 == 7 for this same fixture (miscounting
+    # the width-2 all-wildcard "**" segment as 2**2==4 instead of the
+    # correct len(A intervals)==3), which is exactly the over-count this
+    # fix corrects.
+    assert sram_entries == 6
 
 
 def test_exact_match_resource_usage_no_wildcards_matches_ternary_entry_count():
@@ -407,10 +423,14 @@ def test_exact_match_resource_usage_no_wildcards_matches_ternary_entry_count():
 
 
 def test_exact_match_resource_usage_multiple_wildcards_multiply():
-    # 2 wildcarded bits in one codeword -> 2**2 = 4 concrete entries for
-    # that one leaf, confirming the multiplier is 2**(count of '*'), not a
-    # flat "+1 wildcard present" bump.
-    feature_intervals = {"A": [(0, 10), (11, 20), (21, 65535)], "B": [(0, 100), (101, 65535)]}
+    # Two independent, fully-wildcarded width-1 features (2 intervals each)
+    # in the same codeword -> len(A intervals) * len(B intervals) = 2 * 2 =
+    # 4 concrete entries for that one leaf, confirming the per-feature
+    # factors multiply rather than a flat "+1 wildcard present" bump. Both
+    # features are width 1 here, so len(intervals) == 2**width for each --
+    # this test is about the multiplicative combination across features,
+    # not the width > 1 miscount (that's covered above).
+    feature_intervals = {"A": [(0, 10), (11, 65535)], "B": [(0, 50), (51, 65535)]}
     codewords = {0: {"**": 0}}
     sram_entries, sram_blocks = ev.exact_match_resource_usage(codewords, feature_intervals)
     assert sram_entries == 4
@@ -424,4 +444,4 @@ def test_exact_match_resource_usage_sums_across_multiple_trees():
         1: {"*": 0},
     }
     sram_entries, _ = ev.exact_match_resource_usage(codewords, feature_intervals)
-    assert sram_entries == 1 + 1 + 2  # tree 0: 2 concrete leaves; tree 1: 1 leaf x 2**1
+    assert sram_entries == 1 + 1 + 2  # tree 0: 2 concrete leaves; tree 1: 1 leaf x len(A intervals)==2

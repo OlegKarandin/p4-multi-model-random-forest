@@ -181,17 +181,35 @@ def exact_match_resource_usage(codewords, feature_intervals):
   reported alongside ternary_matching_resource_usage rather than replacing
   it.
 
-  Confirmed against build_p4_script.generate_codewords (build_p4_script.py:
-  328-401) by direct call on a tiny synthetic tree this session: a
-  wildcarded bit really is a literal '*' character, one substring-of-bits
-  per feature, concatenated in feature_intervals iteration order -- exactly
-  what this function's codeword.count('*') relies on. feature_intervals is
-  accepted (parallel to ternary_matching_resource_usage's signature) but
-  unused here: the wildcard count already comes straight out of each
-  codeword string, so no per-feature interval lookup is needed to know how
-  many concrete values a wildcarded bit stands in for -- '*' is always a
-  single BIT position (one binary choice), regardless of how many decimal
-  intervals that feature's whole codeword segment enumerates.
+  Final-review fix: a flat `2 ** codeword.count('*')` over-counts. Per
+  build_p4_script.generate_codewords (build_p4_script.py:338-411), each
+  feature gets its own fixed-width codeword segment (width =
+  len(feature_intervals[feature]) - 1), and that segment is a THERMOMETER/
+  UNARY code: valid segments are always of the shape 0^j 1^(width-j) for
+  some j (see generate_codewords's `code[idx] = '1'`/`'0'` assignment
+  logic) -- there are exactly `len(feature_intervals[feature])` reachable
+  values for that segment (one per position of the 0/1 boundary, j = 0..
+  width), NOT 2**width independent bit combinations. When a leaf's tree
+  path never tests a feature at all (`feature not in features_involved`),
+  generate_codewords fills that feature's *entire* segment with '*'
+  characters -- so treating every '*' in that segment as an independent
+  binary choice (2**width) overcounts whenever width > 1 (a feature with
+  more than 2 intervals): the correct multiplier for a fully-wildcarded
+  segment is `len(feature_intervals[feature])`, which only coincides with
+  2**width in the degenerate width == 1 case (2 intervals).
+
+  This function now walks each codeword in per-feature segments (mirroring
+  generate_codewords's own concatenation order: feature_intervals.keys()
+  iteration order, each segment consuming `len(feature_intervals[feature])
+  - 1` characters) and, for each segment that is ALL wildcards, multiplies
+  the leaf's entry-expansion factor by `len(feature_intervals[feature])`
+  instead of `2 ** width`. A segment that is NOT all wildcards (the
+  feature IS on the leaf's path, so generate_codewords started it as all
+  '*' and then narrowed some positions to '0'/'1') may still contain
+  leftover '*' characters in a shape whose exact reachable-value count
+  isn't a simple closed form here; for that narrower sub-case this keeps
+  `2 ** (wildcards within that one segment)` as a documented, safe
+  (never-underestimating) approximation.
 
   Returns (sram_entries, sram_blocks). sram_blocks is deliberately None:
   the SRAM per-block *entry capacity* for a plain exact-match key table is
@@ -213,8 +231,24 @@ def exact_match_resource_usage(codewords, feature_intervals):
   sram_entries = 0
   for tree in codewords:
     for codeword in codewords[tree]:
-      wildcard_count = codeword.count('*')
-      sram_entries += 2 ** wildcard_count
+      entry_factor = 1
+      position = 0
+      for feature, intervals in feature_intervals.items():
+        width = len(intervals) - 1
+        if width <= 0:
+          continue
+        segment = codeword[position:position + width]
+        position += width
+        if segment == '*' * width:
+          # Feature entirely untested on this leaf's path: thermometer
+          # code has exactly len(intervals) reachable values, not 2**width.
+          entry_factor *= len(intervals)
+        else:
+          # Feature IS on the path -- any remaining '*' in this segment is
+          # not a full free choice among len(intervals) values. Keep the
+          # old 2**(wildcards-in-segment) as a safe over-approximation.
+          entry_factor *= 2 ** segment.count('*')
+      sram_entries += entry_factor
 
   sram_blocks = None
   return sram_entries, sram_blocks

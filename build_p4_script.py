@@ -858,7 +858,15 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
   generate_P4_tables_and_apply. 'ternary' (the default) is byte-identical
   to every caller before this task; 'exact' switches only the
   classification tables to resources/table_classification_exact.p4 /
-  `: exact;` keys (feature-range tables stay ternary/range either way)."""
+  `: exact;` keys (feature-range tables stay ternary/range either way).
+
+  CAVEAT: with match_type='exact', the emitted P4 program is NOT yet
+  end-to-end compilable/loadable on its own. get_table_entries (writes
+  table_entries.json) is unchanged by this parameter and still emits
+  ternary/wildcard-shaped ('*') entries for the same classification tables
+  that this function just declared `: exact;` -- concrete, enumerated
+  exact-match entries for those wildcarded codewords still need to be
+  generated as follow-on work before 'exact' output can actually be loaded."""
 
   # clf_app/clf_ddos may be None -- meaning "no task at all" (e.g. M1 is
   # DDoS-only: clf_app is None, clf_ddos is a trained model).
