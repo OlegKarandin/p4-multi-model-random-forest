@@ -321,79 +321,35 @@ def _derive_joint_feature_intervals(model_app, model_ddos, feature_names_app, fe
     return get_feature_intervals_from_thresholds(feature_thresholds)
 
 
-class _MergedCompileHandle:
-    """Wraps two `compile_p4_async` Futures (the disjoint loop's independent
-    app-only and ddos-only programs) behind the same `.result(timeout=...)`
-    interface a single Future exposes, so the loop-splicing code
-    (`pending_previous`/`pending_next`) can treat "this iteration's hardware
-    validation" as one handle regardless of how many real p4c invocations it
-    took.
-
-    Both futures are submitted (via `compile_p4_async`) immediately and run
-    concurrently on `p4_compile`'s shared 2-worker pool, rather than as one
-    task that calls the blocking `compile_p4` twice in sequence -- this
-    keeps both loops' real-compiler-facing calls behind the same
-    `compile_p4_async` seam (the interface this task's brief names as what
-    `_process_single_split` consumes), so a test can mock exactly one
-    function to cover both the joint and disjoint paths, and it never
-    silently attempts a real, unmocked WSL2 invocation in the default test
-    suite. As a side effect it also finishes in roughly one compile's wall
-    time instead of two, which only helps.
-    """
-
-    def __init__(self, future_app, future_ddos):
-        self._future_app = future_app
-        self._future_ddos = future_ddos
-
-    def result(self, timeout=None):
-        from p4_compile import CompileResult
-
-        result_app = self._future_app.result(timeout=timeout)
-        result_ddos = self._future_ddos.result(timeout=timeout)
-
-        def _sum_or_none(a, b):
-            # "0 resources used" and "one program's compile failed" must
-            # stay distinguishable (CompileResult's own None-means-unknown
-            # convention) -- so a single None input makes the merged field
-            # None too, never silently treated as 0.
-            return None if (a is None or b is None) else a + b
-
-        return CompileResult(
-            errors=_sum_or_none(result_app.errors, result_ddos.errors),
-            warnings=_sum_or_none(result_app.warnings, result_ddos.warnings),
-            stages=_sum_or_none(result_app.stages, result_ddos.stages),
-            tables=_sum_or_none(result_app.tables, result_ddos.tables),
-            gateway=_sum_or_none(result_app.gateway, result_ddos.gateway),
-            sram=_sum_or_none(result_app.sram, result_ddos.sram),
-            map_ram=_sum_or_none(result_app.map_ram, result_ddos.map_ram),
-            tcam=_sum_or_none(result_app.tcam, result_ddos.tcam),
-        )
-
-
 def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, split_idx, method, k,
                                   model_app, model_ddos, feature_names_app, feature_names_ddos, encoding):
     """Kicks off (non-blocking) real-compiler validation for one iteration's
     trained model(s). Returns None (never a handle) when validate_on_hardware
     is False, preserving today's zero-cost behavior exactly. Otherwise
-    returns an object exposing `.result(timeout=...)` -- either the raw
-    Future from `compile_p4_async` (encoding == 'joint') or a
-    `_MergedCompileHandle` wrapping two of them (encoding == 'disjoint').
+    returns the raw Future from `compile_p4_async`, exposing
+    `.result(timeout=...)`.
+
+    Task 3: `generate_P4_code` now represents genuine disjoint encoding
+    (two independently-derived, possibly differently-discretized
+    feature_intervals for a feature both models select) inside ONE combined
+    P4 program via `_resolve_disjoint_feature_plan` -- so 'joint' and
+    'disjoint' no longer need different real-compile strategies. Both
+    branches generate ONE P4 program and issue ONE `compile_p4_async` call,
+    matching real production deployment (both tasks always ship together in
+    one combined pipeline -- confirmed by the project owner, not optional).
+    This removes the need for the prior plan's two-separate-programs
+    approximation (`_MergedCompileHandle`, since removed): that
+    approximation over-counted by paying for two full parser/deparser
+    pipelines instead of one shared one.
 
     encoding == 'joint': both models share ONE feature_intervals dict
-    (`_derive_joint_feature_intervals`) and are compiled together into ONE
-    P4 program -- one real compile produces this iteration's
-    stages_real/tcam_real/compile_errors directly.
+    (`_derive_joint_feature_intervals`), which _resolve_disjoint_feature_plan
+    resolves to entirely shared (non-namespaced) entries.
 
-    encoding == 'disjoint': the two models are NOT required to share
-    interval boundaries under disjoint encoding -- merging them into one
-    feature_intervals dict the way 'joint' does would silently impose a
-    shared discretization that `evaluation.multi_model_memory_evaluation`'s
-    'disjoint' branch does not describe (it evaluates each model against
-    its OWN independently-derived feature_intervals). So two INDEPENDENT P4
-    programs are generated and compiled here -- one containing only
-    model_app (clf_ddos=None, num_class_ddos=0), one containing only
-    model_ddos (mirrored) -- and their results are merged into one
-    CompileResult by `_MergedCompileHandle`.
+    encoding == 'disjoint': each model's OWN, independently-derived
+    feature_intervals (`_derive_feature_intervals`) is passed straight
+    through as feature_intervals_app/feature_intervals_ddos --
+    `generate_P4_code` resolves per-feature sharing vs namespacing itself.
     """
     if not validate_on_hardware:
         return None
@@ -407,7 +363,8 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
 
         filename = f"split{split_idx}_{method}_k{k}.p4"
         written_path = generate_P4_code(
-            3, 2, model_app, model_ddos, feature_intervals,
+            3, 2, model_app, model_ddos,
+            feature_intervals_app=feature_intervals, feature_intervals_ddos=feature_intervals,
             output_dir=hardware_output_dir, output_filename=filename)
         log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
         return compile_p4_async(written_path, log_dir)
@@ -416,21 +373,14 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
         feature_intervals_app = _derive_feature_intervals(model_app, feature_names_app)
         feature_intervals_ddos = _derive_feature_intervals(model_ddos, feature_names_ddos)
 
-        filename_app = f"split{split_idx}_{method}_k{k}_app.p4"
-        filename_ddos = f"split{split_idx}_{method}_k{k}_ddos.p4"
-        written_path_app = generate_P4_code(
-            3, 0, model_app, None, feature_intervals_app,
-            output_dir=hardware_output_dir, output_filename=filename_app)
-        written_path_ddos = generate_P4_code(
-            0, 2, None, model_ddos, feature_intervals_ddos,
-            output_dir=hardware_output_dir, output_filename=filename_ddos)
-
-        log_dir_app = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}_app/"
-        log_dir_ddos = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}_ddos/"
-
-        future_app = compile_p4_async(written_path_app, log_dir_app)
-        future_ddos = compile_p4_async(written_path_ddos, log_dir_ddos)
-        return _MergedCompileHandle(future_app, future_ddos)
+        filename = f"split{split_idx}_{method}_k{k}.p4"
+        written_path = generate_P4_code(
+            3, 2, model_app, model_ddos,
+            feature_intervals_app=feature_intervals_app,
+            feature_intervals_ddos=feature_intervals_ddos,
+            output_dir=hardware_output_dir, output_filename=filename)
+        log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
+        return compile_p4_async(written_path, log_dir)
 
     else:
         raise ValueError(f"Unknown encoding for hardware validation: {encoding!r}")

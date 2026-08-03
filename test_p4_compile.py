@@ -358,7 +358,8 @@ def test_compile_p4_against_real_toolchain(tmp_path):
     tree_nodes.update({i + offset: bps.get_nodes(t, i + offset) for i, t in trees_ddos.items()})
     feature_intervals = bps.get_feature_intervals_from_thresholds(bps.get_feature_thresholds(tree_nodes))
 
-    bps.generate_P4_code(3, 2, clf_app, clf_ddos, feature_intervals,
+    bps.generate_P4_code(3, 2, clf_app, clf_ddos,
+                          feature_intervals_app=feature_intervals, feature_intervals_ddos=feature_intervals,
                           output_dir=str(tmp_path) + os.sep, output_filename="probe.p4")
 
     result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))

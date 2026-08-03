@@ -489,6 +489,29 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
             "key": _,
             "action_params": _,
           }
+
+  Task 3 (disjoint-encoding single-pipeline generator): this function needs
+  NO code change to correctly emit resolved-plan-aware entries -- it never
+  reads/writes anything about the RAW tracked-value field (that's entirely
+  `generate_P4_tables_and_apply`'s and `generate_P4_registers_and_apply`'s
+  concern). It is already agnostic to whether a `feature_intervals` key is
+  a "raw" or "resolved"/namespaced name: `table_name`/`action` are built
+  directly from whatever key is given, and `codewords`' own segment order
+  must already match `feature_intervals`' iteration order (same
+  requirement as always, pre-dating this task -- both must come from the
+  same `generate_codewords(paths, feature_intervals)` call). So per
+  _resolve_disjoint_feature_plan's design, a caller building a genuinely
+  disjoint (namespaced) pipeline's table_entries.json should call both
+  `generate_codewords` and this function with a `feature_intervals` dict
+  keyed by RESOLVED names (e.g. {"app_flow_iat_max": [...], "flow_iat_max":
+  [...]}), each mapped to that entry's own intervals -- exactly reproducing
+  "keyed by resolved_name for the table/field name" automatically, with
+  zero changes needed here. No caller in this task's scope (main.py's
+  pipeline is joint-only; feature_selection.py's real-compile validation
+  only needs `generate_P4_code`'s emitted .p4 SOURCE, not table_entries.json)
+  actually exercises the disjoint-namespaced path through this function
+  yet -- this note documents the convention for the eventual caller that
+  will.
   '''
 
   feature_code_length = {}
@@ -600,6 +623,55 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
     output_file.write(json.dumps(table_entries))
 
 
+def _resolve_disjoint_feature_plan(feature_intervals_app, feature_intervals_ddos):
+  '''Decides, per feature name, whether App and DDoS can share ONE
+  discretization table/codeword field or need independent, namespaced
+  ones. Returns an ordered dict: resolved_name -> (raw_feature_name,
+  intervals, models), where `models` is a subset of {"app","ddos"} naming
+  which model(s) actually read this resolved feature's code_<resolved_name>
+  field, and `raw_feature_name` is the underlying feature this resolved
+  entry discretizes (needed because the RAW VALUE register/computation is
+  always shared and keyed by raw_feature_name, never by resolved_name).
+
+  Two models share a plain (non-namespaced) entry for a feature only when
+  BOTH select it AND their interval lists are identical -- true by
+  construction for joint-derived callers (both pass the literally same
+  dict), and true only coincidentally for disjoint-derived callers (each
+  model's intervals come from its own independently-trained tree).
+  Features selected by only one model are never namespaced (nothing to
+  disambiguate).
+  '''
+  # NOTE: a feature selected by only ONE model must never be namespaced --
+  # there is nothing to disambiguate against, since the other model doesn't
+  # discretize it at all. Namespacing only applies when BOTH models select
+  # the same feature name with DIFFERING intervals (genuine disjoint
+  # encoding).
+  from collections import OrderedDict
+  resolved = OrderedDict()
+  seen = set()
+  for feature in feature_intervals_app:
+    seen.add(feature)
+    in_ddos = feature in feature_intervals_ddos
+    if in_ddos and feature_intervals_app[feature] == feature_intervals_ddos[feature]:
+      resolved[feature] = (feature, feature_intervals_app[feature], {"app", "ddos"})
+    elif in_ddos:
+      # Both models select it, but with differing intervals.
+      resolved["app_" + feature] = (feature, feature_intervals_app[feature], {"app"})
+    else:
+      # App-exclusive -- nothing to disambiguate.
+      resolved[feature] = (feature, feature_intervals_app[feature], {"app"})
+  for feature in feature_intervals_ddos:
+    if feature in seen and feature_intervals_app.get(feature) == feature_intervals_ddos[feature]:
+      continue  # already added as a shared entry above
+    if feature in seen:
+      # Both models select it, but with differing intervals.
+      resolved["ddos_" + feature] = (feature, feature_intervals_ddos[feature], {"ddos"})
+    else:
+      # DDoS-exclusive -- nothing to disambiguate.
+      resolved[feature] = (feature, feature_intervals_ddos[feature], {"ddos"})
+  return resolved
+
+
 def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):
   """
       action <ACTION_NAME> (bit<<ACTION_CODE_LENGTH>> code) {
@@ -671,7 +743,9 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
 
 def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
                                   codewords=None, use_default_action_discount=False,
-                                  match_type='ternary'):
+                                  match_type='ternary',
+                                  feature_names_app=None, feature_names_ddos=None,
+                                  raw_feature_names=None):
   """
       table <TABLE_NAME> {
           key = {
@@ -708,6 +782,32 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   entries first (see evaluation.exact_match_resource_usage for the
   analytical accounting of that multiplier); this function only emits the
   table declarations' match kind, not the table_entries.json rows.
+
+  feature_names: Task 3 -- the full pool of RESOLVED names (see
+  _resolve_disjoint_feature_plan) that get a range-matching table declared,
+  one per resolved name, regardless of which model(s) actually read it.
+
+  feature_names_app / feature_names_ddos: Task 3, optional. Restrict which
+  of `feature_names` actually appear as a `meta.code_<resolved_name>` key
+  field in the App / DDoS classification tables respectively -- a resolved
+  name selected by only one model (e.g. a namespaced "ddos_<feature>" entry,
+  or a feature only one model selected at all) must not appear as a key in
+  the OTHER model's classification table. Each defaults to `feature_names`
+  itself when omitted (None), exactly reproducing every pre-Task-3 caller's
+  behavior -- both models keying on the identical, full feature set --
+  byte-for-byte.
+
+  raw_feature_names: Task 3, optional. Maps resolved_name -> raw_feature_name
+  for the range-matching tables' <FEATURE_NAME> substitution -- the RAW
+  tracked-value field (`meta.<raw_feature_name>_val`) that a resolved
+  name's own discretization table reads its input from (see
+  _resolve_disjoint_feature_plan's docstring for why this can differ from
+  resolved_name under genuine disjoint encoding: two namespaced entries,
+  e.g. app_<feature>/ddos_<feature>, both read the SAME shared raw value).
+  A resolved name absent from this mapping (or the whole mapping omitted)
+  falls back to using resolved_name itself as the raw name, reproducing
+  every pre-Task-3 caller's behavior (which never had this distinction)
+  byte-for-byte.
   """
 
   SIZE_FEATURE_TABLE = 200
@@ -726,6 +826,13 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   apply_templates = ""
 
   feature_names = list(feature_names)
+  # Task 3: each model's classification tables key on its OWN resolved
+  # feature set -- defaulting to the full `feature_names` pool when not
+  # given, so every pre-Task-3 caller (a single shared feature_names list)
+  # is byte-identical.
+  feature_names_app = list(feature_names_app) if feature_names_app is not None else feature_names
+  feature_names_ddos = list(feature_names_ddos) if feature_names_ddos is not None else feature_names
+  raw_feature_names = raw_feature_names or {}
 
   # Tier 3: the classification tables key on one field per selected feature
   # (meta.code_<feature>), not a single combined meta.codeword field. Task 8:
@@ -734,10 +841,14 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   # the generated key text, since neither template file declares its own
   # <MATCH_TYPE> marker (match type is baked into <KEYS> here, not read from
   # the template).
-  classification_keys = "\n".join(
-      "            meta.code_"+feature.replace(" ","_").lower()+" : "+match_type+";"
-      for feature in feature_names
-  )
+  def _classification_keys(names):
+    return "\n".join(
+        "            meta.code_"+feature.replace(" ","_").lower()+" : "+match_type+";"
+        for feature in names
+    )
+
+  classification_keys_app = _classification_keys(feature_names_app)
+  classification_keys_ddos = _classification_keys(feature_names_ddos)
 
   def _default_action_line(action_name, tree_codewords):
     # "" leaves resources/table_classification.p4's whole
@@ -756,7 +867,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
       with open(classification_table_template_path, 'r') as table_template_file:
         table_template = table_template_file.read()
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_app_"+str(i))
-        table_template = table_template.replace("<KEYS>", classification_keys)
+        table_template = table_template.replace("<KEYS>", classification_keys_app)
         table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_app_"+str(i)+";")
         table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
         action_name = "classify_flow_codeword_app_"+str(i)
@@ -772,7 +883,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
       with open(classification_table_template_path, 'r') as table_template_file:
         table_template = table_template_file.read()
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_ddos_"+str(i))
-        table_template = table_template.replace("<KEYS>", classification_keys)
+        table_template = table_template.replace("<KEYS>", classification_keys_ddos)
         table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_ddos_"+str(i)+";")
         table_template = table_template.replace("<SIZE>", str(SIZE_CLASSIFICATION_TABLE))
         action_name = "classify_flow_codeword_ddos_"+str(i)
@@ -785,10 +896,16 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
 
   feature_idx = 0
   for feature in feature_names:
+    # Task 3: the range table's key reads the RAW tracked-value field
+    # (shared, model-independent) even when this resolved entry's NAME is
+    # namespaced (app_<feature>/ddos_<feature>) -- defaults to `feature`
+    # itself (raw_feature_names omitted or missing this key), reproducing
+    # every pre-Task-3 caller's behavior byte-for-byte.
+    raw_name = raw_feature_names.get(feature, feature)
     with open(PATH_TABLE_TEMPLATE_P4, 'r') as table_template_file:
       table_template = table_template_file.read()
       table_template = table_template.replace("<TABLE_NAME>","table_"+str(feature_idx)+"_"+feature.replace(" ","_").lower())
-      table_template = table_template.replace("<FEATURE_NAME>", feature.replace(" ","_").lower()+"_val")
+      table_template = table_template.replace("<FEATURE_NAME>", raw_name.replace(" ","_").lower()+"_val")
       table_template = table_template.replace("<MATCH_TYPE>", "range")
       table_template = table_template.replace("<ACTIONS>", str("set_code_"+feature.replace(" ","_").lower())+";")
       table_template = table_template.replace("<SIZE>", str(SIZE_FEATURE_TABLE))
@@ -860,7 +977,8 @@ def generate_voting_code(num_trees, num_classes, task):
   return table_decl, apply_call
 
 
-def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_intervals,
+def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
+                      feature_intervals_app, feature_intervals_ddos,
                       output_dir=OUTPUT_PATH, output_filename='p4_code_RF_models.p4',
                       match_type='ternary'):
   """match_type: Task 8 -- passed straight through to
@@ -875,7 +993,29 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
   ternary/wildcard-shaped ('*') entries for the same classification tables
   that this function just declared `: exact;` -- concrete, enumerated
   exact-match entries for those wildcarded codewords still need to be
-  generated as follow-on work before 'exact' output can actually be loaded."""
+  generated as follow-on work before 'exact' output can actually be loaded.
+
+  Task 3: feature_intervals_app / feature_intervals_ddos are each model's
+  OWN, independently-derived feature_intervals dict (raw feature name ->
+  interval list) -- no longer a single shared dict, since real production
+  deployment always runs ONE combined pipeline for both tasks, and disjoint
+  encoding lets the two independently-trained models pick different
+  discretization thresholds for a feature they both happen to select. A
+  task with no active model passes {} for its side (e.g. an App-only or
+  DDoS-only run passes {} for the other model's feature_intervals, exactly
+  mirroring clf_app/clf_ddos=None for "no task"). A joint-encoded caller
+  (both models sharing one discretization) passes the SAME dict for both
+  parameters, reproducing every pre-Task-3 caller's output byte-for-byte.
+
+  Internally this resolves both dicts, once, via
+  _resolve_disjoint_feature_plan: a feature both models select with
+  IDENTICAL intervals shares ONE discretization table/field; a feature both
+  models select with DIFFERING intervals gets two independent, namespaced
+  (app_/ddos_ prefixed) discretization tables/fields -- while the
+  underlying RAW feature-value register/computation always stays shared,
+  since a raw counter value is model-independent regardless of who
+  discretizes it (see _resolve_disjoint_feature_plan's own docstring for
+  the full design)."""
 
   # clf_app/clf_ddos may be None -- meaning "no task at all" (e.g. M1 is
   # DDoS-only: clf_app is None, clf_ddos is a trained model).
@@ -888,6 +1028,12 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
   # consulted and never raises on log2(0)/log2(1 task with 1 class), etc.
   bit_per_classes_app = math.ceil(math.log2(num_class_app)) if num_trees_app > 0 else 0
   bit_per_classes_ddos = math.ceil(math.log2(num_class_ddos)) if num_trees_ddos > 0 else 0
+
+  # Task 3: resolve App's and DDoS's independently-derived feature_intervals
+  # into ONE plan describing, per resolved name, whether both models share
+  # ONE discretization table/field for a feature or need independent,
+  # namespaced ones. Computed once, consumed by every section below.
+  resolved_plan = _resolve_disjoint_feature_plan(feature_intervals_app, feature_intervals_ddos)
 
   metadata_code = ""
   if num_trees_app > 0:
@@ -905,20 +1051,50 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos, feature_i
       metadata_code += "\tbit<1> class_tree_ddos_"+str(i)+"_is_set;\n"
     metadata_code += "\tbit<"+str(bit_per_classes_ddos)+"> classification_ddos;\n"
 
-  # Tier 3: every selected feature gets its own tracked-value field and its
-  # own codeword field, instead of all features sharing bit-slices of one
-  # combined meta.codeword field.
-  for feature in feature_intervals:
-    feature_id = feature.replace(" ","_").lower()
-    codeword_width = len(feature_intervals[feature]) - 1
-    metadata_code += "\tbit<16> "+feature_id+"_val;\n"
-    metadata_code += "\tbit<"+str(codeword_width)+"> code_"+feature_id+";\n"
+  # Tier 3 + Task 3: every RESOLVED entry gets its own codeword field
+  # (code_<resolved_name>), but the raw tracked-value field (<raw>_val) is
+  # declared exactly once per DISTINCT raw feature name -- never twice just
+  # because two resolved entries (e.g. app_<feature>/ddos_<feature>) both
+  # discretize the same underlying shared raw value.
+  raw_feature_intervals = {}  # raw_feature_name -> intervals (first-seen; only the KEYS feed generate_P4_registers_and_apply, which ignores values)
+  for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
+    if raw_feature_name not in raw_feature_intervals:
+      raw_feature_intervals[raw_feature_name] = intervals
+      metadata_code += "\tbit<16> "+raw_feature_name.replace(" ","_").lower()+"_val;\n"
 
-  registers_code, register_actions_code, feature_update_apply_code = generate_P4_registers_and_apply(feature_intervals)
+  for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
+    codeword_width = len(intervals) - 1
+    metadata_code += "\tbit<"+str(codeword_width)+"> code_"+resolved_name.replace(" ","_").lower()+";\n"
 
-  action_templates = generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos)
+  # Task 3, point 3: registers must be resolved against the DEDUPLICATED set
+  # of RAW feature names, never the (possibly namespaced) resolved names --
+  # a raw value register must not be generated twice just because two
+  # resolved entries share it.
+  registers_code, register_actions_code, feature_update_apply_code = generate_P4_registers_and_apply(raw_feature_intervals)
+
+  # generate_P4_actions only needs resolved_name -> intervals: it writes
+  # meta.code_<resolved_name>, one action per resolved entry, and is
+  # already agnostic to whether a name is "raw" or "resolved"/namespaced --
+  # no change needed to that function itself, only to what it's fed here.
+  flat_resolved_intervals = {
+      resolved_name: intervals
+      for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items()
+  }
+  action_templates = generate_P4_actions(flat_resolved_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos)
+
+  # Task 3, point 4: each model's classification tables must key on
+  # code_<resolved_name> only for resolved entries that model actually
+  # reads. Point 2/5: the range-matching tables (one per resolved entry,
+  # always) still need each entry's raw feature name for the RAW value
+  # field they key on.
+  feature_names_app = [name for name, (_, _, models) in resolved_plan.items() if "app" in models]
+  feature_names_ddos = [name for name, (_, _, models) in resolved_plan.items() if "ddos" in models]
+  raw_feature_names = {name: raw for name, (raw, _, _) in resolved_plan.items()}
+
   table_templates, apply_templates = generate_P4_tables_and_apply(
-      feature_intervals.keys(), num_trees_app, num_trees_ddos, match_type=match_type)
+      resolved_plan.keys(), num_trees_app, num_trees_ddos, match_type=match_type,
+      feature_names_app=feature_names_app, feature_names_ddos=feature_names_ddos,
+      raw_feature_names=raw_feature_names)
 
   # generate code to vote between the trees -- only for tasks that actually
   # have trees. generate_voting_code now returns (table_decl, apply_call);

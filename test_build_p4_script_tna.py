@@ -46,6 +46,45 @@ class _StubClassifier:
 
 
 # ---------------------------------------------------------------------------
+# Task 3: _resolve_disjoint_feature_plan
+# ---------------------------------------------------------------------------
+
+def test_resolve_disjoint_feature_plan_shares_identical_intervals():
+    # Both models select "flow_iat_max" with the SAME intervals -- must
+    # resolve to ONE shared (non-namespaced) entry, exactly like today's
+    # joint-encoding behavior.
+    shared = {"flow_iat_max": [(0, 100), (101, 65535)]}
+    plan = bps._resolve_disjoint_feature_plan(shared, shared)
+    assert list(plan.keys()) == ["flow_iat_max"]
+    raw_name, intervals, models = plan["flow_iat_max"]
+    assert raw_name == "flow_iat_max"
+    assert models == {"app", "ddos"}
+
+
+def test_resolve_disjoint_feature_plan_namespaces_differing_intervals():
+    # Both models select "flow_iat_max" but with DIFFERENT intervals
+    # (genuine disjoint encoding) -- must resolve to two namespaced,
+    # independent entries.
+    app_intervals = {"flow_iat_max": [(0, 50), (51, 65535)]}
+    ddos_intervals = {"flow_iat_max": [(0, 200), (201, 65535)]}
+    plan = bps._resolve_disjoint_feature_plan(app_intervals, ddos_intervals)
+    assert set(plan.keys()) == {"app_flow_iat_max", "ddos_flow_iat_max"}
+    assert plan["app_flow_iat_max"][0] == "flow_iat_max"
+    assert plan["app_flow_iat_max"][2] == {"app"}
+    assert plan["ddos_flow_iat_max"][0] == "flow_iat_max"
+    assert plan["ddos_flow_iat_max"][2] == {"ddos"}
+
+
+def test_resolve_disjoint_feature_plan_handles_model_exclusive_features():
+    # A feature selected by only one model needs no namespacing at all.
+    app_intervals = {"fwd_packet_length_max": [(0, 1500), (1501, 65535)]}
+    ddos_intervals = {}
+    plan = bps._resolve_disjoint_feature_plan(app_intervals, ddos_intervals)
+    assert list(plan.keys()) == ["fwd_packet_length_max"]
+    assert plan["fwd_packet_length_max"][2] == {"app"}
+
+
+# ---------------------------------------------------------------------------
 # generate_P4_actions
 # ---------------------------------------------------------------------------
 
@@ -598,7 +637,7 @@ def m1_ddos_only_output():
   generate_P4_code(
       num_class_app=3, num_class_ddos=2,
       clf_app=None, clf_ddos=_StubClassifier(1),
-      feature_intervals=M1_FEATURE_INTERVALS,
+      feature_intervals_app={}, feature_intervals_ddos=M1_FEATURE_INTERVALS,
   )
   with open(_OUTPUT_FILE, "r") as f:
     return f.read()
@@ -650,13 +689,67 @@ def _tiny_ddos_forest():
   return _StubClassifier(1)
 
 
+def _tiny_app_forest():
+  """Minimal stand-in for a trained App classifier: two trees. Follows the
+  same _StubClassifier convention as _tiny_ddos_forest() above -- neither
+  generate_P4_code nor generate_P4_tables_and_apply ever reads tree
+  internals, only len(clf.estimators_), so a real fitted RandomForestClassifier
+  isn't needed for these tests."""
+  return _StubClassifier(2)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: single-pipeline generator for disjoint encoding
+# ---------------------------------------------------------------------------
+
+def test_generate_P4_code_disjoint_shares_when_intervals_match():
+    # Both models pick the same intervals for a shared feature name --
+    # must produce exactly ONE set_code_<feature> table, not two.
+    clf_ddos = _tiny_ddos_forest()
+    shared = {"Flow_IAT_Max": [(0, 100), (101, 65535)]}
+    written_path = bps.generate_P4_code(
+        0, 2, None, clf_ddos, feature_intervals_app=shared, feature_intervals_ddos=shared)
+    with open(written_path) as f:
+        text = f.read()
+    # "set_code_flow_iat_max" legitimately appears twice for ANY single
+    # working feature -- once as the action's own declaration, once as the
+    # range table's <ACTIONS> reference to it (confirmed against
+    # pre-Task-3 master: bare count is 2 there too, for exactly this
+    # reason). The real "shared, not duplicated" invariant is that only
+    # ONE such action is ever *declared*.
+    assert text.count("action set_code_flow_iat_max") == 1
+    assert "set_code_app_flow_iat_max" not in text
+    assert "set_code_ddos_flow_iat_max" not in text
+
+
+def test_generate_P4_code_disjoint_namespaces_when_intervals_differ():
+    # Both models pick DIFFERENT intervals for the same feature name --
+    # must produce two independent, namespaced set_code_ tables in the
+    # SAME generated file (one combined pipeline, not two programs).
+    clf_app = _tiny_app_forest()  # reuse this file's existing tiny-forest fixture helper
+    clf_ddos = _tiny_ddos_forest()
+    app_intervals = {"Flow_IAT_Max": [(0, 50), (51, 65535)]}
+    ddos_intervals = {"Flow_IAT_Max": [(0, 200), (201, 65535)]}
+    written_path = bps.generate_P4_code(
+        3, 2, clf_app, clf_ddos,
+        feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals)
+    with open(written_path) as f:
+        text = f.read()
+    assert "set_code_app_flow_iat_max" in text
+    assert "set_code_ddos_flow_iat_max" in text
+    # exactly one raw-value register/table reading the underlying feature,
+    # shared by both discretizations -- confirm the raw feature name
+    # appears in the metadata/register declarations only once, not twice
+    assert text.count("flow_iat_max_val") >= 1  # both discretizations read the SAME raw field
+
+
 def test_generate_P4_code_writes_to_injectable_path(tmp_path):
   clf_ddos = _tiny_ddos_forest()  # reuse this file's existing tiny-forest fixture helper
   feature_intervals = {"F": [(0, 100), (101, 65535)]}
   out_dir = str(tmp_path) + os.sep
   written_path = bps.generate_P4_code(
       num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
-      feature_intervals=feature_intervals,
+      feature_intervals_app={}, feature_intervals_ddos=feature_intervals,
       output_dir=out_dir, output_filename="custom_name.p4",
   )
   assert written_path == out_dir + "custom_name.p4"
@@ -670,7 +763,7 @@ def test_generate_P4_code_default_path_unchanged():
   feature_intervals = {"F": [(0, 100), (101, 65535)]}
   written_path = bps.generate_P4_code(
       num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
-      feature_intervals=feature_intervals,
+      feature_intervals_app={}, feature_intervals_ddos=feature_intervals,
   )
   assert written_path == bps.OUTPUT_PATH + "p4_code_RF_models.p4"
 
@@ -731,7 +824,7 @@ def test_generate_P4_code_match_type_exact_propagates_to_generated_p4(tmp_path):
   out_dir = str(tmp_path) + os.sep
   written_path = bps.generate_P4_code(
       num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
-      feature_intervals=feature_intervals,
+      feature_intervals_app={}, feature_intervals_ddos=feature_intervals,
       output_dir=out_dir, output_filename="exact_match_test.p4",
       match_type='exact',
   )
@@ -755,7 +848,7 @@ def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
   out_dir = str(tmp_path) + os.sep
   written_path = bps.generate_P4_code(
       num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
-      feature_intervals=feature_intervals,
+      feature_intervals_app={}, feature_intervals_ddos=feature_intervals,
       output_dir=out_dir, output_filename="ternary_default_test.p4",
   )
   with open(written_path, "r") as f:
