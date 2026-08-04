@@ -342,11 +342,21 @@ from pathlib import Path
 
 
 def test_main_py_threshold_is_16_bit():
+    # The invariant guarded here is "feature values are clipped to a 16-bit
+    # bound, never a 19-bit one". main.py used to spell that as its own
+    # `threshold = (2 ** 16) - 2` literal inside implement_tree_models_in_P4's
+    # dataset loading; that function now takes already-trained models and does
+    # no loading, so the only remaining clipping bound is
+    # compare_independent_joint_mapping's `threshold = INFINITE`. Deriving it
+    # from the shared constant is strictly better than a duplicated literal,
+    # so assert on that plus INFINITE's own width (pinned by the test below).
     source_file = Path(__file__).parent.parent / "src" / "main.py"
     with open(source_file) as f:
         source = f.read()
-    assert "threshold = (2 ** 16) - 2" in source
+    assert "threshold = INFINITE" in source
+    assert bps.INFINITE == (2 ** 16) - 1
     assert "(2 ** 19) - 2" not in source
+    assert "(2**19)-2" not in source.replace(" ", "")
 
 
 def test_build_p4_script_infinite_is_16_bit_sentinel():

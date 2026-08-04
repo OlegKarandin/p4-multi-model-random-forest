@@ -797,21 +797,31 @@ def test_generate_voting_code_emits_table_not_if_cascade():
   assert apply_call.strip() == "vote_app.apply();"
 
 
-def test_generate_voting_code_table_size_scales_with_entry_count():
-  # Final-review fix: table size used to be hardcoded to 32, which would
-  # silently undersize the table once num_classes ** num_trees exceeds 32
-  # (e.g. 5 trees x 3 classes = 243 entries). size must now scale as
-  # max(32, num_classes ** num_trees).
-
-  # Already-validated 3-tree/3-class config: 27 < 32, floor still applies,
-  # so this must NOT change output for this config.
+def test_generate_voting_code_table_size_is_the_exact_entry_count():
+  # The table emits exactly num_classes ** num_trees const entries, so that
+  # IS its size (reviews/p4_tofino_reference.md Sec 4.4: size must come from
+  # the real logical entry count). A `max(32, ...)` floor used to be applied
+  # as a conservative guard; it is not merely redundant but wrong -- see the
+  # 1-bit key case below.
   table_decl_small, _ = bps.generate_voting_code(3, 3, "app")
-  assert "size = 32;" in table_decl_small
+  assert "size = 27;" in table_decl_small
 
-  # 5 trees x 3 classes = 243 > 32: size must scale up.
+  # 5 trees x 3 classes = 243 entries.
   table_decl_large, _ = bps.generate_voting_code(5, 3, "app")
   assert "size = 243;" in table_decl_large
-  assert "size = 32;" not in table_decl_large
+
+
+def test_generate_voting_code_size_respects_a_one_bit_key_space():
+  # The real M1/M2 DDoS config: 1 tree, 2 classes. The key is a single
+  # bit<1> field, so the table can hold at most 2 entries -- and emits
+  # exactly 2. Declaring 32 is unreachable by construction and the real
+  # Tofino compiler rejects it outright:
+  #   "warning: Shrinking table SwitchIngress.vote_ddos: with 1 match bits,
+  #    can only have 2 entries"
+  table_decl, _ = bps.generate_voting_code(1, 2, "ddos")
+
+  assert "size = 2;" in table_decl
+  assert "size = 32;" not in table_decl
 
 
 def test_generate_voting_code_voting_decisions_match_statistics_mode_for_all_combos():
@@ -1322,8 +1332,10 @@ def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
 # and those pragma lines remain the only deltas from the pre-table-sizing
 # baseline -- _reconstruct_pre_table_sizing_text undoes both, and
 # test_generate_P4_code_default_call_changes_only_table_sizes proves it.
+# Re-recorded a THIRD time by dropping generate_voting_code's max(32, ...)
+# size floor: the vote tables now declare their exact const-entry count.
 _DEFAULT_CALL_OUTPUT_SHA256 = (
-    "82f3d9da8eaebd7c97f30e845d0c03795f35ae5c7a8f8059657cfab5b34fd6bf")
+    "3b6f2cedde35f98149224be9e7c346d1b39369093d370a17cda0a2ce826c5af5")
 
 # The sha256 the same call produced BEFORE the table-sizing follow-up (when
 # every feature table declared `size = 200;` and every classification table
@@ -1599,7 +1611,11 @@ def _reconstruct_pre_table_sizing_text(p4_text):
 
     - put the OLD fixed literals back into the table declarations -- 200 for
       every range-matching feature table, 400 for every classification table,
-      leaving vote_* (already correctly sized back then) alone;
+      and 32 for every vote_* table. vote_* used to be `max(32, num_classes **
+      num_trees)`, and both configs in this fixture (3 trees x 3 classes = 27,
+      1 tree x 2 classes = 2) sat under that floor, so 32 is what the baseline
+      declared for both; the floor was later dropped because a 1-bit key
+      cannot hold 32 entries at all;
     - drop the @pa_container_size PHV-pinning pragma lines, added later to
       pin each feature value field to a 16-bit container (see the pinning
       tests at the end of this file for the real-compile evidence). The
@@ -1627,6 +1643,8 @@ def _reconstruct_pre_table_sizing_text(p4_text):
         old_literal = "400"
       elif current_table.startswith("table_"):
         old_literal = "200"
+      elif current_table.startswith("vote_"):
+        old_literal = "32"
       if old_literal is not None:
         line = line.replace("size = " + size_match.group(1) + ";",
                             "size = " + old_literal + ";")

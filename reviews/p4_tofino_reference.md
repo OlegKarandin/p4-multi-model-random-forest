@@ -492,6 +492,18 @@ control plane will install** (`len(intervals)` for a range table, the real post-
 for a classification table) — an honest, entry-count-derived declaration is correct and necessary
 regardless of whether it changes the compiled physical footprint at a given scale.
 
+**An over-declared `size` is not harmlessly conservative when the key space is smaller than it.** For
+an exact-match table the compiler caps `size` at the key's own cardinality and warns:
+
+```
+warning: Shrinking table SwitchIngress.vote_ddos: with 1 match bits, can only have 2 entries
+```
+
+This bit this project's `generate_voting_code`, which applied a `max(32, num_classes ** num_trees)`
+floor. The real 1-tree/2-class DDoS vote table keys on a single `bit<1>` field — 2 entries is the
+entire key space, and the table emits exactly 2 `const entries`. Declaring the exact count removed
+the warning (9 → 8 on a real compile). A "safety margin" on `size` is not free: state the real count.
+
 ### 4.5 Default-action discounting (Planter-style)
 
 Dropping every classification-table entry whose leaf's class equals that tree's majority class, and

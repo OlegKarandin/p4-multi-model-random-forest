@@ -1,5 +1,4 @@
-from src.training.dataset import load_dataset, read_app_dataset, read_DDOS_dataset
-from src.training.train_model import training_and_feature_selection
+from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.p4gen.build_p4_script import *
 from src.training.feature_selection import compare_feature_selection_approaches, compare_feature_selection_approaches_parallel
 
@@ -24,29 +23,36 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def implement_tree_models_in_P4():
-    # we classify traffic of 3 applications and detect if traffic is an attack or is benign
-    num_classes_app = 3
-    num_classes_ddos = 2
+def implement_tree_models_in_P4(clf_app, clf_ddos, selected_features,
+                                num_classes_app=3, num_classes_ddos=2,
+                                output_dir=OUTPUT_PATH,
+                                output_filename='p4_code_RF_models.p4',
+                                use_default_action_discount=False):
+    """Compile two ALREADY-TRAINED Random Forests into one combined TNA
+    program plus its control-plane entries, under joint encoding (both tasks
+    share one discretization derived from the union of every tree's splits).
 
-    # traffic flows classifier is trained with 3 trees, while the DDOS detector is trained with 1 tree
-    num_trees_app = 3 # 1
-    num_trees_ddos = 1 # 3
+    Returns the path of the written .p4 file; `table_entries.json` is written
+    alongside it in the same directory.
 
-    # number of features we want to use in both models
-    num_features = 3
+    Takes trained models rather than training them itself. The previous
+    zero-argument version orchestrated its own dataset loading and training
+    via training_and_feature_selection(), which could not run at all: that
+    function calls train_classifier_RF, a name defined only in
+    legacy/feature_sharing_script.py and never imported, so every invocation
+    raised NameError. Only the training half was broken -- the P4 generation
+    below is unchanged -- so the fix is to let callers own training and keep
+    this as the model -> P4 interface.
 
-    datasets_path = "resources/"
-    threshold = (2 ** 16) - 2
-    df_app = load_dataset(datasets_path, 'apps_flow_features.csv', threshold)
-    df_ddos = load_dataset(datasets_path, 'Wednesday-workingHours.pcap_ISCX.csv', threshold)
-
-    clf_app, clf_ddos, selected_features = training_and_feature_selection(df_app, df_ddos, num_features, num_trees_app, num_trees_ddos)
-
+    selected_features must be the model's ORDERED training-feature-name list
+    (feature_names[i] is training column i), which is what export_text needs;
+    it is not interchangeable with the alphabetically-sorted key order that
+    get_feature_thresholds produces.
+    """
     clf_app = dt_thresholds_float_to_int(clf_app)
     clf_ddos = dt_thresholds_float_to_int(clf_ddos)
 
-    # export the trees into textual format 
+    # export the trees into textual format
     trees_app = get_tree_textual_representation(clf_app, selected_features)
     trees_ddos = get_tree_textual_representation(clf_ddos, selected_features)
 
@@ -63,16 +69,24 @@ def implement_tree_models_in_P4():
 
     feature_thresholds = get_feature_thresholds(tree_nodes)
     feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
-    feature_intervals_to_csv(feature_intervals)
+
+    ensure_directory_exists(output_dir)
+    feature_intervals_to_csv(feature_intervals, path_to_output=output_dir)
 
     paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
-    
-    codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
-    codeword_length = len(next(iter(codewords[0].items()))[0])
-    get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset)
 
-    generate_P4_code(num_classes_app, num_classes_ddos, clf_app, clf_ddos,
-                      feature_intervals_app=feature_intervals, feature_intervals_ddos=feature_intervals)
+    codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
+    get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset,
+                      path_to_output=output_dir,
+                      use_default_action_discount=use_default_action_discount)
+
+    return generate_P4_code(
+        num_classes_app, num_classes_ddos, clf_app, clf_ddos,
+        feature_intervals_app=feature_intervals, feature_intervals_ddos=feature_intervals,
+        output_dir=output_dir, output_filename=output_filename,
+        use_default_action_discount=use_default_action_discount,
+        selected_features_app=selected_features,
+        selected_features_ddos=selected_features)
 
 
 def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):

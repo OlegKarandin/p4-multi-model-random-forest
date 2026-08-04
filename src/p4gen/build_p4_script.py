@@ -1100,12 +1100,16 @@ def generate_voting_code(num_trees, num_classes, task):
   behavior change).
   """
   bit_per_classes = math.ceil(math.log2(num_classes)) or 1
-  # Table emits exactly num_classes ** num_trees const entries (see the
-  # product() loop below); size must scale with that, with 32 as a floor
-  # matching the two configs validated this session (3-tree/3-class = 27,
-  # 1-tree/2-class = 2) so this fix doesn't shrink the table for a
-  # degenerate config and doesn't change output for the already-tested ones.
-  size = max(32, num_classes ** num_trees)
+  # The table emits exactly num_classes ** num_trees const entries (see the
+  # product() loop below), so that IS its size -- the real logical entry
+  # count, per reviews/p4_tofino_reference.md Sec 4.4. A `max(32, ...)` floor
+  # used to be applied as a conservative guard, but it is not merely
+  # redundant: for the real 1-tree/2-class DDoS config the key is a single
+  # bit<1> field, so 2 entries is the entire key space and the real Tofino
+  # compiler rejects anything larger --
+  #   "warning: Shrinking table SwitchIngress.vote_ddos: with 1 match bits,
+  #    can only have 2 entries"
+  size = num_classes ** num_trees
 
   key_lines = "\n".join(
       "\t\t\tmeta.class_tree_{}_{} : exact;".format(task, i)
