@@ -28,7 +28,7 @@ from build_p4_script import (
     generate_P4_code,
     generate_voting_code,
     get_table_entries,
-    get_ternary_match,
+    get_ternary_value_and_mask,
     most_common_class_and_dropped_codewords,
     OUTPUT_PATH,
 )
@@ -224,13 +224,13 @@ def test_generate_P4_actions_num_trees_app_1_now_named_with_tree_suffix():
 # get_table_entries
 # ---------------------------------------------------------------------------
 
-def _decode_ternary(ternary, width):
-  """Invert get_ternary_match: recover the original bit-string ('0'/'1'/'*'
-  per position) from a "0xV&&&0xM" ternary string, given the known bit
-  width of the slice it was generated from."""
-  value_hex, mask_hex = ternary.split("&&&")
-  value_bits = bin(int(value_hex, 16))[2:].zfill(width)
-  mask_bits = bin(int(mask_hex, 16))[2:].zfill(width)
+def _decode_ternary(spec, width):
+  """Invert get_ternary_value_and_mask: recover the original bit-string
+  ('0'/'1'/'*' per position) from a table_entries.json ternary key_fields
+  spec ({"value": "0xV", "mask": "0xM"}), given the known bit width of the
+  slice it was generated from."""
+  value_bits = bin(int(spec["value"], 16))[2:].zfill(width)
+  mask_bits = bin(int(spec["mask"], 16))[2:].zfill(width)
   return "".join(
       "*" if m == "0" else v
       for v, m in zip(value_bits, mask_bits)
@@ -270,18 +270,23 @@ def test_get_table_entries_slices_codeword_per_feature_single_model(tmp_path):
   entry = classification_entries[0]
 
   # `tree` is no longer a runtime action parameter (it's implicit in which
-  # per-tree action/table is used) -- action_params holds only the class.
-  assert entry["action_params"] == ["1"]
+  # per-tree action/table is used) -- action_params holds only the class,
+  # under bf_rt's real action-data field name for classify_flow_codeword_*
+  # (the literal `class` parameter generate_P4_actions emits).
+  assert entry["action_params"] == {"class": "1"}
+  assert entry["is_default_action"] is False
+  assert entry["priority"] == 0
 
-  # One ternary key component per feature (2 features -> 2-element list),
-  # not a single combined-codeword ternary string.
-  assert len(entry["key"]) == 2
+  # One NAMED ternary key field per feature (bf_rt's real
+  # add_with_<action>(<field>=..., <field>_mask=...) convention), keyed on
+  # the same meta.code_<feature> name generate_P4_tables_and_apply declares.
+  assert set(entry["key_fields"]) == {"code_feature_a", "code_feature_b"}
 
-  # Round-trip: decoding each ternary component against its feature's known
+  # Round-trip: decoding each ternary field against its feature's known
   # width must recover exactly that feature's slice of the original
-  # codeword, in feature_intervals iteration order.
-  decoded_a = _decode_ternary(entry["key"][0], width=3)
-  decoded_b = _decode_ternary(entry["key"][1], width=1)
+  # codeword.
+  decoded_a = _decode_ternary(entry["key_fields"]["code_feature_a"], width=3)
+  decoded_b = _decode_ternary(entry["key_fields"]["code_feature_b"], width=1)
   assert decoded_a == "101"
   assert decoded_b == "*"
   assert decoded_a + decoded_b == codeword
@@ -318,18 +323,22 @@ def test_get_table_entries_multi_model_offset_still_slices_per_feature(tmp_path)
 
   # `tree` is no longer a runtime action parameter -- action_params holds
   # only the single class value.
-  assert app_entries[0]["action_params"] == ["0"]
-  assert ddos_entries[0]["action_params"] == ["1"]
+  assert app_entries[0]["action_params"] == {"class": "0"}
+  assert ddos_entries[0]["action_params"] == {"class": "1"}
 
   for entry, original in ((app_entries[0], codeword_app), (ddos_entries[0], codeword_ddos)):
-    assert len(entry["key"]) == 2
-    decoded = _decode_ternary(entry["key"][0], width=3) + _decode_ternary(entry["key"][1], width=1)
+    assert set(entry["key_fields"]) == {"code_feature_a", "code_feature_b"}
+    decoded = (_decode_ternary(entry["key_fields"]["code_feature_a"], width=3)
+               + _decode_ternary(entry["key_fields"]["code_feature_b"], width=1))
     assert decoded == original
 
 
-def test_get_table_entries_feature_range_entries_unaffected(tmp_path):
-  # Sanity: section 1 (feature-value -> codeword-bit tables) is untouched by
-  # the Tier-3 slicing change -- still a single-element ".." range key.
+def test_get_table_entries_feature_range_entries_use_named_start_end_fields(tmp_path):
+  # Section 1 (feature-value -> codeword-bit tables): one NAMED range key
+  # field per entry, which bf_rt's real add_with_<action> exposes as the two
+  # kwargs <field>_start / <field>_end. The field name is the same
+  # meta.<raw_feature>_val name generate_P4_tables_and_apply keys the range
+  # table on (see the naming-consistency test further below).
   get_table_entries(
       GTE_PATHS_LEAF_NODES, GTE_FEATURE_INTERVALS, {0: {}},
       offset=None, path_to_output=str(tmp_path) + os.sep,
@@ -341,8 +350,30 @@ def test_get_table_entries_feature_range_entries_unaffected(tmp_path):
   range_entries = [e for e in entries if e["table_name"].startswith("table_")]
   assert len(range_entries) == 4 + 2  # Feature_A has 4 intervals, Feature_B has 2
   for entry in range_entries:
-    assert len(entry["key"]) == 1
-    assert ".." in entry["key"][0]
+    assert entry["is_default_action"] is False
+    assert len(entry["key_fields"]) == 1
+    field_name, spec = next(iter(entry["key_fields"].items()))
+    assert field_name in ("feature_a_val", "feature_b_val")
+    assert set(spec) == {"start", "end"}
+    assert int(spec["start"]) <= int(spec["end"])
+
+  # Feature_A's four intervals, in the order this function writes them, with
+  # their real boundaries and their real code values.
+  feature_a = [e for e in range_entries if e["table_name"] == "table_0_feature_a"]
+  assert [e["key_fields"]["feature_a_val"] for e in feature_a] == [
+      {"start": "31", "end": str(INFINITE)},
+      {"start": "21", "end": "30"},
+      {"start": "11", "end": "20"},
+      {"start": "0", "end": "10"},
+  ]
+  # 3 codeword bits for 4 intervals, highest interval first: 000, 001, 011,
+  # 111 -> 0, 1, 3, 7.
+  assert [e["action_params"] for e in feature_a] == [
+      {"code": "0"}, {"code": "1"}, {"code": "3"}, {"code": "7"}]
+  # Priority is that entry's own 0-indexed position within its own table.
+  assert [e["priority"] for e in feature_a] == [0, 1, 2, 3]
+  assert [e["priority"] for e in range_entries
+          if e["table_name"] == "table_1_feature_b"] == [0, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -395,19 +426,83 @@ def test_get_table_entries_default_action_discount_omits_every_majority_class_le
   with open(tmp_path / "table_entries_discount.json") as f:
     entries = json.load(f)
 
-  classification_entries = [e for e in entries if e["action"] == "classify_flow_codeword_0"]
-  assert len(classification_entries) == 1   # 3 leaves minus both class-0 default_action leaves
+  classification_entries = [e for e in entries
+                            if e["action"] == "classify_flow_codeword_0"
+                            and not e["is_default_action"]]
+  assert len(classification_entries) == 1   # 3 leaves minus both class-0 default-action leaves
 
   written_codewords = {
-      _decode_ternary(entry["key"][0], width=3) + _decode_ternary(entry["key"][1], width=1)
+      _decode_ternary(entry["key_fields"]["code_feature_a"], width=3)
+      + _decode_ternary(entry["key_fields"]["code_feature_b"], width=1)
       for entry in classification_entries
   }
   assert written_codewords.isdisjoint(dropped_codewords)
 
 
+def test_get_table_entries_discount_writes_one_default_action_record_per_tree(tmp_path):
+  # The load-bearing half of the discount under the real bf_rt schema: the
+  # dropped leaves' class is not lost, it becomes ONE default-action record
+  # per tree's table, which p4/deploy_table_entries.py installs via bf_rt's
+  # real set_default_with_<action>. Without it, every flow whose codeword
+  # was discounted away would hit no entry at all and go unclassified.
+  codewords = {
+      0: {"101*": 0, "010*": 1, "111*": 0},   # app tree 0 -> majority class 0
+      1: {"000*": 1, "011*": 1, "110*": 0},   # ddos tree 0 -> majority class 1
+  }
+  expected_default_class = {}
+  for tree_id in codewords:
+    class_value, _ = most_common_class_and_dropped_codewords(codewords[tree_id])
+    expected_default_class[tree_id] = str(int(float(class_value)))
+
+  get_table_entries(
+      GTE_PATHS_LEAF_NODES, GTE_FEATURE_INTERVALS, codewords,
+      offset=1, path_to_output=str(tmp_path) + os.sep,
+      output_filename="table_entries_defaults.json",
+      use_default_action_discount=True,
+  )
+  with open(tmp_path / "table_entries_defaults.json") as f:
+    entries = json.load(f)
+
+  defaults = [e for e in entries if e["is_default_action"]]
+  assert len(defaults) == 2
+  by_table = {e["table_name"]: e for e in defaults}
+  assert set(by_table) == {"get_classification_tree_app_0",
+                           "get_classification_tree_ddos_0"}
+
+  app_default = by_table["get_classification_tree_app_0"]
+  ddos_default = by_table["get_classification_tree_ddos_0"]
+  assert app_default["action"] == "classify_flow_codeword_app_0"
+  assert ddos_default["action"] == "classify_flow_codeword_ddos_0"
+  assert app_default["action_params"] == {"class": expected_default_class[0]}
+  assert ddos_default["action_params"] == {"class": expected_default_class[1]}
+
+  # A default-action record has no key concept at all: bf_rt's real
+  # set_default_with_<action> takes only data fields (no key fields, no
+  # $MATCH_PRIORITY).
+  for entry in defaults:
+    assert entry["key_fields"] == {}
+    assert entry["priority"] is None
+
+  # ...and the same table's explicit entries really did lose the dropped
+  # codewords they now cover.
+  for tree_id, table_name in ((0, "get_classification_tree_app_0"),
+                              (1, "get_classification_tree_ddos_0")):
+    _, dropped = most_common_class_and_dropped_codewords(codewords[tree_id])
+    explicit = [e for e in entries
+                if e["table_name"] == table_name and not e["is_default_action"]]
+    assert len(explicit) == len(codewords[tree_id]) - len(dropped)
+    written = {
+        _decode_ternary(e["key_fields"]["code_feature_a"], width=3)
+        + _decode_ternary(e["key_fields"]["code_feature_b"], width=1)
+        for e in explicit
+    }
+    assert written.isdisjoint(dropped)
+
+
 def test_get_table_entries_discount_off_by_default_writes_every_leaf(tmp_path):
   # Regression guard: omitting use_default_action_discount entirely must
-  # still write all 3 leaves, matching pre-Task-7 behavior exactly.
+  # still write all 3 leaves AND emit no default-action record anywhere --
+  # the new capability is genuinely opt-in.
   codewords = {0: {"101*": 0, "010*": 1, "111*": 0}}
 
   get_table_entries(
@@ -421,6 +516,121 @@ def test_get_table_entries_discount_off_by_default_writes_every_leaf(tmp_path):
 
   classification_entries = [e for e in entries if e["action"] == "classify_flow_codeword_0"]
   assert len(classification_entries) == 3
+  assert [e for e in entries if e["is_default_action"]] == []
+  # Every record carries the flag explicitly, so a consumer never has to
+  # guess from its absence.
+  assert all("is_default_action" in e for e in entries)
+
+
+def test_get_table_entries_discount_all_leaves_same_class_leaves_only_the_default(tmp_path):
+  # Degenerate but real: every leaf of a tree carries the same class, so the
+  # discount drops all of them. The tree must still be fully represented --
+  # by its single default-action record, which classifies every flow.
+  codewords = {0: {"101*": 1, "010*": 1, "111*": 1}}
+
+  get_table_entries(
+      GTE_PATHS_LEAF_NODES, GTE_FEATURE_INTERVALS, codewords,
+      offset=None, path_to_output=str(tmp_path) + os.sep,
+      output_filename="table_entries_all_dropped.json",
+      use_default_action_discount=True)
+  with open(tmp_path / "table_entries_all_dropped.json") as f:
+    entries = json.load(f)
+
+  tree_records = [e for e in entries
+                  if e["table_name"] == "get_classification_tree_0"]
+  assert len(tree_records) == 1
+  assert tree_records[0]["is_default_action"] is True
+  assert tree_records[0]["action_params"] == {"class": "1"}
+
+
+def test_get_table_entries_empty_tree_writes_nothing_at_all(tmp_path):
+  # A tree with no codewords at all must not produce a default-action record
+  # carrying a made-up class (most_common_class_and_dropped_codewords would
+  # raise on an empty dict, so this also guards the guard).
+  get_table_entries(
+      GTE_PATHS_LEAF_NODES, GTE_FEATURE_INTERVALS, {0: {}},
+      offset=None, path_to_output=str(tmp_path) + os.sep,
+      output_filename="table_entries_empty_tree.json",
+      use_default_action_discount=True)
+  with open(tmp_path / "table_entries_empty_tree.json") as f:
+    entries = json.load(f)
+
+  assert [e for e in entries if e["table_name"].startswith("get_classification")] == []
+
+
+def test_get_ternary_value_and_mask_splits_value_and_mask():
+  # '*' positions are wildcards: 0 in both value and mask; fixed bits are
+  # themselves in the value and 1 in the mask. Hex strings, zero-padded to
+  # the codeword's nibble count -- the same computation the old combined
+  # "0xV&&&0xM" helper did, just returned separately so callers can feed
+  # bf_rt's real <field>= / <field>_mask= kwargs directly.
+  assert get_ternary_value_and_mask("101*") == ("0xA", "0xE")
+  assert get_ternary_value_and_mask("101") == ("0x5", "0x7")
+  assert get_ternary_value_and_mask("****") == ("0x0", "0x0")
+  assert get_ternary_value_and_mask("11111111") == ("0xFF", "0xFF")
+
+
+def test_get_table_entries_priority_restarts_per_tree(tmp_path):
+  # $MATCH_PRIORITY is per TABLE, and each tree has its own table -- a global
+  # running counter would hand tree 1's first entry a priority of len(tree 0),
+  # which is wrong (harmless only because this project's entries provably
+  # never overlap, but still not what the field means).
+  codewords = {
+      0: {"101*": 0, "010*": 1, "111*": 2},
+      1: {"000*": 1, "011*": 0},
+  }
+  get_table_entries(
+      GTE_PATHS_LEAF_NODES, GTE_FEATURE_INTERVALS, codewords,
+      offset=1, path_to_output=str(tmp_path) + os.sep,
+      output_filename="table_entries_priority.json",
+  )
+  with open(tmp_path / "table_entries_priority.json") as f:
+    entries = json.load(f)
+
+  for table_name, expected in (("get_classification_tree_app_0", [0, 1, 2]),
+                               ("get_classification_tree_ddos_0", [0, 1])):
+    assert [e["priority"] for e in entries
+            if e["table_name"] == table_name] == expected
+
+
+def test_range_table_key_field_name_matches_generated_p4_exactly(tmp_path):
+  # The seam a naming-convention drift would silently break: nothing raises
+  # if generate_P4_tables_and_apply declares `meta.flow_iat_max_val` while
+  # get_table_entries names the same key field something else -- the two
+  # would just talk past each other, and every real bf_rt insertion would
+  # fail at deploy time with an unknown-field error. Generate both halves
+  # from the SAME feature_intervals and compare by string equality.
+  feature_intervals = {"Flow_IAT_Max": [(0, 50), (51, 900), (901, INFINITE)]}
+
+  written_path = bps.generate_P4_code(
+      0, 2, None, _tiny_ddos_forest(),
+      feature_intervals_app={}, feature_intervals_ddos=feature_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="key_name_seam.p4")
+  with open(written_path) as f:
+    p4_text = f.read()
+
+  get_table_entries(
+      GTE_PATHS_LEAF_NODES, feature_intervals, {0: {}},
+      offset=None, path_to_output=str(tmp_path) + os.sep,
+      output_filename="key_name_seam.json")
+  with open(tmp_path / "key_name_seam.json") as f:
+    entries = json.load(f)
+
+  # Every range-matching key field the generated P4 actually declares...
+  declared = re.findall(r"meta\.(\w+)\s*:\s*range;", p4_text)
+  assert declared, "generated P4 declares no range-matching key at all"
+  # ...and every range key field name table_entries.json actually writes.
+  written = {name
+             for e in entries if e["table_name"].startswith("table_")
+             for name in e["key_fields"]}
+  assert written == set(declared) == {"flow_iat_max_val"}
+
+  # Same for the table the entries are addressed to: bf_rt looks the table
+  # up by this exact name on the running program.
+  declared_tables = set(re.findall(r"table\s+(table_\w+)\s*\{", p4_text))
+  written_tables = {e["table_name"] for e in entries
+                    if e["table_name"].startswith("table_")}
+  assert written_tables == declared_tables == {"table_0_flow_iat_max"}
 
 
 # ---------------------------------------------------------------------------
@@ -490,57 +700,48 @@ def test_generate_P4_tables_and_apply_each_tree_table_references_its_own_action(
   assert "classify_flow_codeword_ddos;" not in table_templates
 
 
-def test_generate_P4_tables_and_apply_default_action_discount_emits_const_default_action():
-  codewords = {0: {"101*": 0, "010*": 1, "111*": 0}}   # app tree 0: class 0 wins
+def test_generate_P4_tables_and_apply_never_declares_a_default_action():
+  # Real-compile A/B this session: the
+  # `const default_action = classify_flow_codeword_<task>_<i>(<literal>);`
+  # line Task 1 introduced cost +1 real pipeline stage for one modified
+  # table and +2 for all four (9 -> 11), even though table_summary.log's own
+  # "critical path length through the table dependency graph" stayed at 9 in
+  # every variant -- a compiler placement artifact, not a resource shortage.
+  # Deleting the line entirely restored 9 stages with identical
+  # tcam/sram/gateway/map_ram. Planter's own shipped decision table
+  # (P4/DT_performance_Iris_EB.p4) likewise never declares a
+  # compile-time-constant default action; its real default class is installed
+  # by the control plane at deploy time, which is what get_table_entries'
+  # is_default_action records + p4/deploy_table_entries.py now do here.
   table_templates, _ = generate_P4_tables_and_apply(
-      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=0,
-      codewords=codewords, use_default_action_discount=True,
-  )
-  assert "const default_action = classify_flow_codeword_app_0(0);" in table_templates
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=2, num_trees_ddos=1)
+  assert "default_action" not in table_templates
+  # The marker line itself is gone from both classification templates, so it
+  # can never leak into generated P4 as a literal string either.
   assert "<DEFAULT_ACTION>" not in table_templates
 
 
-def test_generate_P4_tables_and_apply_discount_off_by_default_marker_line_fully_stripped():
-  # Task 7's central promise: with the parameter unset/False, generated
-  # text is byte-identical to before this task -- the whole
-  # "<DEFAULT_ACTION>" marker line (added to
-  # resources/table_classification.p4) must vanish entirely, not just the
-  # bare token.
-  codewords = {0: {"101*": 0, "010*": 1, "111*": 0}}
+def test_generate_P4_tables_and_apply_exact_match_tables_declare_no_default_action_either():
+  # The same removal must hold for resources/table_classification_exact.p4,
+  # the other classification template.
   table_templates, _ = generate_P4_tables_and_apply(
-      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=0,
-      codewords=codewords, use_default_action_discount=False,
-  )
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=1,
+      match_type='exact')
   assert "default_action" not in table_templates
   assert "<DEFAULT_ACTION>" not in table_templates
 
 
-def test_generate_P4_tables_and_apply_discount_ddos_tree_reads_codewords_at_app_offset():
-  # ddos tree i must read codewords[num_trees_app + i], not codewords[i] --
-  # confirms the ddos branch doesn't accidentally reuse the app tree's slot.
-  codewords = {
-      0: {"000": 2, "001": 2, "010": 1},   # app tree 0 -> majority class 2
-      1: {"100": 1, "101": 0, "110": 1},   # ddos tree 0 (index 1 == num_trees_app + 0) -> majority class 1
-  }
-  table_templates, _ = generate_P4_tables_and_apply(
-      ["Feature_A"], num_trees_app=1, num_trees_ddos=1,
-      codewords=codewords, use_default_action_discount=True,
-  )
-  assert "const default_action = classify_flow_codeword_app_0(2);" in table_templates
-  assert "const default_action = classify_flow_codeword_ddos_0(1);" in table_templates
-
-
-def test_generate_P4_tables_and_apply_discount_true_without_codewords_still_byte_identical():
-  # use_default_action_discount=True with no codewords supplied (e.g. a
-  # caller that hasn't wired codewords through yet) must not crash and
-  # must not emit a default_action line -- there is nothing to compute it
-  # from.
-  table_templates, _ = generate_P4_tables_and_apply(
-      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=0,
-      use_default_action_discount=True,
-  )
-  assert "default_action" not in table_templates
-  assert "<DEFAULT_ACTION>" not in table_templates
+def test_generate_P4_tables_and_apply_rejects_removed_discount_parameters():
+  # Regression guard: `codewords` / `use_default_action_discount` are really
+  # GONE from this function's signature, not merely ignored -- a caller still
+  # passing either must fail loudly rather than silently getting a table with
+  # no default action when it believed it asked for one.
+  with pytest.raises(TypeError):
+    generate_P4_tables_and_apply(
+        ["flow_iat_max"], 1, 0, codewords={0: {"101*": 0}})
+  with pytest.raises(TypeError):
+    generate_P4_tables_and_apply(
+        ["flow_iat_max"], 1, 0, use_default_action_discount=True)
 
 
 # ---------------------------------------------------------------------------
@@ -894,13 +1095,14 @@ def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
 # Follow-up (post-plan): use_default_action_discount wired into generate_P4_code
 # ---------------------------------------------------------------------------
 #
-# Task 7 taught generate_P4_tables_and_apply to emit
-# `const default_action = classify_flow_codeword_<task>_<i>(<class>);`, but
-# generate_P4_code -- the real P4-generation entry point -- never computed
-# tree codewords, so it could never produce that construct. These tests pin
-# the new, opt-in end-to-end path: given each model's ORIGINAL ordered
-# training-feature-name list, generate_P4_code recomputes per-model codewords
-# and forwards them.
+# Given each model's ORIGINAL ordered training-feature-name list,
+# generate_P4_code recomputes per-model codewords. Those codewords drive the
+# discount's two REAL effects: each classification table's declared `size`
+# (the entries the control plane no longer installs) and get_table_entries'
+# per-tree is_default_action record. What they must NOT drive any more is a
+# `const default_action` line in the generated P4 -- see
+# test_generate_P4_tables_and_apply_never_declares_a_default_action for the
+# real-compile evidence behind that removal.
 #
 # Unlike _tiny_app_forest()/_tiny_ddos_forest() (bare _StubClassifier stand-ins,
 # enough only because nothing read tree internals before), these tests need
@@ -941,14 +1143,21 @@ def _derive_intervals(clf):
   return bps.get_feature_intervals_from_thresholds(bps.get_feature_thresholds(tree_nodes))
 
 
-def test_generate_P4_code_discount_emits_default_action_for_both_tasks(tmp_path):
+def test_generate_P4_code_discount_emits_no_const_default_action_for_either_task(tmp_path):
+  # Same fixture that previously produced one
+  # `const default_action = classify_flow_codeword_<task>_<i>(<class>);` per
+  # tree (2 app trees + 1 ddos tree, each with a real majority class, so the
+  # discount genuinely triggers) -- the construct must now be absent
+  # everywhere in the generated program.
   clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
   clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
+  intervals_app = _derive_intervals(clf_app)
+  intervals_ddos = _derive_intervals(clf_ddos)
 
   written_path = bps.generate_P4_code(
       3, 2, clf_app, clf_ddos,
-      feature_intervals_app=_derive_intervals(clf_app),
-      feature_intervals_ddos=_derive_intervals(clf_ddos),
+      feature_intervals_app=intervals_app,
+      feature_intervals_ddos=intervals_ddos,
       output_dir=str(tmp_path) + os.sep, output_filename="discount_on.p4",
       use_default_action_discount=True,
       selected_features_app=_DISCOUNT_FEATURE_NAMES,
@@ -956,10 +1165,21 @@ def test_generate_P4_code_discount_emits_default_action_for_both_tasks(tmp_path)
   with open(written_path) as f:
     text = f.read()
 
-  # One line per tree: 2 app trees + 1 ddos tree.
-  assert "const default_action = classify_flow_codeword_app_0(" in text
-  assert "const default_action = classify_flow_codeword_app_1(" in text
-  assert "const default_action = classify_flow_codeword_ddos_0(" in text
+  # Precondition: this fixture really does exercise the discount (otherwise
+  # the assertion below would pass vacuously).
+  for clf, intervals in ((clf_app, intervals_app), (clf_ddos, intervals_ddos)):
+    for tree_codewords in _codewords_of(clf, intervals).values():
+      _, dropped = most_common_class_and_dropped_codewords(tree_codewords)
+      assert len(dropped) >= 1
+
+  assert "const default_action" not in text
+  assert "default_action" not in text
+  assert "<DEFAULT_ACTION>" not in text
+  # The discount's real effects are unaffected: tables still exist and are
+  # still sized from their discounted codeword counts (covered by the table
+  # sizing tests below).
+  assert "get_classification_tree_app_0" in text
+  assert "get_classification_tree_ddos_0" in text
 
 
 def test_generate_P4_code_discount_via_config_object(tmp_path):
@@ -968,16 +1188,32 @@ def test_generate_P4_code_discount_via_config_object(tmp_path):
   import p4_gen_config
 
   clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
-  written_path = bps.generate_P4_code(
-      0, 2, None, clf_ddos,
-      feature_intervals_app={}, feature_intervals_ddos=_derive_intervals(clf_ddos),
-      output_dir=str(tmp_path) + os.sep, output_filename="discount_config.p4",
-      selected_features_ddos=_DISCOUNT_FEATURE_NAMES,
-      config=p4_gen_config.P4GenConfig(use_default_action_discount=True))
-  with open(written_path) as f:
-    text = f.read()
+  intervals_ddos = _derive_intervals(clf_ddos)
+  codewords = _codewords_of(clf_ddos, intervals_ddos)
+  _, dropped = most_common_class_and_dropped_codewords(codewords[0])
+  assert len(dropped) >= 1, "fixture no longer exercises a real discount"
 
-  assert "const default_action = classify_flow_codeword_ddos_0(" in text
+  def _generate(filename, **extra):
+    path = bps.generate_P4_code(
+        0, 2, None, clf_ddos,
+        feature_intervals_app={}, feature_intervals_ddos=intervals_ddos,
+        output_dir=str(tmp_path) + os.sep, output_filename=filename,
+        selected_features_ddos=_DISCOUNT_FEATURE_NAMES, **extra)
+    with open(path) as f:
+      return f.read()
+
+  text = _generate("discount_config.p4",
+                   config=p4_gen_config.P4GenConfig(use_default_action_discount=True))
+
+  # The discount's remaining generated-P4 effect is the declared table size:
+  # the entries it folds into the control-plane-set default action come off
+  # the table's reservation. (It no longer emits any default_action line --
+  # see test_generate_P4_tables_and_apply_never_declares_a_default_action.)
+  assert _table_sizes(text)["get_classification_tree_ddos_0"] == \
+      max(1, len(codewords[0]) - len(dropped))
+  assert _table_sizes(_generate("no_discount_config.p4"))[
+      "get_classification_tree_ddos_0"] == len(codewords[0])
+  assert "default_action" not in text
 
 
 def test_generate_P4_code_discount_ddos_only_needs_no_app_features(tmp_path):
@@ -993,8 +1229,9 @@ def test_generate_P4_code_discount_ddos_only_needs_no_app_features(tmp_path):
   with open(written_path) as f:
     text = f.read()
 
-  assert "const default_action = classify_flow_codeword_ddos_0(" in text
+  assert "get_classification_tree_ddos_0" in text
   assert "classify_flow_codeword_app" not in text
+  assert "default_action" not in text
 
 
 def test_generate_P4_code_discount_without_selected_features_app_raises(tmp_path):
@@ -1053,19 +1290,19 @@ def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
   # Namespacing still in force...
   assert "set_code_app_flow_iat_max" in text
   assert "set_code_ddos_flow_iat_max" in text
-  # ...and every classification table on BOTH sides still got its discount,
-  # carrying the majority class of THAT model's own per-model codewords --
-  # recomputed here against that model's own intervals, exactly as the
-  # generator must.
+  # ...and every classification table on BOTH sides still got its discount --
+  # visible now as its declared size, computed from THAT model's own per-model
+  # codewords (recomputed here against that model's own intervals, exactly as
+  # the generator must), never as a default_action line.
+  sizes = _table_sizes(text)
   for clf, intervals, task in ((clf_app, intervals_app, "app"),
                                (clf_ddos, intervals_ddos, "ddos")):
-    trees = bps.get_tree_textual_representation(clf, _DISCOUNT_FEATURE_NAMES)
-    tree_nodes = {tree: bps.get_nodes(trees[tree]) for tree in trees}
-    codewords = bps.generate_codewords(bps.get_root_to_leaf_paths(tree_nodes), intervals)
+    codewords = _codewords_of(clf, intervals)
     for tree_id in codewords:
-      class_value, _ = most_common_class_and_dropped_codewords(codewords[tree_id])
-      assert "const default_action = classify_flow_codeword_{}_{}({});".format(
-          task, tree_id, int(float(class_value))) in text
+      _, dropped = most_common_class_and_dropped_codewords(codewords[tree_id])
+      assert sizes["get_classification_tree_{}_{}".format(task, tree_id)] == \
+          max(1, len(codewords[tree_id]) - len(dropped))
+  assert "default_action" not in text
 
 
 # Byte-identical regression guard for the default (discount off) path: this

@@ -7,6 +7,5 @@
             <ACTIONS>        
         }
         size = <SIZE>;
-        <DEFAULT_ACTION>
     }
     

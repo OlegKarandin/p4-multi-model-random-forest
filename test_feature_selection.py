@@ -443,10 +443,14 @@ def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
         tmp_path, encoding, method):
     """Both branches must forward `config` AND the ordered training-feature-name
     lists. `generate_P4_code` is spied on but still really runs (side_effect is
-    the real function), so this checks the generated program too: a config
-    carrying use_default_action_discount=True must actually put the
-    `const default_action` construct in the emitted P4, and match_type='exact'
-    must actually reach the classification tables' key kind.
+    the real function), so this checks the generated program too:
+    match_type='exact' must actually reach the classification tables' key kind,
+    and no table may declare a default action (a config carrying
+    use_default_action_discount=True used to emit
+    `const default_action = <action>(<literal>);`; that construct is gone --
+    the discount now only shrinks table sizes / explicit table_entries.json
+    entries, and the real default class is installed by the control plane, see
+    build_p4_script.generate_P4_tables_and_apply's docstring).
     """
     import re
     import build_p4_script as bps
@@ -477,10 +481,9 @@ def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
     assert kwargs["selected_features_ddos"] == ["f0", "f1"]
 
     text = (tmp_path / "split0_{}_k2.p4".format(method)).read_text()
-    # use_default_action_discount really landed in the generated program...
-    assert "const default_action = classify_flow_codeword_app_0(" in text
-    assert "const default_action = classify_flow_codeword_ddos_0(" in text
-    # ...and so did match_type.
+    # The generated program declares no default action at all, discount or not.
+    assert "default_action" not in text
+    # match_type really landed in the generated program.
     assert re.search(r"meta\.code_\S+ : exact;", text)
     assert not re.search(r"meta\.code_\S+ : ternary;", text)
 
@@ -566,6 +569,12 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
     for call in spy_kickoff.call_args_list:
         assert call.kwargs.get("config") is cfg
 
-    # And the config's discount really reached the generated programs.
-    for p4_file in sorted(tmp_path.glob("*.p4")):
-        assert "const default_action = classify_flow_codeword_" in p4_file.read_text()
+    # And the config really reached the generated programs -- which now
+    # declare no default action at all (the discount's effect moved to table
+    # sizing + table_entries.json's is_default_action records).
+    generated = sorted(tmp_path.glob("*.p4"))
+    assert generated
+    for p4_file in generated:
+        text = p4_file.read_text()
+        assert "classify_flow_codeword_" in text
+        assert "default_action" not in text
