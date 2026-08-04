@@ -24,6 +24,7 @@ What was confirmed directly in the real driver source:
     "100" as 100. (Passing plain ints would work identically -- see rm8_insert_test.py.)
 """
 import json
+import keyword
 
 PROGRAM_NAME = "p4_code_RF_models"  # must match the program name used to launch bf_switchd -p <PROGRAM_NAME>
 CONTROL_BLOCK = "SwitchIngress"     # matches this project's real control block name (resources/p4_template.p4)
@@ -31,6 +32,19 @@ ENTRIES_FILE_PATH = "p4/table_entries.json"
 
 with open(ENTRIES_FILE_PATH) as f:
     table_entries = json.load(f)
+
+
+def _data_kwargs(action_params):
+    # Every classify_flow_codeword_* P4 action has a single parameter literally named
+    # "class" (see build_p4_script.generate_P4_actions). "class" is a Python keyword, so
+    # bfrtcli's own generated add_with_<action>/set_default_with_<action> methods cannot
+    # have a parameter literally named "class" (that would be a SyntaxError in the exec'd
+    # def). bfrtcli's validate_p4_entity_name/add_prefix_to_entry (see bfrtcli.py) detects
+    # the keyword collision and renames the data field to "data_<name>" (names_prefix=
+    # "data_" for data fields in _make_core_method_strs), so the real method signature has
+    # data_class=None, not class=None. Apply the same rename here before passing kwargs.
+    return {("data_" + k) if keyword.iskeyword(k) else k: v
+            for k, v in action_params.items()}
 
 program = getattr(bfrt, PROGRAM_NAME)  # noqa: F821 -- bfrt is injected by bfshell
 pipe = program.pipe
@@ -43,7 +57,7 @@ for entry in table_entries:
 
     if entry.get("is_default_action"):
         set_default_method = getattr(table, "set_default_with_" + action_name)
-        set_default_method(**entry["action_params"])
+        set_default_method(**_data_kwargs(entry["action_params"]))
         defaults_set += 1
         continue
 
@@ -59,7 +73,7 @@ for entry in table_entries:
             kwargs[field_name + "_end"] = spec["end"]
     if entry.get("priority") is not None:
         kwargs["MATCH_PRIORITY"] = entry["priority"]
-    kwargs.update(entry["action_params"])
+    kwargs.update(_data_kwargs(entry["action_params"]))
 
     add_method = getattr(table, "add_with_" + action_name)
     add_method(**kwargs)
