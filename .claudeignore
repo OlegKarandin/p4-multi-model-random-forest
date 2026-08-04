@@ -1,0 +1,9 @@
+*.csv
+*.log
+*.parquet
+*.zip
+intermediate/
+mininet/
+p4/
+resources/
+results/

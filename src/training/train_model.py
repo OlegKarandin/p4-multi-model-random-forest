@@ -11,9 +11,9 @@ patch_sklearn()
 
 import numpy as np
 
-from build_p4_script import dt_thresholds_float_to_int, MAX_CODEWORD_LENGTH
-from evaluation import single_model_memory_evaluation, multi_model_memory_evaluation, accuracy_metrics
-from threshold_alignment import align_rf_thresholds
+from src.p4gen.build_p4_script import dt_thresholds_float_to_int, MAX_CODEWORD_LENGTH
+from src.p4gen.evaluation import single_model_memory_evaluation, multi_model_memory_evaluation, accuracy_metrics
+from src.training.threshold_alignment import align_rf_thresholds
 
 import optuna
 from optuna.samplers import TPESampler

@@ -8,9 +8,9 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-from train_model import train_multi_RF_Optuna_multi_constrained
-from evaluation import accuracy_metrics
-import p4_gen_config
+from src.training.train_model import train_multi_RF_Optuna_multi_constrained
+from src.p4gen.evaluation import accuracy_metrics
+from src.p4gen import p4_gen_config
 
 
 def compare_feature_selection_approaches(X_app, X_ddos, y_app, y_ddos, n_trees, max_depth, max_blocks,
@@ -287,7 +287,7 @@ def _derive_feature_intervals(clf, feature_names):
     ternary usage we don't need -- `generate_P4_code` recomputes codewords
     from `clf`/`feature_intervals` on its own).
     """
-    from build_p4_script import get_tree_textual_representation, get_nodes, \
+    from src.p4gen.build_p4_script import get_tree_textual_representation, get_nodes, \
         get_feature_thresholds, get_feature_intervals_from_thresholds
 
     trees = get_tree_textual_representation(clf, feature_names)
@@ -304,7 +304,7 @@ def _derive_joint_feature_intervals(model_app, model_ddos, feature_names_app, fe
     compiled numbers are meant to validate against, so the real program must
     be built from the same interval derivation, not a re-invented one.
     """
-    from build_p4_script import get_tree_textual_representation, get_nodes, \
+    from src.p4gen.build_p4_script import get_tree_textual_representation, get_nodes, \
         get_feature_thresholds, get_feature_intervals_from_thresholds
 
     trees_app = get_tree_textual_representation(model_app, feature_names_app)
@@ -366,8 +366,8 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     if not validate_on_hardware:
         return None
 
-    from p4_compile import compile_p4_async
-    from build_p4_script import generate_P4_code
+    from src.p4gen.p4_compile import compile_p4_async
+    from src.p4gen.build_p4_script import generate_P4_code
 
     if encoding == 'joint':
         feature_intervals = _derive_joint_feature_intervals(
@@ -498,8 +498,8 @@ def _process_single_split(
         validation path too instead of being dropped here.
     """
     # Import inside function to ensure proper pickling in subprocess
-    from train_model import train_multi_RF_Optuna_multi_constrained
-    from evaluation import accuracy_metrics
+    from src.training.train_model import train_multi_RF_Optuna_multi_constrained
+    from src.p4gen.evaluation import accuracy_metrics
 
     if config is not None:
         validate_on_hardware = config.validate_on_hardware

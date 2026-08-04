@@ -32,8 +32,8 @@ import numpy as np
 import pytest
 from unittest.mock import patch
 
-import feature_selection as fs
-import p4_compile as pc
+from src.training import feature_selection as fs
+from src.p4gen import p4_compile as pc
 
 # `feature_selection` imports `train_model`, which calls sklearnex's
 # `patch_sklearn()` at import time (train_model.py:9-10) to globally swap in
@@ -63,7 +63,7 @@ unpatch_sklearn()
 # every RandomForestClassifier train_model.py constructs, without touching
 # train_model.py itself -- it only changes how fast these tests run, not
 # what train_model.py does in production.
-import train_model as _train_model_module
+from src.training import train_model as _train_model_module
 from sklearn.ensemble import RandomForestClassifier as _RealRandomForestClassifier
 
 
@@ -85,7 +85,7 @@ def _tiny_dataset(n=40, n_features=3, seed=0):
 
 def _fit_tiny_rf(X, y, n_estimators=1, max_depth=2, seed=0):
     from sklearn.ensemble import RandomForestClassifier
-    import build_p4_script as bps
+    from src.p4gen import build_p4_script as bps
 
     clf = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth,
                                   random_state=seed).fit(X, y)
@@ -116,7 +116,7 @@ def test_process_single_split_without_hardware_validation_has_none_fields():
 @pytest.mark.slow
 def test_process_single_split_with_hardware_validation_calls_compile_async(tmp_path):
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset()
-    with patch("p4_compile.compile_p4_async") as mock_compile:
+    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
         fake_future = type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
             errors=0, warnings=0, stages=3, tables=5, tcam=2)})()
         mock_compile.return_value = fake_future
@@ -135,8 +135,8 @@ def test_process_single_split_with_hardware_validation_calls_compile_async(tmp_p
         assert "stages_real" in row and "tcam_real" in row and "compile_errors" in row
     # Every row must eventually be filled in (validate_on_hardware=True,
     # matching the "always present, only None if the compile really wasn't
-    # collected" contract) -- both the 'single' (disjoint, merged-handle)
-    # and 'multi' (joint) rows.
+    # collected" contract) -- both the 'single' (disjoint) and 'multi'
+    # (joint) rows.
     assert all(row["stages_real"] is not None for row in result.results)
     assert any(row["stages_real"] == 3 for row in result.results)
 
@@ -174,7 +174,7 @@ def test_process_single_split_disjoint_and_joint_rows_each_get_their_own_compile
         return type("F", (), {"result": lambda self, timeout=None, s=stages: pc.CompileResult(
             errors=0, warnings=0, stages=s, tables=s, tcam=s)})()
 
-    with patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async) as mock_compile:
+    with patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async) as mock_compile:
         result = fs._process_single_split(
             split_idx=7, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             n_trees=1, max_depth=3, max_blocks=50,
@@ -223,7 +223,7 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
     import os
     import re
     from sklearn.ensemble import RandomForestClassifier
-    import build_p4_script as bps
+    from src.p4gen import build_p4_script as bps
 
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=40, n_features=4)
 
@@ -263,8 +263,8 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
         return type("F", (), {"result": lambda self, timeout=None, s=stages: pc.CompileResult(
             errors=0, warnings=0, stages=s, tables=s, tcam=s)})()
 
-    with patch("train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
-         patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+    with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
+         patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result = fs._process_single_split(
             split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             n_trees=1, max_depth=3, max_blocks=50,
@@ -309,9 +309,9 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
     the expensive Optuna search; `p4_compile.compile_p4_async` faked the
     same way) rather than a new slow real-Optuna test.
     """
-    import p4_gen_config
+    from src.p4gen import p4_gen_config
     from sklearn.ensemble import RandomForestClassifier
-    import build_p4_script as bps
+    from src.p4gen import build_p4_script as bps
 
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=30, n_features=2)
 
@@ -331,8 +331,8 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
     kwargs_dir = str(tmp_path / "kwargs") + "/"
     config_dir = str(tmp_path / "config") + "/"
 
-    with patch("train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
-         patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+    with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
+         patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_kwargs = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             n_trees=1, max_depth=3, max_blocks=50,
@@ -341,8 +341,8 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
         )
 
     cfg = p4_gen_config.P4GenConfig(validate_on_hardware=True, hardware_output_dir=config_dir)
-    with patch("train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
-         patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+    with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
+         patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_config = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             n_trees=1, max_depth=3, max_blocks=50,
@@ -377,7 +377,7 @@ def test_kickoff_hardware_validation_joint_makes_one_compile_call(tmp_path):
     clf_app = _fit_tiny_rf(X, y_app, seed=0)
     clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
 
-    with patch("p4_compile.compile_p4_async") as mock_compile:
+    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
         fake_future = type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(stages=9, tcam=1)})()
         mock_compile.return_value = fake_future
 
@@ -402,7 +402,7 @@ def test_kickoff_hardware_validation_disjoint_makes_one_compile_call_and_writes_
     clf_app = _fit_tiny_rf(X, y_app, seed=0)
     clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
 
-    with patch("p4_compile.compile_p4_async") as mock_compile:
+    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
         fake_future = type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(stages=5, tcam=1)})()
         mock_compile.return_value = fake_future
 
@@ -432,7 +432,7 @@ def test_kickoff_hardware_validation_disjoint_makes_one_compile_call_and_writes_
 # ---------------------------------------------------------------------------
 
 def _discount_and_exact_config(tmp_path):
-    import p4_gen_config
+    from src.p4gen import p4_gen_config
     return p4_gen_config.P4GenConfig(
         validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
         use_default_action_discount=True, match_type='exact')
@@ -453,7 +453,7 @@ def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
     build_p4_script.generate_P4_tables_and_apply's docstring).
     """
     import re
-    import build_p4_script as bps
+    from src.p4gen import build_p4_script as bps
 
     X = np.random.RandomState(0).randint(0, 65535, size=(60, 2))
     y_app = np.random.RandomState(0).randint(0, 3, size=60)
@@ -464,9 +464,9 @@ def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
     cfg = _discount_and_exact_config(tmp_path)
     real_generate_P4_code = bps.generate_P4_code
 
-    with patch("build_p4_script.generate_P4_code",
+    with patch("src.p4gen.build_p4_script.generate_P4_code",
                side_effect=real_generate_P4_code) as spy_generate, \
-         patch("p4_compile.compile_p4_async") as mock_compile:
+         patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
         mock_compile.return_value = type("F", (), {
             "result": lambda self, timeout=None: pc.CompileResult(stages=5, tcam=1)})()
 
@@ -499,7 +499,7 @@ def test_kickoff_hardware_validation_without_config_is_unchanged(tmp_path):
     clf_app = _fit_tiny_rf(X, y_app, seed=0)
     clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
 
-    with patch("p4_compile.compile_p4_async") as mock_compile:
+    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
         mock_compile.return_value = type("F", (), {
             "result": lambda self, timeout=None: pc.CompileResult(stages=5, tcam=1)})()
 
@@ -521,9 +521,9 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
     (with the config's discount actually in force) executes for every
     iteration.
     """
-    import p4_gen_config
+    from src.p4gen import p4_gen_config
     from sklearn.ensemble import RandomForestClassifier
-    import build_p4_script as bps
+    from src.p4gen import build_p4_script as bps
 
     # Same size/shape/labels as every other _process_single_split test in this
     # file. In particular y_ddos keeps this codebase's {-1, 1} DDoS label
@@ -551,8 +551,8 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
 
     real_kickoff = fs._kickoff_hardware_validation
 
-    with patch("train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
-         patch("p4_compile.compile_p4_async", side_effect=_fake_compile_async), \
+    with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
+         patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async), \
          patch.object(fs, "_kickoff_hardware_validation",
                       side_effect=real_kickoff) as spy_kickoff:
         result = fs._process_single_split(

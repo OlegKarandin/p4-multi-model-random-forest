@@ -1,6 +1,6 @@
 import math
 import sklearn.metrics as mt
-from build_p4_script import *
+from src.p4gen.build_p4_script import *
 
 def accuracy_metrics(y_true, y_pred, task):
 

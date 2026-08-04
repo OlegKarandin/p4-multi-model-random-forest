@@ -24,15 +24,15 @@ pip install -r requirements.txt
 ```
 
 ## Generating P4 code
-To generate the P4 that implements Random Forest models for DDOS detection and Application Identification code run
+To generate the P4 that implements Random Forest models for DDOS detection and Application Identification code run (from the repo root)
 `
-python main.py
+python -m src.main
 `
 
 Resulting code and M/A table entries will be generated in ./P4 folder
 
 ## Modifying the number of trees
-Number of trees (and thus size of M/A tables) can be configured in `main.py`:
+Number of trees (and thus size of M/A tables) can be configured in `src/main.py`:
 ```
 num_trees_app = 3
 num_trees_ddos = 1

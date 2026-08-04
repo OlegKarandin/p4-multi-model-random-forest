@@ -1,7 +1,7 @@
 import math
 
-import evaluation as ev
-import build_p4_script as bps
+from src.p4gen import evaluation as ev
+from src.p4gen import build_p4_script as bps
 import pytest
 
 
@@ -342,7 +342,7 @@ from pathlib import Path
 
 
 def test_main_py_threshold_is_16_bit():
-    source_file = Path(__file__).parent / "main.py"
+    source_file = Path(__file__).parent.parent / "src" / "main.py"
     with open(source_file) as f:
         source = f.read()
     assert "threshold = (2 ** 16) - 2" in source
@@ -354,7 +354,7 @@ def test_build_p4_script_infinite_is_16_bit_sentinel():
 
 
 def test_dataset_py_clips_outliers_to_threshold_not_hardcoded_19bit_value():
-    source_file = Path(__file__).parent / "dataset.py"
+    source_file = Path(__file__).parent.parent / "src" / "training" / "dataset.py"
     with open(source_file) as f:
         source = f.read()
     assert "(2**19)-2" not in source.replace(" ", "")

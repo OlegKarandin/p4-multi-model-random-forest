@@ -183,3 +183,7 @@ zlog-cfg-cur
 figures/
 legacy/
 docs/
+temp/*.txt
+temp/*.csv
+.claude/
+.superpowers/

@@ -1,9 +1,9 @@
-from dataset import load_dataset, read_app_dataset, read_DDOS_dataset
-from train_model import training_and_feature_selection
-from build_p4_script import *
-from feature_selection import compare_feature_selection_approaches, compare_feature_selection_approaches_parallel
+from src.training.dataset import load_dataset, read_app_dataset, read_DDOS_dataset
+from src.training.train_model import training_and_feature_selection
+from src.p4gen.build_p4_script import *
+from src.training.feature_selection import compare_feature_selection_approaches, compare_feature_selection_approaches_parallel
 
-from analysis import analyze_multi_objective_results
+from src.reporting.analysis import analyze_multi_objective_results
 
 import argparse
 import pandas as pd

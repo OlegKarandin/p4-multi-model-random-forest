@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import p4_compile as pc
+from src.p4gen import p4_compile as pc
 
 
 def _write_fixture_logs(tmp_path, table_summary_text, mau_resources_text, table_placement_text):
@@ -223,7 +223,7 @@ def test_compile_p4_builds_login_shell_command_with_correct_quoting(tmp_path):
     # quoting scheme would mangle.
     output_dir = str(tmp_path / "some path" / "Документы")
 
-    with patch("p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         result = pc.compile_p4(p4_path, output_dir)
 
     assert mock_run.call_count == 1
@@ -268,12 +268,12 @@ def test_compile_p4_target_parameter_selects_the_b_flag(tmp_path):
     """
     fake_proc = _fake_completed_process(stdout="0 errors, 10 warnings generated.\n")
 
-    with patch("p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
     default_command = mock_run.call_args[0][0][3]
     assert "-b tofino -a tna" in default_command
 
-    with patch("p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"),
                        architecture="t2na", target="tofino2")
     tofino2_command = mock_run.call_args[0][0][3]
@@ -319,7 +319,7 @@ def test_compile_p4_errors_and_warnings_degrade_to_none_when_summary_absent(tmp_
     # print), errors/warnings must stay None, not silently become 0.
     fake_proc = _fake_completed_process(stdout="a hard crash before any summary line\n")
 
-    with patch("p4_compile.subprocess.run", return_value=fake_proc):
+    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc):
         result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
 
     assert result.errors is None
@@ -338,7 +338,7 @@ def test_compile_p4_against_real_toolchain(tmp_path):
     import numpy as np
     from sklearn.ensemble import RandomForestClassifier
 
-    import build_p4_script as bps
+    from src.p4gen import build_p4_script as bps
 
     rng = np.random.RandomState(0)
     X = rng.randint(0, 65535, size=(100, 2))

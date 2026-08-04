@@ -7,8 +7,8 @@ from collections import Counter
 from itertools import product
 from statistics import mode
 
-from feature_registers import FEATURE_REGISTER_CATALOG
-import p4_gen_config
+from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
+from src.p4gen import p4_gen_config
 
 INFINITE = (2**16)-1
 MAX_CODEWORD_LENGTH = 512
