@@ -269,7 +269,10 @@ though nothing about their actual logic depends on each other. **Splitting the s
 independent per-feature metadata fields** (each its own container, at the cost of some PHV padding)
 removes the hazard and lets the compiler co-locate the tables in the same stage. Measured effect on a
 3-feature/1-tree slice: **7 stages → 5 stages**, purely from this layout change, with zero change to
-touch count or logic. This holds even in combination with other changes (e.g. maximum-legal register
+touch count or logic. **PHV layout is a first-class resource input on this target, not a backend
+detail: the same allocator also decides TCAM *block* count for range-matched keys (§4.2's "PHV
+container width" bullet), which is why the generator now pins those fields explicitly rather than
+leaving them to the allocator.** This holds even in combination with other changes (e.g. maximum-legal register
 touch counts) — it is an independent, additive win. Classification tables should correspondingly key
 on **one separate ternary field per feature**, not one concatenated codeword field, for the same
 reason (this is also what "Tier-3" / the per-feature-field template design in this project's
@@ -353,6 +356,10 @@ the table can hold), *not* an already-physically-expanded row count. A naive per
 wrong and overcounts real usage by roughly 4×** — confirmed by comparing predicted vs. real compiled
 block counts on real feature tables with 7–68 intervals each: every one of them fit in exactly 1
 physical block regardless of interval count, where the naive formula predicted anywhere from 3 to 5.
+**Caveat added later (see "PHV container width" below): "exactly 1 block" holds only when the key
+field lands in a 16-bit PHV container. The same tables cost 2 blocks each when the allocator parks
+their `bit<16>` key in a 32-bit container — interval count is still irrelevant, but container width
+is not.**
 
 The cost model this project's code now implements works interval-by-interval, using the **exact
 per-value decomposition the real Tofino control-plane driver performs at insertion time** (traced from
@@ -402,6 +409,22 @@ Key facts confirmed about real range-match behavior:
   cost model does not control. Treat block-boundary-adjacent predictions (within roughly the last 1%
   of a block) as having a small, order-dependent uncertainty rather than being exact — this only
   matters when a table's total physical-row usage lands very close to a 512-row multiple.
+- **PHV container width of the key field decides blocks-per-entry, and nothing about the table does.**
+  A `bit<16>` range key allocated into a **32-bit W container** costs **2 physical TCAM blocks**
+  (`mau.characterize.log` reports `1 in 2 (88)` — one entry spanning two 44-bit words); the same key
+  in a **16-bit H container** costs **1** (`1 in 1 (44)`). Established by three controlled sweeps over
+  otherwise-identical range tables, each varying exactly one thing: declared `size` (11→256), action-
+  data width (4→25 bits), and range key width (4→19 bits) **all had zero effect**; six byte-identical
+  tables fed from one shared source expression all cost 1 block. On a real M2 program the split was
+  visible directly in `phv_allocation_summary_0.log` — `flow_iat_max_val`→`W2` and
+  `fwd_packet_length_max_val`→`W3` cost 2 blocks each, while `fwd_iat_max_val`→`H7` cost 1.
+  **Fix: pin every range-key field with `@pa_container_size("ingress", "ig_md.<field>", 16)`.** On
+  that same program pinning all four fields moved every field to an H container and took it from
+  **14 TCAM blocks / 10 stages to 12 / 9**, 0 errors, where 12 is exactly what `evaluation.py`
+  predicts. This is what makes the cost model's range term correct rather than accidentally correct;
+  `build_p4_script.generate_P4_code` now emits one pragma per distinct raw value field. Note the
+  compile-time *entry* accounting is unaffected either way — the compiler charged each declared range
+  1 row against a 512-row capacity (`13 / 512`), applying no expansion multiplier at all.
 - **A table's P4-declared `size` is enforced as a hard logical-entry cap independent of remaining
   physical capacity** — even an aligned, cheap-to-store set of ranges cannot exceed `size` entries,
   regardless of how much physical block headroom remains.
@@ -492,6 +515,50 @@ verified mechanism used by the Planter RF-tree generator), is implemented and va
   action via the control plane, matching how all other table entries are installed, and this is the
   path that has been live-verified.
 
+### 4.6 Data-dependency-driven stage placement (`readiness levels`)
+
+The crossbar/block model of §4.3 is a **bin-packer**: it answers "how few stages could these tables
+fit in", which is a lower bound. The real compiler also obeys **data dependencies** — a feature's
+range table cannot be placed before the register chain producing its key value has run — and it
+places **eagerly**, at the earliest legal stage rather than the latest. Both effects are real and
+both are derivable from this project's own `FEATURE_REGISTER_CATALOG`:
+
+```
+level = 1                                   # flow hash; every register is flow-hash indexed
+      + 1 if the feature is fwd-gated       # flow_orientation_action must resolve meta.fwd first
+      + one per RegisterAction in its chain # a "dependency" register feeds a "value" register
+```
+
+A register shared between two features (`flow_last_arrival_time`, executed once for both
+`flow_iat_max` and `flow_iat_mean`) is executed once but still sits on **both** features' critical
+paths, so it counts for both.
+
+Validated against a real compile of the M2 program (3 App trees + 1 DDoS tree, 4 features):
+
+| feature | gated | chain | level | real stage |
+|---|---|---|---|---|
+| `flow_iat_max` | no | last_arrival → max | 3 | 5 |
+| `flow_iat_mean` | no | last_arrival → mean | 3 | 5 |
+| `fwd_packet_length_max` | fwd | max | 3 | 5 |
+| `fwd_iat_max` | fwd | last_arrival → max | **4** | **6** |
+
+The derived levels reproduce the observed stage offsets `0/0/0/1` exactly. The range pool really
+occupies **2** stages, not the 1 the pure packer predicted, and the classification tables (which read
+every feature's codeword, so they sit one level past the last range table) occupy 1 more — **3 match
+-table stages, which is what the compiler does**. Note the extra stage is *not* a capacity effect:
+that stage holds 4 blocks / 4 tables / 8 key bytes against caps of 24 / 8 / 64.
+
+`evaluation.py` implements this as `feature_readiness_level` / `readiness_levels_for` plus an optional
+`readiness_levels` argument to `crossbar_stages_needed`, which then switches from first-fit-decreasing
+to **eager placement** (earliest stage at or after the table's level with room, spilling forward when
+full) and counts *occupied* stages rather than index span. Eager placement is the point: the
+theoretical optimum would drop every table into the single latest stage, and the compiler does not do
+that. Passing no levels keeps the original packer behaviour unchanged.
+
+**Caveat:** this models register-chain depth only. It does not model gateway/action dependencies,
+PHV-sharing hazards (§3.6), or the compiler's own placement heuristics, so it remains an
+approximation of a greedy allocator — just a much closer one than pure packing.
+
 ---
 
 ## 5. Quick-reference constants (this compiler version, 9.13.4)
@@ -533,7 +600,10 @@ estimate — not what `evaluation.py` uses when real intervals are known, see §
   observed, in one real run, to push table placement from sharing one stage to spreading across four
   — with *no* change in each table's own resource footprint). Don't conflate "the design needs N
   stages" with "the compiler happened to place it in N stages this run" — the latter can regress from
-  compiler placement heuristics alone.
+  compiler placement heuristics alone. **Not every gap between a model's stage count and the
+  compiler's is heuristic noise, though**: the one-stage gap originally seen on the M2 program turned
+  out to be a real, derivable register-chain dependency, now modelled (§4.6). Check for a genuine
+  dependency before writing a divergence off as placement luck.
 - **A synthetic or untrained model can hide real structural issues.** Always validate resource claims
   against a real trained model, not synthetic/toy data — several real bugs and TNA restrictions in
   this project were only found once a real model's actual codeword widths and interval counts were
@@ -562,6 +632,13 @@ estimate — not what `evaluation.py` uses when real intervals are known, see §
   confirmed, not where either target's own ceiling sits.
 - **The range-match crossbar model is an unmeasured analogy**, not a separately confirmed finding —
   applied conservatively (§4.3), but range tables may have their own distinct per-stage limit.
+- **Why a 32-bit PHV container doubles a range key's TCAM words is unexplained** (§4.2). The effect is
+  measured, reproducible, and now avoided by pinning, but the underlying microarchitectural reason
+  (how the match input crossbar feeds container bytes to the range-match units) was not chased down —
+  the pragma makes it moot for this project rather than answering it.
+- **The readiness-level model (§4.6) covers register-chain depth only.** Gateway/action dependencies
+  and PHV-sharing hazards can also delay a table and are not modelled; the M2 program happens to have
+  none that bind. A design where they do would diverge again.
 - **The RM-3-style "2-field costs more than 3/4-field" TCAM anomaly** (§4.1) is real, measured, and
   unexplained — flagged as a blind spot, not resolved.
 - **The range-match block-boundary fill margin is understood qualitatively as placement/order-dependent

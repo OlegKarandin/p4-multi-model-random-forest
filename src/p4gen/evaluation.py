@@ -1,6 +1,7 @@
 import math
 import sklearn.metrics as mt
 from src.p4gen.build_p4_script import *
+from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 
 def accuracy_metrics(y_true, y_pred, task):
 
@@ -78,27 +79,50 @@ FEATURE_VALUE_BIT_WIDTH = 16
 RANGE_TABLE_KEY_BYTES = math.ceil(FEATURE_VALUE_BIT_WIDTH / 8)
 
 
-def range_matching_resource_usage(feature_intervals):
+def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE_BIT_WIDTH):
   """Returns (range_entries, range_blocks, range_table_specs).
 
   Every selected feature gets its OWN independent range-matching P4 table
   (build_p4_script.py:663-674, keyed on "meta.<feature>_val : range"), so
   range_table_specs is one (block_count, byte_width) pair per feature --
   the per-table data crossbar_stages_needed() needs. The aggregate
-  range_blocks is still returned for the blocks half of the cost model."""
+  range_blocks is still returned for the blocks half of the cost model.
+
+  A physical TCAM block is TERNARY_MATCHING_ENTRIES_PER_BLOCK rows x
+  TCAM_BLOCK_KEY_LENGTH key bits, so BOTH dimensions cost blocks. The depth
+  term is ceil(total_rows / 512); the width term is the same
+  ceil((key_bits + 4) / 44) that ternary_matching_resource_usage charges
+  (the +4 is the flat per-row overhead of Sec 4.1, confirmed directly in a
+  real compile's mau.characterize.log, which reports a 64-bit ternary key as
+  occupying 68 bits and a 16-bit range key as occupying 20).
+
+  At this project's decided 16-bit feature precision the width factor is 1,
+  so this term changes no current number -- it exists so a wider feature
+  value can never silently under-count, which the depth-only formula did.
+
+  IMPORTANT (measured, reviews/p4_tofino_reference.md Sec 4.2): the width
+  factor is only correct when the key field is pinned to a PHV container of
+  the same width. A bit<16> range key that the compiler parks in a 32-bit W
+  container really costs TWO TCAM words per entry ("1 in 2 (88)"), not one.
+  generate_P4_code therefore emits an @pa_container_size pragma per feature
+  value field; without those pragmas this function under-counts by up to a
+  factor of 2 per table."""
   range_entries, range_blocks = 0, 0
   range_table_specs = []
+
+  width_factor = math.ceil((key_bit_width + 4) / TCAM_BLOCK_KEY_LENGTH)
+  key_bytes = math.ceil(key_bit_width / 8)
 
   for feature in feature_intervals:
     total_rows = 0
     for lo, hi in feature_intervals[feature]:
       total_rows += range_entry_count(lo, hi)
 
-    feature_blocks = math.ceil(total_rows / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
+    feature_blocks = math.ceil(total_rows / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * width_factor
 
     range_entries += len(feature_intervals[feature])
     range_blocks += feature_blocks
-    range_table_specs.append((feature_blocks, RANGE_TABLE_KEY_BYTES))
+    range_table_specs.append((feature_blocks, key_bytes))
 
   return range_entries, range_blocks, range_table_specs
 
@@ -255,6 +279,50 @@ def exact_match_resource_usage(codewords, feature_intervals):
   return sram_entries, sram_blocks
 
 
+# Every per-flow register in this design is indexed by meta.flow_hash, so the
+# hash action occupies one stage ahead of any register touch.
+FLOW_HASH_LEVEL = 1
+
+
+def feature_readiness_level(feature_name, catalog=None):
+  """Earliest pipeline stage at which this feature's `_val` field -- and so
+  its range-matching table -- can possibly be placed.
+
+    level = FLOW_HASH_LEVEL
+          + 1 if the feature is fwd-gated (flow_orientation_action has to
+            resolve meta.fwd before the gated block can run)
+          + one per RegisterAction in the feature's chain
+
+  Each chain entry is a genuinely sequential stage: a "dependency" register
+  produces meta.current_iat, which the paired "value" register consumes.
+  A register shared between two features (flow_last_arrival_time, executed
+  once for both flow_iat_max and flow_iat_mean) still sits on both features'
+  critical paths, so it counts for both.
+
+  A feature absent from the catalog gets no registers emitted at all
+  (generate_P4_registers_and_apply silently skips it), so nothing gates its
+  table beyond the hash itself.
+
+  Validated against a real compile: this yields 3/3/3/4 for M2's feature set,
+  matching the compiler's observed stage offsets 0/0/0/1 exactly."""
+  if catalog is None:
+    catalog = FEATURE_REGISTER_CATALOG
+
+  entry = catalog.get(feature_name.replace(" ", "_").lower())
+  if entry is None:
+    return FLOW_HASH_LEVEL
+
+  gate_cost = 1 if entry.get("gated_by") == "fwd" else 0
+  return FLOW_HASH_LEVEL + gate_cost + len(entry["registers"])
+
+
+def readiness_levels_for(feature_intervals, catalog=None):
+  """One readiness level per feature, positionally aligned with
+  range_matching_resource_usage's range_table_specs (both follow
+  feature_intervals iteration order)."""
+  return [feature_readiness_level(feature, catalog) for feature in feature_intervals]
+
+
 def _stage_shards(block_count, byte_width):
   """Splits one logical table that cannot fit inside a single stage into the
   minimum number of per-stage shards, so the packer never reports a stage
@@ -276,7 +344,7 @@ def _stage_shards(block_count, byte_width):
   return [(shard_blocks, shard_bytes)] * n_shards
 
 
-def crossbar_stages_needed(table_specs):
+def crossbar_stages_needed(table_specs, readiness_levels=None):
   """Packs independent match tables into pipeline stages under ALL three
   per-stage hardware limits simultaneously, and returns the stage count.
 
@@ -319,29 +387,62 @@ def crossbar_stages_needed(table_specs):
   that must never under-count real hardware usage."""
 
   shards = []
-  for block_count, byte_width in table_specs:
-    shards.extend(_stage_shards(block_count, byte_width))
+  for idx, (block_count, byte_width) in enumerate(table_specs):
+    for shard in _stage_shards(block_count, byte_width):
+      shards.append((shard[0], shard[1], idx))
 
   def load(shard):
-    blocks, width = shard
+    blocks, width, _ = shard
     return max(blocks / TCAM_BLOCKS_PER_STAGE,
                width / TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
                1 / TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
-  stages = []  # each entry: [blocks_used, bytes_used, tables_used]
-  for blocks, width in sorted(shards, key=load, reverse=True):
-    for stage in stages:
-      if (stage[0] + blocks <= TCAM_BLOCKS_PER_STAGE and
-          stage[1] + width <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE and
-          stage[2] + 1 <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE):
-        stage[0] += blocks
-        stage[1] += width
-        stage[2] += 1
-        break
-    else:
-      stages.append([blocks, width, 1])
+  def fits(stage, blocks, width):
+    return (stage[0] + blocks <= TCAM_BLOCKS_PER_STAGE and
+            stage[1] + width <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE and
+            stage[2] + 1 <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
-  return len(stages)
+  if readiness_levels is None:
+    stages = []  # each entry: [blocks_used, bytes_used, tables_used]
+    for blocks, width, _ in sorted(shards, key=load, reverse=True):
+      for stage in stages:
+        if fits(stage, blocks, width):
+          stage[0] += blocks
+          stage[1] += width
+          stage[2] += 1
+          break
+      else:
+        stages.append([blocks, width, 1])
+
+    return len(stages)
+
+  # Dependency-aware placement. Two differences from the packer above, both
+  # chosen to track the REAL compiler rather than the theoretical optimum:
+  #
+  #   1. A table may not occupy a stage index below its readiness level --
+  #      its key value literally does not exist yet.
+  #   2. Placement is EAGER (earliest legal stage with room), not "pack as
+  #      few stages as possible". The optimum would drop every table into the
+  #      single latest stage; the compiler does not do that, and neither does
+  #      this. Measured: M2's range pool really occupies 2 stages, which only
+  #      eager placement reproduces.
+  #
+  # The result counts OCCUPIED stages, not the index span -- stages below the
+  # lowest level hold register/hash work, not tables from this pool.
+  by_index = {}  # stage index -> [blocks_used, bytes_used, tables_used]
+  ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]], -load(s)))
+  for blocks, width, table_idx in ordered:
+    index = readiness_levels[table_idx]
+    while index in by_index and not fits(by_index[index], blocks, width):
+      index += 1
+    if index in by_index:
+      by_index[index][0] += blocks
+      by_index[index][1] += width
+      by_index[index][2] += 1
+    else:
+      by_index[index] = [blocks, width, 1]
+
+  return len(by_index)
 
 
 def single_model_memory_evaluation(clf, selected_features, use_default_action_discount=False):
@@ -399,6 +500,8 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
     ternary_entries, ternary_blocks, codeword_length, ternary_table_specs = ternary_matching_resource_usage(
         codewords, feature_intervals, use_default_action_discount=use_default_action_discount)
 
+    range_levels = readiness_levels_for(feature_intervals)
+
   elif encoding == 'disjoint':
 
     (range_entries_app, range_blocks_app, ternary_entries_app, ternary_blocks_app,
@@ -423,6 +526,12 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
     range_table_specs = range_table_specs_app + range_table_specs_ddos
     ternary_table_specs = ternary_table_specs_app + ternary_table_specs_ddos
 
+    # Each model keeps its own intervals here, so levels must be derived per
+    # model and concatenated in the SAME order the specs were.
+    range_levels = (
+        readiness_levels_for(get_feature_intervals(clf_app, selected_features_app)) +
+        readiness_levels_for(get_feature_intervals(clf_ddos, selected_features_ddos)))
+
   # Range-matching tables and ternary classification tables are physically
   # distinct table pools (build_p4_script.py generates them separately), so
   # each pool is packed on its own and the two stage counts are summed. Both
@@ -430,7 +539,18 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
   # respects the block, table-count and byte limits simultaneously, rather
   # than a max() of two independently-relaxed bounds (which can under-count,
   # see crossbar_stages_needed).
-  range_stages = crossbar_stages_needed(range_table_specs)
-  ternary_stages = crossbar_stages_needed(ternary_table_specs)
+  # Both pools are placed dependency-aware (see crossbar_stages_needed and
+  # feature_readiness_level): a feature's range table cannot precede the
+  # register chain producing its key, and every classification table reads
+  # every feature's codeword, so it cannot precede the last range table.
+  # Validated against a real compile of the M2 program: 2 range stages + 1
+  # classification stage = 3, exactly the compiler's own placement. The pure
+  # packer predicted 2.
+  range_stages = crossbar_stages_needed(range_table_specs,
+                                        readiness_levels=range_levels)
+  ternary_level = (max(range_levels) + 1) if range_levels else FLOW_HASH_LEVEL + 1
+  ternary_stages = crossbar_stages_needed(
+      ternary_table_specs,
+      readiness_levels=[ternary_level] * len(ternary_table_specs))
 
   return range_stages + ternary_stages, range_blocks + ternary_blocks

@@ -533,3 +533,208 @@ def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encod
         use_default_action_discount=True)
 
     assert blocks_on < blocks_off
+
+
+# ---------------------------------------------------------------------------
+# Range-table key-WIDTH term.
+#
+# A physical TCAM block is 512 rows x TCAM_BLOCK_KEY_LENGTH (44) key bits --
+# BOTH dimensions cost blocks. ternary_matching_resource_usage has always
+# charged the width factor (ceil((codeword+4)/44)); the range path charged
+# only the depth term (ceil(rows/512)), so a range key wider than 40 bits
+# silently under-counted. Measured against the real Tofino compiler
+# (reviews/p4_tofino_reference.md Sec 4.2): a 16-bit range key pinned to a
+# 16-bit PHV container costs "1 in 1 (44)" -- exactly one word per entry --
+# which is what ceil((16+4)/44) == 1 predicts.
+# ---------------------------------------------------------------------------
+
+
+def test_range_matching_resource_usage_charges_a_key_width_term():
+    # One aligned power-of-2 interval = exactly 1 physical row, so any block
+    # count above 1 can only come from the key-width term.
+    feature_intervals = {"F": [(0, 255)]}
+
+    _, blocks_16, _ = ev.range_matching_resource_usage(feature_intervals, key_bit_width=16)
+    _, blocks_64, _ = ev.range_matching_resource_usage(feature_intervals, key_bit_width=64)
+
+    assert blocks_16 == 1                      # ceil((16+4)/44) == 1
+    assert blocks_64 == 2                      # ceil((64+4)/44) == 2
+
+
+def test_range_table_specs_report_the_real_key_byte_width():
+    # The crossbar byte cost per table must follow the declared key width too
+    # -- crossbar_stages_needed budgets 64 key bytes per stage.
+    feature_intervals = {"F": [(0, 255)]}
+
+    _, _, specs_16 = ev.range_matching_resource_usage(feature_intervals, key_bit_width=16)
+    _, _, specs_64 = ev.range_matching_resource_usage(feature_intervals, key_bit_width=64)
+
+    assert specs_16 == [(1, 2)]                # 1 block, 2 crossbar bytes
+    assert specs_64 == [(2, 8)]                # 2 blocks, 8 crossbar bytes
+
+
+def test_range_matching_resource_usage_default_width_is_the_project_16_bit():
+    # Regression guard: the project's decided feature precision is 16-bit
+    # (reviews/p4_tofino_reference.md Sec 5), whose width factor is 1, so
+    # adding the term must not change any existing caller's numbers.
+    feature_intervals = {"F": [(0, 255)], "G": [(10, 300)]}
+
+    assert (ev.range_matching_resource_usage(feature_intervals) ==
+            ev.range_matching_resource_usage(feature_intervals, key_bit_width=16))
+
+
+# ---------------------------------------------------------------------------
+# Dependency-aware stage placement.
+#
+# crossbar_stages_needed alone is a pure bin-packer: it answers "how few
+# stages could these tables fit in", which is a LOWER bound. The real
+# compiler also obeys data dependencies -- a feature's range table cannot be
+# placed before the register chain that produces its key value has run --
+# and it places eagerly, at the earliest legal stage rather than the latest.
+#
+# The chain depth is fully derivable from FEATURE_REGISTER_CATALOG:
+#     level = 1 (flow hash)
+#           + 1 if the feature is fwd-gated (flow_orientation must resolve)
+#           + one per RegisterAction in the feature's chain
+#
+# Measured against a real compile of the M2 program (3 app trees + 1 ddos
+# tree over these 4 features): levels 3/3/3/4 reproduce the observed stage
+# offsets 0/0/0/1 exactly -- the range tables really do occupy 2 stages, not
+# the 1 the pure packer predicted, and the classification tables 1 more.
+# ---------------------------------------------------------------------------
+
+
+def test_feature_readiness_level_counts_hash_gating_and_chain_depth():
+    # ungated, 2-deep chain (last_arrival_time -> max): 1 + 0 + 2
+    assert ev.feature_readiness_level("Flow_IAT_Max") == 3
+    # ungated, 2-deep chain (shared last_arrival_time -> mean): 1 + 0 + 2
+    assert ev.feature_readiness_level("Flow_IAT_Mean") == 3
+    # fwd-gated, 1-deep chain: 1 + 1 + 1
+    assert ev.feature_readiness_level("Fwd_Packet_Length_Max") == 3
+    # fwd-gated, 2-deep chain: 1 + 1 + 2 -- the deepest, and the one the real
+    # compiler pushed into a stage of its own
+    assert ev.feature_readiness_level("Fwd_IAT_Max") == 4
+
+
+def test_feature_readiness_level_unknown_feature_is_ready_after_the_hash():
+    # A feature with no catalog entry gets no registers emitted at all, so
+    # nothing gates its table beyond the flow hash itself.
+    assert ev.feature_readiness_level("Not_A_Catalog_Feature") == 1
+
+
+def test_readiness_levels_follow_feature_intervals_order():
+    # Must align positionally with range_matching_resource_usage's specs,
+    # which follow feature_intervals iteration order.
+    feature_intervals = {
+        "Fwd_IAT_Max": [(0, 5)],
+        "Flow_IAT_Max": [(0, 5)],
+        "Not_A_Catalog_Feature": [(0, 5)],
+    }
+
+    assert ev.readiness_levels_for(feature_intervals) == [4, 3, 1]
+
+
+def test_crossbar_stages_needed_separates_tables_by_readiness_level():
+    # Four trivially small tables that the pure packer puts in one stage.
+    specs = [(1, 2)] * 4
+    assert ev.crossbar_stages_needed(specs) == 1
+
+    # The same four, with one not ready until a later level, must occupy two
+    # distinct stages -- exactly the M2 range-pool case.
+    assert ev.crossbar_stages_needed(specs, readiness_levels=[3, 3, 3, 4]) == 2
+
+
+def test_crossbar_stages_needed_counts_occupied_stages_not_the_span():
+    # A single late table occupies ONE stage, however deep its level is --
+    # the earlier stage indices belong to other work (registers), not to this
+    # table pool.
+    assert ev.crossbar_stages_needed([(1, 2)], readiness_levels=[7]) == 1
+
+
+def test_crossbar_stages_needed_spills_past_its_level_when_full():
+    # Nine same-level tables cannot share one stage (8-table crossbar cap),
+    # so one spills into the next stage even though its level allows earlier.
+    assert ev.crossbar_stages_needed([(1, 2)] * 9, readiness_levels=[3] * 9) == 2
+
+
+def test_range_and_ternary_pools_reproduce_the_measured_m2_stage_count():
+    # The real M2 feature set. Real compile: range tables in 2 stages,
+    # classification tables in 1 -> 3 stages of match tables.
+    feature_intervals = {
+        "Flow_IAT_Max": [(0, 100), (101, 65535)],
+        "Flow_IAT_Mean": [(0, 100), (101, 65535)],
+        "Fwd_IAT_Max": [(0, 100), (101, 65535)],
+        "Fwd_Packet_Length_Max": [(0, 100), (101, 65535)],
+    }
+    _, _, range_specs = ev.range_matching_resource_usage(feature_intervals)
+    range_levels = ev.readiness_levels_for(feature_intervals)
+
+    range_stages = ev.crossbar_stages_needed(range_specs, readiness_levels=range_levels)
+    # Classification tables read every feature's codeword, so they cannot be
+    # placed until one stage after the last range table.
+    ternary_level = max(range_levels) + 1
+    ternary_stages = ev.crossbar_stages_needed([(2, 11)] * 4,
+                                               readiness_levels=[ternary_level] * 4)
+
+    assert range_stages == 2
+    assert ternary_stages == 1
+    assert range_stages + ternary_stages == 3
+
+
+def _forest_using_all_four_catalog_features(labels, seed):
+    """A forest that really splits on all four M2 catalog features, so the
+    readiness levels under test are all actually present."""
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+
+    rnd = np.random.RandomState(seed)
+    X = rnd.randint(0, 60000, size=(400, 4))
+    y = np.array([labels[(a // 30000 + b // 30000 + c // 30000 + d // 30000)
+                         % len(labels)]
+                  for a, b, c, d in X])
+    # Deliberately SHALLOW: few intervals per feature, so the pure packer
+    # needs only one range stage and any second stage can only come from
+    # dependency depth (asserted explicitly in the tests below).
+    clf = RandomForestClassifier(n_estimators=1, max_depth=4,
+                                 random_state=seed, bootstrap=False).fit(X, y)
+    return bps.dt_thresholds_float_to_int(clf)
+
+
+_M2_CATALOG_FEATURES = ["Flow_IAT_Max", "Flow_IAT_Mean",
+                        "Fwd_IAT_Max", "Fwd_Packet_Length_Max"]
+
+
+def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
+    # End-to-end: the reported stage count must include the extra stage that
+    # Fwd_IAT_Max's deeper register chain forces, matching the real compile
+    # (range tables over 2 stages + classification tables in 1 = 3), not the
+    # pure packer's 2.
+    clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
+    clf_ddos = _forest_using_all_four_catalog_features([-1, 1], seed=7)
+
+    intervals = bps.get_feature_intervals(clf_app, _M2_CATALOG_FEATURES)
+    assert set(intervals) == set(_M2_CATALOG_FEATURES), (
+        "fixture did not split on every catalog feature: {}".format(sorted(intervals)))
+    # Pin the baseline: without dependency levels these range tables all pack
+    # into ONE stage, so a result of 3 below can only come from the extra
+    # stage Fwd_IAT_Max's deeper chain forces -- this test cannot pass for
+    # the wrong reason.
+    _, _, range_specs = ev.range_matching_resource_usage(intervals)
+    assert ev.crossbar_stages_needed(range_specs) == 1
+
+    stages, blocks = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, "joint")
+
+    assert stages == 3
+
+
+def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth():
+    # The same shaped models over feature names with no catalog entry have no
+    # register chains at all, so nothing forces a second range stage.
+    clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
+    clf_ddos = _forest_using_all_four_catalog_features([-1, 1], seed=7)
+
+    stages, _ = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, ["g0", "g1", "g2", "g3"], ["g0", "g1", "g2", "g3"], "joint")
+
+    assert stages == 2

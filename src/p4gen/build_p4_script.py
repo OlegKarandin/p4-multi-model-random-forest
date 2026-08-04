@@ -67,7 +67,16 @@ def get_tree_textual_representation(clf, feature_names, verbose=False):
   tree_textual_representation = {}
 
   for idx,tree in enumerate(clf.estimators_):
-    tree_textual_representation[idx] = export_text(tree, feature_names=feature_names)
+    # max_depth MUST be passed explicitly: sklearn's export_text defaults to
+    # max_depth=10 and renders anything deeper as
+    # "|--- truncated branch of depth N" lines. Those lines contain neither
+    # "class" nor "<=", so get_nodes() below drops them silently -- no error,
+    # just a structurally wrong tree. Measured: a real depth-12 tree with 350
+    # leaves parsed as 168, and on a depth-14 tree 2516 of 4000 probe inputs
+    # then matched no table entry at all. Sizing to the tree's own depth is
+    # exact and cannot be "not quite big enough" for some future deeper model.
+    tree_textual_representation[idx] = export_text(
+        tree, feature_names=feature_names, max_depth=max(1, tree.get_depth()))
 
   if verbose == True:
     for tree in tree_textual_representation:
@@ -208,10 +217,15 @@ def get_feature_intervals_from_thresholds(feature_thresholds):
   for feature, threshold in feature_thresholds:
       #New Feature, Init interval
 
-      # avoid creating a [0, 0] interval (remember that all features are positive)
-      if threshold == 0:
-        continue
-
+      # NOTE: a split at threshold 0 is a REAL split and gets its own [0, 0]
+      # interval. This used to be skipped outright, on the premise that "all
+      # features are positive" -- but 0 is not positive, dataset.py keeps
+      # zero-valued rows, and a "counter is zero vs non-zero" split is exactly
+      # sklearn threshold 0.5 truncated to 0. Skipping it dropped the split
+      # from the intervals while generate_codewords still saw the condition in
+      # every leaf path, so the "> 0" branch matched no interval bound and
+      # stayed fully wildcarded -- matching values it should have excluded.
+      # A [0, 0] range is perfectly legal for a range-match table.
       if feature not in feature_intervals:
           feature_intervals[feature] = [(0, threshold)]
 
@@ -1282,11 +1296,29 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   # declared exactly once per DISTINCT raw feature name -- never twice just
   # because two resolved entries (e.g. app_<feature>/ddos_<feature>) both
   # discretize the same underlying shared raw value.
+  # Each raw value field is also PINNED to a 16-bit PHV container. Measured
+  # against the real Tofino compiler (reviews/p4_tofino_reference.md Sec 4.2):
+  # the allocator is free to park a bit<16> range key in a 32-bit W container,
+  # and when it does, that feature's range table costs TWO physical TCAM
+  # blocks per entry ("1 in 2 (88)") instead of one ("1 in 1 (44)"). Pinning
+  # all four value fields of one real M2 program took it from 14 TCAM blocks /
+  # 10 stages to 12 / 9 -- 12 being exactly what evaluation.py predicts, so
+  # this is what makes the cost model's range term correct rather than
+  # accidentally correct. One pragma per DISTINCT raw field (never per
+  # resolved name): two namespaced entries share one raw field, and a
+  # duplicate pragma for the same field is a compile error.
+  #
+  # The pragma names the field the way the PHV logs do -- `ig_md.<raw>_val`,
+  # after SwitchIngressParser's `out metadata_t ig_md` parameter, NOT the
+  # `meta` name SwitchIngress binds the same struct to.
+  phv_pragmas = ""
   raw_feature_intervals = {}  # raw_feature_name -> intervals (first-seen; only the KEYS feed generate_P4_registers_and_apply, which ignores values)
   for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
     if raw_feature_name not in raw_feature_intervals:
       raw_feature_intervals[raw_feature_name] = intervals
-      metadata_code += "\tbit<16> "+raw_feature_name.replace(" ","_").lower()+"_val;\n"
+      value_field = raw_feature_name.replace(" ","_").lower()+"_val"
+      metadata_code += "\tbit<16> "+value_field+";\n"
+      phv_pragmas += '@pa_container_size("ingress", "ig_md.'+value_field+'", 16)\n'
 
   for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
     codeword_width = len(intervals) - 1
@@ -1410,6 +1442,10 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   # substitute the code in the template
   with open(PATH_P4_CODE_TEMPLATE_INPUT, 'r') as switch_template_file:
     switch_template = switch_template_file.read()
+    # The marker's OWN line is consumed, so a feature-less program keeps the
+    # template's original spacing exactly (and a program with features gets
+    # its pragmas immediately above `struct metadata_t`, no stray blank line).
+    switch_template = switch_template.replace('/* PHV_PRAGMAS */\n', phv_pragmas)
     switch_template = switch_template.replace('/* METADATA */', metadata_code)
     switch_template = switch_template.replace('/* REGISTERS */', registers_code)
     switch_template = switch_template.replace('/* REGISTER_ACTIONS */', register_actions_code)

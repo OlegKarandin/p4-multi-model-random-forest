@@ -11,6 +11,7 @@
 
 const bit<32> MAX_NUM_FLOWS = 4096;
 
+/* PHV_PRAGMAS */
 struct metadata_t {
     bit<32> flow_hash;
     bit<1>  fwd;

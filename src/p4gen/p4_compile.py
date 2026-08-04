@@ -176,7 +176,12 @@ def _find_header_and_totals_rows(text: str) -> Tuple[Optional[str], Optional[str
     return header_row, None
 
 
-_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+# This file lives at <repo root>/src/p4gen/p4_compile.py, so the repo root is
+# three levels up. It used to be one level up, which was correct while this
+# module sat at the repo root -- the src/ reorganisation silently turned the
+# default include path into src/p4gen/resources (a directory that does not
+# exist), handing p4c `-I <nonexistent>`.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _resolve_repo_relative(path: str) -> str:

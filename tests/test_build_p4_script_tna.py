@@ -1316,8 +1316,14 @@ def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
 # it replaced is kept below as _PRE_TABLE_SIZING_OUTPUT_SHA256, and
 # test_generate_P4_code_default_call_changes_only_table_sizes proves the size
 # numbers are the ONLY thing that changed between the two.
+# Re-recorded a SECOND time, deliberately, by the PHV-pinning change: each
+# feature value field now carries an @pa_container_size pragma (real-compile
+# evidence in the pinning tests at the end of this file). The size literals
+# and those pragma lines remain the only deltas from the pre-table-sizing
+# baseline -- _reconstruct_pre_table_sizing_text undoes both, and
+# test_generate_P4_code_default_call_changes_only_table_sizes proves it.
 _DEFAULT_CALL_OUTPUT_SHA256 = (
-    "017626f4a060cdb2a24f37a0077e79c24cfeb02e6d189ce9891c7382c4b736e6")
+    "82f3d9da8eaebd7c97f30e845d0c03795f35ae5c7a8f8059657cfab5b34fd6bf")
 
 # The sha256 the same call produced BEFORE the table-sizing follow-up (when
 # every feature table declared `size = 200;` and every classification table
@@ -1588,15 +1594,27 @@ def test_generate_P4_tables_and_apply_classification_sizes_are_used_when_given()
 
 
 def _reconstruct_pre_table_sizing_text(p4_text):
-  """Put the OLD fixed literals back into `p4_text`'s table declarations --
-  200 for every range-matching feature table, 400 for every classification
-  table, leaving vote_* (already correctly sized before this follow-up)
-  alone. If the only thing this follow-up changed is the size numbers, the
-  result is byte-identical to the pre-follow-up output."""
+  """Undo every delta applied to the generated text since the pre-table-sizing
+  baseline, so what remains must be byte-identical to that baseline:
+
+    - put the OLD fixed literals back into the table declarations -- 200 for
+      every range-matching feature table, 400 for every classification table,
+      leaving vote_* (already correctly sized back then) alone;
+    - drop the @pa_container_size PHV-pinning pragma lines, added later to
+      pin each feature value field to a 16-bit container (see the pinning
+      tests at the end of this file for the real-compile evidence). The
+      pragmas occupy whole lines of their own between MAX_NUM_FLOWS and
+      `struct metadata_t`, so removing those lines restores the original
+      spacing exactly.
+
+  Keeping both undos in one helper is what lets the byte-identity test stay
+  meaningful: it proves these are the ONLY things that ever changed."""
   rebuilt = []
   current_table = None
   for line in p4_text.splitlines(keepends=True):
     stripped = line.strip()
+    if stripped.startswith("@pa_container_size("):
+      continue
     name_match = re.match(r"table\s+(\w+)\s*\{", stripped)
     if name_match:
       current_table = name_match.group(1)
@@ -1671,3 +1689,86 @@ def test_generate_P4_code_selected_features_without_flag_only_refines_sizes(tmp_
   stripped_with = [l for l in with_lists.splitlines()
                    if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
   assert stripped_without == stripped_with
+
+
+# ---------------------------------------------------------------------------
+# PHV container pinning for range-matched feature value fields.
+#
+# Measured against the real Tofino compiler (reviews/p4_tofino_reference.md
+# Sec 4.2): a `bit<16>` range key the PHV allocator parks in a 32-bit W
+# container costs TWO physical TCAM blocks per table ("1 in 2 (88)"), while
+# the same key in a 16-bit H container costs one ("1 in 1 (44)"). The choice
+# is invisible to the trained model, so the cost model cannot predict it --
+# it has to be pinned. Pinning all four feature value fields of one real M2
+# program took it from 14 TCAM blocks / 10 stages to 12 blocks / 9 stages,
+# with 12 being exactly what evaluation.py predicts.
+#
+# The pragma names the field as the PHV logs do -- `ig_md.<raw>_val`, after
+# SwitchIngressParser's `out metadata_t ig_md` parameter, NOT the `meta`
+# name SwitchIngress binds it to.
+# ---------------------------------------------------------------------------
+
+_PA_PRAGMA_RE = re.compile(
+    r'@pa_container_size\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*,\s*(\d+)\s*\)')
+
+
+def test_generate_P4_code_pins_every_feature_value_field_to_a_16_bit_container(tmp_path):
+  clf_ddos = _tiny_ddos_forest()
+  intervals = {
+      "Flow_IAT_Max": [(0, 50), (51, INFINITE)],
+      "Fwd_Packet_Length_Max": [(0, 8), (9, INFINITE)],
+  }
+  written_path = bps.generate_P4_code(
+      0, 2, None, clf_ddos,
+      feature_intervals_app={}, feature_intervals_ddos=intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="pinned.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  pinned = dict(_PA_PRAGMA_RE.findall(text))
+
+  assert pinned == {"flow_iat_max_val": "16", "fwd_packet_length_max_val": "16"}
+
+
+def test_generate_P4_code_pins_exactly_the_declared_value_fields(tmp_path):
+  # The regression this guards: a pragma naming a field that does not exist
+  # is silently ignored by p4c, so the pinning would stop working with no
+  # error anywhere. Assert the pinned set is exactly the set of `<name>_val`
+  # metadata fields the generator declared.
+  clf_ddos = _tiny_ddos_forest()
+  intervals = {
+      "Flow_IAT_Max": [(0, 50), (51, INFINITE)],
+      "Fwd_IAT_Max": [(0, 7), (8, 900), (901, INFINITE)],
+      "Fwd_Packet_Length_Max": [(0, 8), (9, INFINITE)],
+  }
+  written_path = bps.generate_P4_code(
+      0, 2, None, clf_ddos,
+      feature_intervals_app={}, feature_intervals_ddos=intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="pinned_exact.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  declared = set(re.findall(r"bit<16> ([A-Za-z0-9_]+_val);", text))
+  pinned = set(_PA_PRAGMA_RE.findall(text))
+
+  assert declared, "fixture produced no feature value fields at all"
+  assert {name for name, _ in pinned} == declared
+
+
+def test_generate_P4_code_pins_a_shared_raw_field_only_once(tmp_path):
+  # Under disjoint namespacing two resolved entries (app_/ddos_) share ONE
+  # raw value field, which is declared once -- so it must be pinned once.
+  # A duplicate @pa_container_size for the same field is a compile error.
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"Flow_IAT_Max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"Flow_IAT_Max": [(0, 200), (201, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="pinned_shared.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  assert text.count("bit<16> flow_iat_max_val;") == 1
+  assert [name for name, _ in _PA_PRAGMA_RE.findall(text)] == ["flow_iat_max_val"]

@@ -365,3 +365,32 @@ def test_compile_p4_against_real_toolchain(tmp_path):
     result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
     assert result.errors == 0
     assert result.stages is not None
+
+
+# ---------------------------------------------------------------------------
+# include-path resolution
+#
+# _resolve_repo_relative exists so compile_p4's default include_path
+# ("resources") resolves against THIS REPO's root rather than the caller's
+# cwd. It derived that root from os.path.dirname(__file__), which was correct
+# while p4_compile.py lived at the repo root -- but the src/ reorganisation
+# moved it to src/p4gen/, silently turning the default into
+# src/p4gen/resources, a directory that does not exist. p4c would then be
+# handed `-I <nonexistent>` and fail to find p4_headers.p4 / p4_util.p4 for
+# any generated program not sitting beside its own includes.
+# ---------------------------------------------------------------------------
+
+def test_resolve_repo_relative_finds_the_real_resources_directory():
+    resolved = pc._resolve_repo_relative("resources")
+
+    assert os.path.isdir(resolved), (
+        "default include path does not exist: {}".format(resolved))
+    assert os.path.isfile(os.path.join(resolved, "p4_template.p4"))
+    assert os.path.isfile(os.path.join(resolved, "p4_headers.p4"))
+    assert os.path.isfile(os.path.join(resolved, "p4_util.p4"))
+
+
+def test_resolve_repo_relative_leaves_absolute_paths_alone(tmp_path):
+    absolute = str(tmp_path)
+
+    assert pc._resolve_repo_relative(absolute) == absolute
