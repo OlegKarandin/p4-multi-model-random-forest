@@ -168,7 +168,18 @@ pcap/
 *.p4i
 *.json
 p4/*.p4
+p4/tofino_spike/tna_*.p4
+compile_logs*/
 
 results/
 paper/
-reviews/
+reviews/*
+!reviews/p4_tofino_reference.md
+
+# Non-source clutter
+resources/*.csv
+bf_drivers.log*
+zlog-cfg-cur
+figures/
+legacy/
+docs/
