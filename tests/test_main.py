@@ -2,20 +2,6 @@ import sys
 from unittest.mock import patch
 from src import main as m
 
-# Importing src.main transitively imports src.training.train_model, which calls
-# sklearnex.patch_sklearn() unconditionally at import time. In this project's
-# conda env that accelerated RandomForestClassifier is incompatible with the
-# installed scikit-learn's Tree.__setstate__, so EVERY .fit() then raises
-# "ValueError: node array from the pickle has an incompatible dtype". Undo the
-# patch here so the fixtures below can train real forests. This is a
-# pre-existing environment problem, not something these tests introduce -- but
-# note it means any real run of the training pipeline hits it too.
-try:  # pragma: no cover - depends on whether sklearnex is installed
-    from sklearnex import unpatch_sklearn
-    unpatch_sklearn()
-except ImportError:
-    pass
-
 
 def test_parse_args_defaults_to_plot_mode():
     """Today's checked-in default is new_results = False (plotting/analysis

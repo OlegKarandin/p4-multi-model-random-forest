@@ -35,22 +35,6 @@ from unittest.mock import patch
 from src.training import feature_selection as fs
 from src.p4gen import p4_compile as pc
 
-# `feature_selection` imports `train_model`, which calls sklearnex's
-# `patch_sklearn()` at import time (train_model.py:9-10) to globally swap in
-# Intel's oneDAL-accelerated RandomForestClassifier. In this environment that
-# accelerated implementation's tree (de)serialization is incompatible with
-# the installed sklearn's `Tree.__setstate__` (a pre-existing version-skew
-# bug in this conda env, unrelated to this task: "node array from the pickle
-# has an incompatible dtype"), so ANY `RandomForestClassifier(...).fit(...)`
-# call -- including every one inside `train_multi_RF_Optuna_multi_constrained`
-# -- raises ValueError as soon as sklearnex's patch is active. Undoing the
-# patch here (test-only, after the module import that applied it) restores
-# plain sklearn for the rest of this test session so the real training
-# pipeline these tests exercise actually runs, without touching train_model.py
-# itself or any other production file.
-from sklearnex import unpatch_sklearn
-unpatch_sklearn()
-
 # train_model.py's objective() hardcodes `RandomForestClassifier(**params,
 # n_jobs=-1)` for every one of its up to 1000 Optuna trials
 # (train_model.py:754-755). Measured directly (not guessed): on this tiny

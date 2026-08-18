@@ -284,6 +284,22 @@ def _tiny_forest(labels, seed):
     # multi_model_memory_evaluation, leaving their long tuple-unpacking
     # lines (where a transposed variable is easy to miss) untested. Still
     # no dataset file -- the arrays are hardcoded here.
+    #
+    # The golden tuples below (_PRE_TASK_SINGLE_APP etc.) were computed
+    # against plain sklearn's tree-building. sklearnex.patch_sklearn() is a
+    # process-global monkeypatch: once any other imported module (e.g.
+    # train_model.py) has triggered it, scikit-learn's accelerated backend
+    # produces a genuinely different (though equally valid) tree for the
+    # same data/seed, which would make these exact-value assertions flaky
+    # depending on unrelated test-collection order. Unpatch explicitly so
+    # this fixture's tree shape stays deterministic regardless of global
+    # process state.
+    try:
+        from sklearnex import unpatch_sklearn
+        unpatch_sklearn()
+    except ImportError:
+        pass
+
     import numpy as np
     from sklearn.ensemble import RandomForestClassifier
 

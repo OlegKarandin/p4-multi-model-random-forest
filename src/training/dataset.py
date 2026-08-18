@@ -40,7 +40,7 @@ def read_app_dataset(selected_features, threshold):
 
 	return df
 
-def read_DDOS_dataset(selected_features, threshold):
+def read_DDOS_dataset(selected_features, threshold, random_state=42):
 
 	df = pd.read_csv('./resources/Wednesday-workingHours.pcap_ISCX.csv', delimiter=',')
 
@@ -67,16 +67,17 @@ def read_DDOS_dataset(selected_features, threshold):
 	df.drop_duplicates(inplace=True)
 
 	balanced_df = pd.DataFrame()
+	rng = np.random.RandomState(random_state)
 
 	class_df = df[df['Label'] == 1]
-	random_indices = np.random.choice(class_df.index, 10000, replace=False)
+	random_indices = rng.choice(class_df.index, 10000, replace=False)
 	balanced_df = pd.concat([balanced_df, class_df.loc[random_indices]], axis=0)
 
 	class_df = df[df['Label'] == -1]
-	random_indices = np.random.choice(class_df.index, 10000, replace=False)
+	random_indices = rng.choice(class_df.index, 10000, replace=False)
 	balanced_df = pd.concat([balanced_df, class_df.loc[random_indices]], axis=0)
-	
-	balanced_df = balanced_df.sample(frac=1).reset_index(drop=True)
+
+	balanced_df = balanced_df.sample(frac=1, random_state=random_state).reset_index(drop=True)
 
 	return balanced_df
 
