@@ -30,8 +30,77 @@ PROGRAM_NAME = "p4_code_RF_models"  # must match the program name used to launch
 CONTROL_BLOCK = "SwitchIngress"     # matches this project's real control block name (resources/p4_template.p4)
 ENTRIES_FILE_PATH = "p4/table_entries.json"
 
+
+def _range_entry_count(lo, hi, nibble_widths=(4, 4, 4, 4)):
+    # Duplicated from src/p4gen/evaluation.py:range_entry_count rather than imported: this
+    # script runs inside bfshell's embedded Python, which does not have this project's normal
+    # dependency stack (sklearn etc., pulled in transitively by evaluation.py's own imports).
+    # Exact port of expand_range() (bf-drivers/src/pipe_mgr/pipe_mgr_entry_format.c) -- computes
+    # the real number of physical TCAM rows a range key [lo, hi] needs once installed.
+    n = len(nibble_widths)
+    start_vals, end_vals = [], []
+    shift = 0
+    for w in nibble_widths:
+        start_vals.append(1 << shift)
+        end_vals.append((1 << (w + shift)) - 1)
+        shift += w
+
+    if hi < lo:
+        raise ValueError("hi < lo")
+
+    range_start, end, count = lo, hi, 0
+    while True:
+        if range_start == 0:
+            start_nibble = n - 1
+        else:
+            zeroes = (range_start & -range_start).bit_length() - 1
+            cum, start_nibble = 0, n - 1
+            for j in range(n):
+                cum += nibble_widths[j]
+                if cum > zeroes:
+                    start_nibble = j
+                    break
+
+        range_end = None
+        for i in range(start_nibble + 1, 0, -1):
+            candidate = range_start | end_vals[i - 1]
+            while (candidate >= range_start and candidate > end and
+                   candidate >= start_vals[i - 1]):
+                candidate -= start_vals[i - 1]
+            if candidate >= range_start and candidate <= end:
+                range_end = candidate
+                break
+
+        count += 1
+        range_start = range_end + 1
+        if range_end >= end:
+            break
+
+    return count
+
+
+def _row_cost(entry):
+    # Non-zero only for range-keyed entries (feature codeword-bit tables); ternary
+    # classification entries and is_default_action records always cost 0 here, so the sort
+    # below leaves their relative order untouched (Python's sort is stable) and only reorders
+    # within each range table's own entries.
+    for spec in entry.get("key_fields", {}).values():
+        if "start" in spec:
+            return _range_entry_count(int(spec["start"]), int(spec["end"]))
+    return 0
+
+
 with open(ENTRIES_FILE_PATH) as f:
     table_entries = json.load(f)
+
+# Real hardware (reviews/t12_tcam_model_experiment_plan.md Section 13-14, ".superpowers/sdd/
+# task-4c-report.md") confirmed a TCAM block's real usable capacity depends on insertion order:
+# installing wide/multi-row range entries first and narrow/single-row entries last reaches the
+# full nominal 512-row capacity exactly; the reverse order loses up to 6 rows to fragmentation
+# (pipe_mgr_tcam_find_next_free requires multi-row entries to land in mutually contiguous free
+# rows). Sorting by descending per-entry row cost before installing reproduces the order that
+# reached full capacity in both tested configs.
+table_entries.sort(key=lambda e: -_row_cost(e))
 
 
 def _data_kwargs(action_params):

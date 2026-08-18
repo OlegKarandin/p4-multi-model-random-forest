@@ -352,15 +352,18 @@ def crossbar_stages_needed(table_specs, readiness_levels=None):
   table -- one per tree for the ternary classification tables
   (build_p4_script.py:636-659), one per feature for the range-matching
   tables (build_p4_script.py:663-674). RM-5/RM-6/RM-7 measured these limits
-  on the Ternary Match Input crossbar specifically; applying the same
-  model to range-matching tables is an unmeasured extrapolation by
-  analogy, not a separately confirmed finding -- but it is the
-  conservative direction (it can only raise range_stages, never lower it),
-  consistent with never under-counting. Both pools are packed separately
-  with this one function, since they are physically distinct table pools.
-  Range tables may also have their own, still-unmodelled per-stage limit
-  (distinct from this crossbar analogy) -- a residual gap, not something
-  this function claims to close.
+  on the Ternary Match Input crossbar specifically. A follow-up compile
+  sweep (reviews/open_issues.md item 3, results_rmx_crossbar.csv) confirmed
+  the 8-tables/stage cap generalizes to range tables at 16-bit width, but
+  found range tables cost ~2x the crossbar xbar-units per byte that ternary
+  tables do at the same width -- so reusing TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+  verbatim for the range pool is NOT known-conservative; once a design's
+  range-table byte-budget (rather than the 8-table cap) becomes the binding
+  constraint, this function likely UNDER-counts range_stages instead of
+  over-counting it. The exact byte-width crossover for range tables was not
+  pinned down (needs a >64-bit combined-width multi-field range sweep).
+  Both pools are packed separately with this one function, since they are
+  physically distinct table pools.
 
   Every stage must satisfy at once:
     * <= TCAM_BLOCKS_PER_STAGE                 TCAM blocks
