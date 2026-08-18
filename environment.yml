@@ -43,7 +43,7 @@ dependencies:
       - cloudpickle==3.1.0
       - colorama==0.4.6
       - future==1.0.0
-      - hyperopt==0.2.7
       - networkx==3.4.1
       - py4j==0.10.9.7
+      - scikit-learn-intelex==2026.1.0
       - tqdm==4.66.5

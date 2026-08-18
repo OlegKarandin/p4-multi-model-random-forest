@@ -185,5 +185,9 @@ legacy/
 docs/
 temp/*.txt
 temp/*.csv
+temp/validate/
 .claude/
 .superpowers/
+
+# Spike experiment scratch data
+p4/tofino_spike/t12_experiments/
