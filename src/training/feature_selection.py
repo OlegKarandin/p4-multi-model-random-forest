@@ -405,14 +405,26 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
         raise ValueError(f"Unknown encoding for hardware validation: {encoding!r}")
 
 
-def _advance_pending_compile(results, pending_previous, pending_next):
+def _advance_pending_compile(current_row, pending_previous, pending_next):
     """Joins the PREVIOUS iteration's still-pending hardware-validation handle
     -- which has now had one full training step's wall time to finish in the
-    background -- attaching its numbers to that earlier row (`results[-2]`).
-    The just-appended row (`results[-1]`) gets its own numbers only once
-    `pending_next` is itself joined on a later call; on the very first
-    iteration (`pending_previous` is None, nothing to join yet) that row's
-    three fields are marked None directly instead.
+    background -- attaching its numbers directly to the row it belongs to.
+
+    `pending_previous` and `pending_next` are each either None or a
+    `(handle, row_dict)` pair: the handle is the raw Future returned by
+    `_kickoff_hardware_validation`, and `row_dict` is the specific results
+    row that Future's numbers must land on. Writing into `row_dict` by
+    reference -- rather than indexing `results` by position (`results[-2]`)
+    -- means this no longer depends on exactly one row having been appended
+    per call. A feasible iteration's infeasible-k row(s) can be interleaved
+    in between (F3b's infeasible branch appends a row and `continue`s
+    without ever producing a pending compile) and the attribution still
+    lands on the correct row, because that row's dict was captured at
+    kickoff time, not looked up again later by position.
+
+    `current_row` is the just-appended row for THIS iteration; when nothing
+    is pending yet (`pending_previous` is None, i.e. the very first
+    iteration), its three fields are marked None directly instead.
 
     Shared by both the disjoint ('single') and joint ('multi') loops in
     `_process_single_split`, which differ only in how `pending_next` itself
@@ -423,31 +435,36 @@ def _advance_pending_compile(results, pending_previous, pending_next):
     loop to carry into its next iteration.
     """
     if pending_previous is not None:
-        compile_result = pending_previous.result(timeout=600)
-        results[-2]['stages_real'] = compile_result.stages
-        results[-2]['tcam_real'] = compile_result.tcam
-        results[-2]['compile_errors'] = compile_result.errors
+        handle, row = pending_previous
+        compile_result = handle.result(timeout=600)
+        row['stages_real'] = compile_result.stages
+        row['tcam_real'] = compile_result.tcam
+        row['compile_errors'] = compile_result.errors
     else:
-        results[-1]['stages_real'] = None
-        results[-1]['tcam_real'] = None
-        results[-1]['compile_errors'] = None
+        current_row['stages_real'] = None
+        current_row['tcam_real'] = None
+        current_row['compile_errors'] = None
     return pending_next
 
 
-def _join_final_pending_compile(results, pending_previous):
+def _join_final_pending_compile(pending_previous):
     """Post-loop counterpart to `_advance_pending_compile`: the final
     iteration has no "next" iteration to overlap with, so whatever compile is
-    still outstanding is joined directly here and attached to the last row
-    appended (`results[-1]`). No-op when `pending_previous` is None (either
+    still outstanding is joined directly here and attached to the row it
+    belongs to. `pending_previous` is either None or a `(handle, row_dict)`
+    pair (see `_advance_pending_compile`); writing into `row_dict` by
+    reference means this is unaffected by any infeasible rows appended after
+    the handle was captured. No-op when `pending_previous` is None (either
     validate_on_hardware was False throughout, or -- impossible in practice,
     since every iteration kicks off a new pending compile -- there simply was
     none left outstanding).
     """
     if pending_previous is not None:
-        compile_result = pending_previous.result(timeout=600)
-        results[-1]['stages_real'] = compile_result.stages
-        results[-1]['tcam_real'] = compile_result.tcam
-        results[-1]['compile_errors'] = compile_result.errors
+        handle, row = pending_previous
+        compile_result = handle.result(timeout=600)
+        row['stages_real'] = compile_result.stages
+        row['tcam_real'] = compile_result.tcam
+        row['compile_errors'] = compile_result.errors
 
 
 def _process_single_split(
@@ -588,6 +605,7 @@ def _process_single_split(
                     'acc_ddos': None, 'f1_ddos': None,
                     'stages': None, 'blocks': None,
                     'infeasible': str(exc),
+                    'stages_real': None, 'tcam_real': None, 'compile_errors': None,
                 })
                 if carried_importance_app is None or carried_importance_ddos is None:
                     break  # First iteration: no ranking to continue from.
@@ -643,8 +661,10 @@ def _process_single_split(
                 validate_on_hardware, hardware_output_dir, split_idx, 'single', k_app,
                 model_app, model_ddos, feature_names_app, feature_names_ddos, 'disjoint',
                 config=config)
+            if pending_next_single is not None:
+                pending_next_single = (pending_next_single, results[-1])
             pending_previous_single = _advance_pending_compile(
-                results, pending_previous_single, pending_next_single)
+                results[-1], pending_previous_single, pending_next_single)
 
             if len(remaining_features_app) == 1 and len(remaining_features_ddos) == 1:
                 break
@@ -670,7 +690,7 @@ def _process_single_split(
             del feature_names_ddos[lowest_importance_idx_ddos]
             carried_importance_ddos = np.delete(carried_importance_ddos, lowest_importance_idx_ddos)
 
-        _join_final_pending_compile(results, pending_previous_single)
+        _join_final_pending_compile(pending_previous_single)
 
         warm_start_params_multi = None
         # Same overlap handle as the disjoint loop above, tracked separately
@@ -709,6 +729,7 @@ def _process_single_split(
                     'acc_ddos': None, 'f1_ddos': None,
                     'stages': None, 'blocks': None,
                     'infeasible': str(exc),
+                    'stages_real': None, 'tcam_real': None, 'compile_errors': None,
                 })
                 if carried_importance_shared is None:
                     break
@@ -754,8 +775,10 @@ def _process_single_split(
                 validate_on_hardware, hardware_output_dir, split_idx, 'multi', k,
                 model_app, model_ddos, feature_names_shared, feature_names_shared, 'joint',
                 config=config)
+            if pending_next_multi is not None:
+                pending_next_multi = (pending_next_multi, results[-1])
             pending_previous_multi = _advance_pending_compile(
-                results, pending_previous_multi, pending_next_multi)
+                results[-1], pending_previous_multi, pending_next_multi)
 
             if len(remaining_features_shared) == 1:
                 break
@@ -780,7 +803,7 @@ def _process_single_split(
             del feature_names_shared[lowest_importance_idx]
             carried_importance_shared = np.delete(carried_importance_shared, lowest_importance_idx)
 
-        _join_final_pending_compile(results, pending_previous_multi)
+        _join_final_pending_compile(pending_previous_multi)
 
         return SplitResult(split_idx=split_idx, results=results)
 

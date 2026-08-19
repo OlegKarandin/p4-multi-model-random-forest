@@ -95,3 +95,89 @@ def test_every_k_infeasible_yields_exactly_one_row_per_method(monkeypatch):
     assert result.error is None
     assert len([r for r in result.results if r['method'] == 'single']) == 1
     assert len([r for r in result.results if r['method'] == 'multi']) == 1
+
+
+class _FakeCompileResult:
+    """Stand-in for the real compile_p4_async future's .result(). Encodes
+    WHICH k it was produced for so a misattribution (e.g. the old
+    `results[-2]`-based splicing landing a k=3 compile's numbers on the k=2
+    row) is directly observable instead of merely plausible."""
+
+    def __init__(self, k):
+        self.stages = 100 + k
+        self.tcam = 200 + k
+        self.errors = f'errors_for_k_{k}'
+
+
+class _FakeHandle:
+    def __init__(self, k):
+        self._k = k
+
+    def result(self, timeout=None):
+        return _FakeCompileResult(self._k)
+
+
+def _fake_kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, split_idx,
+                                       method, k, model_app, model_ddos, feature_names_app,
+                                       feature_names_ddos, encoding, config=None):
+    """Stands in for `_kickoff_hardware_validation`: returns a fake
+    future-like handle keyed by k instead of actually invoking the real
+    Tofino compiler."""
+    if not validate_on_hardware:
+        return None
+    return _FakeHandle(k)
+
+
+def test_hardware_validation_results_attach_to_the_row_of_their_own_k(monkeypatch):
+    """Regression for the final whole-branch review finding: an infeasible
+    row appended between two feasible rows must not shift a pending
+    real-compile result onto the wrong neighbor. With raise_at_k=(2,), the
+    disjoint ('single') loop produces rows in append order k=3 (feasible,
+    kicks off a compile), k=2 (infeasible, no compile), k=1 (feasible, kicks
+    off a compile and joins k=3's).
+
+    Under the old `results[-2]`-positional splicing, joining k=3's compile
+    at the k=1 iteration would write into `results[-2]`, which by then is
+    the k=2 (infeasible) row -- not the k=3 row the numbers actually belong
+    to. That row's dict didn't even carry `stages_real`/`tcam_real`/
+    `compile_errors` keys before this fix (finding #2), so the old code
+    would have silently created them there with k=3's values -- observable
+    here as `single[2]['stages_real'] == 103` instead of `None`, and
+    `single[3]['stages_real']` never getting set at all.
+    """
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained',
+        _fake_trainer(raise_at_k=(2,)))
+    monkeypatch.setattr(
+        fs, '_kickoff_hardware_validation', _fake_kickoff_hardware_validation)
+
+    X_app, X_ddos, y_app, y_ddos = _synthetic_data()
+    result = fs._process_single_split(
+        split_idx=10, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+        n_trees=-1, max_depth=-1, max_blocks=25,
+        feature_names=FEATURE_NAMES, random_state=42, verbose=False,
+        validate_on_hardware=True, hardware_output_dir='dummy_hw_out/')
+
+    assert result.error is None
+    single = {r['k']: r for r in result.results if r['method'] == 'single'}
+    assert sorted(single) == [1, 2, 3]
+
+    # Each feasible row's real-compile numbers match its OWN k, not a
+    # neighboring k's.
+    assert single[3]['infeasible'] == ''
+    assert single[3]['stages_real'] == 103
+    assert single[3]['tcam_real'] == 203
+    assert single[3]['compile_errors'] == 'errors_for_k_3'
+
+    assert single[1]['infeasible'] == ''
+    assert single[1]['stages_real'] == 101
+    assert single[1]['tcam_real'] == 201
+    assert single[1]['compile_errors'] == 'errors_for_k_1'
+
+    # The infeasible row never had a model to compile: all three keys are
+    # present (docstring's promise) and None, never borrowed from a
+    # neighbor.
+    assert single[2]['infeasible'] != ''
+    assert single[2]['stages_real'] is None
+    assert single[2]['tcam_real'] is None
+    assert single[2]['compile_errors'] is None
