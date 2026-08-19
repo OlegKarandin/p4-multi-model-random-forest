@@ -40,6 +40,19 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         Statistics about the alignment process
     """
 
+    # Cast ONCE. estimator.predict / decision_path each run
+    # check_array(X, dtype=np.float32) internally, and the arrays arriving from
+    # feature_selection are float64 -- so without this every one of the
+    # thousands of calls below re-casts and re-copies.
+    #
+    # Exactly value-preserving for this project's data: after
+    # dt_thresholds_float_to_int every threshold is an integer, and every
+    # feature value is an integer clipped at INFINITE = 65535 -- both far below
+    # float32's 2**24 exact-integer limit. Local copies, so the caller's arrays
+    # are untouched.
+    X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
+    X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
+
     #print('Threshold index 1')
     threshold_index1 = build_threshold_index(rf1)
 
@@ -124,6 +137,14 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     rf2, feature_idx, range2, target, threshold_index2
                 )
                 #print('Mods2', modifications2)
+
+                if not modifications1 and not modifications2:
+                    # P5: adjust_range_boundaries declined every move (source
+                    # min is 0, source max is INFINITE, or source already
+                    # equals target). Every feature's interval list starts at 0
+                    # and ends at INFINITE, so this is a common path -- and
+                    # there is nothing to evaluate, restore or undo.
+                    continue
 
                 undo_info1 = update_cache_for_modifications(rf1, X_val1, tree_predictions1, node_to_samples1, modifications1)
                 undo_info2 = update_cache_for_modifications(rf2, X_val2, tree_predictions2, node_to_samples2, modifications2)
@@ -270,10 +291,10 @@ def build_prediction_cache(rf, X_val):
     """
     n_samples = X_val.shape[0]
     n_trees = len(rf.estimators_)
-    
+
     tree_predictions = np.zeros((n_trees, n_samples), dtype=np.intp)
     node_to_samples = {}
-    
+
     for tree_idx, estimator in enumerate(rf.estimators_):
         tree = estimator.tree_
 
@@ -282,17 +303,20 @@ def build_prediction_cache(rf, X_val):
         # rf.classes_[...] round-trip here existed only to be undone by a
         # per-element dict lookup in compute_ensemble_prediction.
         tree_predictions[tree_idx] = estimator.predict(X_val).astype(np.intp)
-        
-        # Get decision path (sparse matrix: n_samples x n_nodes)
-        decision_path = estimator.decision_path(X_val)
-        
+
+        # decision_path returns CSR, and slicing ONE column of a CSR matrix is
+        # O(nnz) -- doing it per node made this O(n_nodes x nnz). One tocsc()
+        # makes the whole node -> samples inversion a single O(nnz) pass, since
+        # each node is then one contiguous CSC column.
+        decision_path = estimator.decision_path(X_val).tocsc()
+        decision_path.sort_indices()
+
         # Convert to node -> samples mapping for non-leaf nodes only
         for node_idx in range(tree.node_count):
             if tree.feature[node_idx] >= 0:  # Not a leaf
-                # Get samples that pass through this node
-                samples = decision_path[:, node_idx].nonzero()[0]
-                node_to_samples[(tree_idx, node_idx)] = samples
-    
+                start, end = decision_path.indptr[node_idx], decision_path.indptr[node_idx + 1]
+                node_to_samples[(tree_idx, node_idx)] = decision_path.indices[start:end].copy()
+
     return tree_predictions, node_to_samples
 
 
@@ -465,14 +489,18 @@ def update_cache_for_modifications(rf, X_val, tree_predictions, node_to_samples,
     Returns:
         undo_info: dict with 'predictions' and 'node_samples' to pass to undo function
     """
-    trees_to_repredict = {}
-
+    # Arrays, not Python sets of NumPy scalars: np.unique on a concatenation is
+    # one C-level pass, where set.update was boxing every index.
+    per_tree_sample_arrays = {}
     for tree_idx, node_idx, _ in modifications:
         if (tree_idx, node_idx) in node_to_samples:
-            samples = node_to_samples[(tree_idx, node_idx)]
-            if tree_idx not in trees_to_repredict:
-                trees_to_repredict[tree_idx] = set()
-            trees_to_repredict[tree_idx].update(samples)
+            per_tree_sample_arrays.setdefault(tree_idx, []).append(
+                node_to_samples[(tree_idx, node_idx)])
+
+    trees_to_repredict = {
+        tree_idx: np.unique(np.concatenate(arrays))
+        for tree_idx, arrays in per_tree_sample_arrays.items()
+    }
 
     # Capture old state for undo
     undo_info = {
@@ -480,11 +508,9 @@ def update_cache_for_modifications(rf, X_val, tree_predictions, node_to_samples,
         'node_samples': {}  # (tree_idx, node_idx) -> old_samples
     }
 
-    for tree_idx, sample_indices_set in trees_to_repredict.items():
-        
-        if not sample_indices_set:  # Skip if no samples need reprediction
+    for tree_idx, sample_indices in trees_to_repredict.items():
+        if sample_indices.size == 0:
             continue
-        sample_indices = np.array(list(sample_indices_set), dtype=np.intp)
 
         # Save old predictions
         undo_info['predictions'][tree_idx] = (
@@ -497,7 +523,8 @@ def update_cache_for_modifications(rf, X_val, tree_predictions, node_to_samples,
         tree_predictions[tree_idx, sample_indices] = new_predictions
 
         tree = rf.estimators_[tree_idx].tree_
-        decision_path = rf.estimators_[tree_idx].decision_path(X_subset)
+        decision_path = rf.estimators_[tree_idx].decision_path(X_subset).tocsc()
+        decision_path.sort_indices()
 
         # Find all nodes that need updating: modified nodes and their descendants
         modified_nodes_in_tree = {node_idx for t_idx, node_idx, _ in modifications if t_idx == tree_idx}
@@ -517,7 +544,8 @@ def update_cache_for_modifications(rf, X_val, tree_predictions, node_to_samples,
                 undo_info['node_samples'][key] = node_to_samples[key].copy()
 
             # Get which affected samples now pass through this node
-            local_indices = decision_path[:, node_idx].nonzero()[0]
+            start, end = decision_path.indptr[node_idx], decision_path.indptr[node_idx + 1]
+            local_indices = decision_path.indices[start:end]
             node_to_samples[key] = sample_indices[local_indices]
 
     return undo_info

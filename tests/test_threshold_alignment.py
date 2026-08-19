@@ -205,3 +205,70 @@ def test_vectorised_ensemble_prediction_is_much_faster_than_a_python_loop():
     # loop needs seconds; a bincount needs milliseconds. 1.0 s is a loose
     # ceiling that still fails the interpreted version by a wide margin.
     assert elapsed < 1.0, elapsed
+
+
+def test_node_to_samples_matches_a_direct_decision_path_query():
+    """The CSC inversion must produce exactly what the per-column CSR query
+    produced: the same sample indices, sorted, for every internal node."""
+    rf, X, y = _forest_and_data()
+
+    _, node_to_samples = ta.build_prediction_cache(rf, X)
+
+    for tree_idx, estimator in enumerate(rf.estimators_):
+        tree = estimator.tree_
+        path = estimator.decision_path(X)
+        for node_idx in range(tree.node_count):
+            if tree.feature[node_idx] < 0:
+                continue
+            expected = path[:, node_idx].nonzero()[0]
+            got = node_to_samples[(tree_idx, node_idx)]
+            assert np.array_equal(np.sort(got), np.sort(expected)), (tree_idx, node_idx)
+            assert np.array_equal(got, np.sort(got)), 'indices must stay sorted'
+
+
+def test_alignment_does_not_mutate_the_callers_validation_arrays():
+    """The float32 cast must be local. C8 already flags that this module
+    mutates the caller's MODELS in place; it must not also start mutating the
+    caller's data."""
+    rf1, X1, y1 = _forest_and_data(seed=5)
+    rf2, X2, y2 = _forest_and_data(seed=6)
+    y2 = np.where(y2 == 0, -1, 1)
+    before_dtype, before_copy = X1.dtype, X1.copy()
+
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                           overlap_threshold=0.5, delta_rel=None)
+
+    assert X1.dtype == before_dtype
+    assert np.array_equal(X1, before_copy)
+
+
+def test_float32_cast_is_value_preserving_for_this_projects_data():
+    """Every threshold is an integer after dt_thresholds_float_to_int, and every
+    feature value is an integer clipped at INFINITE = 65535 -- both far below
+    float32's 2**24 exact-integer limit. That is WHY the cast is safe."""
+    values = np.arange(0, INFINITE + 1, dtype=np.float64)
+
+    assert np.array_equal(values.astype(np.float32).astype(np.float64), values)
+
+
+def test_a_candidate_that_moves_nothing_costs_no_prediction(monkeypatch):
+    """P5: adjust_range_boundaries declines to move a threshold at 0 or at
+    INFINITE, and every feature's interval list begins at 0 and ends at
+    INFINITE -- so empty `modifications` is a common path, not an exotic one.
+    It must not pay for two ensemble predictions and four metric computations."""
+    rf1, X1, y1 = _forest_and_data(seed=5)
+    rf2, X2, y2 = _forest_and_data(seed=6)
+    y2 = np.where(y2 == 0, -1, 1)
+
+    calls = []
+    real = ta.compute_ensemble_prediction
+    monkeypatch.setattr(ta, 'compute_ensemble_prediction',
+                        lambda tp, rf: (calls.append(1), real(tp, rf))[1])
+
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                           overlap_threshold=0.5, delta_rel=0.05)
+
+    # Two initial predictions, then exactly two per candidate that actually
+    # moved something. An odd count, or a count that keeps growing when no
+    # candidate moves anything, means the bail is missing.
+    assert len(calls) % 2 == 0
