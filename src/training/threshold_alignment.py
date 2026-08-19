@@ -12,8 +12,47 @@ def rel_deg(before, after):
     return (before - after) / max(1e-9, 1.0 - before)
 
 
+# (acc_app, f1_app, acc_ddos, f1_ddos) -- the order every 4-tuple in this
+# module uses. Named so a reader of accept_alignment knows what position 2 is.
+METRIC_NAMES = ('acc_app', 'f1_app', 'acc_ddos', 'f1_ddos')
+
+
+def accept_alignment(before, after, delta_rel):
+    """Whether an alignment may stand, judged PER TASK (spec B.4).
+
+    before, after : 4-tuples (acc_app, f1_app, acc_ddos, f1_ddos).
+    delta_rel : permitted relative-error degradation per metric, or None to
+        accept unconditionally.
+
+    Four independent guards, not an average. Averaging let a move costing DDoS
+    0.009 while gaining App 0.001 through: the mean drops 0.0040, inside the old
+    0.005 tolerance, while per task it gives away 22.5% of DDoS's error. That is
+    the mechanism behind the measured DDoS-specific alignment tax of ~0.004 that
+    is invariant to budget -- DDoS lost even when the joint arm was handed MORE
+    capacity and App gained.
+
+    No amount of gain on one metric can offset a loss on another: `all`, over
+    per-metric tests, never a sum.
+    """
+    if delta_rel is None:
+        return True
+    return all(rel_deg(b, a) <= delta_rel for b, a in zip(before, after))
+
+
+def ratchet(before, after):
+    """Element-wise high-water marks (spec B.4).
+
+    Per task, not on the mean. With only the mean ratcheted, a sequence where
+    App improves while DDoS degrades keeps the mean flat, no single move trips
+    the guard, and DDoS drifts arbitrarily far. Independent marks bound each
+    task's total drift from ITS OWN best at delta_rel, independently of the
+    other task -- strictly stronger than the per-move test alone.
+    """
+    return tuple(max(b, a) for b, a in zip(before, after))
+
+
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-                        overlap_threshold=0.5, delta_rel=0.0):
+                        overlap_threshold=0.5, delta_rel=0.0, align_stats=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -69,7 +108,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # Initial predictions -- only needed to seed the accept/reject comparison
     # below, which itself is skipped entirely when delta_rel is None (the inf
     # anchor). Not computing them here is what makes that arm the cheapest.
-    before_acc_av = before_fscore_av = None
+    marks = None
     if delta_rel is not None:
         initial_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
         initial_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
@@ -77,10 +116,14 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         before_acc1, before_fscore1 = accuracy_metrics(y_val1, initial_pred1, task="app")
         before_acc2, before_fscore2 = accuracy_metrics(y_val2, initial_pred2, task="ddos")
 
-        before_acc_av = (before_acc1 + before_acc2) / 2
-        before_fscore_av = (before_fscore1 + before_fscore2) / 2
+        # Four independent high-water marks, in METRIC_NAMES order.
+        marks = (before_acc1, before_fscore1, before_acc2, before_fscore2)
 
-        #print(before_acc_av, before_fscore_av)
+    stats = align_stats if align_stats is not None else {}
+    stats['attempted'] = 0
+    stats['accepted'] = 0
+    stats['intervals_before'] = (sum(len(v) for v in intervals1.values())
+                                 + sum(len(v) for v in intervals2.values()))
 
     # Find common features
     common_features = set(intervals1.keys()) & set(intervals2.keys())
@@ -149,11 +192,13 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 undo_info1 = update_cache_for_modifications(rf1, X_val1, tree_predictions1, node_to_samples1, modifications1)
                 undo_info2 = update_cache_for_modifications(rf2, X_val2, tree_predictions2, node_to_samples2, modifications2)
 
+                stats['attempted'] += 1
+
                 if delta_rel is None:
                     # The inf anchor: accept unconditionally. Skipping the
-                    # predict/restore/undo machinery is why this arm is the
-                    # cheapest to run.
+                    # predict/metric machinery is why this arm is cheapest.
                     accepted = True
+                    after = None
                 else:
                     new_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
                     new_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
@@ -162,11 +207,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         after_acc1, after_fscore1 = accuracy_metrics(y_val1, new_pred1, task="app")
                         after_acc2, after_fscore2 = accuracy_metrics(y_val2, new_pred2, task="ddos")
 
-                    after_acc_av = (after_acc1 + after_acc2) / 2
-                    after_fscore_av = (after_fscore1 + after_fscore2) / 2
-
-                    accepted = not (rel_deg(before_acc_av, after_acc_av) > delta_rel
-                                    or rel_deg(before_fscore_av, after_fscore_av) > delta_rel)
+                    after = (after_acc1, after_fscore1, after_acc2, after_fscore2)
+                    accepted = accept_alignment(marks, after, delta_rel)
 
                 if not accepted:
                     restore_thresholds(rf1, modifications1)
@@ -174,11 +216,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     undo_cache_update(tree_predictions1, node_to_samples1, undo_info1)
                     undo_cache_update(tree_predictions2, node_to_samples2, undo_info2)
                 else:
-                    if delta_rel is not None:
-                        if after_acc_av > before_acc_av:
-                            before_acc_av = after_acc_av
-                        if after_fscore_av > before_fscore_av:
-                            before_fscore_av = after_fscore_av
+                    stats['accepted'] += 1
+                    if after is not None:
+                        marks = ratchet(marks, after)
 
                     update_neighboring_ranges_and_index(
                         current_ranges1, idx1, range1, target, 
@@ -201,6 +241,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         'overlap_ratio': overlap_ratio,
                     })
                     alignment_stats['total_aligned_ranges'] += 1'''
+
+    stats['intervals_after'] = (
+        sum(len(v) for v in extract_feature_intervals(rf1).values())
+        + sum(len(v) for v in extract_feature_intervals(rf2).values()))
 
     return rf1, rf2 #, alignment_stats
 

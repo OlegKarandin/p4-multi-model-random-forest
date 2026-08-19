@@ -107,7 +107,7 @@ def train_multi_RF_Optuna_multi_constrained(
             'random_state': 42,
         }
 
-    def fit_pair(params_A, params_B):
+    def fit_pair(params_A, params_B, align_stats=None):
         """ONE fit per task on the FULL training set -- this IS the deployment
         model, not a CV fold (F7).
 
@@ -133,13 +133,18 @@ def train_multi_RF_Optuna_multi_constrained(
                 val_align_A[0], val_align_A[1],
                 val_align_B[0], val_align_B[1],
                 overlap_threshold=cfg.overlap_threshold,
-                delta_rel=cfg.delta_align)
+                delta_rel=cfg.delta_align,
+                align_stats=align_stats)
 
         return model_A, model_B
 
     def objective(trial):
         # (a) The single fit.
-        model_A, model_B = fit_pair(rf_params(trial, 'A'), rf_params(trial, 'B'))
+        align_stats = {}
+        model_A, model_B = fit_pair(rf_params(trial, 'A'), rf_params(trial, 'B'),
+                                   align_stats=align_stats)
+        for name, value in align_stats.items():
+            trial.set_user_attr('align_' + name, value)
 
         # (b) Constraint, on the shipped artifact -- exact, no proxy.
         try:
