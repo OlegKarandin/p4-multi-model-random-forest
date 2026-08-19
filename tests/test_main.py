@@ -104,7 +104,7 @@ def test_implement_tree_models_in_P4_requires_trained_models():
         m.implement_tree_models_in_P4()
 
 
-def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each():
+def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, monkeypatch):
     """A run is one (arm, M) cell. If a run produced both arms, the
     independent baseline would be recomputed once per joint arm -- six
     identical copies, about half the campaign's compute."""
@@ -115,13 +115,22 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each():
     frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
     X = np.zeros((10, 4))
 
+    # A real to_csv either raises or leaves a file at the path it's called
+    # with; a side-effect-free mock is not an accurate stand-in for that, and
+    # lets an unconditional os.replace(tmp_path, path) go completely
+    # unexercised. Run in an isolated cwd with a real results/ dir so the
+    # side effect actually creates the file os.replace needs.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'results').mkdir()
+
     with patch("src.main.compare_feature_selection_approaches_parallel",
                return_value=frame) as mock_run, \
          patch("src.main.read_app_dataset"), \
          patch("src.main.read_DDOS_dataset"), \
          patch("src.main.remove_correlated_features_both_datasets",
                return_value=(X, X, ['Flow.IAT.Max'])), \
-         patch("pandas.DataFrame.to_csv") as mock_csv:
+         patch("pandas.DataFrame.to_csv",
+               side_effect=lambda p, **kw: open(p, 'w').close()) as mock_csv:
         m.compare_independent_joint_mapping(
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
 
@@ -131,6 +140,11 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each():
     # them. Every C.3 claim is a paired test on (M, split, k).
     for call in mock_csv.call_args_list:
         assert call.kwargs.get('mode', 'w') == 'w'
+    # os.replace actually ran (not short-circuited): the three real files
+    # exist under results/, with no leftover .partial temp files.
+    written = sorted(p.name for p in (tmp_path / 'results').iterdir())
+    assert len(written) == 3
+    assert all(not name.endswith('.partial') for name in written)
 
 
 def test_a_cell_whose_file_already_exists_is_skipped():
@@ -184,3 +198,34 @@ def test_redo_forces_recomputation():
 def test_redo_flag_defaults_to_off():
     assert m.parse_args([]).redo is False
     assert m.parse_args(['--redo']).redo is True
+
+
+def test_a_cell_where_every_split_failed_is_not_written():
+    """compare_feature_selection_approaches_parallel swallows per-split
+    exceptions into SplitResult.error and returns a 0-row frame when every
+    split failed. Writing that as a "complete" file would make skip_existing
+    treat the cell as permanently done -- silent data loss for the life of
+    the campaign -- so it must be skipped instead, leaving the cell to retry
+    on the next invocation."""
+    import numpy as np
+    import pandas as pd
+    from unittest.mock import patch
+
+    empty_frame = pd.DataFrame([])
+    X = np.zeros((10, 4))
+
+    with patch("src.main.compare_feature_selection_approaches_parallel",
+               return_value=empty_frame) as mock_run, \
+         patch("src.main.read_app_dataset"), \
+         patch("src.main.read_DDOS_dataset"), \
+         patch("src.main.remove_correlated_features_both_datasets",
+               return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("src.main.os.path.exists", return_value=False), \
+         patch("src.main.os.replace") as mock_replace, \
+         patch("pandas.DataFrame.to_csv") as mock_csv:
+        m.compare_independent_joint_mapping(
+            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
+
+    assert mock_run.call_count == 3
+    assert mock_csv.call_count == 0
+    assert mock_replace.call_count == 0

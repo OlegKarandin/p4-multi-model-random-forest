@@ -304,6 +304,17 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
                 max_workers=max_workers,
             )
 
+            if len(results_df) == 0:
+                # Every split raised (compare_feature_selection_approaches_parallel
+                # swallows per-split exceptions into SplitResult.error), so there
+                # is nothing to write. Writing an empty "complete" file here would
+                # make skip_existing treat this cell as permanently done -- silent
+                # data loss for the life of the campaign. Leave no file behind so
+                # the next invocation retries the cell instead.
+                print(f"=== M={max_blocks}  arm={cfg.arm_slug(encoding)} -- "
+                      f"ALL SPLITS FAILED, not writing (cell will retry on next invocation) ===")
+                continue
+
             # Identity columns, so an arm is recoverable from the row as well as
             # from the filename. P5 extends this to the full C.1 schema.
             results_df['arm'] = arm
@@ -324,14 +335,10 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
             # duplicated rows corrupt those with no error and no visible symptom.
             #
             # Temp-then-rename so an interrupted cell never leaves a partial CSV
-            # that the skip-if-exists guard above would read as complete. The
-            # existence check is a no-op for a real write (to_csv always leaves
-            # tmp_path on disk when it returns normally) and only matters when
-            # to_csv itself is stubbed out, e.g. under test.
+            # that the skip-if-exists guard above would read as complete.
             tmp_path = path + '.partial'
             results_df.to_csv(tmp_path, index=False)
-            if os.path.exists(tmp_path):
-                os.replace(tmp_path, path)
+            os.replace(tmp_path, path)
 
 
 def load_and_combine_data(folder_path, M_values):
