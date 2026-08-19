@@ -26,6 +26,7 @@ import numpy as np
 from src.p4gen.build_p4_script import dt_thresholds_float_to_int, MAX_CODEWORD_LENGTH
 from src.p4gen.evaluation import multi_model_memory_evaluation
 from src.training.threshold_alignment import align_rf_thresholds
+from src.training import early_stopping
 
 import optuna
 from optuna.samplers import TPESampler
@@ -179,33 +180,6 @@ def train_multi_RF_Optuna_multi_constrained(X_A, y_A, X_B, y_B, x_val_A, y_val_A
 
         return avg_accuracy, max_blocks_used
 
-    def constraints_func(trial):
-        codeword = trial.user_attrs.get('codeword_violation', float('inf'))
-        blocks = trial.user_attrs.get('blocks_violation', float('inf'))
-        return [codeword, blocks]
-
-    def early_stopping_callback(study, trial):
-        
-        feasible = [t for t in study.trials 
-                    if t.state == optuna.trial.TrialState.COMPLETE 
-                    and all(c <= 0 for c in constraints_func(t))]
-        
-        if len(feasible) < 25:
-            return
-        
-        # Check Pareto front stability
-        feasible_pareto = [t for t in study.best_trials if all(c <= 0 for c in constraints_func(t))]
-        
-        if len(feasible_pareto) == 0:
-            return  # No feasible Pareto solutions yet, keep searching
-        
-        lookback = 20
-        recent_threshold = len(study.trials) - lookback
-        new_pareto = [t for t in feasible_pareto if t.number >= recent_threshold]
-
-        if len(new_pareto) == 0:
-            study.stop()
-
     sampler = TPESampler(
         n_startup_trials=10,
         n_ei_candidates=24,
@@ -213,7 +187,7 @@ def train_multi_RF_Optuna_multi_constrained(X_A, y_A, X_B, y_B, x_val_A, y_val_A
         group=True,
         warn_independent_sampling=True,
         constant_liar=True,
-        constraints_func=constraints_func
+        constraints_func=early_stopping.constraint_values
     )
 
     study = optuna.create_study(
@@ -237,14 +211,12 @@ def train_multi_RF_Optuna_multi_constrained(X_A, y_A, X_B, y_B, x_val_A, y_val_A
     study.optimize(
         objective,
         n_trials=1000,
-        callbacks=[early_stopping_callback],
+        callbacks=[early_stopping.ParetoStagnationStopper(min_feasible=25, lookback=20)],
         catch=(RuntimeError,)
     )
 
     # Filter feasible trials
-    feasible_trials = [t for t in study.trials 
-                       if t.state == optuna.trial.TrialState.COMPLETE
-                       and all(c <= 0 for c in constraints_func(t))]
+    feasible_trials = [t for t in study.trials if early_stopping.is_feasible(t)]
 
     if not feasible_trials:
         raise RuntimeError('No feasible solutions found')
