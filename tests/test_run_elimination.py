@@ -107,13 +107,35 @@ def test_the_joint_arm_always_passes_one_shared_feature_set(monkeypatch):
 
 
 def test_the_independent_arm_lets_the_feature_sets_diverge(monkeypatch):
-    """Independent is unconstrained; the divergence is the whole point."""
+    """Independent is unconstrained: each task ranks features by its OWN
+    permutation importance, so nothing forces the two elimination orders to
+    match. Feed genuinely different importance rankings per task -- app's
+    rises left-to-right (drops the lowest-index feature first), ddos's falls
+    left-to-right (drops the highest-index feature first) -- and confirm the
+    feature sets actually diverge, not just that their lengths stay equal.
+    """
+    call_count = {'n': 0}
+
+    def _fake_importance(model, X, y, **kwargs):
+        call_count['n'] += 1
+        k = X.shape[1]
+        ascending = np.arange(1, k + 1, dtype=float)
+        # _run_elimination calls importance_app then importance_ddos each
+        # iteration, so odd calls are app, even calls are ddos.
+        values = ascending if call_count['n'] % 2 == 1 else ascending[::-1]
+        return type('Importance', (), {'importances_mean': values})()
+
+    monkeypatch.setattr(fs, 'permutation_importance', _fake_importance)
+
     record = []
     _run(monkeypatch, 'independent', record=record)
 
-    # Both start from the same list and each drops its own least-important
-    # feature, so the sets are equal at k=3 and free to differ below it.
+    # Both start from the same list, so the sets are equal at k=3 (the first
+    # trainer call, before any drop has happened yet).
     assert record[0]['features_A'] == record[0]['features_B']
+    # After the first drop: app dropped the lowest-index feature (index 0),
+    # ddos dropped the highest-index one -- the sets MUST now differ.
+    assert record[1]['features_A'] != record[1]['features_B']
     assert all(len(c['features_A']) == len(c['features_B']) for c in record)
 
 

@@ -29,7 +29,6 @@ from src.p4gen.switch_semantics import switch_predict
 from src.training.threshold_alignment import align_rf_thresholds
 from src.training import early_stopping
 from src.training import trial_selection
-from src.training.errors import NoFeasibleSolution
 
 import optuna
 from optuna.samplers import TPESampler

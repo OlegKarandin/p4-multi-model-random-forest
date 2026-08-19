@@ -9,23 +9,26 @@ approximation with a single combined compile (via
 branch's own shape -- `_MergedCompileHandle` has since been removed as dead
 code (no remaining callers).
 
-The three full end-to-end tests (`test_process_single_split_*`) exercise the
-real training pipeline (`train_multi_RF_Optuna_multi_constrained`) on a tiny
-synthetic dataset. Only the *compiler* is mocked (`p4_compile.compile_p4_async`),
-never WSL2/p4c itself, so this file never attempts a real toolchain invocation
--- but the real Optuna search itself (hardcoded `n_trials=1000` with an
-early-stopping callback requiring 25 feasible + 20 pareto-stable trials,
-train_model.py:871-876/827-841) is measured to take several minutes per
-`_process_single_split` call even on this tiny dataset (n_jobs=-1's process-
-pool overhead dominates each trial's otherwise-trivial fit; not something
-this task's scope covers fixing). These three are therefore marked
-`pytest.mark.slow`, matching this repo's existing convention for expensive
-real-dependency tests (see test_p4_compile.py's own real-toolchain test) --
-not run by a bare `pytest` invocation (pytest.ini: `addopts = -m "not slow"`),
-run explicitly with `pytest test_feature_selection.py -m slow -v`. The direct
-unit tests below them exercise the exact same new code
-(`_kickoff_hardware_validation`) against models fitted directly (bypassing
-Optuna) and run in seconds.
+Post-P2 cleanup: this file used to carry three `pytest.mark.slow` tests that
+ran the real Optuna search (`train_multi_RF_Optuna_multi_constrained`)
+end-to-end on a tiny synthetic dataset -- several minutes per
+`_process_single_split` call even at this scale, since n_jobs=-1's
+process-pool overhead dominates each trial's otherwise-trivial fit. Two of
+them (hardware validation ON with a basic "compile was called" check, and
+"disjoint/joint each get their own compile result, not a merged one")
+became exact duplicates of
+`test_process_single_split_splices_compile_results_onto_correct_iteration`
+below once that test was restructured for the one-arm-per-call
+`_process_single_split` (Task 5) -- both check disjoint's rows get one
+stage count and joint's rows get another, with real hardware-validation
+kickoff and real P4 codegen, just fast (mocked training) instead of slow
+(real Optuna). They were deleted rather than fixed, to stop paying real
+Optuna's wall time for coverage that already exists elsewhere. The third
+(hardware validation OFF, confirming every row carries the three
+compile-result keys as None) covered a genuinely distinct code path with no
+fast equivalent, so it was converted to the same fast mocked-training
+pattern the rest of this file already uses, instead of being deleted --
+there is no `pytest.mark.slow` test left in this file.
 """
 
 import numpy as np
@@ -34,29 +37,6 @@ from unittest.mock import patch
 
 from src.training import feature_selection as fs
 from src.p4gen import p4_compile as pc
-
-# train_model.py's objective() hardcodes `RandomForestClassifier(**params,
-# n_jobs=-1)` for every one of its up to 1000 Optuna trials
-# (train_model.py:754-755). Measured directly (not guessed): on this tiny
-# (27-40 row) synthetic data, n_jobs=-1 costs ~20x more wall time per .fit()
-# than n_jobs=1 (0.023s vs 0.0005s/fit) -- Windows loky/joblib worker-pool
-# overhead dominates a workload this trivial. That measured 20x turns a
-# few-second training call into several minutes, times 6 calls per
-# _process_single_split (3 iterations x 2 loops), which is impractical to
-# run repeatedly as a test. This test-only monkeypatch forces n_jobs=1 for
-# every RandomForestClassifier train_model.py constructs, without touching
-# train_model.py itself -- it only changes how fast these tests run, not
-# what train_model.py does in production.
-from src.training import train_model as _train_model_module
-from sklearn.ensemble import RandomForestClassifier as _RealRandomForestClassifier
-
-
-def _forced_single_job_rf(*args, **kwargs):
-    kwargs['n_jobs'] = 1
-    return _RealRandomForestClassifier(*args, **kwargs)
-
-
-_train_model_module.RandomForestClassifier = _forced_single_job_rf
 
 
 def _tiny_dataset(n=40, n_features=3, seed=0):
@@ -81,13 +61,36 @@ def _fit_tiny_rf(X, y, n_estimators=1, max_depth=2, seed=0):
 # the real signature/shape at feature_selection.py:439-453).
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
-def test_process_single_split_without_hardware_validation_has_none_fields():
+def test_process_single_split_without_hardware_validation_has_none_fields(monkeypatch):
+    """Default path (validate_on_hardware=False): every row must carry the
+    three compile-result keys as None -- `_process_single_split`'s docstring
+    promises this unconditionally, not just when hardware validation ran.
+    Fast/mocked (see the module docstring for why the real-Optuna version of
+    this test was replaced): `train_multi_RF_Optuna_multi_constrained` is
+    replaced with a fake that fits real (instant) tiny RandomForestClassifiers,
+    same pattern as the tests below.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+    from src.p4gen import build_p4_script as bps
+
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset()
+
+    def _fake_train(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                     val_select_A, val_select_B, features_A, features_B,
+                     max_blocks, encoding, cfg, warm_start_params=None):
+        model_A = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
+        model_B = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
+        return model_A, model_B, 1, 1, 0.7, 0.9, {}
+
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained', _fake_train)
+
     result = fs._process_single_split(
         split_idx=0, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-        n_trees=1, max_depth=3, max_blocks=50,
-        feature_names=["f0", "f1", "f2"], random_state=42, verbose=False,
+        max_blocks=50, feature_names=["f0", "f1", "f2"],
+        random_state=42, verbose=False,
     )
     assert result.error is None
     assert len(result.results) > 0
@@ -95,86 +98,6 @@ def test_process_single_split_without_hardware_validation_has_none_fields():
         assert row["stages_real"] is None
         assert row["tcam_real"] is None
         assert row["compile_errors"] is None
-
-
-@pytest.mark.slow
-def test_process_single_split_with_hardware_validation_calls_compile_async(tmp_path):
-    X_app, X_ddos, y_app, y_ddos = _tiny_dataset()
-    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
-        fake_future = type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
-            errors=0, warnings=0, stages=3, tables=5, tcam=2)})()
-        mock_compile.return_value = fake_future
-
-        result = fs._process_single_split(
-            split_idx=0, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            n_trees=1, max_depth=3, max_blocks=50,
-            feature_names=["f0", "f1", "f2"], random_state=42, verbose=False,
-            validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
-        )
-
-    assert result.error is None
-    assert mock_compile.called
-    assert len(result.results) > 0
-    for row in result.results:
-        assert "stages_real" in row and "tcam_real" in row and "compile_errors" in row
-    # Every row must eventually be filled in (validate_on_hardware=True,
-    # matching the "always present, only None if the compile really wasn't
-    # collected" contract) -- both the 'single' (disjoint) and 'multi'
-    # (joint) rows.
-    assert all(row["stages_real"] is not None for row in result.results)
-    assert any(row["stages_real"] == 3 for row in result.results)
-
-
-@pytest.mark.slow
-def test_process_single_split_disjoint_and_joint_rows_each_get_their_own_compile(tmp_path):
-    """Task 3: the disjoint ('single') loop now compiles ONE combined
-    program per iteration too (no more app-leg/ddos-leg merge) -- this
-    proves each loop's rows get their OWN loop's real compile result (not a
-    neighboring loop's, and not a merged sum), by giving the 'single' and
-    'multi' loops different fake stage counts and checking each row's
-    stages_real matches its own loop's value directly.
-    """
-    X_app, X_ddos, y_app, y_ddos = _tiny_dataset()
-
-    import os
-    import re
-
-    call_count = {"n": 0}
-
-    def _fake_compile_async(p4_path, output_dir, **kwargs):
-        call_count["n"] += 1
-        # Both loops now write ONE combined file per iteration, named
-        # split{split_idx}_{method}_k{k}.p4 (see
-        # _kickoff_hardware_validation) -- distinguish by the embedded
-        # method segment ('single' for disjoint, 'multi' for joint). Match
-        # against os.path.basename, NOT the full path: pytest's `tmp_path`
-        # fixture derives its directory name from the TEST FUNCTION's own
-        # name, which contains "single_split" as a substring (this very
-        # test's name does), so a full-path substring check is a
-        # false-positive trap.
-        basename = os.path.basename(p4_path)
-        m = re.match(r'split\d+_(single|multi)_k\d+\.p4$', basename)
-        stages = 3 if m.group(1) == 'single' else 10
-        return type("F", (), {"result": lambda self, timeout=None, s=stages: pc.CompileResult(
-            errors=0, warnings=0, stages=s, tables=s, tcam=s)})()
-
-    with patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async) as mock_compile:
-        result = fs._process_single_split(
-            split_idx=7, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            n_trees=1, max_depth=3, max_blocks=50,
-            feature_names=["f0", "f1", "f2"], random_state=42, verbose=False,
-            validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
-        )
-
-    assert result.error is None
-    assert call_count["n"] > 0
-    single_rows = [row for row in result.results if row["method"] == "single"]
-    multi_rows = [row for row in result.results if row["method"] == "multi"]
-    assert len(single_rows) > 0 and len(multi_rows) > 0
-    # disjoint rows: one combined program -> 3, never merged with joint's 10.
-    assert all(row["stages_real"] == 3 for row in single_rows)
-    # joint rows: one combined program -> 10.
-    assert all(row["stages_real"] == 10 for row in multi_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -295,11 +218,15 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
         assert row['compile_errors'] == 0
 
 
-def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_path):
+@pytest.mark.parametrize("arm", ["independent", "joint"])
+def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_path, arm):
     """Task 4: a P4GenConfig passed via `config=` must produce the exact
     same result as passing its `validate_on_hardware`/`hardware_output_dir`
     values as the individual keyword arguments directly -- `config` is an
-    additive convenience, not a different code path. Reuses the same fast
+    additive convenience, not a different code path. Parametrized over both
+    arms: the config-forwarding logic in `_process_single_split` is
+    arm-independent, but a change that only broke one arm's plumbing would
+    otherwise slip past single-arm coverage. Reuses the same fast
     mocked-training pattern as
     `test_process_single_split_splices_compile_results_onto_correct_iteration`
     above (real, instantly-fit tiny RandomForestClassifiers standing in for
@@ -332,7 +259,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
          patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_kwargs = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            max_blocks=50,
+            max_blocks=50, arm=arm,
             feature_names=["f0", "f1"], random_state=42, verbose=False,
             validate_on_hardware=True, hardware_output_dir=kwargs_dir,
         )
@@ -342,7 +269,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
          patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_config = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            max_blocks=50,
+            max_blocks=50, arm=arm,
             feature_names=["f0", "f1"], random_state=42, verbose=False,
             config=cfg,
         )

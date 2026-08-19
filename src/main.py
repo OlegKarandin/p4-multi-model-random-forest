@@ -318,7 +318,10 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
 
             # Identity columns, so an arm is recoverable from the row as well as
             # from the filename. P5 extends this to the full C.1 schema.
-            results_df['arm'] = arm
+            # 'arm' itself is not stamped here: _run_elimination already sets it
+            # per row, and re-stamping it at the frame level would silently
+            # flatten any future heterogeneity in that column instead of
+            # surfacing it.
             results_df['alignment_enabled'] = cfg.alignment_enabled and arm == 'joint'
             results_df['delta_align'] = cfg.delta_align_label(encoding)
             results_df['delta_select'] = cfg.delta_select

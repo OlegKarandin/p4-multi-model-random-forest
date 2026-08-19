@@ -135,6 +135,12 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
 
     assert mock_run.call_count == 3       # one call per primary arm
+    # Each call actually carried ITS OWN (arm, cfg) pair, not e.g. the same
+    # cfg reused three times or arm/cfg transposed between calls.
+    assert [c.kwargs['arm'] for c in mock_run.call_args_list] == \
+        [arm for arm, _ in m.PRIMARY_ARMS]
+    assert [c.kwargs['cfg'] for c in mock_run.call_args_list] == \
+        [cfg for _, cfg in m.PRIMARY_ARMS]
     assert mock_csv.call_count == 3       # one file per (arm, M)
     # Overwrite, never append: a re-run cell must replace its rows, not double
     # them. Every C.3 claim is a paired test on (M, split, k).
