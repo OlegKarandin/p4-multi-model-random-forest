@@ -4,17 +4,35 @@ from src.training.errors import AlignmentInvariantError
 import sklearn
 import numpy as np
 
-def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2, overlap_threshold=0.5):
+
+def rel_deg(before, after):
+    """Degradation as a fraction of `before`'s error. Same definition as
+    trial_selection.rel_deg -- duplicated rather than imported to keep this
+    module free of a training-package dependency it otherwise does not need."""
+    return (before - after) / max(1e-9, 1.0 - before)
+
+
+def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
+                        overlap_threshold=0.5, delta_rel=0.0):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
-    
+
     Parameters:
     -----------
     rf1, rf2 : RandomForestClassifier or RandomForestRegressor
         The two pretrained RandomForest models to align
     overlap_threshold : float, default=0.5
         Minimum overlap ratio required to consider ranges similar enough to align
-    
+    delta_rel : float or None
+        Permitted relative-error degradation. None accepts every move and
+        skips the accuracy evaluation entirely (the "inf" anchor).
+
+        NOTE: in P2 this still guards the AVERAGE of the two tasks -- the
+        minimal faithful step, replacing a hardcoded 0.005 absolute tolerance
+        with a relative one. P3 replaces it with four independent per-task
+        guards and a per-task high-water ratchet. Joint-arm accuracy numbers
+        produced between P2 and P3 are not meaningful.
+
     Returns:
     --------
     rf1_aligned, rf2_aligned : Modified RandomForest models with aligned thresholds
@@ -35,17 +53,21 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2, overlap_thresh
         tree_predictions1, node_to_samples1 = build_prediction_cache(rf1, X_val1)
         tree_predictions2, node_to_samples2 = build_prediction_cache(rf2, X_val2)
 
-    # Initial predictions
-    initial_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
-    initial_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
+    # Initial predictions -- only needed to seed the accept/reject comparison
+    # below, which itself is skipped entirely when delta_rel is None (the inf
+    # anchor). Not computing them here is what makes that arm the cheapest.
+    before_acc_av = before_fscore_av = None
+    if delta_rel is not None:
+        initial_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
+        initial_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
 
-    before_acc1, before_fscore1 = accuracy_metrics(y_val1, initial_pred1, task="app")
-    before_acc2, before_fscore2 = accuracy_metrics(y_val2, initial_pred2, task="ddos")
+        before_acc1, before_fscore1 = accuracy_metrics(y_val1, initial_pred1, task="app")
+        before_acc2, before_fscore2 = accuracy_metrics(y_val2, initial_pred2, task="ddos")
 
-    before_acc_av = (before_acc1 + before_acc2) / 2
-    before_fscore_av = (before_fscore1 + before_fscore2) / 2
+        before_acc_av = (before_acc1 + before_acc2) / 2
+        before_fscore_av = (before_fscore1 + before_fscore2) / 2
 
-    #print(before_acc_av, before_fscore_av)
+        #print(before_acc_av, before_fscore_av)
 
     # Find common features
     common_features = set(intervals1.keys()) & set(intervals2.keys())
@@ -106,37 +128,37 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2, overlap_thresh
                 undo_info1 = update_cache_for_modifications(rf1, X_val1, tree_predictions1, node_to_samples1, modifications1)
                 undo_info2 = update_cache_for_modifications(rf2, X_val2, tree_predictions2, node_to_samples2, modifications2)
 
-                new_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
-                new_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
+                if delta_rel is None:
+                    # The inf anchor: accept unconditionally. Skipping the
+                    # predict/restore/undo machinery is why this arm is the
+                    # cheapest to run.
+                    accepted = True
+                else:
+                    new_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
+                    new_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
 
-                # check whether it influences accuracy
-                with sklearn.config_context(assume_finite=True):
-                    after_acc1, after_fscore1 = accuracy_metrics(y_val1, new_pred1, task="app")
-                    after_acc2, after_fscore2 = accuracy_metrics(y_val2, new_pred2, task="ddos")
+                    with sklearn.config_context(assume_finite=True):
+                        after_acc1, after_fscore1 = accuracy_metrics(y_val1, new_pred1, task="app")
+                        after_acc2, after_fscore2 = accuracy_metrics(y_val2, new_pred2, task="ddos")
 
-                after_acc_av = (after_acc1 + after_acc2) / 2
-                after_fscore_av = (after_fscore1 + after_fscore2) / 2
+                    after_acc_av = (after_acc1 + after_acc2) / 2
+                    after_fscore_av = (after_fscore1 + after_fscore2) / 2
 
-                #print(after_acc_av, after_fscore_av)
+                    accepted = not (rel_deg(before_acc_av, after_acc_av) > delta_rel
+                                    or rel_deg(before_fscore_av, after_fscore_av) > delta_rel)
 
-                accuracy_tolerance = 0.005
-                if before_acc_av - after_acc_av > accuracy_tolerance or before_fscore_av - after_fscore_av > accuracy_tolerance:
-                    #print('Restoring thresholds')
+                if not accepted:
                     restore_thresholds(rf1, modifications1)
                     restore_thresholds(rf2, modifications2)
-
                     undo_cache_update(tree_predictions1, node_to_samples1, undo_info1)
                     undo_cache_update(tree_predictions2, node_to_samples2, undo_info2)
-
                 else:
-                    if after_acc_av > before_acc_av:
-                        #print('Accuracy improvement from alignment: {}'.format(after_acc_av - before_acc_av))
-                        before_acc_av = after_acc_av
+                    if delta_rel is not None:
+                        if after_acc_av > before_acc_av:
+                            before_acc_av = after_acc_av
+                        if after_fscore_av > before_fscore_av:
+                            before_fscore_av = after_fscore_av
 
-                    if after_fscore_av > before_fscore_av:
-                        before_fscore_av = after_fscore_av
-
-                    #print('Updating ranges and indexes')
                     update_neighboring_ranges_and_index(
                         current_ranges1, idx1, range1, target, 
                         feature_idx, threshold_index1

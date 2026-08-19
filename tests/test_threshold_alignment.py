@@ -33,7 +33,10 @@ def _aligned_forest_pair():
     rf2 = dt_thresholds_float_to_int(RandomForestClassifier(
         n_estimators=3, max_depth=4, random_state=0).fit(X2, y2))
 
-    return ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5)
+    # delta_rel=None accepts every move, which is the maximum-mutation path --
+    # exactly what a partition-invariant test should be exercising.
+    return ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                  overlap_threshold=0.5, delta_rel=None)
 
 
 def test_missing_threshold_raises_a_catchable_exception_not_systemexit():

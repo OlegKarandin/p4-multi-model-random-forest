@@ -1,0 +1,227 @@
+"""Spec B.1/B.2: one fit, per-task objectives, constraint on what is returned."""
+import numpy as np
+import pytest
+
+from src.training.config import TrainConfig
+from src.training.errors import NoFeasibleSolution
+from src.training.train_model import train_multi_RF_Optuna_multi_constrained
+
+FEATURE_NAMES = ['Flow.IAT.Max', 'Fwd.IAT.Max', 'Fwd.Packet.Length.Max']
+
+
+def _tiny_problem(n=300, seed=0):
+    """Small enough for a real Optuna search in a test, structured enough that
+    a shallow forest beats chance."""
+    rng = np.random.default_rng(seed)
+    X_app = rng.integers(0, 400, size=(n, 3)).astype(float)
+    y_app = (X_app[:, 0] // 134).astype(int)
+    X_ddos = rng.integers(0, 400, size=(n, 3)).astype(float)
+    y_ddos = np.where(X_ddos[:, 1] > 200, 1, -1)
+    return X_app, y_app, X_ddos, y_ddos
+
+
+def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300):
+    X_app, y_app, X_ddos, y_ddos = _tiny_problem(n=n)
+    cfg = cfg or TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3)
+    return train_multi_RF_Optuna_multi_constrained(
+        X_app, y_app, X_ddos, y_ddos,
+        (X_app, y_app), (X_ddos, y_ddos),
+        (X_app, y_app), (X_ddos, y_ddos),
+        FEATURE_NAMES, FEATURE_NAMES,
+        max_blocks, encoding, cfg)
+
+
+def test_the_contract_returns_seven_values():
+    out = _call()
+
+    assert len(out) == 7
+    model_A, model_B, stages, blocks, acc_sel_A, acc_sel_B, best_params = out
+    assert hasattr(model_A, 'predict') and hasattr(model_B, 'predict')
+    assert isinstance(stages, (int, np.integer))
+    assert isinstance(blocks, (int, np.integer))
+    assert 0.0 <= acc_sel_A <= 1.0
+    assert 0.0 <= acc_sel_B <= 1.0
+    assert isinstance(best_params, dict)
+
+
+def test_blocks_le_max_blocks_holds_for_the_RETURNED_models():
+    """THE invariant, and the entire point of F7: the constraint is evaluated
+    on the shipped artifact, not on a CV-fold proxy. Re-measure independently
+    rather than trusting the returned number."""
+    from src.p4gen.evaluation import multi_model_memory_evaluation
+
+    for max_blocks in (40, 60, 90):
+        model_A, model_B, _, blocks, _, _, _ = _call(max_blocks=max_blocks)
+
+        _, remeasured = multi_model_memory_evaluation(
+            model_A, model_B, FEATURE_NAMES, FEATURE_NAMES, 'disjoint')
+
+        assert remeasured == blocks, max_blocks
+        assert blocks <= max_blocks, max_blocks
+
+
+def test_the_returned_model_is_fit_on_the_full_training_set_not_a_fold():
+    """F7: a 3-fold CV model sees ~2/3 of the rows. n_node_samples at the root
+    of every tree must equal the full training set size."""
+    X_app, y_app, X_ddos, y_ddos = _tiny_problem()
+    cfg = TrainConfig(n_trials=8, min_feasible_before_stop=3, lookback=2)
+
+    model_A, model_B, *_ = train_multi_RF_Optuna_multi_constrained(
+        X_app, y_app, X_ddos, y_ddos,
+        (X_app, y_app), (X_ddos, y_ddos),
+        (X_app, y_app), (X_ddos, y_ddos),
+        FEATURE_NAMES, FEATURE_NAMES, 60, 'disjoint', cfg)
+
+    for tree in model_A.estimators_:
+        assert tree.tree_.n_node_samples[0] == len(y_app)
+    for tree in model_B.estimators_:
+        assert tree.tree_.n_node_samples[0] == len(y_ddos)
+
+
+def test_an_impossible_block_budget_raises_no_feasible_solution():
+    with pytest.raises(NoFeasibleSolution) as excinfo:
+        _call(max_blocks=0)
+
+    assert excinfo.value.max_blocks == 0
+    assert excinfo.value.k == 3
+
+
+def test_alignment_enabled_false_never_calls_align_rf_thresholds(monkeypatch):
+    """Spec A.2: the ablation arm is a genuine SKIP of the call, not
+    delta_align = 0, so the arm is provably prediction-identical to the
+    unaligned models."""
+    import src.training.train_model as tm
+
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return args[0], args[1]
+
+    monkeypatch.setattr(tm, 'align_rf_thresholds', spy)
+
+    _call(encoding='joint',
+          cfg=TrainConfig(alignment_enabled=False, n_trials=6,
+                          min_feasible_before_stop=2, lookback=2))
+
+    assert calls == []
+
+
+def test_the_joint_arm_passes_delta_align_and_overlap_threshold_through(monkeypatch):
+    import src.training.train_model as tm
+
+    calls = []
+
+    def spy(rf1, rf2, *args, **kwargs):
+        calls.append(kwargs)
+        return rf1, rf2
+
+    monkeypatch.setattr(tm, 'align_rf_thresholds', spy)
+
+    _call(encoding='joint',
+          cfg=TrainConfig(delta_align=0.05, overlap_threshold=0.4, n_trials=6,
+                          min_feasible_before_stop=2, lookback=2))
+
+    assert calls, 'alignment should have run in the joint arm'
+    assert all(c['delta_rel'] == 0.05 for c in calls)
+    assert all(c['overlap_threshold'] == 0.4 for c in calls)
+
+
+def test_the_independent_arm_never_aligns(monkeypatch):
+    """Alignment is a joint-arm treatment. Under disjoint encoding each model
+    keeps its own intervals, so there is nothing to share."""
+    import src.training.train_model as tm
+
+    calls = []
+    monkeypatch.setattr(tm, 'align_rf_thresholds',
+                        lambda rf1, rf2, *a, **k: (calls.append(1), (rf1, rf2))[1])
+
+    _call(encoding='disjoint')
+
+    assert calls == []
+
+
+def test_every_feasible_trial_records_the_attrs_the_selection_rule_reads(monkeypatch):
+    """select_best_trial and constraint_values both read user_attrs, so a
+    feasible trial missing one would crash the search at the very end."""
+    import optuna
+    import src.training.train_model as tm
+    from src.training import early_stopping
+
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        captured['study'] = study
+        return study
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    _call()
+
+    feasible = [t for t in captured['study'].trials if early_stopping.is_feasible(t)]
+    assert feasible, 'the tiny problem should admit at least one feasible trial'
+    for trial in feasible:
+        for attr in ('acc_app', 'acc_ddos', 'blocks', 'stages',
+                     'codeword_violation', 'blocks_violation'):
+            assert attr in trial.user_attrs, (trial.number, attr)
+
+
+def test_the_winner_is_refit_deterministically_not_cached(monkeypatch):
+    """F8: caching every feasible trial's model pair costs a measured 401 KB
+    per pair, ~100 pairs per search, 11 workers. Because random_state is fixed
+    in the params and alignment is deterministic given the same inputs, the
+    winner can be refit from best_trial.params instead -- one fit-pair (~550 ms)
+    rather than 40 MB of live cache per worker.
+
+    The refit must reproduce the trial's own recorded numbers exactly. If it
+    does not, something in the pipeline is non-deterministic and every reported
+    result is a different model from the one that was selected."""
+    import optuna
+    import src.training.train_model as tm
+    from src.training import early_stopping, trial_selection
+
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        captured['study'] = study
+        return study
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    _, _, stages, blocks, acc_sel_A, acc_sel_B, best_params = _call()
+
+    feasible = [t for t in captured['study'].trials if early_stopping.is_feasible(t)]
+    winner, _ = trial_selection.select_best_trial(feasible, 0.02, k=3, max_blocks=60)
+
+    assert best_params == dict(winner.params)
+    assert blocks == winner.user_attrs['blocks']
+    assert stages == winner.user_attrs['stages']
+    assert acc_sel_A == winner.user_attrs['acc_app']
+    assert acc_sel_B == winner.user_attrs['acc_ddos']
+
+
+def test_delta_align_none_accepts_every_move_without_scoring(monkeypatch):
+    """Spec A.2: the inf anchor skips the predict/restore/undo machinery, which
+    is also why it is the cheapest arm to run."""
+    from src.training import threshold_alignment as ta
+
+    scored = []
+    real_metrics = ta.accuracy_metrics
+
+    def spy(y_true, y_pred, task):
+        scored.append(task)
+        return real_metrics(y_true, y_pred, task)
+
+    monkeypatch.setattr(ta, 'accuracy_metrics', spy)
+
+    _call(encoding='joint',
+          cfg=TrainConfig(delta_align=None, n_trials=6,
+                          min_feasible_before_stop=2, lookback=2))
+
+    assert scored == [], 'delta_align=None must not evaluate accuracy at all'
