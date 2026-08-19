@@ -1,8 +1,21 @@
-try:
-  from sklearnex import patch_sklearn
-  patch_sklearn()
-except ImportError:
-  pass
+import os
+
+# Intel's oneDAL acceleration is OPT-IN and off by default. Two reasons, both
+# fatal to this pipeline when it is on:
+#   1. In the PolimiML env its RandomForestClassifier cannot round-trip trees
+#      through scikit-learn 1.6.1's Tree.__setstate__, so every .fit() raises
+#      "node array from the pickle has an incompatible dtype".
+#   2. This project mutates tree_.threshold IN PLACE after fitting
+#      (dt_thresholds_float_to_int, align_rf_thresholds). oneDAL keeps its own
+#      internal model representation, so those mutations may not be observed --
+#      which would silently invalidate every result rather than crash.
+# Set THESIS_USE_SKLEARNEX=1 only after verifying both of the above.
+if os.environ.get('THESIS_USE_SKLEARNEX') == '1':
+  try:
+    from sklearnex import patch_sklearn
+    patch_sklearn()
+  except ImportError:
+    pass
 
 import sklearn
 from sklearn.model_selection import StratifiedKFold
