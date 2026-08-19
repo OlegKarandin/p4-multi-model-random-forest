@@ -1,0 +1,145 @@
+"""One parameterised elimination loop replaces two near-duplicate ones."""
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+
+from src.training import feature_selection as fs
+from src.training.config import TrainConfig
+from src.training.errors import NoFeasibleSolution
+from src.training.splits import make_task_splits
+
+FEATURE_NAMES = ['Flow.IAT.Max', 'Fwd.IAT.Max', 'Fwd.Packet.Length.Max']
+
+
+def _splits(seed=0):
+    rng = np.random.default_rng(seed)
+    n = 400
+    X_app = rng.integers(0, 500, size=(n, 3)).astype(float)
+    y_app = np.array([c % 3 for c in range(n)])
+    X_ddos = rng.integers(0, 500, size=(n, 3)).astype(float)
+    y_ddos = np.array([-1, 1] * (n // 2))
+    return (make_task_splits(X_app, y_app, random_state=42),
+            make_task_splits(X_ddos, y_ddos, random_state=42))
+
+
+def _fake_trainer(raise_at_k=(), record=None):
+    """Stands in for the 7-tuple trainer from Task 4."""
+    def trainer(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                val_select_A, val_select_B, features_A, features_B,
+                max_blocks, encoding, cfg, warm_start_params=None):
+        k = X_A.shape[1]
+        if record is not None:
+            record.append({'k': k, 'encoding': encoding,
+                           'features_A': list(features_A),
+                           'features_B': list(features_B),
+                           'n_train_A': len(y_A),
+                           'n_val_align_A': len(val_align_A[1]),
+                           'n_val_select_A': len(val_select_A[1])})
+        if k in raise_at_k:
+            raise NoFeasibleSolution(k=k, max_blocks=max_blocks)
+        model_A = RandomForestClassifier(
+            n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
+        model_B = RandomForestClassifier(
+            n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
+        return model_A, model_B, 1, 1, 0.71, 0.91, {'n_estimators_A': 1}
+    return trainer
+
+
+def _run(monkeypatch, arm, raise_at_k=(), record=None):
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained',
+        _fake_trainer(raise_at_k, record))
+    app, ddos = _splits()
+    return fs._run_elimination(
+        arm=arm, split_idx=10, app=app, ddos=ddos,
+        feature_names=list(FEATURE_NAMES), max_blocks=25, cfg=TrainConfig())
+
+
+def test_independent_arm_produces_one_row_per_k(monkeypatch):
+    rows = _run(monkeypatch, 'independent')
+
+    assert sorted(r['k'] for r in rows) == [1, 2, 3]
+    assert {r['arm'] for r in rows} == {'independent'}
+    assert {r['method'] for r in rows} == {'single'}
+
+
+def test_joint_arm_produces_one_row_per_k(monkeypatch):
+    rows = _run(monkeypatch, 'joint')
+
+    assert sorted(r['k'] for r in rows) == [1, 2, 3]
+    assert {r['arm'] for r in rows} == {'joint'}
+    assert {r['method'] for r in rows} == {'multi'}
+
+
+def test_the_arm_chooses_the_encoding(monkeypatch):
+    record = []
+    _run(monkeypatch, 'independent', record=record)
+    assert {c['encoding'] for c in record} == {'disjoint'}
+
+    record = []
+    _run(monkeypatch, 'joint', record=record)
+    assert {c['encoding'] for c in record} == {'joint'}
+
+
+def test_the_joint_arm_always_passes_one_shared_feature_set(monkeypatch):
+    """Under joint encoding every tree's codeword spans the MERGED interval
+    pool, so a feature used by only one task widens BOTH tasks' codewords.
+    Sharing the feature set is part of the treatment, not an implementation
+    convenience."""
+    record = []
+    _run(monkeypatch, 'joint', record=record)
+
+    for call in record:
+        assert call['features_A'] == call['features_B']
+
+
+def test_the_independent_arm_lets_the_feature_sets_diverge(monkeypatch):
+    """Independent is unconstrained; the divergence is the whole point."""
+    record = []
+    _run(monkeypatch, 'independent', record=record)
+
+    # Both start from the same list and each drops its own least-important
+    # feature, so the sets are equal at k=3 and free to differ below it.
+    assert record[0]['features_A'] == record[0]['features_B']
+    assert all(len(c['features_A']) == len(c['features_B']) for c in record)
+
+
+def test_the_trainer_receives_the_train_bucket_not_the_whole_dataset(monkeypatch):
+    """55% train, 15% val_align, 15% val_select -- confirm the buckets that
+    reach the trainer are the split ones, not the full arrays."""
+    record = []
+    _run(monkeypatch, 'joint', record=record)
+
+    n_total = 400
+    assert record[0]['n_train_A'] / n_total < 0.60
+    assert record[0]['n_train_A'] / n_total > 0.50
+    assert record[0]['n_val_align_A'] / n_total < 0.20
+    assert record[0]['n_val_select_A'] / n_total < 0.20
+
+
+def test_selection_time_accuracies_are_recorded_separately_from_test_ones(monkeypatch):
+    """acc_sel_* come from val_select (what the search optimised); acc_* come
+    from X_test (which nothing selects on). Conflating them would make the
+    reported numbers optimistic."""
+    rows = _run(monkeypatch, 'joint')
+
+    assert all(r['acc_sel_app'] == 0.71 for r in rows)
+    assert all(r['acc_sel_ddos'] == 0.91 for r in rows)
+    assert all(r['acc_app'] != 0.71 for r in rows)
+
+
+def test_an_infeasible_middle_k_still_records_and_continues(monkeypatch):
+    """F3b, now in one place instead of two."""
+    rows = _run(monkeypatch, 'joint', raise_at_k=(2,))
+
+    by_k = {r['k']: r for r in rows}
+    assert sorted(by_k) == [1, 2, 3]
+    assert by_k[2]['infeasible'].startswith('no feasible solution at k=2')
+    assert by_k[2]['acc_app'] is None
+    assert by_k[1]['infeasible'] == ''
+
+
+def test_an_infeasible_first_k_breaks_with_one_row(monkeypatch):
+    rows = _run(monkeypatch, 'independent', raise_at_k=(3,))
+
+    assert len(rows) == 1
+    assert rows[0]['k'] == 3
