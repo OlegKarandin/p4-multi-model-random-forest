@@ -52,7 +52,8 @@ def ratchet(before, after):
 
 
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-                        overlap_threshold=0.5, delta_rel=0.0, align_stats=None):
+                        overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
+                        endpoint_ratio_cap=5.0, candidate_log=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -92,6 +93,13 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
     X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
 
+    # One sort per model, for shift_mass. Per-model is correct: damage to rf1
+    # depends on X_val1's distribution, not X_val2's. Feature indices line up --
+    # trees are fit on X_*_train[:, remaining] and validated on
+    # X_*_val[:, remaining], the same column space.
+    sorted_cols1 = np.sort(X_val1, axis=0)
+    sorted_cols2 = np.sort(X_val2, axis=0)
+
     #print('Threshold index 1')
     threshold_index1 = build_threshold_index(rf1)
 
@@ -109,6 +117,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # below, which itself is skipped entirely when delta_rel is None (the inf
     # anchor). Not computing them here is what makes that arm the cheapest.
     marks = None
+    current = None
     if delta_rel is not None:
         initial_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
         initial_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
@@ -118,6 +127,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
         # Four independent high-water marks, in METRIC_NAMES order.
         marks = (before_acc1, before_fscore1, before_acc2, before_fscore2)
+        # Last-ACCEPTED state -- the model's actual current metrics, as opposed
+        # to marks' running per-task max. Before any candidate, both coincide.
+        current = marks
 
     stats = align_stats if align_stats is not None else {}
     stats['attempted'] = 0
@@ -163,7 +175,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
             if range1 == range2:
                 continue
             
-            overlap_ratio = calculate_range_overlap(range1, range2)
+            overlap_ratio = calculate_range_overlap(range1, range2, endpoint_ratio_cap)
 
             #print(range1, range2, overlap_ratio, overlap_ratio >= overlap_threshold)
             
@@ -210,6 +222,38 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     after = (after_acc1, after_fscore1, after_acc2, after_fscore2)
                     accepted = accept_alignment(marks, after, delta_rel)
 
+                if candidate_log is not None:
+                    candidate_log.append({
+                        'feature_idx': int(feature_idx),
+                        'range1': tuple(range1),
+                        'range2': tuple(range2),
+                        'overlap_ratio': float(overlap_ratio),
+                        'endpoint_ratio': float(endpoint_ratio(range1, range2)),
+                        # current is None only on the delta_rel=None (inf) arm,
+                        # where accept/reject -- and therefore any notion of
+                        # "current error" -- is skipped entirely; 0.0 mirrors
+                        # rel_deg's own placeholder for that arm below.
+                        'error_app': 1.0 - current[0] if current is not None else 0.0,
+                        'error_ddos': 1.0 - current[2] if current is not None else 0.0,
+                        'shift_mass_1': max(
+                            shift_mass(sorted_cols1[:, feature_idx], old, new)
+                            for old, new in ((range1[0], target[0]), (range1[1], target[1]))),
+                        'shift_mass_2': max(
+                            shift_mass(sorted_cols2[:, feature_idx], old, new)
+                            for old, new in ((range2[0], target[0]), (range2[1], target[1]))),
+                        # Local, immediate-effect degradation: current is the
+                        # actual model state right before THIS candidate, as
+                        # opposed to marks' cumulative per-task high-water mark
+                        # (which accept_alignment above correctly uses instead --
+                        # that ratchet is deliberate, spec B.4, and unaffected
+                        # by this diagnostic). Comparing a local physical bound
+                        # (shift_mass) against a cumulative quantity would be
+                        # apples-to-oranges.
+                        'rel_deg': tuple(rel_deg(b, a) for b, a in zip(current, after))
+                                   if after is not None else (0.0, 0.0, 0.0, 0.0),
+                        'accepted': bool(accepted),
+                    })
+
                 if not accepted:
                     restore_thresholds(rf1, modifications1)
                     restore_thresholds(rf2, modifications2)
@@ -219,6 +263,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     stats['accepted'] += 1
                     if after is not None:
                         marks = ratchet(marks, after)
+                        current = after
 
                     update_neighboring_ranges_and_index(
                         current_ranges1, idx1, range1, target, 
@@ -386,11 +431,51 @@ def find_partially_overlapping_ranges(ranges1, ranges2):
     return overlaps
 
 
-def calculate_range_overlap(range1, range2):
-    """Calculate the overlap ratio between two ranges"""
+def endpoint_ratio(range1, range2):
+    """The larger of the two endpoint ratios -- the quantity the historic
+    `endpoint_ratio_cap = 5` thresholds. A pure diagnostic after Task 7; kept
+    so the instrumented run can quantify how often it disagreed with the oracle.
+    """
     min1, max1 = range1
     min2, max2 = range2
-    
+
+    ratios = [1.0]
+    if min1 and min2:
+        ratios.append(max(min1, min2) / min(min1, min2))
+    if max1 and max2:
+        ratios.append(max(max1, max2) / min(max1, max2))
+    return max(ratios)
+
+
+def shift_mass(sorted_col, old_thr, new_thr):
+    """Fraction of validation rows that change side when a split moves.
+
+    sklearn sends x <= threshold left, so the affected set is (lo, hi]. This is
+    the quantity the endpoint ratio was a proxy for -- and the proxy is exact
+    only when the feature is log-distributed. It is O(log n) per candidate
+    against the O(n_trees x n_samples) oracle.
+    """
+    lo, hi = (old_thr, new_thr) if old_thr <= new_thr else (new_thr, old_thr)
+    return float(np.searchsorted(sorted_col, hi, 'right')
+                 - np.searchsorted(sorted_col, lo, 'right')) / len(sorted_col)
+
+
+def calculate_range_overlap(range1, range2, endpoint_ratio_cap=5.0):
+    """Overlap ratio between two ranges; 0.0 also means 'vetoed'.
+
+    endpoint_ratio_cap : veto any pair whose endpoint ratio exceeds this. None
+        disables the veto so every candidate reaches the acceptance oracle.
+
+    NOTE this function's 0.0 return is overloaded: it means both "no overlap"
+    and "vetoed". The zero-side and INFINITE-side vetoes below are structural
+    (adjust_range_boundaries cannot move those boundaries at all). The endpoint
+    ratio cap is NOT structural -- it is a heuristic pre-filter, and Task 7
+    replaces it with a delta-derived one that provably never vetoes a move the
+    oracle would accept.
+    """
+    min1, max1 = range1
+    min2, max2 = range2
+
     # Early exit if either range starts at 0 but not both
     if (min1 == 0) != (min2 == 0):
         return 0.0
@@ -406,17 +491,9 @@ def calculate_range_overlap(range1, range2):
     if (max1 == INFINITE) != (max2 == INFINITE):
         return 0.0
 
-    # Early exit for large ratio differences
-    if min1 and min2:  # Both non-zero
-        min_ratio = max(min1, min2) / min(min1, min2)
-        if min_ratio > 5:
-            return 0.0
-    
-    if max1 and max2:  # Both non-zero
-        max_ratio = max(max1, max2) / min(max1, max2)
-        if max_ratio > 5:
-            return 0.0
-    
+    if endpoint_ratio_cap is not None and endpoint_ratio(range1, range2) > endpoint_ratio_cap:
+        return 0.0
+
     # Calculate intersection
     intersection_start = max(min1, min2)
     intersection_end = min(max1, max2)

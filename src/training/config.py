@@ -32,6 +32,11 @@ class TrainConfig:
     overlap_threshold : minimum overlap ratio for a range pair to be an
         alignment CANDIDATE -- a separate concern from whether a candidate is
         ACCEPTED (that is delta_align). Was hardcoded at the call site.
+    endpoint_ratio_cap : heuristic pre-filter on a candidate's endpoint ratio,
+        applied before overlap_threshold. None disables the veto so every
+        candidate reaches the acceptance oracle. Was hardcoded at 5 inside
+        calculate_range_overlap; Task 7 replaces it with a delta-derived filter
+        using the evidence gathered by scripts/instrument_alignment_filter.py.
     n_trees, max_depth : inclusive search bounds. No -1 sentinel (F10i); P4
         rederives these from the capacity ceiling.
     """
@@ -40,6 +45,7 @@ class TrainConfig:
     alignment_enabled: bool = True
     delta_select: float = 0.02
     overlap_threshold: float = 0.5
+    endpoint_ratio_cap: Optional[float] = 5.0
     n_trees: int = 7
     max_depth: int = 10
     n_trials: int = 1000
