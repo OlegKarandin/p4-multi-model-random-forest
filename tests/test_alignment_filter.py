@@ -7,15 +7,6 @@ from src.training.config import TrainConfig
 from src.training import threshold_alignment as ta
 
 
-def test_the_cap_vetoes_a_pair_the_stated_criterion_would_accept():
-    """(1, 100) vs (10, 100): endpoint ratio 10, so vetoed -- yet the true
-    overlap is 0.909, far above overlap_threshold = 0.5, and the move is a
-    9-unit nudge. The cap is a second acceptance criterion hiding inside a
-    function whose name promises a measurement."""
-    assert ta.calculate_range_overlap((1, 100), (10, 100), endpoint_ratio_cap=5.0) == 0.0
-    assert ta.calculate_range_overlap((1, 100), (10, 100), endpoint_ratio_cap=None) > 0.9
-
-
 def test_the_cap_waves_through_a_far_larger_absolute_shift():
     """(1000, 4000) vs (3900, 4000): endpoint ratio 3.9, so the cap passes it,
     despite a 2900-unit drag on a 3%-overlapping pair. Backwards near zero."""
@@ -29,16 +20,6 @@ def test_the_cap_is_maximally_permissive_at_the_clip_atom():
     ratio of ~1.00002 -- the most permissive reading available -- while
     relocating the entire clip atom. No tuned constant fixes this."""
     assert ta.endpoint_ratio((40000, 65534), (40000, INFINITE)) < 1.001
-
-
-def test_disabling_the_cap_lets_every_candidate_reach_the_oracle():
-    """Required for the instrumented run, and required by the sweep: any filter
-    used during the sweep must widen at least as fast as the oracle so that it
-    never binds. A fixed cap would make the frontier saturate because of `5`
-    rather than because of anything about alignment."""
-    assert ta.calculate_range_overlap((1, 100), (10, 100), endpoint_ratio_cap=None) > 0.0
-    assert TrainConfig(endpoint_ratio_cap=None).endpoint_ratio_cap is None
-    assert TrainConfig().endpoint_ratio_cap == 5.0
 
 
 def test_shift_mass_counts_the_validation_rows_that_change_side():
@@ -74,9 +55,10 @@ def test_the_candidate_log_records_one_row_per_candidate_with_both_predictors():
     log = []
     ta.align_rf_thresholds(mk(X1, y1, 0), mk(X2, y2, 1), X1, y1, X2, y2,
                            overlap_threshold=0.5, delta_rel=0.05,
-                           endpoint_ratio_cap=None, candidate_log=log)
+                           candidate_log=log)
 
     assert log, 'the fixture must produce candidates'
+    # Every entry carries both predictors regardless of how it was decided.
     for entry in log:
         assert set(entry) == {'feature_idx', 'range1', 'range2', 'overlap_ratio',
                              'endpoint_ratio', 'shift_mass_1', 'shift_mass_2',
@@ -86,10 +68,68 @@ def test_the_candidate_log_records_one_row_per_candidate_with_both_predictors():
         assert isinstance(entry['accepted'], bool)
 
 
-def test_the_candidate_log_is_off_by_default_and_costs_nothing():
-    """It runs inside the hot path, so it must be strictly opt-in."""
+def test_calculate_range_overlap_is_a_pure_measurement_again():
+    """The heuristic veto is gone; only the two STRUCTURAL vetoes remain --
+    adjust_range_boundaries genuinely cannot move a boundary at 0 or at
+    INFINITE, so those pairs can never be aligned."""
+    import inspect
+
+    assert 'endpoint_ratio_cap' not in inspect.signature(ta.calculate_range_overlap).parameters
+    assert ta.calculate_range_overlap((1, 100), (10, 100)) > 0.9
+    assert ta.calculate_range_overlap((0, 100), (10, 100)) == 0.0
+    assert ta.calculate_range_overlap((10, INFINITE), (10, 40000)) == 0.0
+
+
+def test_the_cap_derives_from_delta_and_the_tasks_own_error():
+    """Spec table: delta x error, so it widens with the swept variable and can
+    never be the thing that makes the frontier saturate."""
+    assert ta.shift_mass_cap(0.02, before_acc=0.76, slack=1.0) == pytest.approx(0.0048)
+    assert ta.shift_mass_cap(0.05, before_acc=0.76, slack=1.0) == pytest.approx(0.0120)
+    assert ta.shift_mass_cap(0.20, before_acc=0.76, slack=1.0) == pytest.approx(0.0480)
+    assert ta.shift_mass_cap(0.02, before_acc=0.96, slack=1.0) == pytest.approx(0.0008)
+    assert ta.shift_mass_cap(0.05, before_acc=0.96, slack=1.0) == pytest.approx(0.0020)
+    assert ta.shift_mass_cap(0.20, before_acc=0.96, slack=1.0) == pytest.approx(0.0080)
+
+
+def test_the_slack_factor_widens_the_cap_for_f1():
+    """The p >= delta_accuracy bound is exact for accuracy. Weighted F1 can move
+    further per flip when flips concentrate in one class, so the default 2x
+    slack keeps the filter sound-for-accuracy and a tight heuristic for F1."""
+    assert ta.shift_mass_cap(0.05, 0.96, slack=2.0) == pytest.approx(0.0040)
+
+
+def test_delta_none_makes_the_cap_infinite_so_it_never_binds():
+    """This is what makes spec A.2's claim about the inf anchor TRUE. With a
+    fixed cap in force, the inf arm accepted only what the constant let
+    through, so the frontier's upper anchor was set by an untuned number."""
+    assert ta.shift_mass_cap(None, before_acc=0.96, slack=2.0) == float('inf')
+
+
+def test_the_filter_never_vetoes_a_move_the_oracle_would_accept():
+    """Soundness -- the one property a pre-filter must have, and the one the
+    endpoint ratio demonstrably lacked. Only samples inside the moved window can
+    change ANY prediction, so delta_accuracy <= p, so rel_deg <= p / error.
+    Requiring p <= delta * error can therefore only remove moves whose rel_deg
+    already exceeds delta."""
+    col = np.sort(np.array([float(v) for v in range(1000)]))
+    error = 0.04
+    before_acc = 1.0 - error
+
+    for delta in (0.0, 0.02, 0.05, 0.10, 0.20):
+        cap = ta.shift_mass_cap(delta, before_acc, slack=1.0)
+        for old, new in ((100, 101), (100, 140), (100, 500), (0, 999)):
+            mass = ta.shift_mass(col, old, new)
+            if mass > cap:
+                # The bound says rel_deg could be as large as mass / error, so
+                # a vetoed move is one that MIGHT exceed delta -- never one that
+                # provably would not.
+                assert mass / error > delta, (delta, old, new, mass)
+
+
+def test_the_candidate_log_is_still_off_by_default():
     import inspect
 
     signature = inspect.signature(ta.align_rf_thresholds)
     assert signature.parameters['candidate_log'].default is None
-    assert signature.parameters['endpoint_ratio_cap'].default == 5.0
+    assert signature.parameters['shift_mass_slack'].default == 2.0
+    assert 'endpoint_ratio_cap' not in signature.parameters

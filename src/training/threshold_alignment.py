@@ -53,7 +53,7 @@ def ratchet(before, after):
 
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
-                        endpoint_ratio_cap=5.0, candidate_log=None):
+                        shift_mass_slack=2.0, candidate_log=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -118,6 +118,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # anchor). Not computing them here is what makes that arm the cheapest.
     marks = None
     current = None
+    # Only used to derive cap1/cap2 below; shift_mass_cap ignores before_acc
+    # entirely when delta_rel is None, so these placeholders are never read.
+    before_acc1 = before_acc2 = 0.0
     if delta_rel is not None:
         initial_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
         initial_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
@@ -130,6 +133,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         # Last-ACCEPTED state -- the model's actual current metrics, as opposed
         # to marks' running per-task max. Before any candidate, both coincide.
         current = marks
+
+    # Derived per task from the SWEPT variable, so the filter widens with
+    # delta_rel and never binds. Per-model is correct: damage to rf1 depends on
+    # X_val1's distribution, not X_val2's.
+    cap1 = shift_mass_cap(delta_rel, before_acc1, shift_mass_slack)
+    cap2 = shift_mass_cap(delta_rel, before_acc2, shift_mass_slack)
 
     stats = align_stats if align_stats is not None else {}
     stats['attempted'] = 0
@@ -175,13 +184,36 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
             if range1 == range2:
                 continue
             
-            overlap_ratio = calculate_range_overlap(range1, range2, endpoint_ratio_cap)
+            overlap_ratio = calculate_range_overlap(range1, range2)
 
             #print(range1, range2, overlap_ratio, overlap_ratio >= overlap_threshold)
-            
+
             if overlap_ratio >= overlap_threshold:
                 target = calculate_target_range(range1, range2)
-                
+
+                mass1 = max(shift_mass(sorted_cols1[:, feature_idx], old, new)
+                            for old, new in ((range1[0], target[0]), (range1[1], target[1])))
+                mass2 = max(shift_mass(sorted_cols2[:, feature_idx], old, new)
+                            for old, new in ((range2[0], target[0]), (range2[1], target[1])))
+
+                if mass1 > cap1 or mass2 > cap2:
+                    # Cheap predictor of an expensive oracle's verdict.
+                    # Empirically well-motivated (P3 Task 6), not a proven
+                    # veto-side guarantee -- see shift_mass_cap's docstring.
+                    if candidate_log is not None:
+                        candidate_log.append({
+                            'feature_idx': int(feature_idx),
+                            'range1': tuple(range1), 'range2': tuple(range2),
+                            'overlap_ratio': float(overlap_ratio),
+                            'endpoint_ratio': float(endpoint_ratio(range1, range2)),
+                            'error_app': 1.0 - current[0] if current is not None else 0.0,
+                            'error_ddos': 1.0 - current[2] if current is not None else 0.0,
+                            'shift_mass_1': mass1, 'shift_mass_2': mass2,
+                            'rel_deg': (0.0, 0.0, 0.0, 0.0),
+                            'accepted': False,
+                        })
+                    continue
+
                 # Adjust boundaries to make ranges identical
                 modifications1 = adjust_range_boundaries(
                     rf1, feature_idx, range1, target, threshold_index1
@@ -235,12 +267,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         # rel_deg's own placeholder for that arm below.
                         'error_app': 1.0 - current[0] if current is not None else 0.0,
                         'error_ddos': 1.0 - current[2] if current is not None else 0.0,
-                        'shift_mass_1': max(
-                            shift_mass(sorted_cols1[:, feature_idx], old, new)
-                            for old, new in ((range1[0], target[0]), (range1[1], target[1]))),
-                        'shift_mass_2': max(
-                            shift_mass(sorted_cols2[:, feature_idx], old, new)
-                            for old, new in ((range2[0], target[0]), (range2[1], target[1]))),
+                        'shift_mass_1': mass1,
+                        'shift_mass_2': mass2,
                         # Local, immediate-effect degradation: current is the
                         # actual model state right before THIS candidate, as
                         # opposed to marks' cumulative per-task high-water mark
@@ -460,18 +488,51 @@ def shift_mass(sorted_col, old_thr, new_thr):
                  - np.searchsorted(sorted_col, lo, 'right')) / len(sorted_col)
 
 
-def calculate_range_overlap(range1, range2, endpoint_ratio_cap=5.0):
-    """Overlap ratio between two ranges; 0.0 also means 'vetoed'.
+def shift_mass_cap(delta_rel, before_acc, slack=2.0):
+    """The largest shift_mass that can be permitted at tolerance `delta_rel`.
 
-    endpoint_ratio_cap : veto any pair whose endpoint ratio exceeds this. None
-        disables the veto so every candidate reaches the acceptance oracle.
+    Derived, not tuned. Only samples inside the moved window can change ANY
+    prediction -- however many tree nodes share that threshold, the affected
+    sample set is the same set. So a move relocating fraction p satisfies
+    delta_accuracy <= p, hence rel_deg <= p / error. Requiring
+    p <= delta_rel * error. This guarantees the converse direction that
+    actually matters for a pre-filter's own local claim: any candidate that
+    PASSES this cap (mass <= cap) is guaranteed -- by the physical fact above,
+    not by assumption -- to itself satisfy the accuracy bound at this delta.
+    It does NOT by itself prove the reverse (that every VETOED candidate would
+    truly have been rejected by the full per-task guard in align_rf_thresholds):
+    shift_mass is an upper bound on possible damage, not a lower bound, so a
+    large-mass move could in principle have had small real damage. Treat this
+    as a well-motivated, empirically-supported heuristic (P3 Task 6's
+    instrumentation found zero violations of the local delta_accuracy <= p
+    bound, though only a weak Pearson correlation between shift_mass and
+    actual damage -- r~+0.14 for app, r~+0.01 for ddos), not a proof that the
+    filter never discards a move the full guard would have kept.
+
+    Because the cap widens with delta_rel, it can never be the thing that makes
+    the frontier saturate -- which is what unconfounds the sweep and makes
+    delta = inf genuinely bound the maximum achievable sharing.
+
+    `slack` is honest bookkeeping: the bound is exact for accuracy, but the
+    acceptance guard also covers weighted F1, which can move further than
+    accuracy per flip when flips concentrate in one class. Both datasets are
+    balanced, so the gap is small; 2x keeps this sound-for-accuracy and a tight
+    heuristic for F1.
+    """
+    if delta_rel is None:
+        return float('inf')
+    return slack * delta_rel * (1.0 - before_acc)
+
+
+def calculate_range_overlap(range1, range2):
+    """Overlap ratio between two ranges; 0.0 also means 'vetoed'.
 
     NOTE this function's 0.0 return is overloaded: it means both "no overlap"
     and "vetoed". The zero-side and INFINITE-side vetoes below are structural
-    (adjust_range_boundaries cannot move those boundaries at all). The endpoint
-    ratio cap is NOT structural -- it is a heuristic pre-filter, and Task 7
-    replaces it with a delta-derived one that provably never vetoes a move the
-    oracle would accept.
+    (adjust_range_boundaries cannot move those boundaries at all). The old
+    endpoint-ratio-cap heuristic pre-filter that used to live here is gone as
+    of Task 7, replaced by the delta-derived shift_mass_cap veto in the
+    candidate loop of align_rf_thresholds.
     """
     min1, max1 = range1
     min2, max2 = range2
@@ -489,9 +550,6 @@ def calculate_range_overlap(range1, range2, endpoint_ratio_cap=5.0):
     # nothing covered the tail. dataset.py clips every feature at INFINITE, so
     # a (m, INFINITE) interval is common, not exotic.
     if (max1 == INFINITE) != (max2 == INFINITE):
-        return 0.0
-
-    if endpoint_ratio_cap is not None and endpoint_ratio(range1, range2) > endpoint_ratio_cap:
         return 0.0
 
     # Calculate intersection
