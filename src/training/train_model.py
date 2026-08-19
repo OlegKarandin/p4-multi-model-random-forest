@@ -27,6 +27,7 @@ from src.p4gen.build_p4_script import dt_thresholds_float_to_int, MAX_CODEWORD_L
 from src.p4gen.evaluation import multi_model_memory_evaluation
 from src.training.threshold_alignment import align_rf_thresholds
 from src.training import early_stopping
+from src.training.errors import NoFeasibleSolution
 
 import optuna
 from optuna.samplers import TPESampler
@@ -219,7 +220,7 @@ def train_multi_RF_Optuna_multi_constrained(X_A, y_A, X_B, y_B, x_val_A, y_val_A
     feasible_trials = [t for t in study.trials if early_stopping.is_feasible(t)]
 
     if not feasible_trials:
-        raise RuntimeError('No feasible solutions found')
+        raise NoFeasibleSolution(k=len(features_A), max_blocks=max_blocks)
 
     # Find best accuracy among feasible
     best_accuracy = max(t.user_attrs['avg_accuracy'] for t in feasible_trials)

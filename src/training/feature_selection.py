@@ -508,8 +508,8 @@ def _process_single_split(
     if validate_on_hardware and hardware_output_dir and not hardware_output_dir.endswith(('/', '\\')):
         hardware_output_dir = hardware_output_dir + "/"
 
+    results = []
     try:
-        results = []
         split_random_state = random_state + split_idx
 
         # Create train-test splits
@@ -728,9 +728,36 @@ def _process_single_split(
         import traceback
         return SplitResult(
             split_idx=split_idx,
-            results=[],
+            results=results,
             error=f"{str(e)}\n{traceback.format_exc()}"
         )
+
+
+def _collect_split_results(split_results):
+    """Fold SplitResults into (rows, n_completed, n_failed, n_partial).
+
+    F3a: a split that raised partway carries BOTH `results` and `error`. The
+    previous collector treated them as mutually exclusive, so one infeasible k
+    at the end of a 17-step elimination discarded the 16 rows that had already
+    succeeded. Rows are kept whenever present; the error is still counted and
+    still printed by the caller.
+    """
+    rows = []
+    n_completed = 0
+    n_failed = 0
+    n_partial = 0
+
+    for result in split_results:
+        if result.results:
+            rows.extend(result.results)
+        if result.error:
+            n_failed += 1
+            if result.results:
+                n_partial += 1
+        else:
+            n_completed += 1
+
+    return rows, n_completed, n_failed, n_partial
 
 
 def compare_feature_selection_approaches_parallel(
@@ -792,13 +819,10 @@ def compare_feature_selection_approaches_parallel(
 
     print(f"Using {max_workers} parallel workers")
 
-    all_results = []
-    completed = 0
-    failed = 0
+    collected = []
 
     # Use ProcessPoolExecutor for true parallelism (avoids GIL)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all splits
         futures = {
             executor.submit(
                 _process_single_split,
@@ -812,29 +836,26 @@ def compare_feature_selection_approaches_parallel(
             for split_idx in range(10, 10 + n_splits)
         }
 
-        # Collect results as they complete
         for future in as_completed(futures):
             split_idx = futures[future]
-
             try:
                 result: SplitResult = future.result()
-
-                if result.error:
-                    print(f"Split {result.split_idx} failed: {result.error}")
-                    failed += 1
-                else:
-                    all_results.extend(result.results)
-                    completed += 1
-                    print(f"Completed split {result.split_idx} ({completed}/{n_splits})")
-
             except Exception as e:
                 print(f"Split {split_idx} raised exception: {e}")
-                failed += 1
+                collected.append(SplitResult(split_idx=split_idx, results=[], error=str(e)))
+                continue
 
-    # Convert to DataFrame
+            if result.error:
+                print(f"Split {result.split_idx} failed after "
+                      f"{len(result.results)} rows: {result.error}")
+            else:
+                print(f"Completed split {result.split_idx}")
+            collected.append(result)
+
+    all_results, completed, failed, partial = _collect_split_results(collected)
     results_df = pd.DataFrame(all_results)
 
-    print(f"\nCompleted {completed} splits, {failed} failed")
+    print(f"\nCompleted {completed} splits, {failed} failed ({partial} of them partial)")
     print(f"Total experiments: {len(results_df)}")
 
     if len(results_df) > 0:
