@@ -59,7 +59,22 @@ def dt_thresholds_float_to_int(clf):
     # Only process internal nodes (feature != -2 means it's not a leaf)
     for i in range(tree_obj.node_count):
         if tree_obj.feature[i] != -2:
-            tree_obj.threshold[i] = int(round(tree_obj.threshold[i]))
+            # math.floor, NOT round: Python's round is round-half-to-EVEN, and
+            # sklearn puts every split at the MIDPOINT of two observed values --
+            # so for an integer-valued feature with a unit gap the threshold is
+            # always v + 0.5 and the rule applies to ~a third of all splits
+            # (measured: 33-42%). round(2.5) == 2 is right for a `<= 2.5` split,
+            # but round(3.5) == 4 WIDENS it to include 4, so ~half of those
+            # splits move up by one integer -- asymmetrically, since it never
+            # moves one down.
+            #
+            # For an integer x and any real t, `x <= t` and `x <= floor(t)` are
+            # the same test, so floor is exact on integer-valued features. It is
+            # not exact on this dataset's *.Mean features, which are genuine
+            # means and take fractional values -- but it stays 3-8x closer to
+            # the fitted model than round does (measured per-tree predictions
+            # changed: 24 vs 185 at 3 trees, 48 vs 316 at 7).
+            tree_obj.threshold[i] = math.floor(tree_obj.threshold[i])
   return clf
 
 
