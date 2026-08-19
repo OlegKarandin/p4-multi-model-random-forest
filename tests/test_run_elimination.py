@@ -143,3 +143,64 @@ def test_an_infeasible_first_k_breaks_with_one_row(monkeypatch):
 
     assert len(rows) == 1
     assert rows[0]['k'] == 3
+
+
+def test_hardware_validation_survives_an_interleaved_infeasible_row(monkeypatch):
+    """Regression test for 8a4746d ("Decouple hardware-validation joins from
+    results list position"): an infeasible row between two feasible ones must
+    not misattribute a neighboring iteration's real-compile result, and the
+    infeasible row itself must carry the same three keys (all None) that
+    `_process_single_split`'s docstring promises every row gets.
+
+    `tests/test_feature_selection_infeasible.py` (deleted when this file was
+    added) was the purpose-built regression test for exactly this bug; this
+    replaces that coverage against the merged loop.
+    """
+    from src.p4gen.p4_compile import CompileResult
+
+    class _FakeFuture:
+        def __init__(self, k):
+            self.k = k
+
+        def result(self, timeout=None):
+            return CompileResult(errors=0, warnings=0, stages=100 + self.k,
+                                  tables=100 + self.k, tcam=100 + self.k)
+
+    def _fake_kickoff(validate_on_hardware, hardware_output_dir, split_idx, method, k,
+                       model_app, model_ddos, names_app, names_ddos, encoding, config=None):
+        # Stands in for a real compile handle -- encodes k so the assertions
+        # below can tell whether a row's numbers came from ITS OWN iteration
+        # or got misattributed to a neighbor.
+        return _FakeFuture(k)
+
+    monkeypatch.setattr(fs, '_kickoff_hardware_validation', _fake_kickoff)
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained',
+        _fake_trainer(raise_at_k=(2,)))
+
+    app, ddos = _splits()
+    rows = fs._run_elimination(
+        arm='joint', split_idx=10, app=app, ddos=ddos,
+        feature_names=list(FEATURE_NAMES), max_blocks=25, cfg=TrainConfig(),
+        validate_on_hardware=True, hardware_output_dir='unused/')
+
+    by_k = {r['k']: r for r in rows}
+    assert sorted(by_k) == [1, 2, 3]
+
+    # k=3 and k=1 are feasible: each gets ITS OWN compile result, not a
+    # neighbor's -- k=2's infeasible row sits between them and carries no
+    # compile handle at all, so it must not shift the attribution.
+    assert by_k[3]['stages_real'] == 103
+    assert by_k[3]['tcam_real'] == 103
+    assert by_k[3]['compile_errors'] == 0
+
+    assert by_k[1]['stages_real'] == 101
+    assert by_k[1]['tcam_real'] == 101
+    assert by_k[1]['compile_errors'] == 0
+
+    # k=2 is infeasible: no compile ever ran for it, so all three stay None
+    # -- this is the fix for Important #1 (the row used to be missing these
+    # keys entirely).
+    assert by_k[2]['stages_real'] is None
+    assert by_k[2]['tcam_real'] is None
+    assert by_k[2]['compile_errors'] is None

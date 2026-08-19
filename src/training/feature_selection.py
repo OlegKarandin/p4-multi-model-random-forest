@@ -534,6 +534,7 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
                 'acc_sel_app': None, 'acc_sel_ddos': None,
                 'stages': None, 'blocks': None,
                 'infeasible': str(exc),
+                'stages_real': None, 'tcam_real': None, 'compile_errors': None,
             })
             if carried_app is None or k == 1:
                 break  # No ranking to continue from, or nothing left to drop.
