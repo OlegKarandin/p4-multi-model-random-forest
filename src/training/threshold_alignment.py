@@ -276,9 +276,12 @@ def build_prediction_cache(rf, X_val):
     
     for tree_idx, estimator in enumerate(rf.estimators_):
         tree = estimator.tree_
-        
-        # Get predictions for this tree
-        tree_predictions[tree_idx] = rf.classes_[estimator.predict(X_val).astype(int)]
+
+        # Class INDICES, not labels. A RandomForest's sub-estimators are fit on
+        # encoded y, so estimator.predict already returns indices -- the
+        # rf.classes_[...] round-trip here existed only to be undone by a
+        # per-element dict lookup in compute_ensemble_prediction.
+        tree_predictions[tree_idx] = estimator.predict(X_val).astype(np.intp)
         
         # Get decision path (sparse matrix: n_samples x n_nodes)
         decision_path = estimator.decision_path(X_val)
@@ -294,19 +297,25 @@ def build_prediction_cache(rf, X_val):
 
 
 def compute_ensemble_prediction(tree_predictions, rf):
-    """Compute ensemble prediction from per-tree predictions via majority vote."""
+    """Hard majority vote over per-tree class indices, returning class labels.
+
+    Deliberately NOT rf.predict, which averages predict_proba (a SOFT vote):
+    the switch votes hard, via generate_voting_code's exact-match table whose
+    const entries are mode() over the per-tree class indices. Ties break toward
+    the smallest class index in both -- np.argmax here, mode() there.
+
+    Vectorised as one bincount over a sample-major offset array. The previous
+    pure-Python double loop ran ~n_trees x n_samples interpreted iterations
+    (~28k at n_trees=7, 4000 samples) twice per alignment candidate.
+    """
     n_trees, n_samples = tree_predictions.shape
     n_classes = rf.n_classes_
 
-    # Build mapping from class label to index (handles non-0-indexed classes)
-    class_to_idx = {c: i for i, c in enumerate(rf.classes_)}
-
-    # Count votes per class
-    votes = np.zeros((n_samples, n_classes), dtype=np.intp)
-    for tree_idx in range(n_trees):
-        for sample_idx in range(n_samples):
-            class_label = int(tree_predictions[tree_idx, sample_idx])
-            votes[sample_idx, class_to_idx[class_label]] += 1
+    # Offset each sample into its own length-n_classes slot, then count the
+    # whole (n_trees, n_samples) block in a single pass.
+    offsets = np.arange(n_samples, dtype=np.intp) * n_classes
+    flat = (offsets[None, :] + tree_predictions).ravel()
+    votes = np.bincount(flat, minlength=n_samples * n_classes).reshape(n_samples, n_classes)
 
     return rf.classes_[np.argmax(votes, axis=1)]
 
@@ -484,7 +493,7 @@ def update_cache_for_modifications(rf, X_val, tree_predictions, node_to_samples,
         )
 
         X_subset = X_val[sample_indices]
-        new_predictions = rf.classes_[rf.estimators_[tree_idx].predict(X_subset).astype(int)]
+        new_predictions = rf.estimators_[tree_idx].predict(X_subset).astype(np.intp)
         tree_predictions[tree_idx, sample_indices] = new_predictions
 
         tree = rf.estimators_[tree_idx].tree_

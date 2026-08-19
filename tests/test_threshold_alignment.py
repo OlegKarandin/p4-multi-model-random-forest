@@ -100,3 +100,108 @@ def test_aligned_intervals_still_tile_zero_to_infinite():
             assert intervals[-1][1] == INFINITE, (feature_idx, intervals)
             for (_, prev_max), (next_min, _) in zip(intervals, intervals[1:]):
                 assert next_min == prev_max + 1, (feature_idx, intervals)
+
+
+def _forest_and_data(n_estimators=7, n=300, seed=5, min_samples_leaf=20):
+    """A forest with impure leaves, so hard and soft voting can disagree.
+
+    min_samples_leaf is a parameter because the hard/soft gap widens sharply
+    with it (P1 Task 7 measured 0.33% of DDoS flows at leaf 5 versus 1.90% at
+    leaf 200), so a test that needs the two to differ has to ask for impurity
+    rather than hope for it."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    rng = np.random.default_rng(seed)
+    X = np.clip(rng.integers(0, 90000, size=(n, 4)), 0, INFINITE).astype(float)
+    y = np.array([c % 3 for c in range(n)])
+    rf = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=n_estimators, max_depth=5, min_samples_leaf=min_samples_leaf,
+        random_state=0).fit(X, y))
+    return rf, X, y
+
+
+def test_ensemble_prediction_is_the_cached_path_to_switch_predict():
+    """One rule, two paths. switch_predict (P1 Task 7) computes the switch's
+    hard vote from scratch; this function computes it from the incrementally
+    maintained cache. They must agree exactly -- otherwise the alignment guard
+    is measuring something the reported accuracy is not."""
+    from src.p4gen.switch_semantics import switch_predict
+
+    rf, X, y = _forest_and_data()
+    tree_predictions, _ = ta.build_prediction_cache(rf, X)
+
+    got = ta.compute_ensemble_prediction(tree_predictions, rf)
+
+    assert np.array_equal(got, switch_predict(rf, X))
+
+
+def test_ensemble_prediction_matches_the_generated_vote_tables_rule():
+    """Pin the tie-break too, against the same vote_winner the generated
+    vote_<task> table's const entries are built from."""
+    from src.p4gen.switch_semantics import vote_winner
+
+    rf, X, y = _forest_and_data()
+    tree_predictions, _ = ta.build_prediction_cache(rf, X)
+
+    got = ta.compute_ensemble_prediction(tree_predictions, rf)
+
+    expected = np.array([
+        rf.classes_[vote_winner(tree_predictions[:, i].tolist(), rf.n_classes_)]
+        for i in range(X.shape[0])])
+    assert np.array_equal(got, expected)
+
+
+def test_ensemble_prediction_differs_from_rf_predict_and_that_is_intended():
+    """Guard against someone 'fixing' the hard vote into a soft one. The hard
+    vote is what the switch runs; rf.predict's soft vote is up to 1.7 accuracy
+    points optimistic (P1 Task 7). With impure leaves the two genuinely differ."""
+    rf, X, y = _forest_and_data(n_estimators=7, n=1200, min_samples_leaf=200)
+    tree_predictions, _ = ta.build_prediction_cache(rf, X)
+
+    hard = ta.compute_ensemble_prediction(tree_predictions, rf)
+
+    assert not np.array_equal(hard, rf.predict(X))
+
+
+def test_prediction_cache_stores_class_indices_not_labels():
+    """The round-trip rf.classes_[predict(...)] in build_prediction_cache
+    existed only to be undone by a per-element dict lookup in
+    compute_ensemble_prediction. Indices throughout removes both."""
+    rf, X, y = _forest_and_data()
+
+    tree_predictions, _ = ta.build_prediction_cache(rf, X)
+
+    assert tree_predictions.dtype == np.intp
+    assert tree_predictions.min() >= 0
+    assert tree_predictions.max() < rf.n_classes_
+
+
+def test_prediction_cache_agrees_with_each_tree_predicting_alone():
+    rf, X, y = _forest_and_data()
+
+    tree_predictions, _ = ta.build_prediction_cache(rf, X)
+
+    for tree_idx, estimator in enumerate(rf.estimators_):
+        assert np.array_equal(tree_predictions[tree_idx],
+                              estimator.predict(X).astype(np.intp))
+
+
+def test_vectorised_ensemble_prediction_is_much_faster_than_a_python_loop():
+    """Not a microbenchmark for its own sake: this function runs ~2x per
+    candidate, thousands of candidates per alignment call, once per Optuna
+    trial, across 7 M x 15 splits x 17 k. A pure-Python double loop here is the
+    single largest cost in the module."""
+    import time
+
+    rf, X, y = _forest_and_data(n_estimators=7, n=4000)
+    tree_predictions, _ = ta.build_prediction_cache(rf, X)
+
+    start = time.perf_counter()
+    for _ in range(20):
+        ta.compute_ensemble_prediction(tree_predictions, rf)
+    elapsed = time.perf_counter() - start
+
+    # 20 calls over 7 trees x 4000 samples = 560k vote increments. A Python
+    # loop needs seconds; a bincount needs milliseconds. 1.0 s is a loose
+    # ceiling that still fails the interpreted version by a wide margin.
+    assert elapsed < 1.0, elapsed
