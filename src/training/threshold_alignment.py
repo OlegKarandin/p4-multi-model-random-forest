@@ -1,5 +1,5 @@
 from src.p4gen.evaluation import accuracy_metrics
-from src.p4gen.build_p4_script import INFINITE
+from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.training.errors import AlignmentInvariantError
 import sklearn
 import numpy as np
@@ -206,57 +206,35 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
 
 def extract_feature_intervals(rf):
+    """Feature intervals for `rf`, keyed by feature INDEX.
+
+    Delegates to the generator's own get_feature_intervals_from_thresholds so
+    the two cannot diverge again (C1). That function is key-agnostic -- it needs
+    only (key, threshold) tuples sorted by key then threshold -- so feature
+    indices work exactly as feature names do.
+
+    Why delegation rather than a patch: this module used to skip splits at
+    threshold 0 while the generator (deliberately, see build_p4_script.py's own
+    comment) does not. Alignment therefore optimised a partition that was not
+    the partition the TCAM cost was computed from, and its block savings were
+    mis-targeted wherever a zero split existed. The dedup rules also differed
+    -- a set() here, skip-if-equal-to-previous there -- equivalent then, free to
+    drift later.
     """
-    Extract feature intervals from a scikit-learn random forest model.
-    
-    Args:
-        rf: A trained RandomForestClassifier or RandomForestRegressor
-    
-    Returns:
-        dict: Dictionary with feature index as key and list of intervals as values
-    """
-    # Step 1: Extract all thresholds for each feature
-    feature_thresholds = {}
-    
+    feature_thresholds = []
+
     for estimator in rf.estimators_:
         tree = estimator.tree_
-        
         for node_idx in range(tree.node_count):
             if tree.feature[node_idx] >= 0:  # Not a leaf node
-                feature_idx = tree.feature[node_idx]
-                threshold = int(round(tree.threshold[node_idx]))
+                feature_thresholds.append((int(tree.feature[node_idx]),
+                                           int(round(tree.threshold[node_idx]))))
 
-                if threshold == 0:
-                    continue
-                
-                if feature_idx not in feature_thresholds:
-                    feature_thresholds[feature_idx] = set()
-                feature_thresholds[feature_idx].add(threshold)
-    
-    # Step 2: Build intervals for each feature
-    feature_intervals = {}
-    
-    for feature_idx, thresholds in feature_thresholds.items():
-        if not thresholds:
-            continue
-        
-        # Sort thresholds in ascending order
-        sorted_thresholds = sorted(list(thresholds))
-        intervals = []
-        
-        # First interval: (0, smallest_threshold)
-        intervals.append((0, sorted_thresholds[0]))
-        
-        # Middle intervals: (threshold_i + 1, threshold_i+1)
-        for i in range(len(sorted_thresholds) - 1):
-            intervals.append((sorted_thresholds[i] + 1, sorted_thresholds[i + 1]))
-        
-        # Last interval: (largest_threshold + 1, INFINITE)
-        intervals.append((sorted_thresholds[-1] + 1, INFINITE))
-        
-        feature_intervals[feature_idx] = intervals
-    
-    return feature_intervals
+    # get_feature_intervals_from_thresholds relies on the list being sorted by
+    # (key, threshold) -- that is how it dedups and how it chains intervals.
+    feature_thresholds.sort()
+
+    return get_feature_intervals_from_thresholds(feature_thresholds)
 
 
 def build_threshold_index(rf):

@@ -351,9 +351,6 @@ def test_a_rejected_alignment_restores_every_data_structure_exactly():
     _assert_snapshot_restored(rf, tree_predictions, node_to_samples, threshold_index, snap)
 
 
-@pytest.mark.xfail(strict=True, reason='C1: extract_feature_intervals skips '
-                                      'threshold == 0, the generator does not. '
-                                      'Fixed in Task 4.')
 def test_extract_feature_intervals_agrees_with_the_generator():
     """Alignment optimises the partition extract_feature_intervals produces,
     while the TCAM cost is computed from the generator's partition. If they
@@ -402,3 +399,42 @@ def test_a_forest_with_a_zero_threshold_is_representable_in_the_fixtures():
     thresholds = [int(round(t)) for t in rf.estimators_[0].tree_.threshold
                   if t != -2.0]
     assert 0 in thresholds, thresholds
+
+
+def test_a_zero_split_gets_its_own_interval():
+    """C1: the generator emits (0, 0), (1, t1), ...; this module emitted
+    (0, t1), ... -- so alignment optimised a partition the TCAM cost was not
+    computed from, and its block savings were mis-targeted wherever a zero
+    split existed."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    X = np.array([[0.0], [0.0], [1.0], [5.0], [0.0], [7.0]])
+    y = np.array([0, 0, 1, 1, 0, 1])
+    rf = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=1, max_depth=1, random_state=0).fit(X, y))
+
+    intervals = ta.extract_feature_intervals(rf)
+
+    assert intervals[0][0] == (0, 0), intervals[0]
+
+
+def test_the_threshold_index_and_the_intervals_agree_on_which_splits_exist():
+    """build_threshold_index never skipped 0, so it held (f, 0) keys that no
+    interval referenced. After C1 the two views agree."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    X = np.array([[0.0], [0.0], [1.0], [5.0], [0.0], [7.0]])
+    y = np.array([0, 0, 1, 1, 0, 1])
+    rf = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=1, max_depth=1, random_state=0).fit(X, y))
+
+    intervals = ta.extract_feature_intervals(rf)
+    index = ta.build_threshold_index(rf)
+
+    # Every threshold in the index is a boundary of some interval on that
+    # feature: either an upper bound, or (lower - 1).
+    for feature_idx, threshold in index:
+        bounds = {hi for _, hi in intervals[feature_idx]}
+        bounds |= {lo - 1 for lo, _ in intervals[feature_idx] if lo > 0}
+        bounds |= {0}
+        assert threshold in bounds, (feature_idx, threshold, intervals[feature_idx])
