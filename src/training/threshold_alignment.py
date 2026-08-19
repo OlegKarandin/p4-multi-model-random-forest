@@ -1,5 +1,6 @@
 from src.p4gen.evaluation import accuracy_metrics
 from src.p4gen.build_p4_script import INFINITE
+from src.training.errors import AlignmentInvariantError
 import sklearn
 import numpy as np
 
@@ -316,7 +317,18 @@ def calculate_range_overlap(range1, range2):
     # Early exit if either range starts at 0 but not both
     if (min1 == 0) != (min2 == 0):
         return 0.0
-    
+
+    # C5: the mirror of the above at the top end. adjust_range_boundaries
+    # refuses to move a threshold at INFINITE (its max-side guard) exactly as
+    # it refuses to move one at 0 -- but nothing vetoed the PAIR, so
+    # update_neighboring_ranges_and_index wrote the shrunk boundary into
+    # `ranges` while the model kept splitting at INFINITE and the index kept
+    # the true key. Every later decision on that feature was then wrong, and
+    # nothing covered the tail. dataset.py clips every feature at INFINITE, so
+    # a (m, INFINITE) interval is common, not exotic.
+    if (max1 == INFINITE) != (max2 == INFINITE):
+        return 0.0
+
     # Early exit for large ratio differences
     if min1 and min2:  # Both non-zero
         min_ratio = max(min1, min2) / min(min1, min2)
@@ -368,8 +380,8 @@ def adjust_range_boundaries(rf, feature_idx, source_range, target_range, thresho
     if threshold_source_min != threshold_target_min and threshold_source_min != 0:
 
         if (feature_idx, threshold_source_min) not in threshold_index:
-            print('{} not in feature_index'.format((feature_idx, threshold_source_min)))
-            exit()
+            raise AlignmentInvariantError(
+                '{} missing from threshold_index'.format((feature_idx, threshold_source_min)))
 
         for tree_idx, node_idx in threshold_index[(feature_idx, threshold_source_min)]:
             
@@ -382,8 +394,8 @@ def adjust_range_boundaries(rf, feature_idx, source_range, target_range, thresho
     if threshold_source_max != threshold_target_max and threshold_source_max != INFINITE:
 
         if (feature_idx, threshold_source_max) not in threshold_index:
-            print('{} not in feature_index'.format((feature_idx, threshold_source_max)))
-            exit()
+            raise AlignmentInvariantError(
+                '{} missing from threshold_index'.format((feature_idx, threshold_source_max)))
 
         for tree_idx, node_idx in threshold_index[(feature_idx, threshold_source_max)]:
 
@@ -520,10 +532,17 @@ def update_neighboring_ranges_and_index(ranges, target_idx, old_range, new_range
     threshold_old_max = old_max
     threshold_new_max = new_max
 
+    # C5: mirror adjust_range_boundaries' own guards. It declines to move a
+    # threshold at 0 (min side) or at INFINITE (max side), so `ranges` must not
+    # claim those boundaries moved -- that disagreement between `ranges`,
+    # tree_.threshold and threshold_index IS C5.
+    effective_min = new_min if threshold_old_min != 0 else old_min
+    effective_max = new_max if threshold_old_max != INFINITE else old_max
+    effective_range = (effective_min, effective_max)
+
     # Update the target range
-    if new_range != old_range:
-        #print('Updating range {} to range {}'.format(ranges[target_idx], new_range))
-        ranges[target_idx] = (new_min, new_max)
+    if effective_range != old_range:
+        ranges[target_idx] = effective_range
 
         # Update threshold index
         if threshold_old_min != threshold_new_min and threshold_old_min != 0:
@@ -541,14 +560,12 @@ def update_neighboring_ranges_and_index(ranges, target_idx, old_range, new_range
 
             # Check if this range's max boundary matches the old min boundary
             if range_max + 1 == old_min:
-                new_range_max = new_min - 1
-                #print('Updating neighboring range {} to {}'.format((range_min, range_max), (range_min, new_range_max)))
-            
+                new_range_max = effective_min - 1
+
             # Check if this range's min boundary matches the old max boundary
             if range_min - 1 == old_max:
-                new_range_min = new_max + 1
-                #print('Updating neighboring range {} to {}'.format((range_min, range_max), (new_range_min, range_max)))
-            
+                new_range_min = effective_max + 1
+
             if new_range_min > new_range_max:
                 raise RuntimeError("Smth is very-very wrong")
 
@@ -563,8 +580,8 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
     """
 
     if (feature_idx, old_threshold) not in threshold_index:
-        print('{} not in threshold_index'.format((feature_idx, old_threshold)))
-        exit()
+        raise AlignmentInvariantError(
+            '{} missing from threshold_index'.format((feature_idx, old_threshold)))
 
     nodes = threshold_index.pop((feature_idx, old_threshold))
     ##print('Updating threshold {} to {} for nodes {}'.format(old_threshold, new_threshold, nodes))
