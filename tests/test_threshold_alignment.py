@@ -272,3 +272,133 @@ def test_a_candidate_that_moves_nothing_costs_no_prediction(monkeypatch):
     # moved something. An odd count, or a count that keeps growing when no
     # candidate moves anything, means the bail is missing.
     assert len(calls) % 2 == 0
+
+
+import copy
+
+
+def _snapshot(rf, tree_predictions, node_to_samples, threshold_index):
+    return {
+        'thresholds': [e.tree_.threshold.copy() for e in rf.estimators_],
+        'predictions': tree_predictions.copy(),
+        'node_samples': {k: v.copy() for k, v in node_to_samples.items()},
+        'index': copy.deepcopy(threshold_index),
+    }
+
+
+def _assert_snapshot_restored(rf, tree_predictions, node_to_samples, threshold_index, snap):
+    for estimator, before in zip(rf.estimators_, snap['thresholds']):
+        assert np.array_equal(estimator.tree_.threshold, before)
+    assert np.array_equal(tree_predictions, snap['predictions'])
+    assert set(node_to_samples) == set(snap['node_samples'])
+    for key, before in snap['node_samples'].items():
+        assert np.array_equal(node_to_samples[key], before), key
+    assert threshold_index == snap['index']
+
+
+def _first_movable_interval(rf):
+    """A (feature_idx, source, target) triple adjust_range_boundaries will
+    actually act on: both boundaries away from 0 and INFINITE."""
+    for feature_idx, intervals in ta.extract_feature_intervals(rf).items():
+        for lo, hi in intervals:
+            if lo > 0 and hi != INFINITE:
+                return feature_idx, (lo, hi), (lo, hi + 1)
+    raise AssertionError('fixture has no interior interval to move')
+
+
+def test_the_incremental_cache_equals_a_from_scratch_recomputation():
+    """THE invariant the whole incremental cache rests on, and nothing checked
+    it. After a modification plus a cache update, the maintained predictions
+    must equal what build_prediction_cache would produce on the mutated model."""
+    rf, X, y = _forest_and_data()
+    X32 = np.ascontiguousarray(X, dtype=np.float32)
+    threshold_index = ta.build_threshold_index(rf)
+    tree_predictions, node_to_samples = ta.build_prediction_cache(rf, X32)
+
+    feature_idx, source, target = _first_movable_interval(rf)
+    modifications = ta.adjust_range_boundaries(
+        rf, feature_idx, source, target, threshold_index)
+    assert modifications, 'the fixture must actually move a threshold'
+    ta.update_cache_for_modifications(
+        rf, X32, tree_predictions, node_to_samples, modifications)
+
+    fresh_predictions, fresh_node_samples = ta.build_prediction_cache(rf, X32)
+
+    assert np.array_equal(tree_predictions, fresh_predictions)
+    for key, fresh in fresh_node_samples.items():
+        assert np.array_equal(np.sort(node_to_samples[key]), np.sort(fresh)), key
+
+
+def test_a_rejected_alignment_restores_every_data_structure_exactly():
+    """Rollback round-trip. Task 5's four independent guards make rejection far
+    more common than the single averaged guard did, so any leak here compounds."""
+    rf, X, y = _forest_and_data()
+    X32 = np.ascontiguousarray(X, dtype=np.float32)
+    threshold_index = ta.build_threshold_index(rf)
+    tree_predictions, node_to_samples = ta.build_prediction_cache(rf, X32)
+
+    snap = _snapshot(rf, tree_predictions, node_to_samples, threshold_index)
+
+    feature_idx, source, target = _first_movable_interval(rf)
+    modifications = ta.adjust_range_boundaries(
+        rf, feature_idx, source, target, threshold_index)
+    undo_info = ta.update_cache_for_modifications(
+        rf, X32, tree_predictions, node_to_samples, modifications)
+
+    ta.restore_thresholds(rf, modifications)
+    ta.undo_cache_update(tree_predictions, node_to_samples, undo_info)
+
+    _assert_snapshot_restored(rf, tree_predictions, node_to_samples, threshold_index, snap)
+
+
+@pytest.mark.xfail(strict=True, reason='C1: extract_feature_intervals skips '
+                                      'threshold == 0, the generator does not. '
+                                      'Fixed in Task 4.')
+def test_extract_feature_intervals_agrees_with_the_generator():
+    """Alignment optimises the partition extract_feature_intervals produces,
+    while the TCAM cost is computed from the generator's partition. If they
+    disagree, the block savings are mis-targeted -- so they must be the same
+    partition, by construction."""
+    from sklearn.ensemble import RandomForestClassifier
+    from src.p4gen.build_p4_script import get_feature_intervals
+
+    names = ['Flow.IAT.Max', 'Fwd.IAT.Max', 'Fwd.Packet.Length.Max', 'Bwd.IAT.Min']
+    rng = np.random.default_rng(5)
+    n = 300
+    X = np.clip(rng.integers(0, 90000, size=(n, 4)), 0, INFINITE).astype(float)
+    y = np.array([c % 3 for c in range(n)])
+    # Force a real threshold-0 split on feature 0: give it a small integer
+    # range (so 0 and 1 are adjacent observed values -- floor(0.5) == 0 is
+    # then a real, reachable rounded threshold, not just a rare coincidence
+    # of a 90000-wide random range) and zero out a label-correlated subset,
+    # so "value == 0 vs > 0" becomes an optimal split. This exercises the
+    # still-live C1 bug deterministically, matching how dataset.py's real
+    # zero-valued rows produce exactly this kind of split.
+    X[:, 0] = rng.integers(0, 5, size=n).astype(float)
+    X[y == 0, 0] = 0.0
+    rf = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=7, max_depth=5, min_samples_leaf=20, random_state=0).fit(X, y))
+
+    ours = ta.extract_feature_intervals(rf)
+    theirs = get_feature_intervals(rf, names)
+
+    assert {names[idx] for idx in ours} == set(theirs)
+    for feature_idx, intervals in ours.items():
+        assert intervals == theirs[names[feature_idx]], names[feature_idx]
+
+
+def test_a_forest_with_a_zero_threshold_is_representable_in_the_fixtures():
+    """C1's precondition: a split at threshold 0 is real -- dataset.py keeps
+    zero-valued rows, and a 'counter is zero vs non-zero' split is exactly
+    sklearn threshold 0.5 truncated to 0. Build one deliberately so Task 4's
+    fix has something to be tested against."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    X = np.array([[0.0], [0.0], [1.0], [5.0], [0.0], [7.0]])
+    y = np.array([0, 0, 1, 1, 0, 1])
+    rf = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=1, max_depth=1, random_state=0).fit(X, y))
+
+    thresholds = [int(round(t)) for t in rf.estimators_[0].tree_.threshold
+                  if t != -2.0]
+    assert 0 in thresholds, thresholds
