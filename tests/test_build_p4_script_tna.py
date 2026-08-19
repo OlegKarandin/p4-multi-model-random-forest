@@ -17,11 +17,11 @@ import json
 import os
 import re
 from itertools import product
-from statistics import mode
 
 import pytest
 
 from src.p4gen import build_p4_script as bps
+from src.p4gen import switch_semantics
 from src.p4gen.build_p4_script import (
     generate_P4_actions,
     generate_P4_tables_and_apply,
@@ -753,8 +753,12 @@ def test_generate_P4_tables_and_apply_rejects_removed_discount_parameters():
 # single exact-match P4 table: generate_voting_code now returns a 2-tuple
 # (table_declaration_text, apply_call_text) instead of one if-cascade
 # string. Both tests below lock in the table's *decisions* (not the string
-# formatting), using statistics.mode() for tie-breaking, same as before --
-# this is a mechanism change, not a behavior change.
+# formatting), using switch_semantics.vote_winner() for tie-breaking. That
+# function used to be statistics.mode(), which returns the FIRST-ENCOUNTERED
+# mode on a tie -- so its winner depended on arbitrary tree ordering.
+# vote_winner's smallest-class-index rule is order-independent, and it is a
+# deliberate behavior change: the two rules disagree on every combo tuple
+# that is an exact tie (e.g. (1, 2, 0), where each class appears once).
 
 _VOTING_ENTRY_RE = re.compile(
     r"\((?P<combo>[\d,\s]+)\) : set_classification_app\((?P<winner>\d+)\);"
@@ -788,7 +792,7 @@ def test_generate_voting_code_emits_table_not_if_cascade():
 
   decisions = _parse_voting_table_decisions(table_decl)
   expected = {
-      combo: mode(combo)
+      combo: switch_semantics.vote_winner(combo, num_classes)
       for combo in product(range(num_classes), repeat=num_trees)
   }
   assert len(expected) == num_classes ** num_trees == 27
@@ -824,14 +828,14 @@ def test_generate_voting_code_size_respects_a_one_bit_key_space():
   assert "size = 32;" not in table_decl
 
 
-def test_generate_voting_code_voting_decisions_match_statistics_mode_for_all_combos():
+def test_generate_voting_code_voting_decisions_match_vote_winner_for_all_combos():
   num_trees, num_classes = 3, 3
   table_decl, _apply_call = bps.generate_voting_code(num_trees, num_classes, "app")
 
   decisions = _parse_voting_table_decisions(table_decl)
 
   expected = {
-      combo: mode(combo)
+      combo: switch_semantics.vote_winner(combo, num_classes)
       for combo in product(range(num_classes), repeat=num_trees)
   }
 
@@ -1334,15 +1338,26 @@ def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
 # test_generate_P4_code_default_call_changes_only_table_sizes proves it.
 # Re-recorded a THIRD time by dropping generate_voting_code's max(32, ...)
 # size floor: the vote tables now declare their exact const-entry count.
+# Re-recorded a FOURTH time by switch_semantics: generate_voting_code's
+# tie-break changed from statistics.mode() (first-encountered) to
+# switch_semantics.vote_winner() (smallest class index), which is
+# order-independent. For this fixture's 2-tree/3-class app vote table that
+# flips the winner on every tied key tuple -- (1,0), (2,0), (2,1) -- from
+# {1, 2, 2} to {0, 0, 1}. Confirmed by direct diff against the previous
+# baseline that this tie-break flip is the ONLY delta.
 _DEFAULT_CALL_OUTPUT_SHA256 = (
-    "3b6f2cedde35f98149224be9e7c346d1b39369093d370a17cda0a2ce826c5af5")
+    "53eb7a1ef1b615d8bfca0f0be15bbd9947a8a83177d0000f3803e45568b98a31")
 
 # The sha256 the same call produced BEFORE the table-sizing follow-up (when
 # every feature table declared `size = 200;` and every classification table
 # `size = 400;`), originally recorded against the code as it stood before the
 # discount was wired into generate_P4_code.
+# Re-recorded by switch_semantics for the same reason as
+# _DEFAULT_CALL_OUTPUT_SHA256 above: this baseline is also downstream of
+# generate_voting_code's tie-break, so it must reflect vote_winner's
+# smallest-class-index rule instead of the old statistics.mode() rule.
 _PRE_TABLE_SIZING_OUTPUT_SHA256 = (
-    "839a2cbb9753f29546d16b97b5841f14cdd67d7c2b5ece991d891b59cf2820c5")
+    "0a4b684a5cf55e82630e9dae83b512c67df691f825a46503c139c7c815a134b8")
 
 
 def _sha256_of_default_generate_P4_code_call(tmp_path, filename, **extra):

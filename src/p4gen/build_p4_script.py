@@ -5,10 +5,10 @@ import csv
 import json
 from collections import Counter
 from itertools import product
-from statistics import mode
 
 from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 from src.p4gen import p4_gen_config
+from src.p4gen import switch_semantics
 
 INFINITE = (2**16)-1
 MAX_CODEWORD_LENGTH = 512
@@ -1095,9 +1095,14 @@ def generate_voting_code(num_trees, num_classes, task):
   compiler (p4/tofino_spike/tna_m2_vote_table_spike.p4 and the real-program
   test p4/tofino_spike/tna_m2_real_with_vote_table.p4, both 0 errors):
   1 fewer ingress stage and Gateway usage cut from 37 to 10 for M2's real
-  3-tree/3-class case, with identical classification decisions (same
-  statistics.mode() tie-breaking as before -- mechanism change, not a
-  behavior change).
+  3-tree/3-class case. The tie-break is switch_semantics.vote_winner
+  (smallest class index), not the statistics.mode() this function used
+  previously: mode() returns the FIRST-ENCOUNTERED mode, so its winner
+  depended on tree ordering, which is arbitrary. vote_winner is
+  order-independent, and it is the rule every accuracy measurement in the
+  pipeline now uses, so this is a deliberate behavior change, not just a
+  mechanism change -- on tied key tuples the winner can differ from the old
+  statistics.mode() table.
   """
   bit_per_classes = math.ceil(math.log2(num_classes)) or 1
   # The table emits exactly num_classes ** num_trees const entries (see the
@@ -1118,7 +1123,14 @@ def generate_voting_code(num_trees, num_classes, task):
 
   entries_lines = []
   for classification_array in product(range(num_classes), repeat=num_trees):
-    winner = mode(classification_array)
+    # switch_semantics.vote_winner, not statistics.mode: mode returns the
+    # FIRST-ENCOUNTERED mode, so on a tie the winner depended on tree ordering
+    # -- arbitrary, and changed if trees were reordered. Smallest-class-index is
+    # order-independent, and it is the rule every accuracy measurement in the
+    # pipeline now uses, so the reported number and the table agree by
+    # construction. Same key space and same entry count either way, so this
+    # costs nothing in resources.
+    winner = switch_semantics.vote_winner(classification_array, num_classes)
     key_tuple = ", ".join(str(c) for c in classification_array)
     entries_lines.append(
         "\t\t\t({}) : set_classification_{}({});".format(key_tuple, task, winner)
