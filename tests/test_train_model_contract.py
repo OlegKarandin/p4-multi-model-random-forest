@@ -61,8 +61,11 @@ def test_blocks_le_max_blocks_holds_for_the_RETURNED_models():
 
 
 def test_the_returned_model_is_fit_on_the_full_training_set_not_a_fold():
-    """F7: a 3-fold CV model sees ~2/3 of the rows. n_node_samples at the root
-    of every tree must equal the full training set size."""
+    """F7: a 3-fold CV model sees ~2/3 of the rows. weighted_n_node_samples at
+    the root of every tree must equal the full training set size -- plain
+    n_node_samples undercounts under sklearn's default bootstrap=True, since
+    the Splitter drops zero-weight (unsampled) rows from that unweighted
+    count while still weighting the full row set into the fit."""
     X_app, y_app, X_ddos, y_ddos = _tiny_problem()
     cfg = TrainConfig(n_trials=8, min_feasible_before_stop=3, lookback=2)
 
@@ -73,9 +76,9 @@ def test_the_returned_model_is_fit_on_the_full_training_set_not_a_fold():
         FEATURE_NAMES, FEATURE_NAMES, 60, 'disjoint', cfg)
 
     for tree in model_A.estimators_:
-        assert tree.tree_.n_node_samples[0] == len(y_app)
+        assert tree.tree_.weighted_n_node_samples[0] == len(y_app)
     for tree in model_B.estimators_:
-        assert tree.tree_.n_node_samples[0] == len(y_ddos)
+        assert tree.tree_.weighted_n_node_samples[0] == len(y_ddos)
 
 
 def test_an_impossible_block_budget_raises_no_feasible_solution():
