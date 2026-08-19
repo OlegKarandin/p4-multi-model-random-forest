@@ -102,3 +102,85 @@ def test_implement_tree_models_in_P4_requires_trained_models():
     import pytest
     with pytest.raises(TypeError):
         m.implement_tree_models_in_P4()
+
+
+def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each():
+    """A run is one (arm, M) cell. If a run produced both arms, the
+    independent baseline would be recomputed once per joint arm -- six
+    identical copies, about half the campaign's compute."""
+    import numpy as np
+    import pandas as pd
+    from unittest.mock import patch
+
+    frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
+    X = np.zeros((10, 4))
+
+    with patch("src.main.compare_feature_selection_approaches_parallel",
+               return_value=frame) as mock_run, \
+         patch("src.main.read_app_dataset"), \
+         patch("src.main.read_DDOS_dataset"), \
+         patch("src.main.remove_correlated_features_both_datasets",
+               return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("pandas.DataFrame.to_csv") as mock_csv:
+        m.compare_independent_joint_mapping(
+            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
+
+    assert mock_run.call_count == 3       # one call per primary arm
+    assert mock_csv.call_count == 3       # one file per (arm, M)
+    # Overwrite, never append: a re-run cell must replace its rows, not double
+    # them. Every C.3 claim is a paired test on (M, split, k).
+    for call in mock_csv.call_args_list:
+        assert call.kwargs.get('mode', 'w') == 'w'
+
+
+def test_a_cell_whose_file_already_exists_is_skipped():
+    """Resumability: the campaign is ~40 h at a +/-2x estimate over seven
+    independent M values, so re-invoking the same command must continue rather
+    than redo -- and must not append to what is already there."""
+    import numpy as np
+    import pandas as pd
+    from unittest.mock import patch
+
+    frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
+    X = np.zeros((10, 4))
+
+    with patch("src.main.compare_feature_selection_approaches_parallel",
+               return_value=frame) as mock_run, \
+         patch("src.main.read_app_dataset"), \
+         patch("src.main.read_DDOS_dataset"), \
+         patch("src.main.remove_correlated_features_both_datasets",
+               return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("src.main.os.path.exists", return_value=True), \
+         patch("pandas.DataFrame.to_csv"):
+        m.compare_independent_joint_mapping(
+            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
+
+    assert mock_run.call_count == 0
+
+
+def test_redo_forces_recomputation():
+    import numpy as np
+    import pandas as pd
+    from unittest.mock import patch
+
+    frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
+    X = np.zeros((10, 4))
+
+    with patch("src.main.compare_feature_selection_approaches_parallel",
+               return_value=frame) as mock_run, \
+         patch("src.main.read_app_dataset"), \
+         patch("src.main.read_DDOS_dataset"), \
+         patch("src.main.remove_correlated_features_both_datasets",
+               return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("src.main.os.path.exists", return_value=True), \
+         patch("src.main.os.replace"), \
+         patch("pandas.DataFrame.to_csv"):
+        m.compare_independent_joint_mapping(
+            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS, skip_existing=False)
+
+    assert mock_run.call_count == 3
+
+
+def test_redo_flag_defaults_to_off():
+    assert m.parse_args([]).redo is False
+    assert m.parse_args(['--redo']).redo is True

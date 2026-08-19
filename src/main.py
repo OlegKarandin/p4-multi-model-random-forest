@@ -1,6 +1,7 @@
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.p4gen.build_p4_script import *
-from src.training.feature_selection import compare_feature_selection_approaches, compare_feature_selection_approaches_parallel
+from src.training.feature_selection import compare_feature_selection_approaches_parallel
+from src.training.config import TrainConfig
 
 from src.reporting.analysis import analyze_multi_objective_results
 
@@ -9,6 +10,53 @@ import pandas as pd
 import numpy as np
 
 from pathlib import Path
+
+
+# Spec A.2's arm grid. Two anchors bracket the frontier: `joint-off` is a
+# genuine SKIP of the align_rf_thresholds call -- not delta = 0 -- so the arm is
+# provably prediction-identical to the unaligned models and doubles as the
+# requested ablation; `joint-dinf` accepts every alignment unconditionally and
+# bounds the maximum achievable sharing.
+PRIMARY_ARMS = [
+    ('independent', TrainConfig()),
+    ('joint', TrainConfig(alignment_enabled=False)),
+    ('joint', TrainConfig(delta_align=0.0)),
+]
+
+# The swept variable. delta = 0.01 is deliberately excluded: at val_align ~3000
+# and DDoS error ~0.04, one flipped sample is 0.83% relative error, so 1%
+# permits at most one flip and is operationally identical to 0. The grid reaches
+# 20% and inf on purpose -- today's effective behaviour sits around 10-20%
+# relative on DDoS, so the sweep must bracket it, and the frontier should show
+# saturation rather than only its steep part.
+SENSITIVITY_ARMS = [
+    ('joint', TrainConfig(delta_align=0.02)),
+    ('joint', TrainConfig(delta_align=0.05)),
+    ('joint', TrainConfig(delta_align=0.10)),
+    ('joint', TrainConfig(delta_align=0.20)),
+    ('joint', TrainConfig(delta_align=None)),
+]
+
+
+def select_arms(which):
+    if which == 'primary':
+        return PRIMARY_ARMS
+    if which == 'sensitivity':
+        return SENSITIVITY_ARMS
+    if which == 'all':
+        return PRIMARY_ARMS + SENSITIVITY_ARMS
+    raise ValueError("arms must be 'primary', 'sensitivity' or 'all', got {!r}".format(which))
+
+
+def arm_result_path(arm, cfg, max_blocks):
+    """One file per (arm, M): self-describing, globbable, and resumable.
+
+    Replaces feature_selection_comparison_results_by_k_{t}_{d}_{M}.csv, whose
+    -1_-1 sentinel recorded neither the effective n_trees nor max_depth (F10i).
+    """
+    encoding = 'joint' if arm == 'joint' else 'disjoint'
+    return os.path.join('results', 'rf_t{}_d{}_M{}_{}.csv'.format(
+        cfg.n_trees, cfg.max_depth, max_blocks, cfg.arm_slug(encoding)))
 
 
 def parse_args(argv=None):
@@ -20,6 +68,16 @@ def parse_args(argv=None):
              "compare_independent_joint_mapping (expensive, real Optuna searches); "
              "'plot' loads and analyzes already-computed results (default, matches "
              "today's checked-in new_results=False behavior)")
+    parser.add_argument(
+        "--arms", choices=["primary", "sensitivity", "all"], default="primary",
+        help="which arm grid to run in compute mode. 'primary' is the three "
+             "arms the headline comparison needs (independent, joint@off, "
+             "joint@delta=0); 'sensitivity' is the five swept tolerances")
+    parser.add_argument(
+        "--redo", action="store_true",
+        help="recompute (arm, M) cells whose result file already exists. The "
+             "default skips them, so re-running the same command resumes a "
+             "partially finished campaign instead of redoing it")
     return parser.parse_args(argv)
 
 
@@ -183,21 +241,21 @@ def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):
     return X_app, X_ddos, remaining_features
 
 
-def compare_independent_joint_mapping(M_values, eps, n_Cs, n_gammas, selection_threshold, n_splits, parallel=True, max_workers=None):
-    """
-    Run feature selection comparison experiments.
+def compare_independent_joint_mapping(M_values, n_splits, arms=None,
+                                      parallel=True, max_workers=None,
+                                      skip_existing=True):
+    """Run one (arm, M) cell per output file.
 
-    Parameters
-    ----------
-    M_values : list
-        List of max_blocks values to test
-    eps, n_Cs, n_gammas, selection_threshold, n_splits : various
-        Experiment parameters
-    parallel : bool
-        If True, use parallel processing across splits (default: True)
-    max_workers : int, optional
-        Number of parallel workers (only used if parallel=True)
+    arms : list of (arm, TrainConfig). Defaults to PRIMARY_ARMS.
+    skip_existing : skip any cell whose output file already exists. The
+        campaign is ~40 h at a +/-2x estimate and the seven M values are
+        independent runs, so it is meant to be resumed and chunked; the default
+        makes re-invoking the same command continue rather than redo. Pass
+        False (CLI: --redo) to force recomputation.
     """
+    if arms is None:
+        arms = PRIMARY_ARMS
+
     threshold = INFINITE
 
     selected_features = [
@@ -216,45 +274,64 @@ def compare_independent_joint_mapping(M_values, eps, n_Cs, n_gammas, selection_t
     y_app = df_app.Label.to_numpy()
     y_ddos = df_ddos.Label.to_numpy()
 
-    print("Starting Multi-Task vs Single-Task Feature Selection Comparison")
+    print("Starting per-task objective campaign")
     print("=" * 70)
+    print(f"Total number of features: {X_app.shape[1]}")
 
-    n_features = X_app.shape[1]
-    print(f"Total number of features: {n_features}")
-    print(f"Lasso path: eps={eps}, n_Cs={n_Cs}")
-    print(f"MTL path: n_gammas={n_gammas}, selection_threshold={selection_threshold}")
-    print(f"Parallel processing: {parallel}" + (f" (max_workers={max_workers})" if max_workers else ""))
+    for max_blocks in M_values:
+        for arm, cfg in arms:
+            encoding = 'joint' if arm == 'joint' else 'disjoint'
+            path = arm_result_path(arm, cfg, max_blocks)
 
-    for t in [-1]: #np.arange(1, 8, 2):
-        for d in [-1]: #np.arange(2, 7, 2):
-            for max_blocks in M_values:
+            if skip_existing and os.path.exists(path):
+                # Resumability: one file per (arm, M) IS the unit of work, and a
+                # complete file means that cell is done. Cells are written
+                # atomically below, so a file's existence is a reliable
+                # completion marker rather than a maybe-partial artifact.
+                print(f"\n=== M={max_blocks}  arm={cfg.arm_slug(encoding)} -- already complete, skipping ===")
+                continue
 
-                print('Max {} blocks'.format(max_blocks))
+            print(f"\n=== M={max_blocks}  arm={cfg.arm_slug(encoding)} ===")
 
-                # Run the comparison using regularization paths
-                if parallel:
-                    results_df = compare_feature_selection_approaches_parallel(
-                        X_app, X_ddos, y_app, y_ddos, t, d, max_blocks,
-                        feature_names=selected_features,
-                        n_splits=n_splits,
-                        random_state=42,
-                        max_workers=max_workers
-                    )
-                else:
-                    results_df = compare_feature_selection_approaches(
-                        X_app, X_ddos, y_app, y_ddos, t, d, max_blocks,
-                        feature_names=selected_features,
-                        n_splits=n_splits,
-                        random_state=42
-                    )
+            results_df = compare_feature_selection_approaches_parallel(
+                X_app, X_ddos, y_app, y_ddos,
+                max_blocks,
+                feature_names=selected_features,
+                n_splits=n_splits,
+                arm=arm,
+                cfg=cfg,
+                random_state=42,
+                max_workers=max_workers,
+            )
 
-                name = os.path.join('results', 'feature_selection_comparison_results_by_k_{}_{}_{}'.format(
-                    t, d, max_blocks
-                ))
-                file_exists = os.path.exists(name + '.csv')
-                results_df.to_csv(name + '.csv', mode='a', index=False, header=not file_exists)
+            # Identity columns, so an arm is recoverable from the row as well as
+            # from the filename. P5 extends this to the full C.1 schema.
+            results_df['arm'] = arm
+            results_df['alignment_enabled'] = cfg.alignment_enabled
+            results_df['delta_align'] = cfg.delta_align_label()
+            results_df['delta_select'] = cfg.delta_select
+            results_df['M'] = max_blocks
+            results_df['n_trees'] = cfg.n_trees
+            results_df['max_depth'] = cfg.max_depth
 
-                #summary_stats = plot_comparison_results_by_k(results_df, name + '.png', save_plots=True)
+            # Overwrite, NOT append -- and write atomically.
+            #
+            # The old code appended (mode='a', header=not file_exists). With one
+            # file per (arm, M) as the resumability unit and a cost estimate
+            # stated at +/-2x, re-running individual cells is expected, not
+            # exceptional -- and appending would silently DOUBLE a re-run cell's
+            # rows. Every claim in section C.3 is a paired test on (M, split, k);
+            # duplicated rows corrupt those with no error and no visible symptom.
+            #
+            # Temp-then-rename so an interrupted cell never leaves a partial CSV
+            # that the skip-if-exists guard above would read as complete. The
+            # existence check is a no-op for a real write (to_csv always leaves
+            # tmp_path on disk when it returns normally) and only matters when
+            # to_csv itself is stubbed out, e.g. under test.
+            tmp_path = path + '.partial'
+            results_df.to_csv(tmp_path, index=False)
+            if os.path.exists(tmp_path):
+                os.replace(tmp_path, path)
 
 
 def load_and_combine_data(folder_path, M_values):
@@ -289,11 +366,6 @@ def run_main():
     #M = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
     M = [25, 40, 50, 60, 75, 90, 100]
 
-    # Regularization path parameters
-    eps = 1e-5
-    n_Cs = 100
-    n_gammas = 100
-    selection_threshold = 1e-2
     n_splits = 15
 
     # Parallelization settings
@@ -303,13 +375,11 @@ def run_main():
     if args.mode == "compute":
         compare_independent_joint_mapping(
             M_values=M,
-            eps=eps,
-            n_Cs=n_Cs,
-            n_gammas=n_gammas,
-            selection_threshold=selection_threshold,
             n_splits=n_splits,
+            arms=select_arms(args.arms),
             parallel=parallel,
-            max_workers=max_workers
+            max_workers=max_workers,
+            skip_existing=not args.redo,
         )
 
     else:

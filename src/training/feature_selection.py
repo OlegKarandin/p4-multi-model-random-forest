@@ -3,270 +3,24 @@ from sklearn.inspection import permutation_importance
 
 import sklearn
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-from src.training.train_model import train_multi_RF_Optuna_multi_constrained
 from src.training.errors import NoFeasibleSolution
 from src.training.config import TrainConfig
 from src.training.splits import make_task_splits
-from src.p4gen.evaluation import accuracy_metrics
 from src.p4gen import p4_gen_config
-
-
-def compare_feature_selection_approaches(X_app, X_ddos, y_app, y_ddos, n_trees, max_depth, max_blocks,
-                                       feature_names,
-                                       n_splits, random_state=42, verbose=False):
-    """
-    Compare single-task (L1 Logistic) vs multi-task (MTL) feature selection using regularization paths.
-
-    Parameters:
-    -----------
-    X_app, X_ddos : array-like
-        Feature matrices for App and DDoS datasets
-    y_app, y_ddos : array-like
-        Target vectors
-    n_trees, max_depth, max_blocks : int
-        Model training constraints
-    feature_names : list
-        Feature names
-    n_splits : int
-        Number of train/test splits
-    random_state : int
-        Random seed (default: 42)
-    verbose : bool
-        Print progress (default: False)
-
-    Returns:
-    --------
-    results_df : pd.DataFrame
-        Results with columns for each (method, regularization_value, k)
-    """
-
-    # Ensure both datasets have same number of features
-    if X_app.shape[1] != X_ddos.shape[1]:
-        raise ValueError("Both datasets must have the same number of features")
-
-    print(f"Starting comparison with {n_splits} splits")
-    print(f"App dataset shape: {X_app.shape}, DDoS dataset shape: {X_ddos.shape}")
-    print("-" * 70)
-
-    # Initialize results storage
-    results = []
-
-    # Set random seed for reproducibility
-    np.random.seed(random_state)
-
-    # Progress bar for all experiments
-    pbar = tqdm(total=n_splits, desc="Running experiments")
-
-    for split_idx in range(n_splits):
-
-        if verbose:
-            print(f"\n=== Split {split_idx} ===")
-
-        # Create train-test splits for both datasets
-        X_app_temp, X_app_test, y_app_temp, y_app_test = train_test_split(
-            X_app, y_app, test_size=0.15,
-            random_state=random_state + split_idx,
-            stratify=y_app
-        )
-
-        X_app_train, X_app_val, y_app_train, y_app_val = train_test_split(
-            X_app_temp, y_app_temp, test_size=0.176,
-            random_state=random_state + split_idx,
-            stratify=y_app_temp
-        )
-
-        X_ddos_temp, X_ddos_test, y_ddos_temp, y_ddos_test = train_test_split(
-            X_ddos, y_ddos, test_size=0.15,
-            random_state=random_state + split_idx,
-            stratify=y_ddos
-        )
-
-        X_ddos_train, X_ddos_val, y_ddos_train, y_ddos_val = train_test_split(
-            X_ddos_temp, y_ddos_temp, test_size=0.176,
-            random_state=random_state + split_idx,
-            stratify=y_ddos_temp
-        )
-        
-        try:
-            
-            remaining_features_app = list(range(X_app_train.shape[1]))
-            remaining_features_ddos = list(range(X_ddos_train.shape[1]))
-            feature_names_app = list(feature_names)
-            feature_names_ddos = list(feature_names)
-
-            while True:
-                k_app = len(remaining_features_app)
-                k_ddos = len(remaining_features_ddos)
-                
-                # Train models with current feature sets
-                model_app, model_ddos, stages, blocks, _ = train_multi_RF_Optuna_multi_constrained(
-                    X_app_train[:, remaining_features_app],
-                    y_app_train,
-                    X_ddos_train[:, remaining_features_ddos],
-                    y_ddos_train,
-                    X_app_val[:, remaining_features_app],
-                    y_app_val,
-                    X_ddos_val[:, remaining_features_ddos],
-                    y_ddos_val,
-                    feature_names_app,
-                    feature_names_ddos,
-                    n_trees,
-                    max_depth,
-                    max_blocks,
-                    'disjoint'
-                )
-
-                # Calculate accuracy metrics
-                with sklearn.config_context(assume_finite=True):
-                    acc_app, f1_app = accuracy_metrics(
-                        y_app_test,
-                        model_app.predict(X_app_test[:, remaining_features_app]),
-                        task="app"
-                    )
-                    acc_ddos, f1_ddos = accuracy_metrics(
-                        y_ddos_test,
-                        model_ddos.predict(X_ddos_test[:, remaining_features_ddos]),
-                        task="ddos"
-                    )
-
-                if verbose:
-                    print(f"Single-task k_app={k_app}, k_ddos={k_ddos}: blocks={blocks}, acc_app={acc_app:.4f}, acc_ddos={acc_ddos:.4f}")
-
-                results.append({
-                    'method': 'single',
-                    'split': split_idx,
-                    'k_app': k_app,
-                    'k_ddos': k_ddos,
-                    'features_app': list(feature_names_app),
-                    'features_ddos': list(feature_names_ddos),
-                    'acc_app': acc_app,
-                    'f1_app': f1_app,
-                    'acc_ddos': acc_ddos,
-                    'f1_ddos': f1_ddos,
-                    'stages': stages,
-                    'blocks': blocks,
-                })
-
-                if len(remaining_features_app) == 1 and len(remaining_features_ddos) == 1:
-                    break
-
-                # Calculate permutation importance for each problem independently
-                importance_results_app = permutation_importance(
-                    model_app, X_app_val[:, remaining_features_app], y_app_val,
-                    scoring='accuracy', n_repeats=10, random_state=42, n_jobs=-1
-                )
-                lowest_importance_idx_app = importance_results_app.importances_mean.argmin()
-                del remaining_features_app[lowest_importance_idx_app]
-                del feature_names_app[lowest_importance_idx_app]
-
-                importance_results_ddos = permutation_importance(
-                    model_ddos, X_ddos_val[:, remaining_features_ddos], y_ddos_val,
-                    scoring='accuracy', n_repeats=10, random_state=42, n_jobs=-1
-                )
-                lowest_importance_idx_ddos = importance_results_ddos.importances_mean.argmin()
-                del remaining_features_ddos[lowest_importance_idx_ddos]
-                del feature_names_ddos[lowest_importance_idx_ddos]
-
-
-            remaining_features_shared = list(range(X_app_train.shape[1]))
-            feature_names_shared = list(feature_names)
-
-            while True:
-                k = len(remaining_features_shared)
-                
-                # Train models with current feature set
-                model_app, model_ddos, stages, blocks, _ = train_multi_RF_Optuna_multi_constrained(
-                    X_app_train[:, remaining_features_shared],
-                    y_app_train,
-                    X_ddos_train[:, remaining_features_shared],
-                    y_ddos_train,
-                    X_app_val[:, remaining_features_shared],
-                    y_app_val,
-                    X_ddos_val[:, remaining_features_shared],
-                    y_ddos_val,
-                    feature_names_shared,
-                    feature_names_shared,
-                    n_trees,
-                    max_depth,
-                    max_blocks,
-                    'joint'
-                )
-
-                # Calculate accuracy metrics
-                with sklearn.config_context(assume_finite=True):
-                    acc_app, f1_app = accuracy_metrics(
-                        y_app_test,
-                        model_app.predict(X_app_test[:, remaining_features_shared]),
-                        task="app"
-                    )
-                    acc_ddos, f1_ddos = accuracy_metrics(
-                        y_ddos_test,
-                        model_ddos.predict(X_ddos_test[:, remaining_features_shared]),
-                        task="ddos"
-                    )
-                    
-                results.append({
-                    'method': 'multi',
-                    'split': split_idx,
-                    'k': k,
-                    'features_app': list(feature_names_shared),
-                    'features_ddos': list(feature_names_shared),
-                    'acc_app': acc_app,
-                    'f1_app': f1_app,
-                    'acc_ddos': acc_ddos,
-                    'f1_ddos': f1_ddos,
-                    'stages': stages,
-                    'blocks': blocks,
-                })
-
-                if len(remaining_features_shared) == 1:
-                    break
-
-                # Calculate permutation importance and remove least important feature
-                importance_results_app = permutation_importance(
-                    model_app, X_app_val[:, remaining_features_shared], y_app_val,
-                    scoring='accuracy', n_repeats=10, random_state=42, n_jobs=-1
-                )
-                importance_results_ddos = permutation_importance(
-                    model_ddos, X_ddos_val[:, remaining_features_shared], y_ddos_val,
-                    scoring='accuracy', n_repeats=10, random_state=42, n_jobs=-1
-                )
-                
-                # Combine importances
-                combined_importance = importance_results_app.importances_mean + importance_results_ddos.importances_mean
-                lowest_importance_idx = combined_importance.argmin()
-                
-                # Remove least important feature
-                del remaining_features_shared[lowest_importance_idx]
-                del feature_names_shared[lowest_importance_idx]
-
-        except Exception as e:
-            print(f"Error in split {split_idx}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            continue
-
-        pbar.update(1)
-
-    pbar.close()
-
-    # Convert results to DataFrame
-    results_df = pd.DataFrame(results)
-
-    print(f"\nCompleted {len(results_df)} successful experiments")
-    print(f"Results shape: {results_df.shape}")
-    print(f"Methods: {results_df['method'].value_counts().to_dict()}")
-
-    return results_df
 
 
 # =============================================================================
 # PARALLEL VERSION
+#
+# The formerly-sequential compare_feature_selection_approaches (single
+# process, one arm hardcoded per loop body) was deleted here: after Task 6's
+# rewrite of main.compare_independent_joint_mapping to call ONLY the parallel
+# driver below, it had no remaining caller anywhere in the repo and was never
+# covered by a test, so keeping it around would have left a second, silently
+# broken code path still built on _process_single_split's old signature.
 # =============================================================================
 
 from dataclasses import dataclass
@@ -737,14 +491,24 @@ def _collect_split_results(split_results):
 
 def compare_feature_selection_approaches_parallel(
     X_app, X_ddos, y_app, y_ddos,
-    n_trees, max_depth, max_blocks,
+    max_blocks,
     feature_names,
-    n_splits, random_state=42, verbose=False,
+    n_splits,
+    arm,
+    cfg,
+    random_state=42, verbose=False,
     max_workers=None,
     config: Optional[p4_gen_config.P4GenConfig] = None,
 ):
-    """
-    Compare single-task vs multi-task feature selection using parallel processing.
+    """Run ONE arm across n_splits, each split in its own process.
+
+    arm : 'independent' or 'joint'.
+    cfg : TrainConfig -- the arm definition. Frozen, so it is safe to ship to
+        every worker.
+
+    One arm per call: the delta sweep has seven arms, and recomputing the
+    independent baseline for each joint arm would spend about half the
+    campaign's compute producing six identical copies of it.
 
     Each split is processed in a separate process to avoid race conditions.
     Results are collected safely after all workers complete.
@@ -755,8 +519,8 @@ def compare_feature_selection_approaches_parallel(
         Feature matrices for App and DDoS datasets
     y_app, y_ddos : array-like
         Target vectors
-    n_trees, max_depth, max_blocks : int
-        Model training constraints
+    max_blocks : int
+        Model training constraint (TCAM block budget)
     feature_names : list
         Feature names
     n_splits : int
@@ -784,7 +548,8 @@ def compare_feature_selection_approaches_parallel(
     if X_app.shape[1] != X_ddos.shape[1]:
         raise ValueError("Both datasets must have the same number of features")
 
-    print(f"Starting PARALLEL comparison with {n_splits} splits")
+    encoding = 'joint' if arm == 'joint' else 'disjoint'
+    print(f"Starting arm {cfg.arm_slug(encoding)} at M={max_blocks} over {n_splits} splits")
     print(f"App dataset shape: {X_app.shape}, DDoS dataset shape: {X_ddos.shape}")
     print("-" * 70)
 
@@ -803,9 +568,10 @@ def compare_feature_selection_approaches_parallel(
                 _process_single_split,
                 split_idx,
                 X_app, X_ddos, y_app, y_ddos,
-                n_trees, max_depth, max_blocks,
+                max_blocks,
                 feature_names,
                 random_state, verbose,
+                arm, cfg,
                 config=config,
             ): split_idx
             for split_idx in range(10, 10 + n_splits)
