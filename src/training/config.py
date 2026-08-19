@@ -74,10 +74,15 @@ class TrainConfig:
             return 'joint-dinf'
         return 'joint-d{:03d}'.format(int(round(self.delta_align * 100)))
 
-    def delta_align_label(self):
+    def delta_align_label(self, encoding='joint'):
         """What goes in the row's `delta_align` column (spec C.1): the float,
-        "inf" for accept-all, or "" when alignment did not run."""
-        if not self.alignment_enabled:
+        "inf" for accept-all, or "" when alignment did not run.
+
+        encoding='disjoint' suppresses this the same way `arm_slug` does:
+        alignment runs in the joint arm only, so an independent-arm row must
+        not carry the joint arm's alignment settings.
+        """
+        if encoding == 'disjoint' or not self.alignment_enabled:
             return ''
         if self.delta_align is None:
             return 'inf'

@@ -6,6 +6,7 @@ from src.training.config import TrainConfig
 from src.reporting.analysis import analyze_multi_objective_results
 
 import argparse
+import os
 import pandas as pd
 import numpy as np
 
@@ -40,9 +41,9 @@ SENSITIVITY_ARMS = [
 
 def select_arms(which):
     if which == 'primary':
-        return PRIMARY_ARMS
+        return list(PRIMARY_ARMS)
     if which == 'sensitivity':
-        return SENSITIVITY_ARMS
+        return list(SENSITIVITY_ARMS)
     if which == 'all':
         return PRIMARY_ARMS + SENSITIVITY_ARMS
     raise ValueError("arms must be 'primary', 'sensitivity' or 'all', got {!r}".format(which))
@@ -242,7 +243,7 @@ def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):
 
 
 def compare_independent_joint_mapping(M_values, n_splits, arms=None,
-                                      parallel=True, max_workers=None,
+                                      max_workers=None,
                                       skip_existing=True):
     """Run one (arm, M) cell per output file.
 
@@ -318,8 +319,8 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
             # Identity columns, so an arm is recoverable from the row as well as
             # from the filename. P5 extends this to the full C.1 schema.
             results_df['arm'] = arm
-            results_df['alignment_enabled'] = cfg.alignment_enabled
-            results_df['delta_align'] = cfg.delta_align_label()
+            results_df['alignment_enabled'] = cfg.alignment_enabled and arm == 'joint'
+            results_df['delta_align'] = cfg.delta_align_label(encoding)
             results_df['delta_select'] = cfg.delta_select
             results_df['M'] = max_blocks
             results_df['n_trees'] = cfg.n_trees
@@ -336,6 +337,7 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
             #
             # Temp-then-rename so an interrupted cell never leaves a partial CSV
             # that the skip-if-exists guard above would read as complete.
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
             tmp_path = path + '.partial'
             results_df.to_csv(tmp_path, index=False)
             os.replace(tmp_path, path)
@@ -376,7 +378,6 @@ def run_main():
     n_splits = 15
 
     # Parallelization settings
-    parallel = True      # Set to False to use sequential processing
     max_workers = None   # None = auto (cpu_count - 1), or set to specific number
 
     if args.mode == "compute":
@@ -384,7 +385,6 @@ def run_main():
             M_values=M,
             n_splits=n_splits,
             arms=select_arms(args.arms),
-            parallel=parallel,
             max_workers=max_workers,
             skip_existing=not args.redo,
         )

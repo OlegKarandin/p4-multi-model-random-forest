@@ -70,6 +70,20 @@ def test_joint_arm_produces_one_row_per_k(monkeypatch):
     assert {r['method'] for r in rows} == {'multi'}
 
 
+def test_an_unknown_arm_is_rejected(monkeypatch):
+    """'disjoint' is the ENCODING name, not an arm name -- easily typo'd in
+    place of 'independent'. An unvalidated arm would silently run the
+    independent path while writing the typo verbatim into row['arm'],
+    corrupting a results file's identity column."""
+    import pytest
+
+    app, ddos = _splits()
+    with pytest.raises(ValueError, match='arm'):
+        fs._run_elimination(
+            arm='disjoint', split_idx=10, app=app, ddos=ddos,
+            feature_names=list(FEATURE_NAMES), max_blocks=25, cfg=TrainConfig())
+
+
 def test_the_arm_chooses_the_encoding(monkeypatch):
     record = []
     _run(monkeypatch, 'independent', record=record)

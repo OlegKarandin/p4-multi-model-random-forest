@@ -147,6 +147,53 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
     assert all(not name.endswith('.partial') for name in written)
 
 
+def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp_path, monkeypatch):
+    """Regression: TrainConfig() defaults to alignment_enabled=True,
+    delta_align=0.0 -- the SAME values joint-d000 uses -- so writing them
+    unconditionally for every arm made the independent baseline's rows
+    byte-identical to joint-d000's on these two columns, even though
+    alignment never runs for the independent arm (spec A.2/C.1:
+    delta_align='' and alignment_enabled should read as "off" there)."""
+    import numpy as np
+    import pandas as pd
+    from unittest.mock import patch
+
+    written = {}
+
+    def fake_to_csv(self, path, **kw):
+        written[path] = self.copy()
+        open(path, 'w').close()
+
+    frame = pd.DataFrame([{'arm': 'x', 'split': 10, 'k': 3}])
+    X = np.zeros((10, 4))
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'results').mkdir()
+
+    with patch("src.main.compare_feature_selection_approaches_parallel",
+               return_value=frame), \
+         patch("src.main.read_app_dataset"), \
+         patch("src.main.read_DDOS_dataset"), \
+         patch("src.main.remove_correlated_features_both_datasets",
+               return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("pandas.DataFrame.to_csv", new=fake_to_csv):
+        m.compare_independent_joint_mapping(
+            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
+
+    independent_df = next(df for p, df in written.items() if 'independent' in p)
+    joint_d000_df = next(df for p, df in written.items() if 'joint-d000' in p)
+
+    assert (~independent_df['alignment_enabled']).all()
+    assert (independent_df['delta_align'] == '').all()
+    assert joint_d000_df['alignment_enabled'].all()
+    assert (joint_d000_df['delta_align'] == '0').all()
+
+    # The two arms must actually differ -- guards against a fix that makes
+    # both columns constant across arms instead of correctly arm-dependent.
+    assert not independent_df['alignment_enabled'].equals(joint_d000_df['alignment_enabled'])
+    assert not independent_df['delta_align'].equals(joint_d000_df['delta_align'])
+
+
 def test_a_cell_whose_file_already_exists_is_skipped():
     """Resumability: the campaign is ~40 h at a +/-2x estimate over seven
     independent M values, so re-invoking the same command must continue rather

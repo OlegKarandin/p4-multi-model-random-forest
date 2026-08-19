@@ -248,6 +248,9 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     from src.p4gen.evaluation import accuracy_metrics
     from src.p4gen.switch_semantics import switch_accuracy_scorer, switch_predict
 
+    if arm not in ('independent', 'joint'):
+        raise ValueError("arm must be 'independent' or 'joint', got {!r}".format(arm))
+
     shared = (arm == 'joint')
     encoding = 'joint' if shared else 'disjoint'
     method = 'multi' if shared else 'single'

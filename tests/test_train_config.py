@@ -54,6 +54,19 @@ def test_delta_align_label_is_what_goes_in_the_row():
     assert TrainConfig(alignment_enabled=False).delta_align_label() == ''
 
 
+def test_delta_align_label_disjoint_encoding_suppresses_it_like_arm_slug():
+    """Mirrors arm_slug('disjoint'): the independent arm never runs alignment,
+    so its row must not carry the joint arm's default alignment_enabled=True,
+    delta_align=0.0 -- even though those are TrainConfig()'s defaults."""
+    cfg = TrainConfig()
+    assert cfg.alignment_enabled is True
+    assert cfg.delta_align == 0.0
+
+    assert cfg.delta_align_label('disjoint') == ''
+    assert cfg.delta_align_label('joint') == '0'
+    assert cfg.delta_align_label() == '0'
+
+
 def test_negative_tolerances_are_rejected():
     with pytest.raises(ValueError, match='delta_align'):
         TrainConfig(delta_align=-0.01)
