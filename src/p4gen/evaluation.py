@@ -1,4 +1,5 @@
 import math
+import re
 import sklearn.metrics as mt
 from src.p4gen.build_p4_script import *
 from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
@@ -284,6 +285,17 @@ def exact_match_resource_usage(codewords, feature_intervals):
 FLOW_HASH_LEVEL = 1
 
 
+def _normalise_feature_key(feature_name):
+  """Canonical FEATURE_REGISTER_CATALOG key for a feature name.
+
+  Dataset columns arrive dot-separated ('Fwd.Packet.Length.Max'), P4 field
+  names arrive underscore-separated, and the catalog is keyed lowercase
+  underscore. Collapse every run of non-alphanumeric characters to a single
+  underscore so all three spellings land on the same key. Leading/trailing
+  separators are stripped so 'Flow.IAT.Max.' cannot become a distinct key."""
+  return re.sub(r'[^0-9a-z]+', '_', feature_name.lower()).strip('_')
+
+
 def feature_readiness_level(feature_name, catalog=None):
   """Earliest pipeline stage at which this feature's `_val` field -- and so
   its range-matching table -- can possibly be placed.
@@ -308,7 +320,7 @@ def feature_readiness_level(feature_name, catalog=None):
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
 
-  entry = catalog.get(feature_name.replace(" ", "_").lower())
+  entry = catalog.get(_normalise_feature_key(feature_name))
   if entry is None:
     return FLOW_HASH_LEVEL
 

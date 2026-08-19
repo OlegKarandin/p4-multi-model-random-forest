@@ -660,6 +660,44 @@ def test_readiness_levels_follow_feature_intervals_order():
     assert ev.readiness_levels_for(feature_intervals) == [4, 3, 1]
 
 
+def test_feature_readiness_level_resolves_dotted_dataset_names():
+    """F5: the catalog is keyed 'flow_iat_max' but read_app_dataset /
+    read_DDOS_dataset ship 'Flow.IAT.Max'. Only spaces were normalised, so
+    every real feature name missed the catalog and fell back to
+    FLOW_HASH_LEVEL -- which left the register-dependency model in
+    crossbar_stages_needed inert while `stages` was still being reported."""
+    assert ev.feature_readiness_level("Flow.IAT.Max") == 3
+    assert ev.feature_readiness_level("Flow.IAT.Mean") == 3
+    assert ev.feature_readiness_level("Fwd.Packet.Length.Max") == 3
+    assert ev.feature_readiness_level("Fwd.IAT.Max") == 4
+
+
+def test_feature_readiness_level_dotted_and_underscored_names_agree():
+    """The normaliser must be a superset of the old space-only behaviour."""
+    for dotted, underscored in (("Flow.IAT.Max", "Flow_IAT_Max"),
+                                ("Fwd.IAT.Max", "Fwd_IAT_Max"),
+                                ("Fwd.Packet.Length.Max", "Fwd_Packet_Length_Max")):
+        assert ev.feature_readiness_level(dotted) == ev.feature_readiness_level(underscored)
+
+
+def test_feature_readiness_level_unknown_dotted_feature_still_falls_back():
+    """Most of the 18 selected features genuinely have no catalog entry, so
+    the fallback must survive normalisation rather than become a KeyError."""
+    assert ev.feature_readiness_level("Bwd.Packet.Length.Min") == ev.FLOW_HASH_LEVEL
+    assert ev.feature_readiness_level("Packet.Length.Mean") == ev.FLOW_HASH_LEVEL
+
+
+def test_readiness_levels_for_real_dataset_feature_names():
+    """readiness_levels_for is positionally aligned with feature_intervals, so
+    the levels must follow the dict's key order exactly."""
+    feature_intervals = {
+        "Fwd.IAT.Max": [(0, 10), (11, 65535)],
+        "Flow.IAT.Max": [(0, 20), (21, 65535)],
+        "Bwd.IAT.Min": [(0, 30), (31, 65535)],
+    }
+    assert ev.readiness_levels_for(feature_intervals) == [4, 3, 1]
+
+
 def test_crossbar_stages_needed_separates_tables_by_readiness_level():
     # Four trivially small tables that the pure packer puts in one stage.
     specs = [(1, 2)] * 4
