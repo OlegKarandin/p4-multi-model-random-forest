@@ -203,6 +203,12 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
     `_kickoff_hardware_validation` builds) into its returned CompileResult,
     so each row can be checked against the specific compile result that
     belongs to it.
+
+    Task 5: `_process_single_split` now runs exactly one arm per call, so the
+    disjoint ('single') and joint ('multi') loops are exercised by two
+    separate calls (arm='independent' and arm='joint') sharing one
+    `hardware_output_dir` -- the compile filenames already disambiguate by
+    method, so nothing collides.
     """
     import os
     import re
@@ -211,9 +217,9 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
 
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=40, n_features=4)
 
-    def _fake_train(X_A, y_A, X_B, y_B, x_val_A, y_val_A, x_val_B, y_val_B,
-                     features_A, features_B, n_trees, max_depth, max_blocks,
-                     encoding, warm_start_params=None):
+    def _fake_train(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                     val_select_A, val_select_B, features_A, features_B,
+                     max_blocks, encoding, cfg, warm_start_params=None):
         # Real (tiny, instantly-fit) models -- not mocked -- so the
         # downstream real code (accuracy_metrics, permutation_importance,
         # and _kickoff_hardware_validation's real generate_P4_code /
@@ -224,7 +230,7 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return model_A, model_B, 1, 1, {}
+        return model_A, model_B, 1, 1, 0.7, 0.9, {}
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         # Task 3: both loops now write ONE combined file per iteration
@@ -249,18 +255,25 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
 
     with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
          patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
-        result = fs._process_single_split(
+        result_single = fs._process_single_split(
             split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            n_trees=1, max_depth=3, max_blocks=50,
-            feature_names=["f0", "f1", "f2", "f3"], random_state=42, verbose=False,
+            max_blocks=50, feature_names=["f0", "f1", "f2", "f3"],
+            random_state=42, verbose=False, arm='independent',
+            validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
+        )
+        result_multi = fs._process_single_split(
+            split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+            max_blocks=50, feature_names=["f0", "f1", "f2", "f3"],
+            random_state=42, verbose=False, arm='joint',
             validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
         )
 
-    assert result.error is None
+    assert result_single.error is None
+    assert result_multi.error is None
 
-    single_rows = sorted((r for r in result.results if r['method'] == 'single'),
+    single_rows = sorted((r for r in result_single.results if r['method'] == 'single'),
                           key=lambda r: -r['k'])
-    multi_rows = sorted((r for r in result.results if r['method'] == 'multi'),
+    multi_rows = sorted((r for r in result_multi.results if r['method'] == 'multi'),
                          key=lambda r: -r['k'])
 
     # 4 starting features -> k=4,3,2,1 for each loop: first iteration,
@@ -299,14 +312,14 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
 
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=30, n_features=2)
 
-    def _fake_train(X_A, y_A, X_B, y_B, x_val_A, y_val_A, x_val_B, y_val_B,
-                     features_A, features_B, n_trees, max_depth, max_blocks,
-                     encoding, warm_start_params=None):
+    def _fake_train(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                     val_select_A, val_select_B, features_A, features_B,
+                     max_blocks, encoding, cfg, warm_start_params=None):
         model_A = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return model_A, model_B, 1, 1, {}
+        return model_A, model_B, 1, 1, 0.7, 0.9, {}
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         return type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
@@ -319,7 +332,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
          patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_kwargs = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            n_trees=1, max_depth=3, max_blocks=50,
+            max_blocks=50,
             feature_names=["f0", "f1"], random_state=42, verbose=False,
             validate_on_hardware=True, hardware_output_dir=kwargs_dir,
         )
@@ -329,7 +342,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
          patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_config = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            n_trees=1, max_depth=3, max_blocks=50,
+            max_blocks=50,
             feature_names=["f0", "f1"], random_state=42, verbose=False,
             config=cfg,
         )
@@ -504,6 +517,12 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
     itself is spied on but still really runs, so the real generate_P4_code
     (with the config's discount actually in force) executes for every
     iteration.
+
+    Task 5: `_process_single_split` now runs exactly one arm per call, so
+    each of `_kickoff_hardware_validation`'s two call sites (disjoint/
+    'single', joint/'multi') is exercised by its own call
+    (arm='independent'/arm='joint'); the two calls' `spy_kickoff` histories
+    are combined below to check both methods appear across them.
     """
     from src.p4gen import p4_gen_config
     from sklearn.ensemble import RandomForestClassifier
@@ -516,14 +535,14 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
     # predicted samples and emit UndefinedMetricWarning noise.
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset()
 
-    def _fake_train(X_A, y_A, X_B, y_B, x_val_A, y_val_A, x_val_B, y_val_B,
-                     features_A, features_B, n_trees, max_depth, max_blocks,
-                     encoding, warm_start_params=None):
+    def _fake_train(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                     val_select_A, val_select_B, features_A, features_B,
+                     max_blocks, encoding, cfg, warm_start_params=None):
         model_A = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return model_A, model_B, 1, 1, {}
+        return model_A, model_B, 1, 1, 0.7, 0.9, {}
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         return type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
@@ -539,14 +558,19 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
          patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async), \
          patch.object(fs, "_kickoff_hardware_validation",
                       side_effect=real_kickoff) as spy_kickoff:
-        result = fs._process_single_split(
+        result_single = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            n_trees=1, max_depth=3, max_blocks=50,
-            feature_names=["f0", "f1", "f2"], random_state=42, verbose=False,
-            config=cfg)
+            max_blocks=50, feature_names=["f0", "f1", "f2"],
+            random_state=42, verbose=False, arm='independent', config=cfg)
+        result_multi = fs._process_single_split(
+            split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+            max_blocks=50, feature_names=["f0", "f1", "f2"],
+            random_state=42, verbose=False, arm='joint', config=cfg)
 
-    assert result.error is None
-    # Both loops run to k=1, so both call sites are exercised.
+    assert result_single.error is None
+    assert result_multi.error is None
+    # Each call runs exactly one arm to k=1, so together both call sites are
+    # exercised.
     methods = {call.args[3] for call in spy_kickoff.call_args_list}
     assert methods == {'single', 'multi'}
     assert spy_kickoff.call_count > 0
