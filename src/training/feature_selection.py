@@ -9,6 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from src.training.train_model import train_multi_RF_Optuna_multi_constrained
+from src.training.errors import NoFeasibleSolution
 from src.p4gen.evaluation import accuracy_metrics
 from src.p4gen import p4_gen_config
 
@@ -550,28 +551,59 @@ def _process_single_split(
         feature_names_app = list(feature_names)
         feature_names_ddos = list(feature_names)
 
+        # F3b: importance vectors positionally aligned with
+        # remaining_features_*, carried forward so an infeasible k can still
+        # drop a feature. The last feasible model's ranking is the only
+        # defensible order available when there is no model to score.
+        carried_importance_app = None
+        carried_importance_ddos = None
+
         while True:
             k_app = len(remaining_features_app)
             k_ddos = len(remaining_features_ddos)
-            
+
             # Train models with current feature sets
-            model_app, model_ddos, stages, blocks, best_params = train_multi_RF_Optuna_multi_constrained(
-                X_app_train[:, remaining_features_app],
-                y_app_train,
-                X_ddos_train[:, remaining_features_ddos],
-                y_ddos_train,
-                X_app_val[:, remaining_features_app],
-                y_app_val,
-                X_ddos_val[:, remaining_features_ddos],
-                y_ddos_val,
-                feature_names_app,
-                feature_names_ddos,
-                n_trees,
-                max_depth,
-                max_blocks,
-                'disjoint',
-                warm_start_params_single
-            )
+            try:
+                model_app, model_ddos, stages, blocks, best_params = train_multi_RF_Optuna_multi_constrained(
+                    X_app_train[:, remaining_features_app],
+                    y_app_train,
+                    X_ddos_train[:, remaining_features_ddos],
+                    y_ddos_train,
+                    X_app_val[:, remaining_features_app],
+                    y_app_val,
+                    X_ddos_val[:, remaining_features_ddos],
+                    y_ddos_val,
+                    feature_names_app,
+                    feature_names_ddos,
+                    n_trees,
+                    max_depth,
+                    max_blocks,
+                    'disjoint',
+                    warm_start_params_single
+                )
+            except NoFeasibleSolution as exc:
+                results.append({
+                    'method': 'single', 'split': split_idx, 'k': k_app,
+                    'acc_app': None, 'f1_app': None,
+                    'acc_ddos': None, 'f1_ddos': None,
+                    'stages': None, 'blocks': None,
+                    'infeasible': str(exc),
+                })
+                if carried_importance_app is None or carried_importance_ddos is None:
+                    break  # First iteration: no ranking to continue from.
+                if len(remaining_features_app) == 1 and len(remaining_features_ddos) == 1:
+                    break
+                idx_app = int(carried_importance_app.argmin())
+                del remaining_features_app[idx_app]
+                del feature_names_app[idx_app]
+                carried_importance_app = np.delete(carried_importance_app, idx_app)
+
+                idx_ddos = int(carried_importance_ddos.argmin())
+                del remaining_features_ddos[idx_ddos]
+                del feature_names_ddos[idx_ddos]
+                carried_importance_ddos = np.delete(carried_importance_ddos, idx_ddos)
+                continue
+
             warm_start_params_single = best_params  # Use for next k
 
             # Calculate accuracy metrics
@@ -599,6 +631,7 @@ def _process_single_split(
                 'f1_ddos': f1_ddos,
                 'stages': stages,
                 'blocks': blocks,
+                'infeasible': '',
             })
 
             # Kick off this iteration's hardware validation (non-blocking),
@@ -619,19 +652,23 @@ def _process_single_split(
             # Calculate permutation importance for each problem independently
             importance_results_app = permutation_importance(
                 model_app, X_app_val[:, remaining_features_app], y_app_val,
-                scoring='accuracy', n_repeats=10, random_state=42, #n_jobs=-1
+                scoring='accuracy', n_repeats=10, random_state=42,
             )
-            lowest_importance_idx_app = importance_results_app.importances_mean.argmin()
+            carried_importance_app = importance_results_app.importances_mean
+            lowest_importance_idx_app = int(carried_importance_app.argmin())
             del remaining_features_app[lowest_importance_idx_app]
             del feature_names_app[lowest_importance_idx_app]
+            carried_importance_app = np.delete(carried_importance_app, lowest_importance_idx_app)
 
             importance_results_ddos = permutation_importance(
                 model_ddos, X_ddos_val[:, remaining_features_ddos], y_ddos_val,
-                scoring='accuracy', n_repeats=10, random_state=42, #n_jobs=-1
+                scoring='accuracy', n_repeats=10, random_state=42,
             )
-            lowest_importance_idx_ddos = importance_results_ddos.importances_mean.argmin()
+            carried_importance_ddos = importance_results_ddos.importances_mean
+            lowest_importance_idx_ddos = int(carried_importance_ddos.argmin())
             del remaining_features_ddos[lowest_importance_idx_ddos]
             del feature_names_ddos[lowest_importance_idx_ddos]
+            carried_importance_ddos = np.delete(carried_importance_ddos, lowest_importance_idx_ddos)
 
         _join_final_pending_compile(results, pending_previous_single)
 
@@ -641,28 +678,48 @@ def _process_single_split(
         pending_previous_multi = None
         remaining_features_shared = list(range(X_app_train.shape[1]))
         feature_names_shared = list(feature_names)
+        carried_importance_shared = None
 
         while True:
             k = len(remaining_features_shared)
-            
+
             # Train models with current feature set
-            model_app, model_ddos, stages, blocks, best_params = train_multi_RF_Optuna_multi_constrained(
-                X_app_train[:, remaining_features_shared],
-                y_app_train,
-                X_ddos_train[:, remaining_features_shared],
-                y_ddos_train,
-                X_app_val[:, remaining_features_shared],
-                y_app_val,
-                X_ddos_val[:, remaining_features_shared],
-                y_ddos_val,
-                feature_names_shared,
-                feature_names_shared,
-                n_trees,
-                max_depth,
-                max_blocks,
-                'joint',
-                warm_start_params_multi
-            )
+            try:
+                model_app, model_ddos, stages, blocks, best_params = train_multi_RF_Optuna_multi_constrained(
+                    X_app_train[:, remaining_features_shared],
+                    y_app_train,
+                    X_ddos_train[:, remaining_features_shared],
+                    y_ddos_train,
+                    X_app_val[:, remaining_features_shared],
+                    y_app_val,
+                    X_ddos_val[:, remaining_features_shared],
+                    y_ddos_val,
+                    feature_names_shared,
+                    feature_names_shared,
+                    n_trees,
+                    max_depth,
+                    max_blocks,
+                    'joint',
+                    warm_start_params_multi
+                )
+            except NoFeasibleSolution as exc:
+                results.append({
+                    'method': 'multi', 'split': split_idx, 'k': k,
+                    'acc_app': None, 'f1_app': None,
+                    'acc_ddos': None, 'f1_ddos': None,
+                    'stages': None, 'blocks': None,
+                    'infeasible': str(exc),
+                })
+                if carried_importance_shared is None:
+                    break
+                if len(remaining_features_shared) == 1:
+                    break
+                idx = int(carried_importance_shared.argmin())
+                del remaining_features_shared[idx]
+                del feature_names_shared[idx]
+                carried_importance_shared = np.delete(carried_importance_shared, idx)
+                continue
+
             warm_start_params_multi = best_params
 
             # Calculate accuracy metrics
@@ -690,6 +747,7 @@ def _process_single_split(
                 'f1_ddos': f1_ddos,
                 'stages': stages,
                 'blocks': blocks,
+                'infeasible': '',
             })
 
             pending_next_multi = _kickoff_hardware_validation(
@@ -705,20 +763,22 @@ def _process_single_split(
             # Calculate permutation importance and remove least important feature
             importance_results_app = permutation_importance(
                 model_app, X_app_val[:, remaining_features_shared], y_app_val,
-                scoring='accuracy', n_repeats=10, random_state=42, #n_jobs=-1
+                scoring='accuracy', n_repeats=10, random_state=42,
             )
             importance_results_ddos = permutation_importance(
                 model_ddos, X_ddos_val[:, remaining_features_shared], y_ddos_val,
-                scoring='accuracy', n_repeats=10, random_state=42, #n_jobs=-1
+                scoring='accuracy', n_repeats=10, random_state=42,
             )
 
-            # Combine importances
-            combined_importance = importance_results_app.importances_mean + importance_results_ddos.importances_mean
-            lowest_importance_idx = combined_importance.argmin()
-
-            # Remove least important feature
+            # Sum, not mean: both tasks are scored on accuracy over the same
+            # column space, so the sum is the joint arm's shared-feature
+            # ranking. Carried across infeasible k so elimination continues.
+            carried_importance_shared = (importance_results_app.importances_mean
+                                         + importance_results_ddos.importances_mean)
+            lowest_importance_idx = int(carried_importance_shared.argmin())
             del remaining_features_shared[lowest_importance_idx]
             del feature_names_shared[lowest_importance_idx]
+            carried_importance_shared = np.delete(carried_importance_shared, lowest_importance_idx)
 
         _join_final_pending_compile(results, pending_previous_multi)
 
