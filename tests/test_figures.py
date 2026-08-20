@@ -636,9 +636,14 @@ def test_deliverable_5_markdown_renders_a_row_for_every_contrast(tmp_path):
 # Deliverable 6 -- the capacity-ceiling appendix
 # ---------------------------------------------------------------------------
 
-def _synthetic_ceiling_csv(path):
+def _synthetic_ceiling_csv(path, pruned_min_samples_leaf=None):
     """A capacity-ceiling CSV in `scripts/capacity_ceiling.py`'s own schema,
-    covering its full grid so the appendix has every cell it renders."""
+    covering its full grid so the appendix has every cell it renders.
+
+    `pruned_min_samples_leaf`, when given, overrides the recorded value on
+    every pruned-corner row -- simulating a CSV measured under a DIFFERENT
+    `PRUNED.min_samples_leaf` than whatever the constant holds today, the
+    scenario the printed header must render honestly."""
     from scripts.capacity_ceiling import (
         CORNERS, MAX_DEPTH_GRID, N_TREES_GRID, SPLIT_INDICES, cardinality_of)
     rows = []
@@ -652,11 +657,14 @@ def _synthetic_ceiling_csv(path):
                     scale = 1 if corner.name == 'pruned' else 9
                     length = scale * n_trees * max_depth
                     within = length <= 512
+                    leaf = corner.min_samples_leaf
+                    if corner.name == 'pruned' and pruned_min_samples_leaf is not None:
+                        leaf = pruned_min_samples_leaf
                     rows.append({
                         'n_trees': n_trees, 'max_depth': max_depth,
                         'cardinality': cardinality_of(n_trees, max_depth),
                         'corner': corner.name,
-                        'min_samples_leaf': corner.min_samples_leaf,
+                        'min_samples_leaf': leaf,
                         'min_samples_split': corner.min_samples_split,
                         'split_idx': split_idx, 'split_seed': 42 + split_idx,
                         'joint_codeword_length': length,
@@ -704,6 +712,26 @@ def test_deliverable_6_says_so_when_the_measurement_has_never_been_run(tmp_path)
     with pytest.raises(FileNotFoundError):
         figures.appendix_6_capacity_ceiling(
             ceiling_csv=str(tmp_path / 'absent.csv'), output_dir=str(tmp_path))
+
+
+def test_deliverable_6_pruned_corner_header_reflects_the_csv_not_the_constant(tmp_path):
+    """`at_corner` selects rows by the string label 'pruned', not by
+    matching `min_samples_leaf` -- so if `PRUNED.min_samples_leaf` changes
+    after a CSV was measured, a header built from the CONSTANT would
+    disagree with the rows it sits above (a CSV genuinely fit at one value,
+    labelled with another). The header must be read off the data being
+    rendered instead, so it is correct for whatever produced the file --
+    this constructs exactly that mismatch and would fail against a header
+    built from `PRUNED.min_samples_leaf` directly."""
+    from scripts.capacity_ceiling import PRUNED
+    stale_value = PRUNED.min_samples_leaf + 5    # not today's constant
+    csv_path = _synthetic_ceiling_csv(tmp_path / 'capacity_ceiling.csv',
+                                      pruned_min_samples_leaf=stale_value)
+    deliverable = figures.appendix_6_capacity_ceiling(
+        ceiling_csv=csv_path, output_dir=str(tmp_path))
+    markdown = deliverable.markdown_body
+    assert 'min_samples_leaf={}'.format(stale_value) in markdown
+    assert 'min_samples_leaf={}'.format(PRUNED.min_samples_leaf) not in markdown
 
 
 # ---------------------------------------------------------------------------

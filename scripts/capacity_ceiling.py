@@ -319,6 +319,16 @@ def per_cell(frame):
 
     cells = frame.groupby(['n_trees', 'max_depth', 'corner'], as_index=False).agg(
         cardinality=('cardinality', 'max'),
+        # Carried through rather than read off the `Corner` constant: these
+        # are what the ROWS were actually fit with, which is not
+        # necessarily what the constant says today if it changed after this
+        # CSV was written. `min_samples_leaf`/`min_samples_split` are
+        # constant within one (corner, this CSV) by construction (`fit`
+        # always reads them off the same `Corner` namedtuple for every row
+        # of a `collect()` run), so 'first' just recovers that constant --
+        # it is not really an aggregation.
+        min_samples_leaf=('min_samples_leaf', 'first'),
+        min_samples_split=('min_samples_split', 'first'),
         joint_cw_max=('joint_codeword_length', 'max'),
         joint_blocks_max=('joint_blocks', 'max'),
         joint_within_limit_all_splits=('joint_within_limit', 'all'),
@@ -342,10 +352,39 @@ def at_corner(cells, corner, n_trees=None, max_depth=None):
     return rows
 
 
+def corner_params(cells, corner):
+    """The min_samples_leaf/min_samples_split a corner's rows in `cells`
+    were ACTUALLY fit with, read from the data -- never from the `Corner`
+    constant. If the constant changes after a CSV was measured, a printed
+    header built from the constant would disagree with the table beneath
+    it; reading the value off the rows being rendered makes that
+    impossible; whatever produced the file is what gets printed.
+
+    Raises if a CSV somehow mixes two values for one corner name, since
+    that would mean the file blends two measurements under one label and no
+    single header could honestly describe it.
+    """
+    rows = cells[cells.corner == corner.name]
+    if not len(rows):
+        raise ValueError(
+            'corner_params: no rows for corner {!r} in this data'.format(
+                corner.name))
+    leaf = rows['min_samples_leaf'].unique()
+    split = rows['min_samples_split'].unique()
+    if len(leaf) > 1 or len(split) > 1:
+        raise ValueError(
+            'corner_params: corner {!r} has inconsistent min_samples_leaf '
+            '({}) or min_samples_split ({}) across its own rows -- this '
+            'file mixes measurements taken under different constants and '
+            'cannot be rendered under one header.'.format(
+                corner.name, sorted(leaf), sorted(split)))
+    return int(leaf[0]), int(split[0])
+
+
 def print_grid(cells, corner, column, title, note):
+    leaf, split = corner_params(cells, corner)
     print('\n### {} ({} corner: min_samples_leaf={}, min_samples_split={})\n'
-          .format(title, corner.name, corner.min_samples_leaf,
-                  corner.min_samples_split))
+          .format(title, corner.name, leaf, split))
     print('{}\n'.format(note))
     header = ['n_trees \\ max_depth'] + [str(d) for d in MAX_DEPTH_GRID]
     print('| ' + ' | '.join(header) + ' |')
@@ -440,15 +479,20 @@ def select(cells):
     chosen = tied.iloc[0]
     strict = at_corner(cells, LARGE_TREE, chosen.n_trees, chosen.max_depth).iloc[0]
 
+    deciding_leaf, deciding_split = corner_params(cells, DECIDING_CORNER)
     print('\n### Adopted values\n')
     print('The {} corner decides (Ruling P4-2): a cell counts as feasible when '
           'ANY configuration the search can reach there compiles, and pruning '
-          'is inside the search space -- min_samples_leaf up to 195 (the '
-          'reachable edge of suggest_int(5, 200, step=10)), min_samples_split '
-          'up to 400. Requiring the whole box to compile (the '
-          '{} corner) would truncate the reachable frontier without buying a '
-          'real guarantee, since the block budget binds inside the box '
-          'regardless.'.format(DECIDING_CORNER.name, LARGE_TREE.name))
+          'is inside the search space -- min_samples_leaf up to {}, '
+          'min_samples_split up to {} (the values the rows below were '
+          'actually fit with, read from the measurement rather than from '
+          'the `Corner` constant in code, so this stays correct even if the '
+          'constant changes after a CSV is measured). Requiring the whole '
+          'box to compile (the {} corner) would truncate the reachable '
+          'frontier without buying a real guarantee, since the block budget '
+          'binds inside the box regardless.'.format(
+              DECIDING_CORNER.name, deciding_leaf, deciding_split,
+              LARGE_TREE.name))
     print('\n{} of {} grid cells keep the joint codeword within {} bits on all '
           '{} splits at that corner. The largest admissible search space among '
           'them has cardinality ceil(n_trees / 2) * (max_depth - 1) = {}, '
