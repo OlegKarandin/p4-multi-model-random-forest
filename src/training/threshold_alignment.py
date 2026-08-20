@@ -1,6 +1,7 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
+import copy
 import sklearn
 import numpy as np
 
@@ -120,10 +121,23 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
     Returns:
     --------
-    rf1_aligned, rf2_aligned : Modified RandomForest models with aligned thresholds
+    rf1_aligned, rf2_aligned : Deep copies of rf1/rf2 with aligned thresholds.
+        rf1/rf2 themselves are left untouched (C8) -- the return value is the
+        only way to get the aligned models; discarding it discards the
+        alignment.
     alignment_stats : dict
         Statistics about the alignment process
     """
+
+    # C8: deepcopy before anything below reads or mutates rf1/rf2, and
+    # specifically before build_prediction_cache -- its tree_predictions feed
+    # IncrementalMetrics' vote matrix, so if the copy happened after that
+    # call, the cache would describe the caller's forests while every
+    # mutation below landed on the copies, and the accept/reject loop would
+    # silently score the wrong models. ~401 KB per pair against a ~550 ms
+    # fit (measured) -- negligible next to what it protects.
+    rf1 = copy.deepcopy(rf1)
+    rf2 = copy.deepcopy(rf2)
 
     # Cast ONCE. estimator.predict / decision_path each run
     # check_array(X, dtype=np.float32) internally, and the arrays arriving from

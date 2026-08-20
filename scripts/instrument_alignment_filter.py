@@ -61,8 +61,12 @@ def main():
 
     rows = []
     for delta in DELTAS:
-        # Refit per delta so each run starts from identical, unmutated models --
-        # align_rf_thresholds mutates tree_.threshold in place (C8).
+        # Refit per delta so each run starts from identical, unmutated models.
+        # align_rf_thresholds now deepcopies rf1/rf2 on entry and mutates only
+        # the copies (C8), so this refit is no longer needed for THAT reason;
+        # it stays because this loop discards align_rf_thresholds' return
+        # value and only reads the candidate_log side effect, so rf1/rf2
+        # still have to be fresh, unaligned models going into each delta.
         rf1 = fit(app.X_train, app.y_train, 0)
         rf2 = fit(ddos.X_train, ddos.y_train, 1)
 

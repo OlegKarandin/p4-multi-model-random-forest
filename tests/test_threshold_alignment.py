@@ -227,9 +227,9 @@ def test_node_to_samples_matches_a_direct_decision_path_query():
 
 
 def test_alignment_does_not_mutate_the_callers_validation_arrays():
-    """The float32 cast must be local. C8 already flags that this module
-    mutates the caller's MODELS in place; it must not also start mutating the
-    caller's data."""
+    """The float32 cast must be local. Even now that C8 stops this module from
+    mutating the caller's MODELS in place (below), it must not start mutating
+    the caller's data instead."""
     rf1, X1, y1 = _forest_and_data(seed=5)
     rf2, X2, y2 = _forest_and_data(seed=6)
     y2 = np.where(y2 == 0, -1, 1)
@@ -240,6 +240,44 @@ def test_alignment_does_not_mutate_the_callers_validation_arrays():
 
     assert X1.dtype == before_dtype
     assert np.array_equal(X1, before_copy)
+
+
+def test_original_forests_are_unchanged_after_an_alignment_that_accepts_a_move():
+    """C8: align_rf_thresholds deepcopies rf1/rf2 on entry and mutates only the
+    copies, so the caller's originals survive the call. delta_rel=None is the
+    maximum-mutation arm (see _aligned_forest_pair) and this fixture is the
+    same one test_a_candidate_that_moves_nothing_costs_no_prediction uses at
+    delta_rel=0.05, where it reliably produces accepted moves -- a fixture
+    where nothing gets accepted would pass whether or not the copy-on-entry
+    fix landed, which would make the test worthless.
+
+    Checked against the actual tree_.threshold arrays, not just object
+    identity: identity alone wouldn't catch a version that deepcopies but
+    still writes through to the original by accident.
+    """
+    rf1, X1, y1 = _forest_and_data(seed=5)
+    rf2, X2, y2 = _forest_and_data(seed=6)
+    y2 = np.where(y2 == 0, -1, 1)
+
+    before1 = [np.array(e.tree_.threshold, copy=True) for e in rf1.estimators_]
+    before2 = [np.array(e.tree_.threshold, copy=True) for e in rf2.estimators_]
+
+    stats = {}
+    out1, out2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                        overlap_threshold=0.5, delta_rel=None,
+                                        align_stats=stats)
+
+    assert stats['accepted'] > 0, 'the fixture must accept at least one move'
+
+    # Both directions of the contract: the returned objects are new objects,
+    # not the caller's originals wearing new thresholds.
+    assert out1 is not rf1
+    assert out2 is not rf2
+
+    for estimator, expected in zip(rf1.estimators_, before1):
+        assert np.array_equal(estimator.tree_.threshold, expected)
+    for estimator, expected in zip(rf2.estimators_, before2):
+        assert np.array_equal(estimator.tree_.threshold, expected)
 
 
 def test_float32_cast_is_value_preserving_for_this_projects_data():
@@ -762,7 +800,9 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
 
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    # C8: align_rf_thresholds no longer mutates rf1/rf2 in place -- it returns
+    # copies -- so the aligned models to check are the returned ones.
+    rf1, rf2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
                            delta_rel=delta_rel, align_stats=stats)
 
     assert stats == golden['stats']
