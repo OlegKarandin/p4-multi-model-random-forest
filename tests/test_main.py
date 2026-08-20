@@ -346,3 +346,67 @@ def test_M_and_n_splits_flags_actually_take_effect():
 
     assert mock_compute.call_args.kwargs['M_values'] == [25, 40]
     assert mock_compute.call_args.kwargs['n_splits'] == 2
+
+
+# ---------------------------------------------------------------------------
+# Gap 6 (P5): the run manifest, exercised end to end through
+# compare_independent_joint_mapping rather than only at the module level
+# (tests/test_manifest.py covers that). This is what proves the hook itself
+# is wired to the grid actually passed in, lands in results/manifests/ (not
+# results/, where it would trip skip_existing and the protected file-listing
+# assertion above), and round-trips.
+# ---------------------------------------------------------------------------
+
+def test_a_run_manifest_lands_in_results_manifests_with_the_grid_actually_used(
+        tmp_path, monkeypatch):
+    import json
+    import os
+    import numpy as np
+    import pandas as pd
+    from unittest.mock import patch
+
+    frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
+    X = np.zeros((10, 4))
+    # Real DataFrames (unlike the bare-Mock read_*_dataset used by the other
+    # compute-mode tests above) so df_app.shape[0] is a genuine, JSON-able
+    # int -- the manifest write only actually lands when its inputs really
+    # are picklable/serialisable, by design (see write_run_manifest's
+    # docstring: build-then-serialise before any I/O).
+    df_app = pd.DataFrame({'f': range(37), 'Label': [0] * 37})
+    df_ddos = pd.DataFrame({'f': range(53), 'Label': [0] * 53})
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'results').mkdir()
+
+    with patch("src.main.compare_feature_selection_approaches_parallel",
+               return_value=frame), \
+         patch("src.main.read_app_dataset", return_value=df_app), \
+         patch("src.main.read_DDOS_dataset", return_value=df_ddos), \
+         patch("src.main.remove_correlated_features_both_datasets",
+               return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("pandas.DataFrame.to_csv",
+               side_effect=lambda p, **kw: open(p, 'w').close()):
+        m.compare_independent_joint_mapping(
+            M_values=[25, 40], n_splits=2, arms=m.PRIMARY_ARMS)
+
+    manifests_dir = tmp_path / 'results' / 'manifests'
+    assert manifests_dir.is_dir()
+    written = list(manifests_dir.glob('manifest_*.json'))
+    assert len(written) == 1
+
+    with open(written[0]) as f:
+        loaded = json.load(f)
+
+    assert loaded['M_values'] == [25, 40]
+    assert loaded['n_splits'] == 2
+    assert loaded['dataset_rows'] == {'app': 37, 'ddos': 53}
+    assert len(loaded['arms']) == 3
+
+    # And the protected assertion elsewhere in this file (the exact file
+    # listing of results/) is exactly why this lives one level down: the top
+    # of results/ itself carries only the two (arm, M) CSV files' worth of
+    # per-cell output plus the manifests/ subdirectory, never a bare
+    # manifest file competing with skip_existing's completion marker.
+    top_level = {p.name for p in (tmp_path / 'results').iterdir()}
+    assert 'manifests' in top_level
+    assert all(name == 'manifests' or name.endswith('.csv') for name in top_level)

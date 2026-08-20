@@ -4,6 +4,7 @@ from src.training.feature_selection import compare_feature_selection_approaches_
 from src.training.config import TrainConfig
 
 from src.reporting.analysis import analyze_multi_objective_results
+from src.reporting.manifest import write_run_manifest
 
 import argparse
 import os
@@ -297,6 +298,18 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
     print("Starting per-task objective campaign")
     print("=" * 70)
     print(f"Total number of features: {X_app.shape[1]}")
+
+    # Gap 6 (P5, spec C.2): one manifest per invocation, recording the arms,
+    # the grid ACTUALLY passed in (not run_main's defaults), dataset sizes,
+    # and git/library provenance. Row counts come from df_app/df_ddos -- the
+    # raw datasets -- rather than X_app/X_ddos, since remove_correlated_
+    # features_both_datasets only drops columns, never rows.
+    manifest_path = write_run_manifest(
+        arms=arms, M_values=M_values, n_splits=n_splits,
+        n_rows_app=df_app.shape[0], n_rows_ddos=df_ddos.shape[0],
+    )
+    if manifest_path:
+        print(f"Wrote run manifest: {manifest_path}")
 
     for max_blocks in M_values:
         for arm, cfg in arms:
