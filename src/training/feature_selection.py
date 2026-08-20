@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 from sklearn.inspection import permutation_importance
 
@@ -291,6 +293,15 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
                 'stages': None, 'blocks': None,
                 'infeasible': str(exc),
                 'stages_real': None, 'tcam_real': None, 'compile_errors': None,
+                'features_app': ';'.join(names_app), 'features_ddos': ';'.join(names_ddos),
+                # best_params is deliberately '', NOT json.dumps(warm_start_params):
+                # warm_start_params is still bound from the previous (feasible) k
+                # here, so writing it would silently attribute the previous k's
+                # parameters to this infeasible one.
+                'best_params': '',
+                'rel_shortfall': '', 'n_trials_run': '', 'n_feasible': '',
+                'align_attempted': '', 'align_accepted': '',
+                'intervals_before': '', 'intervals_after': '',
             })
             if carried_app is None or k == 1:
                 break  # No ranking to continue from, or nothing left to drop.
@@ -323,6 +334,18 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             'acc_sel_app': acc_sel_app, 'acc_sel_ddos': acc_sel_ddos,
             'stages': stages, 'blocks': blocks,
             'infeasible': '',
+            'features_app': ';'.join(names_app), 'features_ddos': ';'.join(names_ddos),
+            'best_params': json.dumps(best_params),
+            'rel_shortfall': train_result.rel_shortfall,
+            'n_trials_run': train_result.n_trials_run,
+            'n_feasible': train_result.n_feasible,
+            # None (not 0) means alignment never ran for this arm/config --
+            # preserve that distinction as '' rather than erasing it with a
+            # falsy test (a real align_accepted of 0 must stay 0, not '').
+            'align_attempted': train_result.align_attempted if train_result.align_attempted is not None else '',
+            'align_accepted': train_result.align_accepted if train_result.align_accepted is not None else '',
+            'intervals_before': train_result.intervals_before if train_result.intervals_before is not None else '',
+            'intervals_after': train_result.intervals_after if train_result.intervals_after is not None else '',
         })
 
         pending_next = _kickoff_hardware_validation(

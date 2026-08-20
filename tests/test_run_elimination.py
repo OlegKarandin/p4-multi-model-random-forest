@@ -1,4 +1,6 @@
 """One parameterised elimination loop replaces two near-duplicate ones."""
+import json
+
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
@@ -247,3 +249,141 @@ def test_hardware_validation_survives_an_interleaved_infeasible_row(monkeypatch)
     assert by_k[2]['stages_real'] is None
     assert by_k[2]['tcam_real'] is None
     assert by_k[2]['compile_errors'] is None
+
+
+# ---------------------------------------------------------------------------
+# P5 gap 3: the row dicts must carry feature-name provenance, best_params,
+# and the alignment diagnostics -- with the None/''/0 distinction preserved.
+# ---------------------------------------------------------------------------
+
+def test_feasible_rows_carry_provenance_and_alignment_fields_including_a_real_zero(monkeypatch):
+    """A real align_accepted of 0 is falsy in Python -- `if not value` would
+    write it as '', erasing the difference between "alignment accepted
+    nothing" and "alignment never ran". This trainer returns a real 0 to
+    catch exactly that bug."""
+    def trainer(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                val_select_A, val_select_B, features_A, features_B,
+                max_blocks, encoding, cfg, warm_start_params=None):
+        model_A = RandomForestClassifier(
+            n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
+        model_B = RandomForestClassifier(
+            n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
+        from src.training.train_model import TrainResult
+        return TrainResult(
+            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            acc_sel_A=0.71, acc_sel_B=0.91, best_params={'a': 1},
+            rel_shortfall=0.05, n_trials_run=7, n_feasible=4,
+            align_attempted=3, align_accepted=0,
+            intervals_before=12, intervals_after=9)
+
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained', trainer)
+
+    app, ddos = _splits()
+    rows = fs._run_elimination(
+        arm='joint', split_idx=10, app=app, ddos=ddos,
+        feature_names=list(FEATURE_NAMES), max_blocks=25, cfg=TrainConfig())
+
+    assert len(rows) == 3
+    for row in rows:
+        assert row['best_params'] == json.dumps({'a': 1})
+        assert row['rel_shortfall'] == 0.05
+        assert row['n_trials_run'] == 7
+        assert row['n_feasible'] == 4
+        assert row['align_attempted'] == 3
+        # The load-bearing assertion: 0 must survive as 0, not become ''.
+        assert row['align_accepted'] == 0
+        assert row['align_accepted'] != ''
+        assert row['intervals_before'] == 12
+        assert row['intervals_after'] == 9
+
+    # k=3 is the first iteration -- names are still the untouched full list.
+    by_k = {r['k']: r for r in rows}
+    assert by_k[3]['features_app'] == ';'.join(FEATURE_NAMES)
+    assert by_k[3]['features_ddos'] == ';'.join(FEATURE_NAMES)
+
+
+def test_alignment_fields_are_empty_string_not_none_or_zero_when_alignment_never_ran(monkeypatch):
+    """The default fake trainer returns None for the four alignment fields
+    (mirrors the disjoint arm / alignment_enabled=False case). The CSV must
+    carry '' there, not a literal None and not 0."""
+    rows = _run(monkeypatch, 'independent')
+
+    assert len(rows) == 3
+    for row in rows:
+        assert row['align_attempted'] == ''
+        assert row['align_accepted'] == ''
+        assert row['intervals_before'] == ''
+        assert row['intervals_after'] == ''
+        assert row['rel_shortfall'] == 0.0  # a real number, since it ran and returned 0.0
+        assert row['n_trials_run'] == 1
+        assert row['n_feasible'] == 1
+
+
+def test_infeasible_row_best_params_is_empty_string_not_the_previous_ks_params(monkeypatch):
+    """warm_start_params is still bound from the previous k when a later k is
+    infeasible. A naive json.dumps(best_params) there would silently write
+    the PREVIOUS k's params. This is the single most dangerous bug in this
+    task: it produces plausible, wrong data rather than a visible failure."""
+    def trainer(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                val_select_A, val_select_B, features_A, features_B,
+                max_blocks, encoding, cfg, warm_start_params=None):
+        k = X_A.shape[1]
+        if k == 2:
+            from src.training.errors import NoFeasibleSolution
+            raise NoFeasibleSolution(k=k, max_blocks=max_blocks)
+        model_A = RandomForestClassifier(
+            n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
+        model_B = RandomForestClassifier(
+            n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
+        from src.training.train_model import TrainResult
+        return TrainResult(
+            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            acc_sel_A=0.71, acc_sel_B=0.91, best_params={'k': k},
+            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+            align_attempted=None, align_accepted=None,
+            intervals_before=None, intervals_after=None)
+
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained', trainer)
+
+    app, ddos = _splits()
+    rows = fs._run_elimination(
+        arm='joint', split_idx=10, app=app, ddos=ddos,
+        feature_names=list(FEATURE_NAMES), max_blocks=25, cfg=TrainConfig())
+
+    by_k = {r['k']: r for r in rows}
+    assert sorted(by_k) == [1, 2, 3]
+    assert by_k[3]['best_params'] == json.dumps({'k': 3})
+    # The trap: must be '', and specifically must NOT be k=3's params.
+    assert by_k[2]['best_params'] == ''
+    assert by_k[2]['best_params'] != json.dumps({'k': 3})
+    # k=1 ran after the infeasible k=2 and is feasible again -- its own
+    # params, not a stale k=3 or k=2 value.
+    assert by_k[1]['best_params'] == json.dumps({'k': 1})
+
+    # The infeasible row's other new fields must also be '', not a stale
+    # carry-over from the previous iteration.
+    for key in ('rel_shortfall', 'n_trials_run', 'n_feasible',
+                'align_attempted', 'align_accepted',
+                'intervals_before', 'intervals_after'):
+        assert by_k[2][key] == ''
+    # features_* ARE expected on the infeasible row too (names_app/names_ddos
+    # are in scope regardless of whether training succeeded).
+    assert by_k[2]['features_app'] != ''
+    assert len(by_k[2]['features_app'].split(';')) == 2
+
+
+def test_features_round_trip_through_the_semicolon_join(monkeypatch):
+    """Feature names contain dots but never semicolons, so ';'.join/split is
+    a lossless round trip."""
+    rows = _run(monkeypatch, 'independent')
+
+    for row in rows:
+        names = row['features_app'].split(';')
+        assert len(names) == row['k']
+        for name in names:
+            assert name in FEATURE_NAMES
+        # Confirms the join actually used ';' and not something that would
+        # collide with a dot in a feature name.
+        assert all('.' in n for n in names)
