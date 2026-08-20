@@ -971,12 +971,27 @@ def test_the_recompute_never_evaluates_the_same_value_pair_twice(monkeypatch):
         return real(range1, range2)
 
     monkeypatch.setattr(ta, 'calculate_range_overlap', spy)
-    rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
+    # The motivating fixture plus two intervals well above the region the
+    # accepted moves touch:
+    #   I1 = [(0,99),(100,999),(1000,5999),(6000,20000),(20001,INF)]
+    #   I2 = [(0,99),(100,999),(1000,2999),(3000,5999),(6000,50000),(50001,INF)]
+    # The three pairs up there score below the threshold and are never
+    # touched by any move, so every round re-enumerates them unchanged --
+    # which is what makes this test non-vacuous. Measured: 9 judgements with
+    # `seen`, 15 for the same 9 distinct pairs without it.
+    rf1 = _hand_built_forest([99, 999, 5999, 20000])
+    rf2 = _hand_built_forest([99, 999, 2999, 5999, 50000])
+    X = np.array([[0.0], [50.0], [500.0], [1500.0], [2500.0],
+                  [4000.0], [7000.0], [30000.0], [65535.0]])
+    y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1, 2])
+    y2 = np.array([-1, 1, -1, 1, -1, 1, -1, 1, -1])
+    stats = {}
     ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
-                           delta_rel=None)
+                           delta_rel=None, align_stats=stats)
 
     # A single-feature fixture, so every judgement belongs to the same feature
     # and the per-feature `seen` set covers all of them.
+    assert stats['accepted'] > 1, 'more than one round must actually run'
     assert judged, 'the fixture must produce candidates'
     assert len(judged) == len(set(judged)), judged
 
