@@ -1,3 +1,4 @@
+import os
 import sys
 from unittest.mock import patch
 from src import main as m
@@ -24,7 +25,7 @@ def test_parse_args_rejects_unknown_mode():
 
 def test_main_block_dispatches_to_compute_path_when_mode_is_compute():
     with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
-         patch("src.main.load_and_combine_data") as mock_plot, \
+         patch("src.main.run_plot_mode") as mock_plot, \
          patch.object(sys, "argv", ["main.py", "--mode", "compute"]):
         m.run_main()
         assert mock_compute.called
@@ -33,14 +34,117 @@ def test_main_block_dispatches_to_compute_path_when_mode_is_compute():
 
 def test_main_block_dispatches_to_plot_path_when_mode_is_plot():
     with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
-         patch("src.main.load_and_combine_data") as mock_plot, \
-         patch("src.main.analyze_multi_objective_results") as mock_analyze, \
+         patch("src.main.run_plot_mode") as mock_plot, \
          patch.object(sys, "argv", ["main.py", "--mode", "plot"]):
-        mock_plot.return_value = None
-        mock_analyze.return_value = {"all_k": {"coverage_ratio": {"multi_covers_single": 0.5}}}
+        mock_plot.return_value = []
         m.run_main()
         assert mock_plot.called
         assert not mock_compute.called
+
+
+def test_run_main_plot_mode_passes_the_allow_partial_family_flag_through():
+    """--allow-partial-family must actually reach run_plot_mode, not just
+    parse -- see test_parse_args_accepts_allow_partial_family_flag for the
+    parsing half."""
+    with patch("src.main.run_plot_mode") as mock_plot, \
+         patch.object(sys, "argv",
+                      ["main.py", "--mode", "plot", "--allow-partial-family"]):
+        mock_plot.return_value = []
+        m.run_main()
+    assert mock_plot.call_args.kwargs['allow_partial_family'] is True
+
+
+def test_run_main_plot_mode_defaults_allow_partial_family_to_false():
+    with patch("src.main.run_plot_mode") as mock_plot, \
+         patch.object(sys, "argv", ["main.py", "--mode", "plot"]):
+        mock_plot.return_value = []
+        m.run_main()
+    assert mock_plot.call_args.kwargs['allow_partial_family'] is False
+
+
+# ---------------------------------------------------------------------------
+# --allow-partial-family
+# ---------------------------------------------------------------------------
+
+def test_parse_args_allow_partial_family_flag_defaults_to_false():
+    assert m.parse_args([]).allow_partial_family is False
+
+
+def test_parse_args_accepts_allow_partial_family_flag():
+    assert m.parse_args(["--allow-partial-family"]).allow_partial_family is True
+
+
+# ---------------------------------------------------------------------------
+# run_plot_mode: the P7d rewire onto campaign_data.load_campaign +
+# figures.render_all, replacing the old load_and_combine_data +
+# analyze_multi_objective_results path (dead filenames, and fused analysis
+# with plotting -- analyze_multi_objective_results called
+# create_multidim_visualizations unconditionally).
+# ---------------------------------------------------------------------------
+
+def test_run_plot_mode_loads_the_campaign_from_the_given_results_dir():
+    with patch("src.main.load_campaign") as mock_load, \
+         patch("src.main.figures.render_all") as mock_render:
+        mock_load.return_value = "the-df"
+        mock_render.return_value = []
+        m.run_plot_mode(results_dir="somewhere", output_dir="out")
+    mock_load.assert_called_once_with(results_dir="somewhere")
+
+
+def test_run_plot_mode_renders_the_loaded_frame_not_a_copy_or_a_summary():
+    with patch("src.main.load_campaign") as mock_load, \
+         patch("src.main.figures.render_all") as mock_render:
+        mock_load.return_value = "the-df"
+        mock_render.return_value = []
+        m.run_plot_mode(output_dir="out")
+    assert mock_render.call_args.args[0] == "the-df"
+
+
+def test_run_plot_mode_defaults_to_the_pre_registered_holm_family_size():
+    """Carried forward from Task 13: the figures path itself defaults
+    expected_family_size to None, which lets Holm quietly correct over a
+    smaller, weaker family on a partial campaign. main.py must wire the
+    pre-registered 21-comparison family explicitly so a partial campaign
+    raises instead of silently weakening the correction."""
+    from src.reporting import claims
+    with patch("src.main.load_campaign", return_value="df"), \
+         patch("src.main.figures.render_all") as mock_render:
+        mock_render.return_value = []
+        m.run_plot_mode(output_dir="out")
+    assert mock_render.call_args.kwargs['expected_family_size'] == \
+        claims.PRE_REGISTERED_FAMILY_SIZE
+
+
+def test_run_plot_mode_allow_partial_family_disables_the_family_size_check():
+    with patch("src.main.load_campaign", return_value="df"), \
+         patch("src.main.figures.render_all") as mock_render:
+        mock_render.return_value = []
+        m.run_plot_mode(output_dir="out", allow_partial_family=True)
+    assert mock_render.call_args.kwargs['expected_family_size'] is None
+
+
+def test_run_plot_mode_omits_the_capacity_ceiling_deliverable_when_its_csv_is_absent(tmp_path):
+    """scripts/capacity_ceiling.py has not necessarily been run against a
+    given results_dir (e.g. a fresh pilot). appendix_6_capacity_ceiling
+    raises FileNotFoundError rather than rendering nothing, so run_plot_mode
+    must check for the file itself and pass ceiling_csv=None -- render_all's
+    documented way to omit deliverable 6 -- instead of letting that
+    exception propagate out of an otherwise-successful plot run."""
+    with patch("src.main.load_campaign", return_value="df"), \
+         patch("src.main.figures.render_all") as mock_render:
+        mock_render.return_value = []
+        m.run_plot_mode(results_dir=str(tmp_path), output_dir="out")
+    assert mock_render.call_args.kwargs['ceiling_csv'] is None
+
+
+def test_run_plot_mode_passes_the_existing_capacity_ceiling_csv_through(tmp_path):
+    ceiling_csv = tmp_path / 'capacity_ceiling.csv'
+    ceiling_csv.write_text("a,b\n1,2\n")
+    with patch("src.main.load_campaign", return_value="df"), \
+         patch("src.main.figures.render_all") as mock_render:
+        mock_render.return_value = []
+        m.run_plot_mode(results_dir=str(tmp_path), output_dir="out")
+    assert mock_render.call_args.kwargs['ceiling_csv'] == str(ceiling_csv)
 
 
 # ---------------------------------------------------------------------------
@@ -410,3 +514,121 @@ def test_a_run_manifest_lands_in_results_manifests_with_the_grid_actually_used(
     top_level = {p.name for p in (tmp_path / 'results').iterdir()}
     assert 'manifests' in top_level
     assert all(name == 'manifests' or name.endswith('.csv') for name in top_level)
+
+
+# ---------------------------------------------------------------------------
+# run_plot_mode end-to-end: real load_campaign + real figures.render_all,
+# nothing mocked. This is the test that would actually notice an averaged
+# quantity reappearing on the path from a fitted model to a figure -- the
+# defect this whole rerun (and P7d specifically) exists to eliminate.
+# ---------------------------------------------------------------------------
+
+def _plot_mode_row(arm, method, split, k, delta_align='', alignment_enabled=False,
+                   overlap_threshold='', acc_app=0.9, acc_ddos=0.85, blocks=40):
+    import json
+    return {
+        'arm': arm, 'method': method, 'split': split, 'k': k,
+        'acc_app': acc_app, 'f1_app': acc_app - 0.02,
+        'acc_ddos': acc_ddos, 'f1_ddos': acc_ddos - 0.02,
+        'acc_sel_app': acc_app, 'acc_sel_ddos': acc_ddos,
+        'stages': 3, 'blocks': blocks,
+        'infeasible': '',
+        'stages_real': '', 'tcam_real': '', 'compile_errors': '',
+        'features_app': 'F1;F2', 'features_ddos': 'F1;F2',
+        'best_params': json.dumps({'n_estimators': 11}),
+        'rel_shortfall': 0.01, 'n_trials_run': 50, 'n_feasible': 10,
+        'align_attempted': 2, 'align_accepted': 1,
+        'intervals_before': 8, 'intervals_after': 7,
+        'alignment_enabled': alignment_enabled, 'delta_align': delta_align,
+        'delta_select': 0.02, 'overlap_threshold': overlap_threshold,
+    }
+
+
+def _write_plot_mode_campaign_file(results_dir, n_trees, max_depth, M,
+                                   arm_slug, rows):
+    import pandas as pd
+    frame = pd.DataFrame(rows)
+    frame['M'] = M
+    frame['n_trees'] = n_trees
+    frame['max_depth'] = max_depth
+    results_dir.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(
+        results_dir / f'rf_t{n_trees}_d{max_depth}_M{M}_{arm_slug}.csv',
+        index=False)
+
+
+def _write_small_two_arm_campaign(results_dir):
+    independent_rows = [
+        _plot_mode_row('independent', 'single', split=s, k=k,
+                       acc_app=0.90 + 0.001 * s, acc_ddos=0.80 + 0.001 * k,
+                       blocks=30 + s)
+        for s in range(3) for k in (5, 9)
+    ]
+    joint_rows = [
+        _plot_mode_row('joint', 'multi', split=s, k=k,
+                       alignment_enabled=True, delta_align='0.05',
+                       overlap_threshold='0.5',
+                       acc_app=0.91 + 0.001 * s, acc_ddos=0.82 + 0.001 * k,
+                       blocks=25 + s)
+        for s in range(3) for k in (5, 9)
+    ]
+    _write_plot_mode_campaign_file(results_dir, 11, 14, 25, 'independent',
+                                   independent_rows)
+    _write_plot_mode_campaign_file(results_dir, 11, 14, 25, 'joint-d005',
+                                   joint_rows)
+
+
+def test_plot_mode_end_to_end_never_averages_the_two_tasks_accuracy(tmp_path):
+    """The defect the whole rerun exists to fix: the old analysis.py
+    averaged acc_app and acc_ddos into one 'accuracy' number, which could
+    hide a model excellent on one task and useless on the other. Drives
+    --mode plot's real path (load_campaign -> figures.render_all, nothing
+    mocked) over a small synthetic campaign and checks the rendered
+    deliverable 1 data keeps the two tasks as separate columns."""
+    results_dir = tmp_path / 'results'
+    _write_small_two_arm_campaign(results_dir)
+
+    deliverables = m.run_plot_mode(
+        results_dir=str(results_dir), output_dir=str(tmp_path / 'figures'),
+        allow_partial_family=True)
+
+    front_table = next(d for d in deliverables
+                       if d.slug == 'accuracy_vs_blocks_per_task')
+    assert 'acc_app' in front_table.data.columns
+    assert 'acc_ddos' in front_table.data.columns
+    assert 'accuracy' not in front_table.data.columns
+    assert not any('avg' in column.lower() for column in front_table.data.columns)
+
+
+def test_plot_mode_end_to_end_writes_all_deliverables_that_apply_to_a_campaign_with_no_ceiling_csv(tmp_path):
+    results_dir = tmp_path / 'results'
+    _write_small_two_arm_campaign(results_dir)
+    figures_dir = tmp_path / 'figures'
+
+    deliverables = m.run_plot_mode(
+        results_dir=str(results_dir), output_dir=str(figures_dir),
+        allow_partial_family=True)
+
+    # Six, not seven: deliverable 6 (capacity ceiling) is correctly omitted
+    # because no capacity_ceiling.csv exists under results_dir.
+    assert len(deliverables) == 6
+    assert sorted(d.number for d in deliverables) == [1, 2, 3, 4, 5, 7]
+    for deliverable in deliverables:
+        assert len(deliverable.paths) > 0
+        for path in deliverable.paths:
+            assert os.path.isfile(path)
+
+
+def test_plot_mode_end_to_end_raises_on_a_partial_campaign_when_allow_partial_family_is_not_set(tmp_path):
+    """A two-arm synthetic campaign can never assemble the pre-registered
+    7-arm family, so the default (allow_partial_family=False) must raise
+    rather than silently Holm-correcting over the 3 comparisons this
+    campaign actually has."""
+    import pytest
+
+    results_dir = tmp_path / 'results'
+    _write_small_two_arm_campaign(results_dir)
+
+    with pytest.raises(ValueError):
+        m.run_plot_mode(results_dir=str(results_dir),
+                        output_dir=str(tmp_path / 'figures'))

@@ -94,12 +94,16 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
 # `src.main` is imported inside `collect()`, not here. It is needed only by
-# the MEASUREMENT half of this script, and importing it transitively imports
-# `src.reporting.plotting`, which mutates global matplotlib state at import
-# (`plt.style.use('default')` / `sns.set_palette`, plotting.py:7-8). The
-# REPORTING half (per_cell / print_* / select / report) is imported by
-# `src/reporting/figures.py` to persist this script's markdown without
-# re-running the ~10-minute measurement, and it must not inherit that leak.
+# the MEASUREMENT half of this script; the REPORTING half (per_cell /
+# print_* / select / report) is imported by `src/reporting/figures.py` to
+# persist this script's markdown without re-running the ~10-minute
+# measurement, and keeping `src.main` out of this module's own top-level
+# imports means that reporting-only import path never pulls in training/P4
+# codegen dependencies it does not need. (P7d retired `src.reporting.
+# plotting`, whose global matplotlib state mutation at import -- `plt.style.
+# use('default')` / `sns.set_palette` -- used to be the sharper reason this
+# mattered; that module is gone, but the import-cost argument stands on its
+# own.)
 from src.p4gen.build_p4_script import (
     INFINITE, MAX_CODEWORD_LENGTH, dt_thresholds_float_to_int,
     get_feature_intervals_from_thresholds, get_feature_thresholds, get_nodes,

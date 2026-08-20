@@ -3,15 +3,14 @@ from src.p4gen.build_p4_script import *
 from src.training.feature_selection import compare_feature_selection_approaches_parallel
 from src.training.config import TrainConfig
 
-from src.reporting.analysis import analyze_multi_objective_results
+from src.reporting.campaign_data import load_campaign
+from src.reporting import claims
+from src.reporting import figures
 from src.reporting.manifest import write_run_manifest
 
 import argparse
 import os
-import pandas as pd
 import numpy as np
-
-from pathlib import Path
 
 
 # Spec A.2's arm grid. Two anchors bracket the frontier: `joint-off` is a
@@ -91,6 +90,16 @@ def parse_args(argv=None):
         "--n-splits", dest="n_splits", type=int, default=None,
         help="number of CV splits per (arm, M) cell in compute mode. "
              "Defaults to today's value (15) when omitted")
+    parser.add_argument(
+        "--allow-partial-family", dest="allow_partial_family",
+        action="store_true",
+        help="in plot mode, render even when the campaign under results/ "
+             "does not yet cover the full 7-arm sweep (e.g. a single-M "
+             "pilot). The default requires the complete pre-registered "
+             "21-comparison Holm family (7 joint arms x 3 tests) and raises "
+             "otherwise, so a partial campaign never silently applies a "
+             "weaker multiplicity correction than the one pre-registered "
+             "in spec C.3")
     return parser.parse_args(argv)
 
 
@@ -383,30 +392,73 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
             os.replace(tmp_path, path)
 
 
-def load_and_combine_data(folder_path, M_values):
+def run_plot_mode(results_dir='results', output_dir=None,
+                  allow_partial_family=False):
+    """`--mode plot`'s entire body: load the campaign, render every §C.5
+    deliverable, and print where each one landed.
+
+    Replaces `load_and_combine_data` + `analyze_multi_objective_results`,
+    which built dead `..._-1_-1_{M}.csv` filenames the current pipeline
+    never writes and fused analysis with plotting
+    (`analyze_multi_objective_results` called `create_multidim_
+    visualizations` unconditionally at `analysis.py:36`). `campaign_data.py`
+    (loading/pairing), `claims.py` (every statistic) and `figures.py`
+    (rendering only) keep those as separate layers; this function is the
+    thin glue between them, not a third place either concern lives.
+
+    `output_dir=None` defaults to `figures.DEFAULT_FIGURE_DIR`
+    ('results/figures') -- resolved here rather than in the signature so
+    `results_dir` and `output_dir` can be varied independently by a caller
+    (e.g. a pilot run pointed at a scratch directory) without the two
+    silently tracking each other.
+
+    The capacity-ceiling appendix (deliverable 6) replays a measurement
+    `scripts/capacity_ceiling.py` writes separately
+    (`results_dir/capacity_ceiling.csv`) and has nothing in the campaign
+    frame to reconstruct it from. `figures.appendix_6_capacity_ceiling`
+    raises FileNotFoundError rather than rendering nothing when that file is
+    absent, so this checks for it first and passes `ceiling_csv=None` --
+    `figures.render_all`'s documented way to omit deliverable 6 -- instead
+    of letting a routine pilot run (which has no ceiling measurement yet)
+    fail outright.
+
+    `allow_partial_family` controls the ONE thing carried forward from Task
+    13: `claims.paired_tests` defaults `expected_family_size` to None, which
+    lets Holm-Bonferroni quietly correct over however many contrasts happen
+    to be present -- a weaker correction than the pre-registered 21 on any
+    campaign that has not yet run all seven joint arms, silent apart from a
+    line in the rendered markdown. The default here (False) instead passes
+    `claims.PRE_REGISTERED_FAMILY_SIZE` explicitly, so a partial campaign
+    RAISES rather than silently weakening the correction. Pass
+    `--allow-partial-family` (allow_partial_family=True) to render anyway --
+    e.g. a single-M pilot, which by construction can never assemble the
+    full 7-arm family and is not trying to support the corrected claim yet.
     """
-    Load dataframes for different M values and combine them
-    """
-    all_data = []
+    if output_dir is None:
+        output_dir = figures.DEFAULT_FIGURE_DIR
 
-    for M in M_values:
-        filename = f'feature_selection_comparison_results_by_k_{-1}_{-1}_{M}.csv'
-        filepath = Path(folder_path) / filename
+    df = load_campaign(results_dir=results_dir)
 
-        try:
-            df = pd.read_csv(filepath)
-            df['M'] = M  # Add M column
-            all_data.append(df)
-            print(f"Loaded data for M={M}: {len(df)} rows")
-        except FileNotFoundError:
-            print(f"Warning: File not found for M={M}: {filename}")
+    ceiling_csv = os.path.join(results_dir, 'capacity_ceiling.csv')
+    if not os.path.exists(ceiling_csv):
+        print(f"No capacity-ceiling measurement at {ceiling_csv!r} -- "
+              f"skipping deliverable 6 (run scripts/capacity_ceiling.py "
+              f"once, ~10 minutes, to produce it)")
+        ceiling_csv = None
 
-    if not all_data:
-        raise ValueError("No data files found!")
+    expected_family_size = (
+        None if allow_partial_family else claims.PRE_REGISTERED_FAMILY_SIZE)
 
-    # Combine all dataframes
-    combined_df = pd.concat(all_data, ignore_index=True)
-    return combined_df
+    deliverables = figures.render_all(
+        df, output_dir=output_dir, ceiling_csv=ceiling_csv,
+        expected_family_size=expected_family_size)
+
+    for deliverable in deliverables:
+        print(f"\n=== {deliverable.number}. {deliverable.title} ===")
+        for path in deliverable.paths:
+            print(f"  wrote {path}")
+
+    return deliverables
 
 
 def run_main():
@@ -433,12 +485,7 @@ def run_main():
         )
 
     else:
-        df = load_and_combine_data(folder_path='results', M_values=M)
-
-        #create_comparison_plots(df)
-
-        analysis = analyze_multi_objective_results(df, list(range(17, 0, -2)))
-        print(f"\nMulti approach covers {analysis['all_k']['coverage_ratio']['multi_covers_single']:.1%} of Single approach solutions")
+        run_plot_mode(allow_partial_family=args.allow_partial_family)
 
 
 if __name__ == '__main__':
