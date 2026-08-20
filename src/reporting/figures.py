@@ -375,7 +375,12 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         '(acc_app, acc_ddos, -blocks) and PROJECTED into each panel -- a '
         'projected point may look dominated within its panel while being '
         'non-dominated overall, and removing it would hide the very trade '
-        'between the two tasks this figure exists to show.{}'.format(
+        'between the two tasks this figure exists to show. EACH FRONT POOLS '
+        'EVERY SPLIT AND EVERY BLOCK BUDGET M for that arm into one 3-D '
+        'Pareto computation, so a point from one split can dominate a point '
+        'from another and the front is not a front of anything replicated; '
+        'the coverage figure below is therefore over that pooled surface, '
+        'not a per-split comparison.{}'.format(
             coverage_sentence))
 
     data = (pd.concat(front_frames, ignore_index=True)
@@ -548,8 +553,19 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
         axis.grid(True, alpha=0.3)
     figure.tight_layout()
 
-    pooled_m = sorted(df['M'].unique().tolist()) if 'M' in df.columns else []
-    pooled_k = sorted(df['k'].unique().tolist()) if 'k' in df.columns else []
+    # Derived from the JOINED frame (`pair_arms`' inner join on
+    # (M, split, k), via `paired_delta_frame`), not from `df` directly.
+    # `--M` and `--n-splits` let the campaign be chunked and resumed
+    # (main.py's `skip_existing`), so different arms can end up with
+    # different M grids on disk; deriving from raw `df` would report every
+    # M/k present anywhere in the file even when the join dropped some of
+    # them for the arms actually plotted here, which is exactly the average
+    # this sentence claims to describe.
+    joined = paired_delta_frame(df, baseline=baseline)
+    pooled_m = (sorted(joined['M'].unique().tolist())
+               if len(joined) and 'M' in joined.columns else [])
+    pooled_k = (sorted(joined['k'].unique().tolist())
+               if len(joined) and 'k' in joined.columns else [])
     pooling_sentence = (
         'EACH POINT POOLS THE WHOLE GRID, not one operating point: cell '
         'differences are paired on (M, split, k), averaged within each split '
@@ -688,40 +704,62 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
 # ---------------------------------------------------------------------------
 
 _PAIRED_TEST_MARKDOWN_COLUMNS = (
-    'contrast', 'metric', 'alternative', 'n_pairs', 'n_splits',
+    'unit', 'contrast', 'metric', 'alternative', 'n_pairs', 'n_splits',
     'median_diff', 'mean_diff_split_level', 'ci_low', 'ci_high',
     'p_value', 'p_holm', 'significant_holm')
 
 
 def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
                          baseline=claims.INDEPENDENT_ARM_SLUG,
-                         margin=0.0, alpha=0.05, unit='pair',
+                         margin=0.0, alpha=0.05, units=('pair', 'split'),
                          expected_family_size=None):
     """The pre-registered paired tests, Holm-corrected -- rendered, not
     recomputed. Every number is `claims.paired_tests`'.
 
-    One row per (contrast, metric), and `acc_app` and `acc_ddos` are
+    One row per (unit, contrast, metric), and `acc_app` and `acc_ddos` are
     separate rows throughout: there is no pooled accuracy test, because a
     pooled test is exactly what let a loss on one task hide behind a gain on
     the other.
 
-    `expected_family_size` is passed straight through and defaults to None
-    so a partial campaign (the pilot cell) still produces a table. That is a
-    real weakening -- Holm over 9 comparisons is a laxer correction than
-    Holm over the pre-registered 21 -- so the rendered markdown always
-    states how many comparisons were actually corrected over and what the
-    pre-registered family size is. Pass
+    Ruling P7-3: `unit='pair'` -- one difference per `(M, split, k)` cell --
+    is the spec-mandated primary, but those cells are not independent (the
+    same split recurs across every M and k), so its p-values are
+    anti-conservative. `unit='split'` -- one mean difference per split -- is
+    the statistically clean check: valid under split-level replication, far
+    less powerful. The ruling requires BOTH be visible wherever the primary
+    appears, not the primary alone with the split-level number folded into a
+    confidence interval elsewhere. So this table stacks both: `units` is
+    called through `claims.paired_tests` once per unit, each with its own
+    independently Holm-corrected family (mixing the two units into one
+    Holm family would correct pair-level and split-level p-values against
+    each other, which is not what either correction means), and the results
+    are concatenated with the `unit` column identifying which is which.
+
+    `expected_family_size` is passed straight through to every unit's call
+    and defaults to None so a partial campaign (the pilot cell) still
+    produces a table. That is a real weakening -- Holm over 9 comparisons is
+    a laxer correction than Holm over the pre-registered 21 -- so the
+    rendered markdown always states how many comparisons were actually
+    corrected over and what the pre-registered family size is. Pass
     `expected_family_size=claims.PRE_REGISTERED_FAMILY_SIZE` on the complete
     campaign to turn a shrunken family into an error.
     """
-    table = claims.paired_tests(
-        df, baseline=baseline, metrics=claims.DEFAULT_METRICS, margin=margin,
-        alpha=alpha, unit=unit, expected_family_size=expected_family_size)
+    tables = [
+        claims.paired_tests(
+            df, baseline=baseline, metrics=claims.DEFAULT_METRICS,
+            margin=margin, alpha=alpha, unit=unit,
+            expected_family_size=expected_family_size)
+        for unit in units
+    ]
+    table = pd.concat(tables, ignore_index=True)
 
-    n_comparisons = len(table)
+    # n_comparisons is the same family size for every unit (it counts
+    # contrasts x metrics, not pairs), so one note covers all of them.
+    n_comparisons = int(tables[0]['n_comparisons'].iloc[0]) if len(tables[0]) else 0
     family_note = (
-        '{} comparisons were Holm-corrected here; the pre-registered family '
-        'is {} (7 joint arms x 3 tests). {}'.format(
+        '{} comparisons were Holm-corrected within EACH unit below (pair and '
+        'split are corrected independently of each other); the pre-registered '
+        'family is {} (7 joint arms x 3 tests). {}'.format(
             n_comparisons, claims.PRE_REGISTERED_FAMILY_SIZE,
             'The family is complete.'
             if n_comparisons == claims.PRE_REGISTERED_FAMILY_SIZE else
@@ -730,17 +768,23 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
             'correspondingly optimistic.'))
 
     caption = (
-        'Paired Wilcoxon signed-rank tests, one per (contrast, task) and one '
-        'per contrast on blocks, over cells paired on (M, split, k). The '
-        'accuracy tests are one-sided with alternative "greater" applied to '
-        '{}, so a small p-value is the positive finding: the joint arm shows '
-        'no detectable loss. The block test is two-sided, because alignment '
-        'adds intervals before it merges any and sharing can cost blocks as '
-        'well as save them. p_holm is Holm-Bonferroni across the whole '
-        'family. {} Cells within a split share a training split, so the '
-        'p-values are anti-conservative relative to the number of '
-        'independent splits; n_splits is reported beside n_pairs so the gap '
-        'is visible.'.format(
+        'Paired Wilcoxon signed-rank tests, one per (unit, contrast, task) '
+        'and one per (unit, contrast) on blocks. Two units are reported for '
+        'every comparison, per Ruling P7-3: `pair` tests one difference per '
+        '(M, split, k) cell -- the spec-mandated primary, paired exactly as '
+        'spec C.3 requires -- but cells within a split share a training '
+        'split, so its p-values are anti-conservative relative to the '
+        'number of independent splits. `split` collapses each split to its '
+        'mean difference first -- the statistically clean check, far less '
+        'powerful, valid under split-level replication. Neither supersedes '
+        'the other; disagreement between them is itself the diagnostic. '
+        'Each unit is Holm-corrected independently over its own family, '
+        'never pooled with the other. The accuracy tests are one-sided with '
+        'alternative "greater" applied to {}, so a small p-value is the '
+        'positive finding: the joint arm shows no detectable loss. The '
+        'block test is two-sided, because alignment adds intervals before '
+        'it merges any and sharing can cost blocks as well as save them. '
+        '{}'.format(
             'd + {:g}'.format(margin) if margin > 0 else 'd', family_note))
 
     markdown = _markdown_table(
@@ -748,8 +792,9 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
                       if column in table.columns]])
     body = '\n'.join([markdown, '', family_note, '',
                       'Hypotheses, verbatim from `claims.paired_tests`:', ''] +
-                     ['* `{}` / `{}`: {}'.format(row['contrast'], row['metric'],
-                                                 row['hypothesis'])
+                     ['* `{}` / `{}` / `{}`: {}'.format(
+                         row['unit'], row['contrast'], row['metric'],
+                         row['hypothesis'])
                       for _, row in table.iterrows()])
 
     return _write(Deliverable(

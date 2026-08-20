@@ -19,10 +19,12 @@ not the quality of a model.
 Two corners, because the ceiling is not a property of (n_trees, max_depth)
 alone. A cell is a BOUND, so measuring "its" codeword length means fixing the
 regularization that `rf_params` also searches -- `min_samples_leaf` over
-[5, 200] and `min_samples_split` over [10, 400] -- and the answer depends on
+[5, 200] step 10 (Optuna's `suggest_int` therefore clips the reachable set to
+[5, 195]; 200 is never actually selectable) and `min_samples_split` over
+[10, 400] step 10 (400 IS reachable: 10 + 10*39) -- and the answer depends on
 which end you fix it at. Both ends are measured for every cell:
 
-  pruned      min_samples_leaf=200, min_samples_split=400 -- the smallest
+  pruned      min_samples_leaf=195, min_samples_split=400 -- the smallest
               forests the box admits. A cell feasible here is a cell the
               campaign can genuinely reach, with pruning.
   large-tree  min_samples_leaf=5, min_samples_split=10 -- the largest forests
@@ -130,8 +132,14 @@ SPLIT_INDICES = (10, 11, 12)
 SPLIT_RANDOM_STATE = 42
 
 # The two ends of rf_params' regularization ranges (train_model.py:96-99).
+# min_samples_leaf is suggested as suggest_int(5, 200, step=10), which Optuna
+# clips to the reachable set [5, 195] -- 200 is never actually selectable, so
+# the pruned corner uses 195, the true edge of the search space. Effect is
+# nil in practice: the deciding corner (11, 14) measures 413 bits against the
+# 512-bit limit either way, comfortable margin regardless of which of the two
+# values is used.
 Corner = namedtuple('Corner', 'name min_samples_leaf min_samples_split')
-PRUNED = Corner('pruned', 200, 400)
+PRUNED = Corner('pruned', 195, 400)
 LARGE_TREE = Corner('large-tree', 5, 10)
 CORNERS = (PRUNED, LARGE_TREE)
 
@@ -435,8 +443,9 @@ def select(cells):
     print('\n### Adopted values\n')
     print('The {} corner decides (Ruling P4-2): a cell counts as feasible when '
           'ANY configuration the search can reach there compiles, and pruning '
-          'is inside the search space -- min_samples_leaf up to 200, '
-          'min_samples_split up to 400. Requiring the whole box to compile (the '
+          'is inside the search space -- min_samples_leaf up to 195 (the '
+          'reachable edge of suggest_int(5, 200, step=10)), min_samples_split '
+          'up to 400. Requiring the whole box to compile (the '
           '{} corner) would truncate the reachable frontier without buying a '
           'real guarantee, since the block budget binds inside the box '
           'regardless.'.format(DECIDING_CORNER.name, LARGE_TREE.name))
@@ -466,6 +475,17 @@ def select(cells):
               MAX_CODEWORD_LENGTH,
               '-' if pd.isna(chosen.joint_blocks_max) else int(chosen.joint_blocks_max),
               int(strict.joint_cw_max)))
+    print('\nRuling P4-4: at the adopted n_trees, the pruned-corner codeword '
+          'and block counts can look nearly identical across the top of the '
+          'max_depth grid (e.g. the per-cell table above), because under '
+          'heavy pruning the forests stop growing well before the depth '
+          'bound is reached -- raising max_depth buys almost nothing AT THAT '
+          'CORNER. The bound is kept at the top of the grid anyway: '
+          'saturation is a property of the pruned corner only, not of the '
+          'bound. At low min_samples_leaf the search explores every depth in '
+          'the box as a genuinely different model, so truncating max_depth '
+          'to where the pruned corner saturates would cut off models the '
+          'large-tree end of the search can still reach.')
     return int(chosen.n_trees), int(chosen.max_depth)
 
 

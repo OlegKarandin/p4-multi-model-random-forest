@@ -343,6 +343,20 @@ def test_deliverable_1_keeps_a_low_accuracy_cell_at_k_17():
     assert _contains(_drawn_values(deliverable.figure), 0.31)
 
 
+def test_deliverable_1_caption_discloses_that_the_front_pools_splits_and_m():
+    """Figure 1 is the headline deliverable, computing `claims.pareto_front_3d`
+    over every (M, split, k) row of an arm at once -- a point from one split
+    can dominate a point from another, so the resulting 'front' is not a
+    front of anything replicated. Figure 2 carries three sentences of this
+    disclosure; Figure 1 must carry at least one, matching that treatment,
+    so the quoted coverage percentage is not read as a per-split result."""
+    caption = figures.figure_1_accuracy_vs_blocks(
+        _spread_campaign(), output_dir=None).caption.lower()
+    assert 'pool' in caption
+    assert 'split' in caption
+    assert ('block budget' in caption or ' m ' in caption or 'm,' in caption)
+
+
 def test_deliverable_1_writes_a_pdf_a_data_csv_and_a_caption(tmp_path):
     deliverable = figures.figure_1_accuracy_vs_blocks(
         _spread_campaign(), output_dir=str(tmp_path))
@@ -407,6 +421,35 @@ def test_deliverable_2_caption_discloses_that_each_point_pools_the_whole_grid():
     # is disclosing
     assert 'M' not in figures.figure_2_delta_frontier(
         df, output_dir=None).data.columns
+
+
+def test_deliverable_2_pooling_sentence_reflects_the_joined_grid_not_the_raw_frame():
+    """`--M` and `--n-splits` let a campaign be chunked and resumed
+    (main.py's `skip_existing`), so a baseline run at M in {25, 40} can be
+    paired against a joint arm run only at M=25 -- the inner join in
+    `pair_arms` drops M=40 for that contrast. The pooling sentence must name
+    the M/k values the figure actually averaged over (the joined grid), not
+    every M/k anywhere in the raw frame, which here would wrongly include
+    the M=40 the join silently discarded for the plotted arm."""
+    rows = []
+    for M in (25, 40):
+        for split in range(3):
+            for k in (4, 5):
+                rows.append(_row(arm_slug=INDEPENDENT_ARM_SLUG, M=M,
+                                 split=split, k=k, acc_app=BASE_ACC_APP,
+                                 acc_ddos=BASE_ACC_DDOS, blocks=40.0))
+    for M in (25,):    # the joint arm only ran at M=25
+        for split in range(3):
+            for k in (4, 5):
+                rows.append(_row(arm_slug='joint-d005', M=M, split=split, k=k,
+                                 acc_app=BASE_ACC_APP - 0.10,
+                                 acc_ddos=BASE_ACC_DDOS - 0.10, blocks=35.0))
+    df = _frame(rows)
+
+    caption = figures.figure_2_delta_frontier(
+        df, output_dir=None, baseline=INDEPENDENT_ARM_SLUG).caption
+    assert '25' in caption
+    assert '40' not in caption
 
 
 def test_deliverable_2_has_one_panel_per_reported_quantity_two_of_them_per_task():
@@ -516,12 +559,24 @@ def test_a_paired_figure_refuses_to_render_blank_when_the_baseline_is_absent():
 # ---------------------------------------------------------------------------
 
 def test_deliverable_4_is_exactly_the_holm_corrected_table_claims_produced(tmp_path):
+    """Ruling P7-3: the table carries BOTH units, each independently
+    Holm-corrected against `claims.paired_tests`' own per-unit output."""
     df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS)
-    expected = claims.paired_tests(df)
+    expected_pair = claims.paired_tests(df, unit='pair')
+    expected_split = claims.paired_tests(df, unit='split')
     deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
-    assert list(deliverable.data['contrast']) == list(expected['contrast'])
-    assert np.allclose(deliverable.data['p_holm'], expected['p_holm'])
-    assert np.allclose(deliverable.data['p_value'], expected['p_value'])
+
+    assert set(deliverable.data['unit']) == {'pair', 'split'}
+    got_pair = deliverable.data[deliverable.data['unit'] == 'pair'].reset_index(drop=True)
+    got_split = deliverable.data[deliverable.data['unit'] == 'split'].reset_index(drop=True)
+
+    assert list(got_pair['contrast']) == list(expected_pair['contrast'])
+    assert np.allclose(got_pair['p_holm'], expected_pair['p_holm'])
+    assert np.allclose(got_pair['p_value'], expected_pair['p_value'])
+
+    assert list(got_split['contrast']) == list(expected_split['contrast'])
+    assert np.allclose(got_split['p_holm'], expected_split['p_holm'])
+    assert np.allclose(got_split['p_value'], expected_split['p_value'])
 
 
 def test_deliverable_4_keeps_the_two_tasks_on_separate_rows(tmp_path):
@@ -534,12 +589,15 @@ def test_deliverable_4_keeps_the_two_tasks_on_separate_rows(tmp_path):
 
 def test_deliverable_4_markdown_records_how_many_comparisons_were_corrected(tmp_path):
     """A shrunken family weakens Holm for every comparison in it, so the
-    count has to be on the face of the table, not implicit."""
+    count has to be on the face of the table, not implicit. The family size
+    is per-unit (contrasts x metrics), not the doubled row count."""
     df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:3])
     deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
     markdown = open([p for p in deliverable.paths if p.endswith('.md')][0],
                     encoding='utf-8').read()
-    assert str(len(deliverable.data)) in markdown
+    n_comparisons = int(deliverable.data.loc[
+        deliverable.data['unit'] == 'pair', 'n_comparisons'].iloc[0])
+    assert str(n_comparisons) in markdown
     assert str(claims.PRE_REGISTERED_FAMILY_SIZE) in markdown
 
 

@@ -987,11 +987,12 @@ def test_the_recompute_cap_raises_instead_of_looping_without_end(monkeypatch):
 
     The cap is monkeypatched DOWN rather than exercised at its shipped value
     on purpose. The shipped value is deliberately far above the measured
-    fixpoint depth (32 against an observed 6-8), so no reachable fixture would
-    ever trip it -- a test that waited for the real cap to fire would either
-    never run this branch or would have to be retuned every time the constant
-    moves. The motivating fixture needs three rounds (accept, accept,
-    fixpoint), so a cap of 2 truncates it mid-progress.
+    fixpoint depth (32 against an observed maximum of 10 across 18 seed x arm
+    configurations -- a sample maximum, not a proven bound), so no reachable
+    fixture would ever trip it -- a test that waited for the real cap to fire
+    would either never run this branch or would have to be retuned every time
+    the constant moves. The motivating fixture needs three rounds (accept,
+    accept, fixpoint), so a cap of 2 truncates it mid-progress.
     """
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 2)
     rf1, rf2, X, y1, y2 = _neighbour_widening_pair()

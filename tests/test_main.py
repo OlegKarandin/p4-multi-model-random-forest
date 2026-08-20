@@ -137,6 +137,33 @@ def test_run_plot_mode_omits_the_capacity_ceiling_deliverable_when_its_csv_is_ab
     assert mock_render.call_args.kwargs['ceiling_csv'] is None
 
 
+def test_run_plot_mode_prints_the_missing_ceiling_notice_loudly(tmp_path, capsys):
+    """Ruling P7-6: a silently-omitted deliverable is the same class of
+    failure as a silently truncated grid, so passing ceiling_csv=None must
+    not be the only observable effect -- the notice that fires along the way
+    has to actually print, and has to say which deliverable it is skipping
+    and how to produce the missing file (same standard the manifest
+    warning -- test_manifest.py's capsys tests -- was held to)."""
+    with patch("src.main.load_campaign", return_value="df"), \
+         patch("src.main.figures.render_all") as mock_render:
+        mock_render.return_value = []
+        m.run_plot_mode(results_dir=str(tmp_path), output_dir="out")
+    captured = capsys.readouterr()
+    assert 'deliverable 6' in captured.out
+    assert 'scripts/capacity_ceiling.py' in captured.out
+
+
+def test_run_plot_mode_does_not_print_the_ceiling_notice_when_the_csv_exists(tmp_path, capsys):
+    ceiling_csv = tmp_path / 'capacity_ceiling.csv'
+    ceiling_csv.write_text("a,b\n1,2\n")
+    with patch("src.main.load_campaign", return_value="df"), \
+         patch("src.main.figures.render_all") as mock_render:
+        mock_render.return_value = []
+        m.run_plot_mode(results_dir=str(tmp_path), output_dir="out")
+    captured = capsys.readouterr()
+    assert 'deliverable 6' not in captured.out
+
+
 def test_run_plot_mode_passes_the_existing_capacity_ceiling_csv_through(tmp_path):
     ceiling_csv = tmp_path / 'capacity_ceiling.csv'
     ceiling_csv.write_text("a,b\n1,2\n")

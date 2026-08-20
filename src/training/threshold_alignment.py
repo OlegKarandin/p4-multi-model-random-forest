@@ -30,16 +30,21 @@ def rel_deg(before, after):
 # genuinely cycling value-pair sequence has to be caught rather than ruled
 # out.
 #
-# Why 32 and not 8 (P3b T3 measurement, ruling P3b-6). Measured with the cap
-# lifted to 64 so the numbers are true fixpoint depths rather than
-# truncations: on a realistic probe (4000x17 and 3000x17 samples, 7 trees,
-# max_depth=10, min_samples_leaf=5) the deepest feature converges in 6 to 8
-# rounds, hitting exactly 8 on 3 of 12 seed x arm configurations. At a cap of
-# 8 those runs converge on the very last permitted round, so a forest
-# converging one round later would abort a campaign split with
-# AlignmentInvariantError for no reason at all. 32 is ~4x the observed
-# maximum. Smaller fixtures are far below it: 2 to 4 rounds on the test
-# suite's forests.
+# Why 32 and not 8 (P3b T3 measurement, ruling P3b-6, superseded by the P3b
+# Task 5 measurement below). Measured with the cap lifted to 64 so the
+# numbers are true fixpoint depths rather than truncations: on a realistic
+# probe (4000x17 and 3000x17 samples, 7 trees, max_depth=10,
+# min_samples_leaf=5) run over 18 seed x arm configurations
+# (`scripts/measure_alignment_fixpoint_depth.py`), the deepest feature
+# converges in at most 10 rounds -- the first Task 3 measurement, over only
+# 12 configurations, had seen a maximum of 8 and was overtaken by the wider
+# probe. At a cap of 10 (or below) a run reaching that depth would abort a
+# campaign split with AlignmentInvariantError for no reason at all. 32 is
+# 3.2x the observed maximum of 10. This is a SAMPLE maximum over the seeds
+# probed, not a proven bound -- a 19th configuration could exceed it, which
+# is exactly why the cap is kept several times larger rather than pinned to
+# the observed value. Smaller fixtures are far below it: 2 to 4 rounds on
+# the test suite's forests.
 MAX_RECOMPUTE_ROUNDS = 32
 
 # (acc_app, f1_app, acc_ddos, f1_ddos) -- the order every 4-tuple in this
@@ -214,17 +219,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # Find common features
     common_features = set(intervals1.keys()) & set(intervals2.keys())
  
-    sorted_features = sorted(common_features, 
-                        key=lambda f: len(intervals1.get(f, [])) + len(intervals2.get(f, [])), 
+    sorted_features = sorted(common_features,
+                        key=lambda f: len(intervals1.get(f, [])) + len(intervals2.get(f, [])),
                         reverse=True)
-    
-    # Initialize statistics
-    '''alignment_stats = {
-        'common_features': len(common_features),
-        'total_aligned_ranges': 0,
-        'feature_details': {}
-    }'''
-    
+
     for feature_idx in sorted_features:
         current_ranges1 = intervals1[feature_idx]
         current_ranges2 = intervals2[feature_idx]
@@ -422,15 +420,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
                     #print('Resulting Ranges A: {}'.format(current_ranges1))
                     #print('Resulting Ranges B: {}'.format(current_ranges2))
-                    
-                    # Record alignment
-                    '''alignment_stats['feature_details'][feature_idx]['alignments'].append({
-                        'range1': range1,
-                        'range2': range2,
-                        'target': target,
-                        'overlap_ratio': overlap_ratio,
-                    })
-                    alignment_stats['total_aligned_ranges'] += 1'''
 
         if progressed and rounds > 1:
             # Truncated while still accepting moves: the loop never reached a
