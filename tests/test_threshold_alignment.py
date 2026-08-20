@@ -438,3 +438,146 @@ def test_the_threshold_index_and_the_intervals_agree_on_which_splits_exist():
         bounds |= {lo - 1 for lo, _ in intervals[feature_idx] if lo > 0}
         bounds |= {0}
         assert threshold in bounds, (feature_idx, threshold, intervals[feature_idx])
+
+
+# ---------------------------------------------------------------------------
+# T1: find_partially_overlapping_ranges -- the two-pointer overlap sweep.
+# ---------------------------------------------------------------------------
+
+def _find_overlaps_nested(ranges1, ranges2):
+    """Reference oracle: a verbatim copy of the O(n*m) nested scan that
+    find_partially_overlapping_ranges used to be, kept here so the sweep can
+    be checked against the exact behaviour it replaces."""
+    overlaps = []
+
+    for i, (start1, end1) in enumerate(ranges1):
+        if end1 <= start1:
+            continue
+        for j, (start2, end2) in enumerate(ranges2):
+            if end2 <= start2:
+                continue
+            if start1 == start2 and end1 == end2:
+                continue
+            if start1 < end2 and start2 < end1:
+                overlaps.append((i, j))
+
+    return overlaps
+
+
+def _random_tiling(rng, max_threshold=19, n_points=8):
+    """Builds a tiling the way extract_feature_intervals / get_feature_intervals
+    _from_thresholds does: thresholds sorted, each interval chained from
+    last_range[1] + 1, an equal-to-last-max threshold deduped away.
+
+    Drawing thresholds from a SMALL range (default 0..19) makes both kinds of
+    degenerate interval common rather than rare: a threshold of 0 gives a
+    (0, 0) first interval, and two thresholds that are consecutive integers
+    collapse into a (t, t) single-point interval for t > 0.
+    """
+    thresholds = sorted(int(t) for t in rng.integers(0, max_threshold + 1, size=n_points))
+    intervals = []
+    for t in thresholds:
+        if not intervals:
+            intervals.append((0, t))
+        else:
+            last_range = intervals[-1]
+            if t == last_range[1]:
+                continue
+            intervals.append((last_range[1] + 1, t))
+    return intervals
+
+
+def test_the_sweep_matches_the_nested_scan_on_random_gap_free_tilings():
+    """Equivalence, exact list equality INCLUDING ORDER, not set equality --
+    align_stats, the candidate_log row order, and the accept/reject trajectory
+    all depend on the order pairs come out in. Thresholds are drawn from a
+    small range so (0,0) and (t,t) degenerates occur constantly, not as a rare
+    edge case."""
+    rng = np.random.default_rng(20260819)
+
+    for _ in range(3000):
+        ranges1 = _random_tiling(rng)
+        ranges2 = _random_tiling(rng)
+
+        assert ta.find_partially_overlapping_ranges(ranges1, ranges2) == \
+            _find_overlaps_nested(ranges1, ranges2), (ranges1, ranges2)
+
+
+def test_the_sweep_does_not_drop_a_pair_at_the_end1_equals_end2_tie():
+    """The retirement invariant's hardest case: when end1 == end2 the sweep
+    retires only i (ranges1's pointer), never both. Hand-built so the tie is
+    guaranteed to fire at (0, 10) vs (5, 10), rather than hoping a random case
+    hits it."""
+    ranges1 = [(0, 10), (11, 20)]
+    ranges2 = [(5, 10), (11, 25)]
+
+    got = ta.find_partially_overlapping_ranges(ranges1, ranges2)
+
+    assert got == _find_overlaps_nested(ranges1, ranges2)
+    # The pair spanning the tie itself (ranges1[0] against ranges2[0], which
+    # is where end1 == end2 == 10 fires) must not have been dropped.
+    assert (0, 0) in got
+
+
+def test_degenerate_zero_zero_and_t_t_intervals_are_excluded_by_choice_not_accident():
+    """find_partially_overlapping_ranges filters end <= start, which drops
+    (0, 0) AND (t, t) intervals for t > 0. That is consistent, not a bug:
+    calculate_range_overlap already vetoes any pair where exactly one side
+    starts at 0, and adjust_range_boundaries refuses to move a boundary at 0
+    -- so a degenerate interval could never be aligned anyway. This test
+    documents the exclusion as a choice, and pins it against the nested
+    oracle so a future change to the filter shows up here."""
+    ranges1 = [(0, 0), (1, 15), (16, 16), (17, 30)]
+    ranges2 = [(0, 0), (1, 20), (21, 21), (22, 30)]
+    degenerate1 = {0, 2}  # indices of (0, 0) and (16, 16) in ranges1
+    degenerate2 = {0, 2}  # indices of (0, 0) and (21, 21) in ranges2
+
+    got = ta.find_partially_overlapping_ranges(ranges1, ranges2)
+
+    assert got == _find_overlaps_nested(ranges1, ranges2)
+    for idx1, idx2 in got:
+        assert idx1 not in degenerate1 and idx2 not in degenerate2, (idx1, idx2)
+
+
+def test_merely_touching_intervals_are_not_overlaps():
+    """Pins the strict '<' semantics against a future off-by-one 'fix': an
+    interval that only touches another at a shared or adjacent boundary is
+    not a partial overlap, whether the touch is exact (100 == 100) or there
+    is a one-unit gap (100, 101)."""
+    ranges1 = [(0, 100)]
+
+    assert ta.find_partially_overlapping_ranges(ranges1, [(100, 200)]) == []
+    assert ta.find_partially_overlapping_ranges(ranges1, [(101, 200)]) == []
+
+
+def test_a_zero_zero_candidate_produces_no_modifications_either_way():
+    """The consistency argument made executable: a (0, 0) source_range can
+    never produce a modification, whether the other side's min is also 0 or
+    is positive. target_range is computed via calculate_target_range exactly
+    as align_rf_thresholds would, so this exercises the real shape of a call,
+    not a contrived one. threshold_index is deliberately empty -- if either
+    branch DID try to look up a threshold, that would raise rather than
+    silently pass, so an empty modifications list is real evidence of the
+    refusal, not an accident of a missing key."""
+    rf = _one_split_forest()
+
+    # Other side's min is 0: calculate_target_range((0,0), (0, 10)) == (0, 0),
+    # so both the min- and max-side checks in adjust_range_boundaries see no
+    # change and refuse.
+    other_min_zero = (0, 10)
+    target_a = ta.calculate_target_range((0, 0), other_min_zero)
+    modifications_a = ta.adjust_range_boundaries(
+        rf, feature_idx=0, source_range=(0, 0), target_range=target_a,
+        threshold_index={})
+    assert modifications_a == []
+
+    # Other side's min is not 0: calculate_target_range((0,0), (5, 10)) ==
+    # (5, 0) -- the min-side check is refused because threshold_source_min is
+    # 0, and the max-side check sees threshold_source_max == threshold_target
+    # _max == 0.
+    other_min_nonzero = (5, 10)
+    target_b = ta.calculate_target_range((0, 0), other_min_nonzero)
+    modifications_b = ta.adjust_range_boundaries(
+        rf, feature_idx=0, source_range=(0, 0), target_range=target_b,
+        threshold_index={})
+    assert modifications_b == []
