@@ -32,24 +32,28 @@ class TrainConfig:
     overlap_threshold : minimum overlap ratio for a range pair to be an
         alignment CANDIDATE -- a separate concern from whether a candidate is
         ACCEPTED (that is delta_align). Was hardcoded at the call site.
-    n_trees, max_depth : inclusive search bounds. No -1 sentinel (F10i).
-        Rederived from the measured capacity ceiling rather than chosen by
-        hand: `scripts/capacity_ceiling.py` fits both models over a
-        n_trees x max_depth grid on 3 splits at the full feature set and
-        records where the 512-bit codeword limit starts to bind
-        (results/capacity_ceiling.csv). (15, 4) is the feasible cell with the
-        largest admissible search space, n_trees * (max_depth - 1) = 45. The
-        previous (7, 10) placeholder is NOT feasible at its own corner --
-        1599 bits, three times the limit -- so trials Optuna drew near that
-        corner were spent on models that cannot be compiled at all.
+    n_trees, max_depth : inclusive search bounds -- per-axis and independent,
+        so `rf_params` may suggest either maximum without suggesting both at
+        once. No -1 sentinel (F10i). Rederived from the measured capacity
+        ceiling rather than chosen by hand: `scripts/capacity_ceiling.py` fits
+        both models over a n_trees x max_depth grid on 3 splits at the full
+        feature set and records where the 512-bit codeword limit starts to
+        bind, at both ends of rf_params' regularization ranges
+        (results/capacity_ceiling.csv). A cell counts as feasible when ANY
+        configuration the search can reach there compiles -- witnessed by the
+        pruned corner, min_samples_leaf=200 / min_samples_split=400 -- and
+        (11, 14) is the feasible cell with the largest reachable search space,
+        ceil(n_trees / 2) * (max_depth - 1) = 78. The predecessor (7, 10) was
+        a placeholder whose comment said P4 would derive it; nothing had
+        measured the ceiling, which is what this replaces.
     """
 
     delta_align: Optional[float] = 0.0
     alignment_enabled: bool = True
     delta_select: float = 0.02
     overlap_threshold: float = 0.5
-    n_trees: int = 15
-    max_depth: int = 4
+    n_trees: int = 11
+    max_depth: int = 14
     n_trials: int = 1000
     min_feasible_before_stop: int = 25
     lookback: int = 20

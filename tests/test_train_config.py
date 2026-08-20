@@ -12,11 +12,12 @@ def test_defaults_are_the_primary_joint_arm_at_delta_zero():
     assert cfg.delta_select == 0.02
     assert cfg.overlap_threshold == 0.5
     # Rederived from the measured capacity ceiling, not chosen by hand:
-    # (15, 4) is the grid cell with the largest admissible search space
-    # whose joint codeword stays under 512 bits on all 3 splits
-    # (scripts/capacity_ceiling.py, results/capacity_ceiling.csv).
-    assert cfg.n_trees == 15
-    assert cfg.max_depth == 4
+    # (11, 14) is the grid cell with the largest reachable search space,
+    # ceil(n_trees / 2) * (max_depth - 1) = 78, whose joint codeword stays
+    # within 512 bits on all 3 splits at a configuration the search can
+    # reach (scripts/capacity_ceiling.py, results/capacity_ceiling.csv).
+    assert cfg.n_trees == 11
+    assert cfg.max_depth == 14
     assert cfg.n_trials == 1000
     assert cfg.min_feasible_before_stop == 25
     assert cfg.lookback == 20
@@ -32,7 +33,7 @@ def test_config_is_frozen_so_a_worker_cannot_mutate_the_arm_under_itself():
 
 
 def test_arm_slug_matches_the_spec_c2_filenames():
-    """Spec C.2 names the files rf_t15_d4_M25_<slug>.csv, and the slug is the
+    """Spec C.2 names the files rf_t11_d14_M25_<slug>.csv, and the slug is the
     only thing that identifies which arm an artifact came from."""
     assert TrainConfig().arm_slug('disjoint') == 'independent'
     assert TrainConfig(alignment_enabled=False).arm_slug('joint') == 'joint-off'

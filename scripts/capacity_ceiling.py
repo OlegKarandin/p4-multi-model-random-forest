@@ -16,22 +16,44 @@ TCAM blocks and TCAM stages are recorded under BOTH encodings. No Optuna, no
 alignment, no feature elimination -- this measures the capacity of the *bound*,
 not the quality of a model.
 
-Worst-case corner. Each cell is measured at the corner of the Optuna search box
-that produces the LARGEST trees: `n_estimators = n_trees`, `max_depth =
-max_depth`, `min_samples_leaf = 5`, `min_samples_split = 10` (the lower ends of
-`rf_params`' ranges). Codeword length grows with the number of distinct splits,
-so this is the longest codeword the box admits. A cell that fits at its corner
-therefore admits its whole box, and a cell that does not fit is one whose
-corner Optuna would only ever sample and discard.
+Two corners, because the ceiling is not a property of (n_trees, max_depth)
+alone. A cell is a BOUND, so measuring "its" codeword length means fixing the
+regularization that `rf_params` also searches -- `min_samples_leaf` over
+[5, 200] and `min_samples_split` over [10, 400] -- and the answer depends on
+which end you fix it at. Both ends are measured for every cell:
 
-The measurement is corner-conditional, and the script says so. Re-running it
-with `MIN_SAMPLES_LEAF = 200` / `MIN_SAMPLES_SPLIT = 400` -- the OPPOSITE
-corner, where every tree is heavily pruned -- moves the ceiling up by roughly a
-factor of three in depth: only (15, >=10) exceeds the limit there, and the rule
-would then select (11, 14) at cardinality 143 instead of (15, 4) at 45. The
-large-tree corner is the reading taken here because a bound is a promise about
-the LARGEST forest the search may request, and a cell whose own corner cannot be
-compiled is a cell Optuna can only sample and discard.
+  pruned      min_samples_leaf=200, min_samples_split=400 -- the smallest
+              forests the box admits. A cell feasible here is a cell the
+              campaign can genuinely reach, with pruning.
+  large-tree  min_samples_leaf=5, min_samples_split=10 -- the largest forests
+              the box admits, i.e. the longest codeword anywhere in the box.
+
+Which corner decides (Ruling P4-2): the PRUNED one. A cell counts as feasible
+when ANY configuration the search can actually reach there is feasible.
+Deciding on the large-tree corner would instead demand that the ENTIRE box
+compile -- and that guarantee is not real: at (15, 4), feasible under that
+reading, the pair still needs 257 TCAM blocks against a campaign M grid of
+25-100, so the box contains infeasible points either way. That reading pays for
+frontier truncation and does not receive the guarantee it paid for. The search
+is built for boxes with infeasible regions in them: `train_model`'s objective
+records violation MAGNITUDES rather than booleans so the constrained sampler
+can order infeasible trials by how badly they miss, and
+`early_stopping.is_feasible` keys stopping on feasible-front movement, so
+infeasible trials cannot end a search early. Both staircases are printed
+anyway, so a reader can see that the ceiling moves with pruning rather than
+being a property of the two bounds alone.
+
+A box with an infeasible corner is established practice here, not a new risk.
+The bounds are per-axis and independent: at the old (7, 10) placeholders,
+`rf_params` suggested `n_estimators` from {1, 3, 5, 7} and `max_depth` from
+[2, 10] separately, so the joint corner (7 trees at depth 10) -- 1599 bits in
+the table below -- was suggestable but never selectable, and the campaign's
+deployed models were combinations like (7, 4) or (3, 10). Nothing about those
+runs was invalid; what was missing is the measurement, since the bounds were
+placeholders carrying a comment saying P4 would derive them and no one had ever
+located the ceiling. That is why this table exists. It also means the
+worst-case-corner reading would impose a stricter requirement than this project
+has ever applied to itself.
 
 Codeword length above the limit. `multi_model_memory_evaluation` raises
 `RuntimeError("Codewords are too long", codeword_length)` rather than returning
@@ -42,15 +64,19 @@ length is therefore derived directly from the feature intervals (it is
 emits per leaf) so that it exists for every cell, and is cross-checked against
 `e.args[1]` on every cell that raises.
 
-Adoption rule (Ruling P4-1). Among cells whose JOINT-encoding codeword length
-stays within the limit on all 3 splits, rank by admissible search-space
-cardinality `n_trees * (max_depth - 1)` -- the number of `(n_estimators,
-max_depth)` pairs the Optuna bounds admit -- take the maximum, and break ties
-toward the smaller `n_trees`. The script prints the cardinality column and the
-justifying row so the adopted values are traceable to the table.
+Adoption rule (Rulings P4-1 and P4-3). Among cells whose JOINT-encoding
+codeword length stays within the limit on all 3 splits at the deciding corner,
+rank by admissible search-space cardinality, take the maximum, and break ties
+toward the smaller `n_trees`. Cardinality is
+`ceil(n_trees / 2) * (max_depth - 1)`: `rf_params` suggests `n_estimators` with
+`step=2` from 1, so only every other tree count is reachable and the tree axis
+offers `ceil(n_trees / 2)` values, not `n_trees` -- Ruling P4-3 correcting
+P4-1's formula, which overcounted that axis ~2x uniformly (being monotone in
+the same direction, it changes no ranking). The script prints the cardinality
+column and the justifying row, so the adopted values are traceable to a row.
 
-Writes results/capacity_ceiling.csv (one row per cell per split) and prints the
-markdown tables.
+Writes results/capacity_ceiling.csv (one row per cell per split per corner) and
+prints the markdown tables.
 
 Run:
   "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" scripts/capacity_ceiling.py
@@ -58,6 +84,7 @@ Run:
 import os
 import sys
 import time
+from collections import namedtuple
 
 # Running a file inside scripts/ puts scripts/ on sys.path, not the repo root,
 # so `src` would not import under the command in the docstring above.
@@ -92,10 +119,28 @@ MAX_DEPTH_GRID = (2, 4, 6, 8, 10, 12, 14)
 SPLIT_INDICES = (10, 11, 12)
 SPLIT_RANDOM_STATE = 42
 
-# The large-tree corner of rf_params' search box (train_model.py:96-99).
-MIN_SAMPLES_LEAF = 5
-MIN_SAMPLES_SPLIT = 10
+# The two ends of rf_params' regularization ranges (train_model.py:96-99).
+Corner = namedtuple('Corner', 'name min_samples_leaf min_samples_split')
+PRUNED = Corner('pruned', 200, 400)
+LARGE_TREE = Corner('large-tree', 5, 10)
+CORNERS = (PRUNED, LARGE_TREE)
+
+# Ruling P4-2: a cell is feasible when the search can reach ANY feasible
+# configuration there, which is what the pruned corner witnesses.
+DECIDING_CORNER = PRUNED
+
 RF_RANDOM_STATE = 42
+
+
+def cardinality_of(n_trees, max_depth):
+    """Reachable `(n_estimators, max_depth)` pairs inside the bounds.
+
+    `n_estimators` is suggested with step=2 from 1, so the tree axis offers
+    ceil(n_trees / 2) values, not n_trees (Ruling P4-3). `max_depth` is
+    suggested with the default step of 1 from 2, so its axis offers
+    max_depth - 1 values.
+    """
+    return -(-n_trees // 2) * (max_depth - 1)
 
 
 def tree_nodes_of(clf, feature_names):
@@ -153,15 +198,16 @@ def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
         return None, None
 
 
-def fit(X, y, n_estimators, max_depth):
+def fit(X, y, n_estimators, max_depth, corner):
     return dt_thresholds_float_to_int(RandomForestClassifier(
         n_estimators=n_estimators, max_depth=max_depth,
-        min_samples_leaf=MIN_SAMPLES_LEAF, min_samples_split=MIN_SAMPLES_SPLIT,
+        min_samples_leaf=corner.min_samples_leaf,
+        min_samples_split=corner.min_samples_split,
         random_state=RF_RANDOM_STATE, n_jobs=1).fit(X, y))
 
 
 def collect():
-    """One row per (n_trees, max_depth, split)."""
+    """One row per (n_trees, max_depth, split, corner)."""
     df_app = read_app_dataset(SELECTED_FEATURES, INFINITE)
     df_ddos = read_DDOS_dataset(SELECTED_FEATURES, INFINITE)
     X_app, X_ddos, names = remove_correlated_features_both_datasets(df_app, df_ddos)
@@ -179,52 +225,56 @@ def collect():
 
         for n_trees in N_TREES_GRID:
             for max_depth in MAX_DEPTH_GRID:
-                start = time.perf_counter()
-                clf_app = fit(app.X_train, app.y_train, n_trees, max_depth)
-                clf_ddos = fit(ddos.X_train, ddos.y_train, n_trees, max_depth)
+                for corner in CORNERS:
+                    start = time.perf_counter()
+                    clf_app = fit(app.X_train, app.y_train, n_trees, max_depth, corner)
+                    clf_ddos = fit(ddos.X_train, ddos.y_train, n_trees, max_depth, corner)
 
-                joint_len = codeword_length_of(
-                    joint_tree_nodes(clf_app, clf_ddos, names))
-                app_len = codeword_length_of(tree_nodes_of(clf_app, names))
-                ddos_len = codeword_length_of(tree_nodes_of(clf_ddos, names))
-                # Each model gets its own ternary table under disjoint
-                # encoding, so the limit binds per model: the pair is
-                # compilable iff the LONGER of the two fits.
-                disjoint_len = max(app_len, ddos_len)
+                    joint_len = codeword_length_of(
+                        joint_tree_nodes(clf_app, clf_ddos, names))
+                    app_len = codeword_length_of(tree_nodes_of(clf_app, names))
+                    ddos_len = codeword_length_of(tree_nodes_of(clf_ddos, names))
+                    # Each model gets its own ternary table under disjoint
+                    # encoding, so the limit binds per model: the pair is
+                    # compilable iff the LONGER of the two fits.
+                    disjoint_len = max(app_len, ddos_len)
 
-                joint_stages, joint_blocks = measure(
-                    clf_app, clf_ddos, names, 'joint', joint_len)
-                disjoint_stages, disjoint_blocks = measure(
-                    clf_app, clf_ddos, names, 'disjoint', disjoint_len)
+                    joint_stages, joint_blocks = measure(
+                        clf_app, clf_ddos, names, 'joint', joint_len)
+                    disjoint_stages, disjoint_blocks = measure(
+                        clf_app, clf_ddos, names, 'disjoint', disjoint_len)
 
-                rows.append({
-                    'n_trees': n_trees,
-                    'max_depth': max_depth,
-                    'cardinality': n_trees * (max_depth - 1),
-                    'split_idx': split_idx,
-                    'split_seed': seed,
-                    'joint_codeword_length': joint_len,
-                    'joint_within_limit': joint_len <= MAX_CODEWORD_LENGTH,
-                    'joint_stages': joint_stages,
-                    'joint_blocks': joint_blocks,
-                    'disjoint_codeword_length_app': app_len,
-                    'disjoint_codeword_length_ddos': ddos_len,
-                    'disjoint_codeword_length': disjoint_len,
-                    'disjoint_within_limit': disjoint_len <= MAX_CODEWORD_LENGTH,
-                    'disjoint_stages': disjoint_stages,
-                    'disjoint_blocks': disjoint_blocks,
-                    'seconds': time.perf_counter() - start,
-                })
+                    rows.append({
+                        'n_trees': n_trees,
+                        'max_depth': max_depth,
+                        'cardinality': cardinality_of(n_trees, max_depth),
+                        'corner': corner.name,
+                        'min_samples_leaf': corner.min_samples_leaf,
+                        'min_samples_split': corner.min_samples_split,
+                        'split_idx': split_idx,
+                        'split_seed': seed,
+                        'joint_codeword_length': joint_len,
+                        'joint_within_limit': joint_len <= MAX_CODEWORD_LENGTH,
+                        'joint_stages': joint_stages,
+                        'joint_blocks': joint_blocks,
+                        'disjoint_codeword_length_app': app_len,
+                        'disjoint_codeword_length_ddos': ddos_len,
+                        'disjoint_codeword_length': disjoint_len,
+                        'disjoint_within_limit': disjoint_len <= MAX_CODEWORD_LENGTH,
+                        'disjoint_stages': disjoint_stages,
+                        'disjoint_blocks': disjoint_blocks,
+                        'seconds': time.perf_counter() - start,
+                    })
 
-                print('  t={:<3} d={:<3} joint cw={:<5}{} blocks={:<6} | '
-                      'disjoint cw={:<5}{} blocks={:<6} | {:.1f}s'.format(
-                          n_trees, max_depth, joint_len,
-                          '!' if joint_len > MAX_CODEWORD_LENGTH else ' ',
-                          '-' if joint_blocks is None else joint_blocks,
-                          disjoint_len,
-                          '!' if disjoint_len > MAX_CODEWORD_LENGTH else ' ',
-                          '-' if disjoint_blocks is None else disjoint_blocks,
-                          rows[-1]['seconds']))
+                    print('  t={:<3} d={:<3} {:<11} joint cw={:<5}{} blocks={:<6} | '
+                          'disjoint cw={:<5}{} blocks={:<6} | {:.1f}s'.format(
+                              n_trees, max_depth, corner.name, joint_len,
+                              '!' if joint_len > MAX_CODEWORD_LENGTH else ' ',
+                              '-' if joint_blocks is None else joint_blocks,
+                              disjoint_len,
+                              '!' if disjoint_len > MAX_CODEWORD_LENGTH else ' ',
+                              '-' if disjoint_blocks is None else disjoint_blocks,
+                              rows[-1]['seconds']))
 
     frame = pd.DataFrame(rows)
     # None marks "no block/stage count exists because the codeword is too
@@ -237,20 +287,19 @@ def collect():
 
 
 def per_cell(frame):
-    """Collapse the 3 splits into the worst case per cell -- the adoption rule
-    asks for cells that stay within the limit on ALL splits, so the maximum
+    """Collapse the 3 splits into the worst case per (cell, corner) -- the
+    adoption rule asks for cells within the limit on ALL splits, so the maximum
     over splits is the deciding statistic."""
     frame = frame.copy()
     for column in ('joint_stages', 'joint_blocks',
                    'disjoint_stages', 'disjoint_blocks'):
-        # None (the infeasible marker) makes the column dtype object, which
-        # groupby.max cannot order; NaN is skipped instead.
+        # Int64's pd.NA does not compare, so groupby.max cannot order it; NaN
+        # is skipped instead.
         frame[column] = pd.to_numeric(frame[column], errors='coerce')
 
-    cells = frame.groupby(['n_trees', 'max_depth'], as_index=False).agg(
+    cells = frame.groupby(['n_trees', 'max_depth', 'corner'], as_index=False).agg(
         cardinality=('cardinality', 'max'),
         joint_cw_max=('joint_codeword_length', 'max'),
-        joint_cw_min=('joint_codeword_length', 'min'),
         joint_blocks_max=('joint_blocks', 'max'),
         joint_within_limit_all_splits=('joint_within_limit', 'all'),
         disjoint_cw_max=('disjoint_codeword_length', 'max'),
@@ -264,8 +313,19 @@ def per_cell(frame):
     return cells
 
 
-def print_grid(cells, column, title, note):
-    print('\n### {}\n'.format(title))
+def at_corner(cells, corner, n_trees=None, max_depth=None):
+    rows = cells[cells.corner == corner.name]
+    if n_trees is not None:
+        rows = rows[rows.n_trees == n_trees]
+    if max_depth is not None:
+        rows = rows[rows.max_depth == max_depth]
+    return rows
+
+
+def print_grid(cells, corner, column, title, note):
+    print('\n### {} ({} corner: min_samples_leaf={}, min_samples_split={})\n'
+          .format(title, corner.name, corner.min_samples_leaf,
+                  corner.min_samples_split))
     print('{}\n'.format(note))
     header = ['n_trees \\ max_depth'] + [str(d) for d in MAX_DEPTH_GRID]
     print('| ' + ' | '.join(header) + ' |')
@@ -273,8 +333,7 @@ def print_grid(cells, column, title, note):
     for n_trees in N_TREES_GRID:
         line = ['**{}**'.format(n_trees)]
         for max_depth in MAX_DEPTH_GRID:
-            row = cells[(cells.n_trees == n_trees) & (cells.max_depth == max_depth)]
-            value = row[column].iloc[0]
+            value = at_corner(cells, corner, n_trees, max_depth)[column].iloc[0]
             if pd.isna(value):
                 line.append('-')
                 continue
@@ -284,63 +343,96 @@ def print_grid(cells, column, title, note):
         print('| ' + ' | '.join(line) + ' |')
 
 
-def print_cell_table(cells):
-    print('\n### Per-cell summary, ranked by admissible search-space '
-          'cardinality (Ruling P4-1)\n')
-    print('`cardinality = n_trees * (max_depth - 1)` is the number of '
-          '`(n_estimators, max_depth)` pairs the Optuna bounds admit. '
-          '"feasible" means the joint codeword length stayed within {} bits on '
-          'all {} splits.\n'.format(MAX_CODEWORD_LENGTH, len(SPLIT_INDICES)))
-    header = ['n_trees', 'max_depth', 'cardinality', 'joint cw (worst split)',
-              'joint blocks', 'disjoint cw (worst split)', 'disjoint blocks',
-              'feasible']
+def print_where_the_limit_binds(cells):
+    print('\n### Where the {}-bit limit starts to bind, under both corners\n'
+          .format(MAX_CODEWORD_LENGTH))
+    print('The smallest max_depth in the grid whose codeword exceeds the limit '
+          'on at least one split. The two staircases differ by a factor of ~3 '
+          'in depth, which is the point: the ceiling is a property of '
+          '(n_trees, max_depth, pruning), not of the two bounds alone. Ruling '
+          'P4-2 makes the {} corner the deciding one.\n'
+          .format(DECIDING_CORNER.name))
+    header = ['n_trees'] + ['{} / {}'.format(corner.name, encoding)
+                            for corner in CORNERS
+                            for encoding in ('joint', 'disjoint')]
     print('| ' + ' | '.join(header) + ' |')
     print('|' + '|'.join(['---'] * len(header)) + '|')
-    ordered = cells.sort_values(
+    for n_trees in N_TREES_GRID:
+        line = [str(n_trees)]
+        for corner in CORNERS:
+            rows = at_corner(cells, corner, n_trees)
+            for column in ('joint_within_limit_all_splits',
+                           'disjoint_within_limit_all_splits'):
+                over = rows[~rows[column]].max_depth
+                line.append(str(int(over.min())) if len(over) else 'never')
+        print('| ' + ' | '.join(line) + ' |')
+
+
+def print_cell_table(cells):
+    print('\n### Per-cell summary, ranked by admissible search-space '
+          'cardinality (Rulings P4-1 and P4-3)\n')
+    print('`cardinality = ceil(n_trees / 2) * (max_depth - 1)` is the number of '
+          '`(n_estimators, max_depth)` pairs the Optuna bounds actually reach '
+          '(n_estimators has step=2). "feasible" is the {} corner\'s joint '
+          'codeword staying within {} bits on all {} splits -- the deciding '
+          'criterion (Ruling P4-2); the large-tree columns are shown alongside '
+          'so the cost of the stricter reading is visible.\n'.format(
+              DECIDING_CORNER.name, MAX_CODEWORD_LENGTH, len(SPLIT_INDICES)))
+    header = ['n_trees', 'max_depth', 'cardinality',
+              'pruned joint cw', 'pruned joint blocks',
+              'pruned disjoint cw', 'pruned disjoint blocks',
+              'FEASIBLE (pruned)',
+              'large-tree joint cw', 'large-tree joint blocks',
+              'feasible (large-tree)']
+    print('| ' + ' | '.join(header) + ' |')
+    print('|' + '|'.join(['---'] * len(header)) + '|')
+
+    def number(value):
+        return '-' if pd.isna(value) else str(int(value))
+
+    deciding = at_corner(cells, DECIDING_CORNER).sort_values(
         ['joint_within_limit_all_splits', 'cardinality', 'n_trees'],
         ascending=[False, False, True])
-    for _, row in ordered.iterrows():
-        print('| {} | {} | {} | {} | {} | {} | {} | {} |'.format(
-            int(row.n_trees), int(row.max_depth), int(row.cardinality),
-            int(row.joint_cw_max),
-            '-' if pd.isna(row.joint_blocks_max) else int(row.joint_blocks_max),
-            int(row.disjoint_cw_max),
-            '-' if pd.isna(row.disjoint_blocks_max) else int(row.disjoint_blocks_max),
-            'yes' if row.joint_within_limit_all_splits else 'NO'))
-
-
-def print_where_the_limit_binds(cells):
-    print('\n### Where the {}-bit limit starts to bind\n'.format(MAX_CODEWORD_LENGTH))
-    print('| n_trees | smallest max_depth exceeding the limit (joint) | '
-          'smallest max_depth exceeding the limit (disjoint) |')
-    print('|---|---|---|')
-    for n_trees in N_TREES_GRID:
-        row = cells[cells.n_trees == n_trees]
-        cell = []
-        for column in ('joint_within_limit_all_splits',
-                       'disjoint_within_limit_all_splits'):
-            over = row[~row[column]].max_depth
-            cell.append(str(int(over.min())) if len(over) else
-                        'never within this grid')
-        print('| {} | {} | {} |'.format(n_trees, cell[0], cell[1]))
+    for _, row in deciding.iterrows():
+        other = at_corner(cells, LARGE_TREE, row.n_trees, row.max_depth).iloc[0]
+        print('| ' + ' | '.join([
+            str(int(row.n_trees)), str(int(row.max_depth)),
+            str(int(row.cardinality)),
+            number(row.joint_cw_max), number(row.joint_blocks_max),
+            number(row.disjoint_cw_max), number(row.disjoint_blocks_max),
+            'yes' if row.joint_within_limit_all_splits else 'NO',
+            number(other.joint_cw_max), number(other.joint_blocks_max),
+            'yes' if other.joint_within_limit_all_splits else 'NO',
+        ]) + ' |')
 
 
 def select(cells):
-    """Ruling P4-1: maximum admissible cardinality among cells within the limit
-    on all splits, ties broken toward the smaller n_trees."""
-    feasible = cells[cells.joint_within_limit_all_splits]
+    """Rulings P4-1/P4-2/P4-3: maximum admissible cardinality among cells whose
+    joint codeword is within the limit at the deciding corner on all splits,
+    ties broken toward the smaller n_trees."""
+    deciding = at_corner(cells, DECIDING_CORNER)
+    feasible = deciding[deciding.joint_within_limit_all_splits]
     if not len(feasible):
         raise RuntimeError('no grid cell stays within the codeword limit')
 
     best = feasible.cardinality.max()
     tied = feasible[feasible.cardinality == best].sort_values('n_trees')
     chosen = tied.iloc[0]
+    strict = at_corner(cells, LARGE_TREE, chosen.n_trees, chosen.max_depth).iloc[0]
 
     print('\n### Adopted values\n')
-    print('{} of {} grid cells keep the joint codeword within {} bits on all '
-          '{} splits. The largest admissible search space among them has '
-          'cardinality n_trees * (max_depth - 1) = {}, attained by {}.'.format(
-              len(feasible), len(cells), MAX_CODEWORD_LENGTH,
+    print('The {} corner decides (Ruling P4-2): a cell counts as feasible when '
+          'ANY configuration the search can reach there compiles, and pruning '
+          'is inside the search space -- min_samples_leaf up to 200, '
+          'min_samples_split up to 400. Requiring the whole box to compile (the '
+          '{} corner) would truncate the reachable frontier without buying a '
+          'real guarantee, since the block budget binds inside the box '
+          'regardless.'.format(DECIDING_CORNER.name, LARGE_TREE.name))
+    print('\n{} of {} grid cells keep the joint codeword within {} bits on all '
+          '{} splits at that corner. The largest admissible search space among '
+          'them has cardinality ceil(n_trees / 2) * (max_depth - 1) = {}, '
+          'attained by {}.'.format(
+              len(feasible), len(deciding), MAX_CODEWORD_LENGTH,
               len(SPLIT_INDICES), int(best),
               ', '.join('({}, {})'.format(int(r.n_trees), int(r.max_depth))
                         for _, r in tied.iterrows())))
@@ -348,13 +440,20 @@ def select(cells):
         print('Ties are broken toward the smaller n_trees (Ruling P4-1).')
     print('\n**Adopted: n_trees = {}, max_depth = {}** -- justified by the row '
           '(n_trees={}, max_depth={}) of the per-cell table: cardinality {}, '
-          'joint codeword length {} bits at its worst split (limit {}), '
-          '{} joint blocks.'.format(
+          'joint codeword length {} bits at its worst split under pruning '
+          '(limit {}), {} joint blocks. The same cell measures {} bits at the '
+          'large-tree corner, so part of the box is out of reach on codeword '
+          'length. That is normal and was already true of the (7, 10) '
+          'placeholders, whose own corner measures 1599 bits: the bounds are '
+          'per-axis, so a joint corner can be suggestable without ever being '
+          'selectable, and the objective scores such trials by violation '
+          'magnitude rather than letting them stop the search.'.format(
               int(chosen.n_trees), int(chosen.max_depth),
               int(chosen.n_trees), int(chosen.max_depth),
               int(chosen.cardinality), int(chosen.joint_cw_max),
               MAX_CODEWORD_LENGTH,
-              '-' if pd.isna(chosen.joint_blocks_max) else int(chosen.joint_blocks_max)))
+              '-' if pd.isna(chosen.joint_blocks_max) else int(chosen.joint_blocks_max),
+              int(strict.joint_cw_max)))
     return int(chosen.n_trees), int(chosen.max_depth)
 
 
@@ -366,25 +465,26 @@ def main():
     print('\nwrote {} ({} rows)'.format(path, len(frame)))
 
     cells = per_cell(frame)
-    print_grid(cells, 'joint_cw_max',
-               'Joint-encoding codeword length, worst of {} splits'.format(
-                   len(SPLIT_INDICES)),
-               'Bold exceeds the {}-bit limit, so the pair does not '
-               'compile.'.format(MAX_CODEWORD_LENGTH))
-    print_grid(cells, 'disjoint_cw_max',
-               'Disjoint-encoding codeword length (longer of the two models), '
-               'worst of {} splits'.format(len(SPLIT_INDICES)),
-               'Bold exceeds the {}-bit limit.'.format(MAX_CODEWORD_LENGTH))
-    print_grid(cells, 'joint_blocks_max',
-               'Joint-encoding TCAM blocks, worst of {} splits'.format(
-                   len(SPLIT_INDICES)),
-               '"-" is a cell whose codeword exceeds the limit, so no block '
-               'count exists.')
-    print_grid(cells, 'disjoint_blocks_max',
-               'Disjoint-encoding TCAM blocks, worst of {} splits'.format(
-                   len(SPLIT_INDICES)),
-               '"-" is a cell whose codeword exceeds the limit, so no block '
-               'count exists.')
+    splits = len(SPLIT_INDICES)
+    for corner in CORNERS:
+        print_grid(cells, corner, 'joint_cw_max',
+                   'Joint-encoding codeword length, worst of {} splits'.format(splits),
+                   'Bold exceeds the {}-bit limit, so the pair does not '
+                   'compile.'.format(MAX_CODEWORD_LENGTH))
+        print_grid(cells, corner, 'disjoint_cw_max',
+                   'Disjoint-encoding codeword length (longer of the two '
+                   'models), worst of {} splits'.format(splits),
+                   'Bold exceeds the {}-bit limit.'.format(MAX_CODEWORD_LENGTH))
+        print_grid(cells, corner, 'joint_blocks_max',
+                   'Joint-encoding TCAM blocks, worst of {} splits'.format(splits),
+                   '"-" is a cell whose codeword exceeds the limit, so no block '
+                   'count exists. Compare against the campaign M grid of '
+                   '25-100: blocks bind well before codeword bits do at high '
+                   'tree counts.')
+        print_grid(cells, corner, 'disjoint_blocks_max',
+                   'Disjoint-encoding TCAM blocks, worst of {} splits'.format(splits),
+                   '"-" is a cell whose codeword exceeds the limit, so no block '
+                   'count exists.')
     print_where_the_limit_binds(cells)
     print_cell_table(cells)
     select(cells)

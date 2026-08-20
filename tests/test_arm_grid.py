@@ -41,9 +41,9 @@ def test_result_paths_are_self_describing_and_unique_per_arm():
              for arm, cfg in m.PRIMARY_ARMS + m.SENSITIVITY_ARMS}
 
     assert len(paths) == 8
-    assert any(p.endswith('rf_t15_d4_M25_independent.csv') for p in paths)
-    assert any(p.endswith('rf_t15_d4_M25_joint-d002.csv') for p in paths)
-    assert any(p.endswith('rf_t15_d4_M25_joint-dinf.csv') for p in paths)
+    assert any(p.endswith('rf_t11_d14_M25_independent.csv') for p in paths)
+    assert any(p.endswith('rf_t11_d14_M25_joint-d002.csv') for p in paths)
+    assert any(p.endswith('rf_t11_d14_M25_joint-dinf.csv') for p in paths)
 
 
 def test_result_paths_record_the_effective_search_bounds():
