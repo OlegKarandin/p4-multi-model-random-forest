@@ -273,8 +273,7 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
         k = len(remaining_app)
 
         try:
-            (model_app, model_ddos, stages, blocks,
-             acc_sel_app, acc_sel_ddos, best_params) = train_multi_RF_Optuna_multi_constrained(
+            train_result = train_multi_RF_Optuna_multi_constrained(
                 app.X_train[:, remaining_app], app.y_train,
                 ddos.X_train[:, remaining_ddos], ddos.y_train,
                 (app.X_val_align[:, remaining_app], app.y_val_align),
@@ -300,6 +299,11 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             remaining_ddos, names_ddos, carried_ddos = _drop_least_important(
                 remaining_ddos, names_ddos, carried_ddos)
             continue
+
+        model_app, model_ddos = train_result.model_A, train_result.model_B
+        stages, blocks = train_result.stages, train_result.blocks
+        acc_sel_app, acc_sel_ddos = train_result.acc_sel_A, train_result.acc_sel_B
+        best_params = train_result.best_params
 
         warm_start_params = best_params
 

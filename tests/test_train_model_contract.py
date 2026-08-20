@@ -1,10 +1,12 @@
 """Spec B.1/B.2: one fit, per-task objectives, constraint on what is returned."""
+import dataclasses
+
 import numpy as np
 import pytest
 
 from src.training.config import TrainConfig
 from src.training.errors import NoFeasibleSolution
-from src.training.train_model import train_multi_RF_Optuna_multi_constrained
+from src.training.train_model import TrainResult, train_multi_RF_Optuna_multi_constrained
 
 FEATURE_NAMES = ['Flow.IAT.Max', 'Fwd.IAT.Max', 'Fwd.Packet.Length.Max']
 
@@ -31,17 +33,23 @@ def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300):
         max_blocks, encoding, cfg)
 
 
-def test_the_contract_returns_seven_values():
+def test_the_contract_returns_a_frozen_train_result_with_all_fourteen_fields():
     out = _call()
 
-    assert len(out) == 7
-    model_A, model_B, stages, blocks, acc_sel_A, acc_sel_B, best_params = out
-    assert hasattr(model_A, 'predict') and hasattr(model_B, 'predict')
-    assert isinstance(stages, (int, np.integer))
-    assert isinstance(blocks, (int, np.integer))
-    assert 0.0 <= acc_sel_A <= 1.0
-    assert 0.0 <= acc_sel_B <= 1.0
-    assert isinstance(best_params, dict)
+    assert isinstance(out, TrainResult)
+    assert len(dataclasses.fields(out)) == 14
+    assert hasattr(out.model_A, 'predict') and hasattr(out.model_B, 'predict')
+    assert isinstance(out.stages, (int, np.integer))
+    assert isinstance(out.blocks, (int, np.integer))
+    assert 0.0 <= out.acc_sel_A <= 1.0
+    assert 0.0 <= out.acc_sel_B <= 1.0
+    assert isinstance(out.best_params, dict)
+    assert isinstance(out.rel_shortfall, float)
+    assert isinstance(out.n_trials_run, int) and out.n_trials_run > 0
+    assert isinstance(out.n_feasible, int) and out.n_feasible > 0
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        out.blocks = 999
 
 
 def test_blocks_le_max_blocks_holds_for_the_RETURNED_models():
@@ -51,13 +59,13 @@ def test_blocks_le_max_blocks_holds_for_the_RETURNED_models():
     from src.p4gen.evaluation import multi_model_memory_evaluation
 
     for max_blocks in (40, 60, 90):
-        model_A, model_B, _, blocks, _, _, _ = _call(max_blocks=max_blocks)
+        out = _call(max_blocks=max_blocks)
 
         _, remeasured = multi_model_memory_evaluation(
-            model_A, model_B, FEATURE_NAMES, FEATURE_NAMES, 'disjoint')
+            out.model_A, out.model_B, FEATURE_NAMES, FEATURE_NAMES, 'disjoint')
 
-        assert remeasured == blocks, max_blocks
-        assert blocks <= max_blocks, max_blocks
+        assert remeasured == out.blocks, max_blocks
+        assert out.blocks <= max_blocks, max_blocks
 
 
 def test_the_returned_model_is_fit_on_the_full_training_set_not_a_fold():
@@ -69,11 +77,12 @@ def test_the_returned_model_is_fit_on_the_full_training_set_not_a_fold():
     X_app, y_app, X_ddos, y_ddos = _tiny_problem()
     cfg = TrainConfig(n_trials=8, min_feasible_before_stop=3, lookback=2)
 
-    model_A, model_B, *_ = train_multi_RF_Optuna_multi_constrained(
+    out = train_multi_RF_Optuna_multi_constrained(
         X_app, y_app, X_ddos, y_ddos,
         (X_app, y_app), (X_ddos, y_ddos),
         (X_app, y_app), (X_ddos, y_ddos),
         FEATURE_NAMES, FEATURE_NAMES, 60, 'disjoint', cfg)
+    model_A, model_B = out.model_A, out.model_B
 
     for tree in model_A.estimators_:
         assert tree.tree_.weighted_n_node_samples[0] == len(y_app)
@@ -197,16 +206,20 @@ def test_the_winner_is_refit_deterministically_not_cached(monkeypatch):
         return study
 
     monkeypatch.setattr(tm.optuna, 'create_study', capture)
-    _, _, stages, blocks, acc_sel_A, acc_sel_B, best_params = _call()
+    out = _call()
 
     feasible = [t for t in captured['study'].trials if early_stopping.is_feasible(t)]
-    winner, _ = trial_selection.select_best_trial(feasible, 0.02, k=3, max_blocks=60)
+    winner, winner_shortfall = trial_selection.select_best_trial(
+        feasible, 0.02, k=3, max_blocks=60)
 
-    assert best_params == dict(winner.params)
-    assert blocks == winner.user_attrs['blocks']
-    assert stages == winner.user_attrs['stages']
-    assert acc_sel_A == winner.user_attrs['acc_app']
-    assert acc_sel_B == winner.user_attrs['acc_ddos']
+    assert out.best_params == dict(winner.params)
+    assert out.blocks == winner.user_attrs['blocks']
+    assert out.stages == winner.user_attrs['stages']
+    assert out.acc_sel_A == winner.user_attrs['acc_app']
+    assert out.acc_sel_B == winner.user_attrs['acc_ddos']
+    assert out.rel_shortfall == winner_shortfall
+    assert out.n_trials_run == len(captured['study'].trials)
+    assert out.n_feasible == len(feasible)
 
 
 def test_delta_align_none_accepts_every_move_without_scoring(monkeypatch):
@@ -232,3 +245,83 @@ def test_delta_align_none_accepts_every_move_without_scoring(monkeypatch):
                           min_feasible_before_stop=2, lookback=2))
 
     assert scored == [], 'delta_align=None must not evaluate accuracy at all'
+
+
+def test_align_stats_on_the_result_describe_the_refit_not_an_earlier_trial(monkeypatch):
+    """P5 gap 1: the post-search refit must pass its OWN align_stats dict into
+    fit_pair, so the four align_* fields on the returned TrainResult describe
+    the artifact actually returned -- not some earlier trial's user_attrs.
+
+    Force every call's stats to be visibly distinct (a monotonically
+    increasing counter) and assert the RETURNED result carries the counter
+    value from the LAST call, which is the refit -- one more than the number
+    of trials that called align_rf_thresholds during the search. Before gap
+    1 is fixed, the refit calls fit_pair without an align_stats kwarg, so the
+    dict this test reads from stays empty and the fields come back None
+    instead of matching the counter."""
+    import src.training.train_model as tm
+
+    calls = {'n': 0}
+
+    def spy(rf1, rf2, *args, **kwargs):
+        calls['n'] += 1
+        n = calls['n']
+        stats = kwargs.get('align_stats')
+        if stats is not None:
+            stats['attempted'] = n
+            stats['accepted'] = n
+            stats['intervals_before'] = n
+            stats['intervals_after'] = n
+        return rf1, rf2
+
+    monkeypatch.setattr(tm, 'align_rf_thresholds', spy)
+
+    out = _call(encoding='joint',
+                cfg=TrainConfig(n_trials=6, min_feasible_before_stop=2, lookback=2))
+
+    assert calls['n'] >= 2, 'expected at least one trial call plus the refit call'
+    assert out.align_attempted == calls['n']
+    assert out.align_accepted == calls['n']
+    assert out.intervals_before == calls['n']
+    assert out.intervals_after == calls['n']
+
+
+def test_alignment_fields_are_real_ints_when_alignment_runs():
+    """The joint arm with alignment enabled is where align_rf_thresholds
+    actually runs, so the four fields must be real (non-negative) ints, not
+    the None sentinel reserved for arms where alignment never ran."""
+    out = _call(encoding='joint',
+                cfg=TrainConfig(n_trials=6, min_feasible_before_stop=2, lookback=2))
+
+    for value in (out.align_attempted, out.align_accepted,
+                  out.intervals_before, out.intervals_after):
+        assert isinstance(value, int)
+        assert value >= 0
+
+
+def test_alignment_fields_are_none_not_zero_on_the_disjoint_arm():
+    """Alignment is a joint-arm-only treatment (fit_pair never calls
+    align_rf_thresholds under 'disjoint'), so the four fields have no value
+    to report there. A silent 0 would be indistinguishable from 'alignment
+    ran and accepted nothing', a real and different outcome -- so the chosen
+    representation is None, which Task 8 writes into the CSV as ''."""
+    out = _call(encoding='disjoint')
+
+    assert out.align_attempted is None
+    assert out.align_accepted is None
+    assert out.intervals_before is None
+    assert out.intervals_after is None
+
+
+def test_alignment_fields_are_none_not_zero_when_the_joint_arm_disables_alignment():
+    """Same None sentinel applies to the joint arm's own ablation: A.2's
+    alignment_enabled=False is a genuine skip of align_rf_thresholds, not
+    delta_align=0, so it must be just as distinguishable from a real zero."""
+    out = _call(encoding='joint',
+                cfg=TrainConfig(alignment_enabled=False, n_trials=6,
+                                min_feasible_before_stop=2, lookback=2))
+
+    assert out.align_attempted is None
+    assert out.align_accepted is None
+    assert out.intervals_before is None
+    assert out.intervals_after is None

@@ -6,6 +6,7 @@ from src.training import feature_selection as fs
 from src.training.config import TrainConfig
 from src.training.errors import NoFeasibleSolution
 from src.training.splits import make_task_splits
+from src.training.train_model import TrainResult
 
 FEATURE_NAMES = ['Flow.IAT.Max', 'Fwd.IAT.Max', 'Fwd.Packet.Length.Max']
 
@@ -22,7 +23,8 @@ def _splits(seed=0):
 
 
 def _fake_trainer(raise_at_k=(), record=None):
-    """Stands in for the 7-tuple trainer from Task 4."""
+    """Stands in for the TrainResult-returning trainer (P5 gap 2 -- was a
+    7-tuple prior to Task 7)."""
     def trainer(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
                 val_select_A, val_select_B, features_A, features_B,
                 max_blocks, encoding, cfg, warm_start_params=None):
@@ -40,7 +42,12 @@ def _fake_trainer(raise_at_k=(), record=None):
             n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
         model_B = RandomForestClassifier(
             n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
-        return model_A, model_B, 1, 1, 0.71, 0.91, {'n_estimators_A': 1}
+        return TrainResult(
+            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            acc_sel_A=0.71, acc_sel_B=0.91, best_params={'n_estimators_A': 1},
+            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+            align_attempted=None, align_accepted=None,
+            intervals_before=None, intervals_after=None)
     return trainer
 
 

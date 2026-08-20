@@ -17,6 +17,9 @@ if os.environ.get('THESIS_USE_SKLEARNEX') == '1':
   except ImportError:
     pass
 
+from dataclasses import dataclass
+from typing import Any, Optional
+
 import sklearn
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
@@ -61,6 +64,55 @@ def _vary_hyperparams(params: dict, n_trees: int, max_depth: int) -> dict:
     return varied
 
 
+@dataclass(frozen=True)
+class TrainResult:
+    """Return contract for train_multi_RF_Optuna_multi_constrained (P5 gap 2).
+
+    Replaces a 7-tuple rather than growing it to twelve-plus positional
+    values: a dataclass makes every caller name the field it reads instead of
+    counting positions.
+
+    model_A, model_B, stages, blocks, acc_sel_A, acc_sel_B, best_params are
+    the original seven. The rest:
+
+    rel_shortfall : the winning trial's balance shortfall from
+        trial_selection.select_best_trial (spec B.3) -- how far the
+        worse-served task fell below its own achievable best.
+    n_trials_run : len(study.trials) -- how many trials the search actually
+        ran before stopping (early stopping may cut this short of cfg.n_trials).
+    n_feasible : how many of those trials satisfied both the codeword and
+        block-budget constraints.
+    align_attempted, align_accepted, intervals_before, intervals_after :
+        the four align_stats keys from threshold_alignment.align_rf_thresholds,
+        measured on the REFIT winner (gap 1), not an earlier trial. Alignment
+        is a joint-arm-only treatment (fit_pair calls align_rf_thresholds only
+        when encoding == 'joint' and cfg.alignment_enabled) -- on every other
+        arm these four fields are None, deliberately NOT 0: a silent 0 would
+        be indistinguishable from "alignment ran and accepted nothing", which
+        is a real and different outcome. Task 8 writes '' into the CSV for
+        the None case.
+
+    Frozen so a ProcessPoolExecutor worker cannot mutate a result after it
+    crosses the pickle boundary. Every field is plain data (numbers, a dict,
+    or the two fitted models already returned pre-P5) so the whole thing
+    pickles the same as the tuple it replaces.
+    """
+    model_A: Any
+    model_B: Any
+    stages: int
+    blocks: int
+    acc_sel_A: float
+    acc_sel_B: float
+    best_params: dict
+    rel_shortfall: float
+    n_trials_run: int
+    n_feasible: int
+    align_attempted: Optional[int]
+    align_accepted: Optional[int]
+    intervals_before: Optional[int]
+    intervals_after: Optional[int]
+
+
 def train_multi_RF_Optuna_multi_constrained(
         X_A, y_A, X_B, y_B,
         val_align_A, val_align_B,
@@ -80,7 +132,7 @@ def train_multi_RF_Optuna_multi_constrained(
         nothing else; val_select serves this objective and, one level up,
         permutation_importance. Disjoint by construction (splits.py).
 
-    Returns (model_A, model_B, stages, blocks, acc_sel_A, acc_sel_B, best_params).
+    Returns a TrainResult (see its docstring for the full field list).
 
     Raises NoFeasibleSolution when no trial satisfies both the block budget and
     the codeword limit -- an expected outcome at tight max_blocks, handled per-k
@@ -236,8 +288,16 @@ def train_multi_RF_Optuna_multi_constrained(
     # Re-measuring here is not redundant: it is the B.1 invariant checked on the
     # artifact that is actually returned, and it fails loudly if anything in the
     # fit -> align -> measure path is non-deterministic.
+    #
+    # align_stats (P5 gap 1): a fresh dict per refit, same as the objective
+    # passes per trial (a), so the four align_* fields on TrainResult describe
+    # THIS artifact rather than whichever earlier trial happened to be the
+    # winner. Stays empty (all four .get()s below fall through to None) on any
+    # arm where fit_pair does not call align_rf_thresholds at all.
+    align_stats = {}
     model_A, model_B = fit_pair(rf_params(best_trial.params, 'A'),
-                                rf_params(best_trial.params, 'B'))
+                                rf_params(best_trial.params, 'B'),
+                                align_stats=align_stats)
     stages, blocks = multi_model_memory_evaluation(
         model_A, model_B, features_A, features_B, encoding)
 
@@ -247,6 +307,19 @@ def train_multi_RF_Optuna_multi_constrained(
             '(max {}) -- the pipeline is not deterministic'.format(
                 best_trial.number, blocks, best_trial.user_attrs['blocks'], max_blocks))
 
-    return (model_A, model_B, int(stages), int(blocks),
-            best_trial.user_attrs['acc_app'], best_trial.user_attrs['acc_ddos'],
-            dict(best_trial.params))
+    return TrainResult(
+        model_A=model_A,
+        model_B=model_B,
+        stages=int(stages),
+        blocks=int(blocks),
+        acc_sel_A=best_trial.user_attrs['acc_app'],
+        acc_sel_B=best_trial.user_attrs['acc_ddos'],
+        best_params=dict(best_trial.params),
+        rel_shortfall=shortfall,
+        n_trials_run=len(study.trials),
+        n_feasible=len(feasible_trials),
+        align_attempted=align_stats.get('attempted'),
+        align_accepted=align_stats.get('accepted'),
+        intervals_before=align_stats.get('intervals_before'),
+        intervals_after=align_stats.get('intervals_after'),
+    )

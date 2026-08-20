@@ -36,6 +36,7 @@ import pytest
 from unittest.mock import patch
 
 from src.training import feature_selection as fs
+from src.training.train_model import TrainResult
 from src.p4gen import p4_compile as pc
 
 
@@ -82,7 +83,12 @@ def test_process_single_split_without_hardware_validation_has_none_fields(monkey
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return model_A, model_B, 1, 1, 0.7, 0.9, {}
+        return TrainResult(
+            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
+            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+            align_attempted=None, align_accepted=None,
+            intervals_before=None, intervals_after=None)
 
     monkeypatch.setattr(
         'src.training.train_model.train_multi_RF_Optuna_multi_constrained', _fake_train)
@@ -153,7 +159,12 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return model_A, model_B, 1, 1, 0.7, 0.9, {}
+        return TrainResult(
+            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
+            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+            align_attempted=None, align_accepted=None,
+            intervals_before=None, intervals_after=None)
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         # Task 3: both loops now write ONE combined file per iteration
@@ -246,7 +257,12 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return model_A, model_B, 1, 1, 0.7, 0.9, {}
+        return TrainResult(
+            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
+            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+            align_attempted=None, align_accepted=None,
+            intervals_before=None, intervals_after=None)
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         return type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
@@ -469,7 +485,12 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return model_A, model_B, 1, 1, 0.7, 0.9, {}
+        return TrainResult(
+            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
+            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+            align_attempted=None, align_accepted=None,
+            intervals_before=None, intervals_after=None)
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         return type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
