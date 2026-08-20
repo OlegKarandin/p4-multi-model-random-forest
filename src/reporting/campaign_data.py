@@ -28,12 +28,27 @@ its own, both produce a plausible wrong answer:
    infeasible row's `''` (meaning "this k was infeasible, ignore this row
    entirely").
 2. `delta_align` is a string column (`''`, `'0'`, `'0.05'`, `'inf'`,
-   `TrainConfig.delta_align_label`). Compared numerically as loaded,
-   `'0.05' < '0.1'` is a string comparison that happens to be True -- the
-   kind of bug a casual test does not catch. `load_campaign` parses it into
-   `delta_align_num` (float, NaN when not applicable or inf) plus
-   `delta_align_is_inf` (bool), and never leaves the raw string on a
-   numeric comparison path.
+   `TrainConfig.delta_align_label`). The plan that named this trap framed
+   it as a string-vs-numeric ORDERING hazard (e.g. `'0.05' < '0.1'` read as
+   strings). Checked during review: that framing does not hold for this
+   column's realistic value domain. Every value is `'{:g}'.format(x)` for
+   x in [0, 1) -- the exact format `delta_align_label` uses -- and
+   lexicographic order over same-leading-digit decimal fractions below 1
+   always agrees with numeric order; a brute-force check across 200,000
+   random values in that domain found zero divergent pairs. The genuine
+   hazard is different: `''` and `'inf'` are not numbers at all. Naive
+   arithmetic or an unconditional `pd.to_numeric` on the raw column either
+   raises or silently produces NaN in a way that erases the "not
+   applicable" vs "accept-all" distinction -- and, sharper still, pandas'
+   own CSV dtype inference can silently turn a column that is ENTIRELY the
+   literal text `'inf'` (true of every real `joint-dinf` file, since the
+   value is stamped identically onto every row) into float64 infinity
+   before any of this module's own parsing even runs (see the `dtype=str`
+   comment in `load_campaign` below). `load_campaign` parses delta_align
+   into `delta_align_num` (float, NaN when not applicable or inf) plus
+   `delta_align_is_inf` (bool), and reads the whole file as `dtype=str`
+   first so the raw string is never silently reinterpreted as a float
+   behind this module's back.
 
 Frame contract -- every column `load_campaign` returns, and its dtype after
 parsing. Downstream modules (P7b `claims.py`, P7c `figures.py`) should treat

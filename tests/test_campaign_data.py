@@ -166,11 +166,24 @@ def test_delta_align_inf_is_distinguishable_from_any_numeric_value(tmp_path):
     assert np.isnan(df['delta_align_num'].iloc[0])
 
 
-def test_delta_align_numeric_ordering_is_correct_not_a_string_comparison(tmp_path):
-    # '0.05' < '0.1' as STRINGS is True (a string-comparison bug that
-    # survives casual testing); numerically 0.05 < 0.1 is also True, but
-    # '0.2' < '0.1' as strings is also True (wrong) while numerically False.
-    # This is the discriminating case.
+def test_delta_align_num_holds_the_true_parsed_float_for_each_row(tmp_path):
+    # NOT a discriminating test for a string-vs-numeric ORDERING bug: for
+    # delta_align's realistic value domain (the '{:g}'-formatted [0, 1)
+    # grid TrainConfig.delta_align_label produces), lexicographic string
+    # order and numeric order always agree -- every value is '0.<digits>'
+    # with the same leading '0.', so string and numeric comparison never
+    # diverge anywhere in the sweep (confirmed by brute force across 200k
+    # random '{:g}'-formatted values in [0, 1) during review; no
+    # counter-example exists). '0.2' vs '0.1' below is not such a
+    # counter-example either -- both orderings agree there too.
+    #
+    # What this test actually establishes: load_campaign parses
+    # delta_align unconditionally through pd.to_numeric, so the resulting
+    # delta_align_num holds the correct float value regardless -- there is
+    # no code path in this module where a raw string comparison could stand
+    # in for it. The real hazard on this column (see module docstring) is
+    # non-numeric sentinels ('', 'inf') and pandas' dtype inference on them,
+    # both covered by the tests above, not string-vs-numeric ordering.
     rows_lo = [_feasible_row(k=17, split=10, delta_align='0.2')]
     rows_hi = [_feasible_row(k=17, split=11, delta_align='0.1')]
     _write_arm_file(tmp_path, 11, 14, 25, 'joint-d020', rows_lo)
@@ -180,6 +193,8 @@ def test_delta_align_numeric_ordering_is_correct_not_a_string_comparison(tmp_pat
 
     row_020 = df[df['delta_align'] == '0.2'].iloc[0]
     row_010 = df[df['delta_align'] == '0.1'].iloc[0]
+    assert row_020['delta_align_num'] == pytest.approx(0.2)
+    assert row_010['delta_align_num'] == pytest.approx(0.1)
     assert row_020['delta_align_num'] > row_010['delta_align_num']
 
 
