@@ -99,3 +99,16 @@ class TrainConfig:
         if self.delta_align is None:
             return 'inf'
         return '{:g}'.format(self.delta_align)
+
+    def overlap_threshold_label(self, encoding='joint'):
+        """What goes in the row's `overlap_threshold` column (spec C.1): the
+        float, or "" when alignment did not run.
+
+        overlap_threshold only governs which range pairs align_rf_thresholds
+        considers as candidates, so it is meaningless wherever that function
+        is never called -- suppressed the same way delta_align_label is: for
+        the disjoint (independent) arm, and for the joint-off ablation.
+        """
+        if encoding == 'disjoint' or not self.alignment_enabled:
+            return ''
+        return '{:g}'.format(self.overlap_threshold)

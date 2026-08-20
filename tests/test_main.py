@@ -194,10 +194,17 @@ def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp
     assert joint_d000_df['alignment_enabled'].all()
     assert (joint_d000_df['delta_align'] == '0').all()
 
+    # overlap_threshold is a joint-arm-only setting too (it only governs
+    # candidate selection inside align_rf_thresholds, which the independent
+    # arm never calls) -- same suppression as delta_align, same regression.
+    assert (independent_df['overlap_threshold'] == '').all()
+    assert (joint_d000_df['overlap_threshold'] == '0.5').all()
+
     # The two arms must actually differ -- guards against a fix that makes
     # both columns constant across arms instead of correctly arm-dependent.
     assert not independent_df['alignment_enabled'].equals(joint_d000_df['alignment_enabled'])
     assert not independent_df['delta_align'].equals(joint_d000_df['delta_align'])
+    assert not independent_df['overlap_threshold'].equals(joint_d000_df['overlap_threshold'])
 
 
 def test_a_cell_whose_file_already_exists_is_skipped():
@@ -282,3 +289,60 @@ def test_a_cell_where_every_split_failed_is_not_written():
     assert mock_run.call_count == 3
     assert mock_csv.call_count == 0
     assert mock_replace.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# --M / --n-splits
+#
+# M and n_splits were hardcoded in run_main(), so running one small pilot
+# cell meant editing main.py -- exactly the kind of edit that gets committed
+# by accident and silently truncates a later full run. --M is comma-separated
+# (a single flag reads better than a repeated one for a short list of
+# integers, and keeps "--M 25" trivial for a one-cell pilot while "--M
+# 25,40,60" stays a single, greppable token for a partial sweep).
+# ---------------------------------------------------------------------------
+
+def test_M_flag_parses_a_comma_separated_list():
+    assert m.parse_args(["--M", "25,40,60"]).M == [25, 40, 60]
+
+
+def test_M_flag_accepts_a_single_value():
+    assert m.parse_args(["--M", "25"]).M == [25]
+
+
+def test_M_and_n_splits_flags_default_to_none_so_run_main_can_supply_todays_values():
+    args = m.parse_args([])
+    assert args.M is None
+    assert args.n_splits is None
+
+
+def test_n_splits_flag_parses_as_an_int():
+    assert m.parse_args(["--n-splits", "3"]).n_splits == 3
+
+
+def test_omitting_M_and_n_splits_reproduces_todays_grid_exactly():
+    """The property that matters most: a campaign invocation with no --M or
+    --n-splits must run the exact same grid it runs today. A test asserting
+    only that the flags parse would not catch a default that quietly drifted
+    from [25, 40, 50, 60, 75, 90, 100] / 15 -- the failure mode this guards
+    against is a full ~40h campaign that silently runs a truncated grid and
+    looks like it succeeded."""
+    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
+         patch.object(sys, "argv", ["main.py", "--mode", "compute"]):
+        m.run_main()
+
+    assert mock_compute.call_args.kwargs['M_values'] == [25, 40, 50, 60, 75, 90, 100]
+    assert mock_compute.call_args.kwargs['n_splits'] == 15
+
+
+def test_M_and_n_splits_flags_actually_take_effect():
+    """This is what makes a pilot cell a command rather than a patch: --M 25
+    --n-splits 2 must reach compare_independent_joint_mapping unchanged, not
+    just parse into args.M/args.n_splits."""
+    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
+         patch.object(sys, "argv",
+                      ["main.py", "--mode", "compute", "--M", "25,40", "--n-splits", "2"]):
+        m.run_main()
+
+    assert mock_compute.call_args.kwargs['M_values'] == [25, 40]
+    assert mock_compute.call_args.kwargs['n_splits'] == 2

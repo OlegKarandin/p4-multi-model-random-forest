@@ -79,7 +79,26 @@ def parse_args(argv=None):
         help="recompute (arm, M) cells whose result file already exists. The "
              "default skips them, so re-running the same command resumes a "
              "partially finished campaign instead of redoing it")
+    parser.add_argument(
+        "--M", dest="M", type=_parse_M_grid, default=None,
+        help="comma-separated TCAM block budgets to sweep in compute mode, "
+             "e.g. '--M 25' for a single pilot cell or '--M 25,40,60' for a "
+             "partial sweep. Defaults to today's full grid "
+             "[25,40,50,60,75,90,100] when omitted, so a pilot run is a "
+             "command-line flag rather than an edit to this file")
+    parser.add_argument(
+        "--n-splits", dest="n_splits", type=int, default=None,
+        help="number of CV splits per (arm, M) cell in compute mode. "
+             "Defaults to today's value (15) when omitted")
     return parser.parse_args(argv)
+
+
+def _parse_M_grid(value):
+    """--M's argparse type: comma-separated TCAM block budgets, e.g. '25' or
+    '25,40,60'. Comma-separated (rather than a repeated flag) keeps a single
+    pilot cell as short as --M 25 while a partial sweep stays one greppable
+    token."""
+    return [int(v) for v in value.split(',')]
 
 
 def implement_tree_models_in_P4(clf_app, clf_ddos, selected_features,
@@ -328,6 +347,11 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
             results_df['M'] = max_blocks
             results_df['n_trees'] = cfg.n_trees
             results_df['max_depth'] = cfg.max_depth
+            # Suppressed for the disjoint arm the same way delta_align is
+            # (TrainConfig.overlap_threshold_label): alignment runs on the
+            # joint arm only, so an independent-arm row carrying it would
+            # misrepresent the baseline as having used a joint-arm setting.
+            results_df['overlap_threshold'] = cfg.overlap_threshold_label(encoding)
 
             # Overwrite, NOT append -- and write atomically.
             #
@@ -376,9 +400,12 @@ def run_main():
     args = parse_args()
 
     #M = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
-    M = [25, 40, 50, 60, 75, 90, 100]
+    # --M / --n-splits (both default to None) let a pilot cell run as a
+    # command -- e.g. --M 25 --n-splits 2 -- instead of an edit to this file.
+    # Omitting both must reproduce today's grid exactly.
+    M = args.M if args.M is not None else [25, 40, 50, 60, 75, 90, 100]
 
-    n_splits = 15
+    n_splits = args.n_splits if args.n_splits is not None else 15
 
     # Parallelization settings
     max_workers = None   # None = auto (cpu_count - 1), or set to specific number
