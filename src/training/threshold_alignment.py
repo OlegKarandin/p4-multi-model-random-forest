@@ -51,9 +51,31 @@ def ratchet(before, after):
     return tuple(max(b, a) for b, a in zip(before, after))
 
 
+def joint_interval_count(intervals1, intervals2):
+    """Total TCAM-relevant interval count under JOINT encoding: for a feature
+    both models split on, a shared interval list needs only ONE set of TCAM
+    entries -- so the count is the size of the UNION of the two models'
+    interval tuples, not their sum. For a feature only one model splits on,
+    there is nothing to share, so its own interval count is added directly.
+
+    This -- not a flat sum of each model's own interval count -- is the
+    quantity that actually shrinks when alignment succeeds: a successful move
+    makes two previously-different interval lists for the same feature
+    IDENTICAL, collapsing their union. Alignment only ever relocates a
+    threshold, never deletes one, so each model's OWN interval count never
+    changes; a stat built from per-model sums alone is structurally constant
+    and cannot reflect any TCAM savings at all.
+    """
+    common = set(intervals1) & set(intervals2)
+    total = sum(len(set(intervals1[f]) | set(intervals2[f])) for f in common)
+    total += sum(len(v) for f, v in intervals1.items() if f not in common)
+    total += sum(len(v) for f, v in intervals2.items() if f not in common)
+    return total
+
+
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
-                        shift_mass_slack=2.0, candidate_log=None):
+                        candidate_log=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -66,12 +88,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
-
-        NOTE: in P2 this still guards the AVERAGE of the two tasks -- the
-        minimal faithful step, replacing a hardcoded 0.005 absolute tolerance
-        with a relative one. P3 replaces it with four independent per-task
-        guards and a per-task high-water ratchet. Joint-arm accuracy numbers
-        produced between P2 and P3 are not meaningful.
 
     Returns:
     --------
@@ -93,12 +109,18 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
     X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
 
-    # One sort per model, for shift_mass. Per-model is correct: damage to rf1
-    # depends on X_val1's distribution, not X_val2's. Feature indices line up --
-    # trees are fit on X_*_train[:, remaining] and validated on
+    # One sort per model, for shift_mass -- a purely diagnostic quantity now
+    # (P3 Task 8: the shift_mass-derived pre-filter was removed; every
+    # overlap-eligible candidate reaches the real oracle check below). Only
+    # computed when candidate_log asks for it, so it costs nothing on the
+    # default (no-logging) hot path. Per-model is correct: damage to rf1
+    # depends on X_val1's distribution, not X_val2's. Feature indices line up
+    # -- trees are fit on X_*_train[:, remaining] and validated on
     # X_*_val[:, remaining], the same column space.
-    sorted_cols1 = np.sort(X_val1, axis=0)
-    sorted_cols2 = np.sort(X_val2, axis=0)
+    sorted_cols1 = sorted_cols2 = None
+    if candidate_log is not None:
+        sorted_cols1 = np.sort(X_val1, axis=0)
+        sorted_cols2 = np.sort(X_val2, axis=0)
 
     #print('Threshold index 1')
     threshold_index1 = build_threshold_index(rf1)
@@ -118,9 +140,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # anchor). Not computing them here is what makes that arm the cheapest.
     marks = None
     current = None
-    # Only used to derive cap1/cap2 below; shift_mass_cap ignores before_acc
-    # entirely when delta_rel is None, so these placeholders are never read.
-    before_acc1 = before_acc2 = 0.0
     if delta_rel is not None:
         initial_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
         initial_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
@@ -134,17 +153,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         # to marks' running per-task max. Before any candidate, both coincide.
         current = marks
 
-    # Derived per task from the SWEPT variable, so the filter widens with
-    # delta_rel and never binds. Per-model is correct: damage to rf1 depends on
-    # X_val1's distribution, not X_val2's.
-    cap1 = shift_mass_cap(delta_rel, before_acc1, shift_mass_slack)
-    cap2 = shift_mass_cap(delta_rel, before_acc2, shift_mass_slack)
-
     stats = align_stats if align_stats is not None else {}
     stats['attempted'] = 0
     stats['accepted'] = 0
-    stats['intervals_before'] = (sum(len(v) for v in intervals1.values())
-                                 + sum(len(v) for v in intervals2.values()))
+    stats['intervals_before'] = joint_interval_count(intervals1, intervals2)
 
     # Find common features
     common_features = set(intervals1.keys()) & set(intervals2.keys())
@@ -191,28 +203,14 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
             if overlap_ratio >= overlap_threshold:
                 target = calculate_target_range(range1, range2)
 
-                mass1 = max(shift_mass(sorted_cols1[:, feature_idx], old, new)
-                            for old, new in ((range1[0], target[0]), (range1[1], target[1])))
-                mass2 = max(shift_mass(sorted_cols2[:, feature_idx], old, new)
-                            for old, new in ((range2[0], target[0]), (range2[1], target[1])))
-
-                if mass1 > cap1 or mass2 > cap2:
-                    # Cheap predictor of an expensive oracle's verdict.
-                    # Empirically well-motivated (P3 Task 6), not a proven
-                    # veto-side guarantee -- see shift_mass_cap's docstring.
-                    if candidate_log is not None:
-                        candidate_log.append({
-                            'feature_idx': int(feature_idx),
-                            'range1': tuple(range1), 'range2': tuple(range2),
-                            'overlap_ratio': float(overlap_ratio),
-                            'endpoint_ratio': float(endpoint_ratio(range1, range2)),
-                            'error_app': 1.0 - current[0] if current is not None else 0.0,
-                            'error_ddos': 1.0 - current[2] if current is not None else 0.0,
-                            'shift_mass_1': mass1, 'shift_mass_2': mass2,
-                            'rel_deg': (0.0, 0.0, 0.0, 0.0),
-                            'accepted': False,
-                        })
-                    continue
+                # Purely diagnostic now -- only computed when a candidate_log
+                # is actually requested (see the sorted_cols1/2 gating above).
+                mass1 = mass2 = None
+                if candidate_log is not None:
+                    mass1 = max(shift_mass(sorted_cols1[:, feature_idx], old, new)
+                                for old, new in ((range1[0], target[0]), (range1[1], target[1])))
+                    mass2 = max(shift_mass(sorted_cols2[:, feature_idx], old, new)
+                                for old, new in ((range2[0], target[0]), (range2[1], target[1])))
 
                 # Adjust boundaries to make ranges identical
                 modifications1 = adjust_range_boundaries(
@@ -315,9 +313,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     })
                     alignment_stats['total_aligned_ranges'] += 1'''
 
-    stats['intervals_after'] = (
-        sum(len(v) for v in extract_feature_intervals(rf1).values())
-        + sum(len(v) for v in extract_feature_intervals(rf2).values()))
+    stats['intervals_after'] = joint_interval_count(
+        extract_feature_intervals(rf1), extract_feature_intervals(rf2))
 
     return rf1, rf2 #, alignment_stats
 
@@ -491,33 +488,43 @@ def shift_mass(sorted_col, old_thr, new_thr):
 def shift_mass_cap(delta_rel, before_acc, slack=2.0):
     """The largest shift_mass that can be permitted at tolerance `delta_rel`.
 
-    Derived, not tuned. Only samples inside the moved window can change ANY
-    prediction -- however many tree nodes share that threshold, the affected
-    sample set is the same set. So a move relocating fraction p satisfies
-    delta_accuracy <= p, hence rel_deg <= p / error. Requiring
-    p <= delta_rel * error. This guarantees the converse direction that
-    actually matters for a pre-filter's own local claim: any candidate that
-    PASSES this cap (mass <= cap) is guaranteed -- by the physical fact above,
-    not by assumption -- to itself satisfy the accuracy bound at this delta.
-    It does NOT by itself prove the reverse (that every VETOED candidate would
-    truly have been rejected by the full per-task guard in align_rf_thresholds):
-    shift_mass is an upper bound on possible damage, not a lower bound, so a
-    large-mass move could in principle have had small real damage. Treat this
-    as a well-motivated, empirically-supported heuristic (P3 Task 6's
-    instrumentation found zero violations of the local delta_accuracy <= p
-    bound, though only a weak Pearson correlation between shift_mass and
-    actual damage -- r~+0.14 for app, r~+0.01 for ddos), not a proof that the
-    filter never discards a move the full guard would have kept.
+    Derived, not tuned -- for the CORE bound. Only samples inside the moved
+    window can change ANY prediction -- however many tree nodes share that
+    threshold, the affected sample set is the same set. So a move relocating
+    fraction p satisfies delta_accuracy <= p, hence rel_deg <= p / error.
+    Requiring p <= delta_rel * error (i.e. slack = 1) therefore guarantees:
+    any candidate that PASSES that cap is itself guaranteed -- by the physical
+    fact above, not by assumption -- to satisfy the accuracy bound at EXACTLY
+    delta_rel. At the shipped default slack = 2.0, the same argument only
+    guarantees the bound at slack * delta_rel = 2 * delta_rel, not delta_rel
+    itself -- every test of this specific claim in the test suite therefore
+    uses slack=1.0 explicitly; the shipped default is a deliberately looser,
+    UNtested-for-exactness setting.
 
-    Because the cap widens with delta_rel, it can never be the thing that makes
-    the frontier saturate -- which is what unconfounds the sweep and makes
-    delta = inf genuinely bound the maximum achievable sharing.
+    This does NOT by itself prove the reverse (that every VETOED candidate
+    would truly have been rejected by the full per-task guard in
+    align_rf_thresholds): shift_mass is an upper bound on possible damage, not
+    a lower bound, so a large-mass move could in principle have had small real
+    damage. Treat this as a well-motivated, empirically-supported heuristic
+    (P3 Task 6's instrumentation found zero violations of the local
+    delta_accuracy <= p bound, though only a weak Pearson correlation between
+    shift_mass and actual damage -- r~+0.14 for app, r~+0.01 for ddos), not a
+    proof that a filter built on this cap never discards a move the full
+    guard would have kept.
 
-    `slack` is honest bookkeeping: the bound is exact for accuracy, but the
-    acceptance guard also covers weighted F1, which can move further than
-    accuracy per flip when flips concentrate in one class. Both datasets are
-    balanced, so the gap is small; 2x keeps this sound-for-accuracy and a tight
-    heuristic for F1.
+    NOTE (P3 Task 8): this function is currently UNUSED for filtering --
+    align_rf_thresholds no longer vetoes candidates on shift_mass at all (a
+    final whole-branch review found the cap is identically 0 whenever
+    delta_rel = 0, silently discarding confirmed-harmless moves; the project
+    owner chose removal over patching the edge case). It remains here, tested,
+    in case a future phase wants to reintroduce a pre-filter.
+
+    `slack` widens the cap beyond the exact-accuracy bound above; it is NOT a
+    proven safety margin for weighted F1. F1 can move further than accuracy
+    per flip when flips concentrate in one class -- which argues, if anything,
+    for a TIGHTER cap to protect F1, not a looser one. The honest
+    justification for slack > 1 is simply "lean permissive and let the real
+    oracle decide" rather than any F1-specific soundness claim.
     """
     if delta_rel is None:
         return float('inf')

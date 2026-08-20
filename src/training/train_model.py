@@ -134,8 +134,7 @@ def train_multi_RF_Optuna_multi_constrained(
                 val_align_B[0], val_align_B[1],
                 overlap_threshold=cfg.overlap_threshold,
                 delta_rel=cfg.delta_align,
-                align_stats=align_stats,
-                shift_mass_slack=cfg.shift_mass_slack)
+                align_stats=align_stats)
 
         return model_A, model_B
 

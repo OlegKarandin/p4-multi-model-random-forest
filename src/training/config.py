@@ -32,14 +32,6 @@ class TrainConfig:
     overlap_threshold : minimum overlap ratio for a range pair to be an
         alignment CANDIDATE -- a separate concern from whether a candidate is
         ACCEPTED (that is delta_align). Was hardcoded at the call site.
-    shift_mass_slack : multiplies the delta-derived shift_mass_cap pre-filter
-        (Task 7) applied inside align_rf_thresholds's candidate loop. The cap
-        itself is `shift_mass_slack * delta_align * (1 - before_acc)` per task
-        -- it widens with delta_align, so it can never be the thing that makes
-        the delta sweep's frontier saturate, unlike the constant
-        endpoint_ratio_cap it replaces. 2.0 is honest bookkeeping for weighted
-        F1, which can move further than accuracy per flip; see
-        threshold_alignment.shift_mass_cap's docstring.
     n_trees, max_depth : inclusive search bounds. No -1 sentinel (F10i); P4
         rederives these from the capacity ceiling.
     """
@@ -48,7 +40,6 @@ class TrainConfig:
     alignment_enabled: bool = True
     delta_select: float = 0.02
     overlap_threshold: float = 0.5
-    shift_mass_slack: float = 2.0
     n_trees: int = 7
     max_depth: int = 10
     n_trials: int = 1000
@@ -65,9 +56,6 @@ class TrainConfig:
         if not 0.0 <= self.overlap_threshold <= 1.0:
             raise ValueError(
                 'overlap_threshold must be in [0, 1], got {!r}'.format(self.overlap_threshold))
-        if self.shift_mass_slack < 0:
-            raise ValueError(
-                'shift_mass_slack must be >= 0, got {!r}'.format(self.shift_mass_slack))
 
     def arm_slug(self, encoding):
         """Filename-safe arm identity, per spec C.2.

@@ -150,3 +150,29 @@ def test_alignment_reports_its_acceptance_rate_and_interval_counts():
     # pre-existing behaviour from Tasks 1-4, not something this task's
     # accept_alignment/ratchet swap introduced.
     assert stats_loose['accepted'] >= stats_strict['accepted']
+
+
+def test_joint_interval_count_prefers_the_union_over_the_sum():
+    """The bug this replaces: summing each model's OWN interval count can
+    never move, since alignment relocates a threshold, it never deletes one.
+    The TCAM-relevant quantity is the union size for features both models
+    split on -- which DOES shrink once alignment makes two interval lists
+    identical."""
+    # Feature 0: both models split it, currently DIFFERENT ranges (no sharing
+    # possible yet) -- union is all 4 distinct tuples.
+    before1 = {0: [(0, 100), (101, 65535)]}
+    before2 = {0: [(0, 150), (151, 65535)]}
+    assert ta.joint_interval_count(before1, before2) == 4
+
+    # After alignment succeeds, both models split feature 0 identically --
+    # union collapses to the 2 shared tuples. This is the real savings signal
+    # a flat per-model sum (2 + 2 = 4, unchanged) could never show.
+    after1 = {0: [(0, 100), (101, 65535)]}
+    after2 = {0: [(0, 100), (101, 65535)]}
+    assert ta.joint_interval_count(after1, after2) == 2
+
+    # A feature only one model splits on can't be shared -- added directly,
+    # not unioned away.
+    only1 = {0: [(0, 100), (101, 65535)], 1: [(0, 65535)]}
+    only2 = {0: [(0, 100), (101, 65535)]}
+    assert ta.joint_interval_count(only1, only2) == 2 + 1

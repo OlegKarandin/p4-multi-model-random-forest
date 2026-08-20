@@ -1,4 +1,8 @@
-"""Instrumented alignment run: is the endpoint_ratio_cap worth keeping?
+"""Instrumented alignment run: characterises shift_mass as a predictor of
+alignment damage (P3 Task 6/7). The shift_mass-derived pre-filter this script
+originally evaluated was later REMOVED from align_rf_thresholds (P3 Task 8 --
+its cap was found to be identically 0 at delta_align=0, discarding confirmed-
+harmless moves); this script remains useful purely as a measurement tool.
 
 Answers the three questions the pre-filter's replacement turns on, from ONE
 labelled dataset. Cheap because alignment runs AFTER fitting: one fitted model

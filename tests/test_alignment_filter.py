@@ -105,12 +105,12 @@ def test_delta_none_makes_the_cap_infinite_so_it_never_binds():
     assert ta.shift_mass_cap(None, before_acc=0.96, slack=2.0) == float('inf')
 
 
-def test_the_filter_never_vetoes_a_move_the_oracle_would_accept():
-    """Soundness -- the one property a pre-filter must have, and the one the
-    endpoint ratio demonstrably lacked. Only samples inside the moved window can
-    change ANY prediction, so delta_accuracy <= p, so rel_deg <= p / error.
-    Requiring p <= delta * error can therefore only remove moves whose rel_deg
-    already exceeds delta."""
+def test_a_high_mass_candidate_is_one_that_might_exceed_delta():
+    """NOT a soundness proof (see shift_mass_cap's docstring) -- a candidate
+    with mass > cap is one where the mass bound cannot RULE OUT exceeding
+    delta; it does not prove the real guard would have rejected it. This test
+    just pins the algebra: mass > cap implies mass/error > delta, at slack=1
+    where the accuracy-only bound is exact."""
     col = np.sort(np.array([float(v) for v in range(1000)]))
     error = 0.04
     before_acc = 1.0 - error
@@ -120,16 +120,13 @@ def test_the_filter_never_vetoes_a_move_the_oracle_would_accept():
         for old, new in ((100, 101), (100, 140), (100, 500), (0, 999)):
             mass = ta.shift_mass(col, old, new)
             if mass > cap:
-                # The bound says rel_deg could be as large as mass / error, so
-                # a vetoed move is one that MIGHT exceed delta -- never one that
-                # provably would not.
                 assert mass / error > delta, (delta, old, new, mass)
 
 
-def test_the_candidate_log_is_still_off_by_default():
+def test_the_candidate_log_is_off_by_default():
     import inspect
 
     signature = inspect.signature(ta.align_rf_thresholds)
     assert signature.parameters['candidate_log'].default is None
-    assert signature.parameters['shift_mass_slack'].default == 2.0
+    assert 'shift_mass_slack' not in signature.parameters
     assert 'endpoint_ratio_cap' not in signature.parameters

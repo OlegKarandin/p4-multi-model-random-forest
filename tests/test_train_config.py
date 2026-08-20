@@ -16,6 +16,8 @@ def test_defaults_are_the_primary_joint_arm_at_delta_zero():
     assert cfg.n_trials == 1000
     assert cfg.min_feasible_before_stop == 25
     assert cfg.lookback == 20
+    assert not hasattr(cfg, 'shift_mass_slack')
+    assert not hasattr(cfg, 'endpoint_ratio_cap')
 
 
 def test_config_is_frozen_so_a_worker_cannot_mutate_the_arm_under_itself():
@@ -77,21 +79,3 @@ def test_negative_tolerances_are_rejected():
 def test_unknown_encoding_is_rejected_by_arm_slug():
     with pytest.raises(ValueError, match='encoding'):
         TrainConfig().arm_slug('mixed')
-
-
-def test_shift_mass_slack_replaces_the_endpoint_ratio_cap():
-    """Spec-adjacent finding 4.8: whichever filter is chosen, both gating
-    constants must be recoverable from an artifact, so they live on the config
-    and go into the row schema."""
-    cfg = TrainConfig()
-
-    assert cfg.shift_mass_slack == 2.0
-    assert cfg.overlap_threshold == 0.5
-    assert not hasattr(cfg, 'endpoint_ratio_cap')
-
-
-def test_negative_slack_is_rejected():
-    import pytest
-
-    with pytest.raises(ValueError, match='shift_mass_slack'):
-        TrainConfig(shift_mass_slack=-1.0)
