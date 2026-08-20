@@ -167,23 +167,23 @@ def test_delta_align_inf_is_distinguishable_from_any_numeric_value(tmp_path):
 
 
 def test_delta_align_num_holds_the_true_parsed_float_for_each_row(tmp_path):
-    # NOT a discriminating test for a string-vs-numeric ORDERING bug: for
-    # delta_align's realistic value domain (the '{:g}'-formatted [0, 1)
-    # grid TrainConfig.delta_align_label produces), lexicographic string
-    # order and numeric order always agree -- every value is '0.<digits>'
-    # with the same leading '0.', so string and numeric comparison never
-    # diverge anywhere in the sweep (confirmed by brute force across 200k
-    # random '{:g}'-formatted values in [0, 1) during review; no
-    # counter-example exists). '0.2' vs '0.1' below is not such a
-    # counter-example either -- both orderings agree there too.
+    # NOT a test of string-vs-numeric ORDERING in general -- an earlier
+    # version of this comment claimed '{:g}'-formatted values in [0, 1)
+    # always sort the same way lexicographically and numerically. That
+    # claim was wrong ('{:g}' switches to scientific notation under about
+    # 1e-4, e.g. '{:g}'.format(5.19e-05) == '5.19e-05', which sorts
+    # lexicographically ABOVE an ordinary '0.78...' string while being
+    # numerically far below it) and is not repeated here, corrected or
+    # otherwise -- it explains nothing this test or load_campaign needs.
     #
     # What this test actually establishes: load_campaign parses
     # delta_align unconditionally through pd.to_numeric, so the resulting
-    # delta_align_num holds the correct float value regardless -- there is
-    # no code path in this module where a raw string comparison could stand
-    # in for it. The real hazard on this column (see module docstring) is
-    # non-numeric sentinels ('', 'inf') and pandas' dtype inference on them,
-    # both covered by the tests above, not string-vs-numeric ordering.
+    # delta_align_num holds the correct float value regardless of how the
+    # raw strings would sort -- there is no code path in this module where
+    # a raw string comparison stands in for it. The real hazard on this
+    # column (see module docstring) is non-numeric sentinels ('', 'inf')
+    # and pandas' CSV dtype inference silently turning an all-'inf' column
+    # into float64 infinity, both covered by the tests above.
     rows_lo = [_feasible_row(k=17, split=10, delta_align='0.2')]
     rows_hi = [_feasible_row(k=17, split=11, delta_align='0.1')]
     _write_arm_file(tmp_path, 11, 14, 25, 'joint-d020', rows_lo)

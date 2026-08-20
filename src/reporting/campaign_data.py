@@ -28,27 +28,31 @@ its own, both produce a plausible wrong answer:
    infeasible row's `''` (meaning "this k was infeasible, ignore this row
    entirely").
 2. `delta_align` is a string column (`''`, `'0'`, `'0.05'`, `'inf'`,
-   `TrainConfig.delta_align_label`). The plan that named this trap framed
-   it as a string-vs-numeric ORDERING hazard (e.g. `'0.05' < '0.1'` read as
-   strings). Checked during review: that framing does not hold for this
-   column's realistic value domain. Every value is `'{:g}'.format(x)` for
-   x in [0, 1) -- the exact format `delta_align_label` uses -- and
-   lexicographic order over same-leading-digit decimal fractions below 1
-   always agrees with numeric order; a brute-force check across 200,000
-   random values in that domain found zero divergent pairs. The genuine
-   hazard is different: `''` and `'inf'` are not numbers at all. Naive
-   arithmetic or an unconditional `pd.to_numeric` on the raw column either
-   raises or silently produces NaN in a way that erases the "not
-   applicable" vs "accept-all" distinction -- and, sharper still, pandas'
-   own CSV dtype inference can silently turn a column that is ENTIRELY the
+   `TrainConfig.delta_align_label`) carrying two non-numeric sentinels:
+   `''` (alignment did not run) and `'inf'` (accept every move -- the
+   accept-all anchor, not a numeric value). `load_campaign` never compares
+   this raw string on any code path: it parses unconditionally into
+   `delta_align_num` (float, NaN for both sentinels) plus
+   `delta_align_is_inf` (bool, the only way to tell the two sentinels
+   apart once `delta_align_num` is NaN for both). That parse contract does
+   not rest on any claim about how the raw strings would sort -- ordering
+   is simply never evaluated on this column, so no such claim is needed to
+   justify it. (An earlier draft of this docstring made one anyway, about
+   `'{:g}'`-formatted values in `[0, 1)` always sorting the same
+   lexicographically and numerically; that claim was wrong -- `'{:g}'`
+   switches to scientific notation under about `1e-4`, e.g.
+   `'{:g}'.format(5.19e-05) == '5.19e-05'`, which sorts lexicographically
+   *above* an ordinary `'0.78...'` string while being numerically far
+   below it. `TrainConfig.delta_align` (`src/training/config.py`) also
+   enforces no upper bound beyond >= 0, so no fixed domain could have
+   supported the claim regardless. Corrected here rather than repeated.)
+   The genuine, reproducible hazard on this column is different: pandas'
+   own CSV dtype inference silently turns a column that is ENTIRELY the
    literal text `'inf'` (true of every real `joint-dinf` file, since the
    value is stamped identically onto every row) into float64 infinity
-   before any of this module's own parsing even runs (see the `dtype=str`
-   comment in `load_campaign` below). `load_campaign` parses delta_align
-   into `delta_align_num` (float, NaN when not applicable or inf) plus
-   `delta_align_is_inf` (bool), and reads the whole file as `dtype=str`
-   first so the raw string is never silently reinterpreted as a float
-   behind this module's back.
+   before any of this module's own parsing even runs -- which is why
+   `load_campaign` reads the whole file as `dtype=str` first (see that
+   comment below), not as an optional hardening step.
 
 Frame contract -- every column `load_campaign` returns, and its dtype after
 parsing. Downstream modules (P7b `claims.py`, P7c `figures.py`) should treat
