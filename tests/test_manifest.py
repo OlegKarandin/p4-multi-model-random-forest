@@ -237,9 +237,12 @@ def test_git_provenance_of_this_actual_repository_does_not_raise():
 # Provenance must never crash the campaign
 # ---------------------------------------------------------------------------
 
-def test_a_manifest_that_cannot_be_serialised_is_skipped_not_raised(tmp_path):
+def test_a_manifest_that_cannot_be_serialised_is_skipped_not_raised(tmp_path, capsys):
     """An un-JSON-able row count (or any other build failure) must degrade to
-    'no manifest written' rather than take down the calling campaign."""
+    'no manifest written' rather than take down the calling campaign -- and
+    must do so LOUDLY: the entire justification for swallowing the exception
+    here is that a WARNING is printed instead, so that property must itself
+    be asserted, not just inferred from the code not crashing."""
     class NotJSONable:
         pass
 
@@ -252,8 +255,18 @@ def test_a_manifest_that_cannot_be_serialised_is_skipped_not_raised(tmp_path):
     # And critically: no partial directory/file was left behind either.
     assert not (tmp_path / 'manifests').exists()
 
+    # The degradation is visible, not silent: a WARNING line (and its
+    # traceback) actually fires, both on stderr so the identifying line and
+    # its detail are on the same stream -- a future edit that deleted the
+    # print/traceback.print_exc() calls would still return None here, but
+    # would fail this assertion.
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert 'WARNING: failed to write run manifest' in captured.err
+    assert 'NotJSONable' in captured.err or 'not JSON serializable' in captured.err
 
-def test_an_unwritable_directory_is_skipped_not_raised(tmp_path, monkeypatch):
+
+def test_an_unwritable_directory_is_skipped_not_raised(tmp_path, monkeypatch, capsys):
     import src.reporting.manifest as manifest_mod
 
     def _raise(*args, **kwargs):
@@ -267,6 +280,11 @@ def test_an_unwritable_directory_is_skipped_not_raised(tmp_path, monkeypatch):
         directory=str(tmp_path / 'manifests'), cwd=str(tmp_path))
 
     assert path is None
+
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert 'WARNING: failed to write run manifest' in captured.err
+    assert 'disk full' in captured.err
 
 
 # ---------------------------------------------------------------------------

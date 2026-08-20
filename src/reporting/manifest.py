@@ -21,6 +21,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import traceback
 import uuid
 
@@ -166,7 +167,11 @@ def write_run_manifest(arms, M_values, n_splits, n_rows_app, n_rows_ddos,
         os.replace(tmp_path, path)
         return path
     except Exception:
+        # Both lines go to stderr -- not just the traceback -- so the line
+        # someone would actually grep a campaign log for (the identifying
+        # WARNING) lands on the same stream as its detail, rather than being
+        # split across stdout/stderr.
         print('WARNING: failed to write run manifest -- continuing without '
-              'provenance for this invocation:')
-        traceback.print_exc()
+              'provenance for this invocation:', file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return None
