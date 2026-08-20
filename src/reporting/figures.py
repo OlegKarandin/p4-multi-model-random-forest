@@ -105,13 +105,14 @@ TASKS = (
     ('ddos', 'acc_ddos', 'DDoS', 'DDoS detection', 'features_ddos'),
 )
 
-# Figure 2's three reported quantities: two per-task relative-error changes
-# and the block delta. Deliberately three panels rather than two, so the
-# tasks never share an axis.
-REL_ERROR_APP = 'rel_error_change_app'
-REL_ERROR_DDOS = 'rel_error_change_ddos'
+# Figure 2's reported quantities: one relative-error change per task, plus
+# the block delta. Derived from TASKS rather than spelled out, so a third
+# task would gain a panel here too and the two lists cannot drift apart.
+# Deliberately one panel per task rather than one shared axis.
+REL_ERROR_PREFIX = 'rel_error_change_'
 BLOCKS_DELTA = 'd_blocks'
-FRONTIER_METRICS = (REL_ERROR_APP, REL_ERROR_DDOS, BLOCKS_DELTA)
+REL_ERROR_METRICS = tuple(REL_ERROR_PREFIX + key for key, _, _, _, _ in TASKS)
+FRONTIER_METRICS = REL_ERROR_METRICS + (BLOCKS_DELTA,)
 
 # Per-panel size in inches. Multiplied by the panel counts a given frame
 # implies -- never a fixed canvas for a fixed grid.
@@ -165,6 +166,24 @@ def ordered_arms(df, include_baseline=True,
     extras = [slug for slug in present
               if slug not in known and slug != baseline]
     return tuple(ordered + extras)
+
+
+def require_baseline(df, baseline, where):
+    """Refuse to render a paired artifact when the baseline arm is absent.
+
+    Every paired figure pairs each treatment arm against `baseline` on
+    (M, split, k); with no baseline rows, every join is empty and the figure
+    renders BLANK -- axes, ticks, caption and all, with nothing plotted. A
+    blank figure that looks like a finished one is worse than no figure, so
+    this raises the way `claims.paired_tests` already raises on a contrast
+    with no paired cells.
+    """
+    if baseline not in set(df['arm_slug'].unique()):
+        raise ValueError(
+            '{}: baseline arm {!r} is not present in the frame, so every '
+            'pairing on (M, split, k) would be empty and the figure would '
+            'render blank. Arms found: {}.'.format(
+                where, baseline, sorted(df['arm_slug'].unique().tolist())))
 
 
 def _delta_tick_label(arm_slug, delta_num, is_inf):
@@ -400,6 +419,7 @@ def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
     are merged back on the join key with `validate='one_to_one'`, so a
     duplicated cell fails loudly instead of silently multiplying rows.
     """
+    require_baseline(df, baseline, 'paired_delta_frame')
     if arms is None:
         arms = ordered_arms(df, include_baseline=False, baseline=baseline)
 
@@ -411,11 +431,11 @@ def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
             continue
         relative = pd.DataFrame({
             'M': paired['M'], 'split': paired['split'], 'k': paired['k'],
-            REL_ERROR_APP: _relative_error_change(
-                paired['acc_app_baseline'], paired['acc_app_treatment']),
-            REL_ERROR_DDOS: _relative_error_change(
-                paired['acc_ddos_baseline'], paired['acc_ddos_treatment']),
         })
+        for key, accuracy_column, _, _, _ in TASKS:
+            relative[REL_ERROR_PREFIX + key] = _relative_error_change(
+                paired['{}_baseline'.format(accuracy_column)],
+                paired['{}_treatment'.format(accuracy_column)])
         merged = deltas.merge(relative, on=['M', 'split', 'k'], how='inner',
                               validate='one_to_one')
         merged.insert(0, 'arm_slug', arm)
@@ -487,11 +507,9 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
             if arm in set(table['arm_slug'])] if len(table) else []
     positions = {arm: index for index, arm in enumerate(arms)}
 
-    labels = {
-        REL_ERROR_APP: 'App: rel. error change vs {}'.format(baseline),
-        REL_ERROR_DDOS: 'DDoS: rel. error change vs {}'.format(baseline),
-        BLOCKS_DELTA: 'TCAM blocks: change vs {}'.format(baseline),
-    }
+    labels = {REL_ERROR_PREFIX + key: '{}: rel. error change vs {}'.format(
+        short_name, baseline) for key, _, short_name, _, _ in TASKS}
+    labels[BLOCKS_DELTA] = 'TCAM blocks: change vs {}'.format(baseline)
 
     # One tick label per arm, built once from the parsed delta columns
     # `claims.delta_frontier` carried through -- never from the raw
@@ -530,11 +548,26 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
         axis.grid(True, alpha=0.3)
     figure.tight_layout()
 
+    pooled_m = sorted(df['M'].unique().tolist()) if 'M' in df.columns else []
+    pooled_k = sorted(df['k'].unique().tolist()) if 'k' in df.columns else []
+    pooling_sentence = (
+        'EACH POINT POOLS THE WHOLE GRID, not one operating point: cell '
+        'differences are paired on (M, split, k), averaged within each split '
+        'across every block budget M ({}) and every feature count k ({}), and '
+        'the interval is then taken across those per-split means. A block '
+        'change read off this figure is therefore an average over the budget '
+        'grid, and can hide a saving that is much larger at one budget than '
+        'another; Figure 1 shows the per-budget spread that this averages '
+        'over. '.format(
+            ', '.join(str(value) for value in pooled_m) or 'none present',
+            '{}-{}'.format(min(pooled_k), max(pooled_k)) if pooled_k
+            else 'none present'))
+
     caption = (
         'The alignment tolerance sweep: block change and per-task relative '
         'error change against delta, each point a mean over splits with a '
         '{:.0%} Student-t confidence interval, paired against the {} arm on '
-        '(M, split, k). The two tasks are shown on separate panels and are '
+        '(M, split, k). {}The two tasks are shown on separate panels and are '
         'never averaged; relative error ((e_delta - e_base) / e_base) is '
         'reported because the tasks have very different error scales, so '
         'equal accuracy losses are not equal degradations. The two anchors '
@@ -547,7 +580,8 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
         'controls the resulting variance: each interval is built over '
         'per-split mean differences, one observation per split, so the '
         'spread of feature sets across splits is inside the interval rather '
-        'than being assumed away.'.format(confidence, baseline))
+        'than being assumed away.'.format(confidence, baseline,
+                                          pooling_sentence))
 
     return _write(Deliverable(
         number=2, slug='delta_frontier',
@@ -588,6 +622,7 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
     defended is "no task sacrifices itself at any tolerance" rather than "at
     one operating point".
     """
+    require_baseline(df, baseline, 'figure_3_substitution_scatter')
     table = claims.substitution_test_all_arms(df, baseline=baseline,
                                               alpha=alpha)
     arms = list(table['treatment']) if len(table) else []

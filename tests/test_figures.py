@@ -216,8 +216,17 @@ def test_importing_the_figures_module_selects_the_headless_agg_backend():
 
 def test_the_figures_module_never_reaches_for_pyplot_so_it_cannot_call_show():
     """A figure that never enters pyplot's manager can neither be shown nor
-    leaked. Asserted on the parsed module -- not on a substring search,
-    which the module docstring's own explanation of this rule would trip."""
+    leaked, and a module that never names `rcParams` or `style.use` cannot
+    restyle anyone else's figures.
+
+    Asserted on the parsed module rather than on a substring search (which
+    the module docstring's own explanation of these rules would trip) AND
+    rather than only on a before/after snapshot: this test module imports
+    `figures` at its own import, so any snapshot taken inside a test body is
+    taken after import-time mutation has already happened and would miss
+    exactly the leak `plotting.py:7-8` demonstrates. The AST check catches it
+    at the level the rule is stated.
+    """
     import ast
     tree = ast.parse(open(figures.__file__, encoding='utf-8').read())
     imported = set()
@@ -229,8 +238,21 @@ def test_the_figures_module_never_reaches_for_pyplot_so_it_cannot_call_show():
             imported.update('{}.{}'.format(node.module or '', alias.name)
                             for alias in node.names)
         elif isinstance(node, ast.Attribute):
-            assert node.attr != 'show'
-    assert not any('pyplot' in name or 'seaborn' in name for name in imported)
+            # `matplotlib.use('Agg')` is the one sanctioned global call, so
+            # `.use` is only rejected when it hangs off `.style`. Naming
+            # `rcParams` at all is rejected: reading it is harmless, but the
+            # module has no reason to, and the assignment form that is NOT
+            # harmless is spelled the same way.
+            assert node.attr not in ('show', 'rcParams')
+            assert not (node.attr == 'use'
+                        and isinstance(node.value, ast.Attribute)
+                        and node.value.attr == 'style')
+        elif isinstance(node, ast.Name):
+            # catches `from matplotlib import rcParams; rcParams[...] = ...`,
+            # which carries no Attribute node to catch above
+            assert node.id != 'rcParams'
+    assert not any('pyplot' in name or 'seaborn' in name or 'rcParams' in name
+                   for name in imported)
 
 
 def test_rendering_every_deliverable_leaves_no_figure_in_pyplots_manager(tmp_path):
@@ -372,6 +394,21 @@ def test_deliverable_2_reports_relative_error_per_task_never_pooled():
     assert not _contains(values, (expected_app + expected_ddos) / 2.0)
 
 
+def test_deliverable_2_caption_discloses_that_each_point_pools_the_whole_grid():
+    """A point is an average over every M and every k inside a split, not one
+    operating point -- an examiner reading a block saving off this figure has
+    to know that before believing it applies at their budget."""
+    df = _constant_campaign(m_values=(25, 100), k_values=(4, 5))
+    caption = figures.figure_2_delta_frontier(df, output_dir=None).caption
+    assert 'pools' in caption.lower()
+    assert '25, 100' in caption
+    assert '4-5' in caption
+    # and the table really has collapsed M away, which is what the sentence
+    # is disclosing
+    assert 'M' not in figures.figure_2_delta_frontier(
+        df, output_dir=None).data.columns
+
+
 def test_deliverable_2_has_one_panel_per_reported_quantity_two_of_them_per_task():
     deliverable = figures.figure_2_delta_frontier(
         _constant_campaign(), output_dir=None)
@@ -459,6 +496,19 @@ def test_deliverable_3_marks_the_two_substitution_quadrants_with_both_axes():
         x_zeros = [line for line in ax.lines
                    if np.allclose(np.asarray(line.get_xdata(), dtype=float), 0.0)]
         assert y_zeros and x_zeros
+
+
+def test_a_paired_figure_refuses_to_render_blank_when_the_baseline_is_absent():
+    """With no baseline rows every (M, split, k) join is empty, so the figure
+    would render complete but with nothing plotted -- the plausible-looking
+    wrong artifact. `claims.paired_tests` already raises here; so do these."""
+    df = _spread_campaign(arms=('joint-off', 'joint-d005'))
+    for render in (figures.figure_2_delta_frontier,
+                   figures.figure_3_substitution_scatter):
+        with pytest.raises(ValueError, match='baseline'):
+            render(df, output_dir=None)
+    with pytest.raises(ValueError):
+        figures.render_all(df, output_dir=None, ceiling_csv=None)
 
 
 # ---------------------------------------------------------------------------
