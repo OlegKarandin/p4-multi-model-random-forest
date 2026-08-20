@@ -1,6 +1,6 @@
-from src.p4gen.evaluation import accuracy_metrics
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.training.errors import AlignmentInvariantError
+from src.training.incremental_metrics import IncrementalMetrics
 import sklearn
 import numpy as np
 
@@ -135,20 +135,30 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         tree_predictions1, node_to_samples1 = build_prediction_cache(rf1, X_val1)
         tree_predictions2, node_to_samples2 = build_prediction_cache(rf2, X_val2)
 
-    # Initial predictions -- only needed to seed the accept/reject comparison
-    # below, which itself is skipped entirely when delta_rel is None (the inf
-    # anchor). Not computing them here is what makes that arm the cheapest.
+    # The per-model metric state -- vote matrix, per-sample winner, confusion
+    # matrix -- seeded from the initial predictions. Only needed for the
+    # accept/reject comparison below, which is skipped entirely when delta_rel
+    # is None (the inf anchor); not building it there is what makes that arm
+    # the cheapest, and is also why build_prediction_cache does NOT return the
+    # vote matrix itself.
+    #
+    # Each candidate then costs O(#changed samples) instead of two full
+    # validation-set passes twice over: the from-scratch
+    # compute_ensemble_prediction re-counted every (tree, sample) vote and
+    # re-argmaxed every sample, and accuracy_metrics paid sklearn's fixed
+    # per-call validation overhead four times -- measured at 4022us per
+    # accuracy_metrics call at n=4000 against 256us for the prediction it was
+    # measuring. Every number produced here is bit-identical to what those
+    # calls produced; see incremental_metrics' module docstring.
     marks = None
     current = None
+    metrics1 = metrics2 = None
     if delta_rel is not None:
-        initial_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
-        initial_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
-
-        before_acc1, before_fscore1 = accuracy_metrics(y_val1, initial_pred1, task="app")
-        before_acc2, before_fscore2 = accuracy_metrics(y_val2, initial_pred2, task="ddos")
+        metrics1 = IncrementalMetrics(tree_predictions1, rf1, y_val1, task="app")
+        metrics2 = IncrementalMetrics(tree_predictions2, rf2, y_val2, task="ddos")
 
         # Four independent high-water marks, in METRIC_NAMES order.
-        marks = (before_acc1, before_fscore1, before_acc2, before_fscore2)
+        marks = metrics1.metrics() + metrics2.metrics()
         # Last-ACCEPTED state -- the model's actual current metrics, as opposed
         # to marks' running per-task max. Before any candidate, both coincide.
         current = marks
@@ -236,20 +246,27 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
                 stats['attempted'] += 1
 
+                # Rollback tokens for the metric state, paired 1:1 with
+                # undo_info1/2. Bound to None here rather than only inside the
+                # else branch so the reject path below reads the same on every
+                # arm, including the inf one where no apply ever ran.
+                mtoken1 = mtoken2 = None
+
                 if delta_rel is None:
                     # The inf anchor: accept unconditionally. Skipping the
                     # predict/metric machinery is why this arm is cheapest.
                     accepted = True
                     after = None
                 else:
-                    new_pred1 = compute_ensemble_prediction(tree_predictions1, rf1)
-                    new_pred2 = compute_ensemble_prediction(tree_predictions2, rf2)
+                    # IncrementalMetrics' ordering contract: apply reads the NEW
+                    # per-tree predictions out of tree_predictions and the OLD
+                    # ones out of undo_info, so it must run AFTER
+                    # update_cache_for_modifications and BEFORE any
+                    # undo_cache_update.
+                    mtoken1 = metrics1.apply(tree_predictions1, undo_info1)
+                    mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
 
-                    with sklearn.config_context(assume_finite=True):
-                        after_acc1, after_fscore1 = accuracy_metrics(y_val1, new_pred1, task="app")
-                        after_acc2, after_fscore2 = accuracy_metrics(y_val2, new_pred2, task="ddos")
-
-                    after = (after_acc1, after_fscore1, after_acc2, after_fscore2)
+                    after = metrics1.metrics() + metrics2.metrics()
                     accepted = accept_alignment(marks, after, delta_rel)
 
                 if candidate_log is not None:
@@ -285,6 +302,15 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     restore_thresholds(rf2, modifications2)
                     undo_cache_update(tree_predictions1, node_to_samples1, undo_info1)
                     undo_cache_update(tree_predictions2, node_to_samples2, undo_info2)
+                    # The metric state is the fifth structure a rejected
+                    # candidate has to restore. revert is independent of
+                    # undo_cache_update (it restores from its own stored copy,
+                    # not from tree_predictions), so the order here is free --
+                    # but it must happen on EVERY reject, or the ratchet starts
+                    # comparing against a model state that no longer exists.
+                    if delta_rel is not None:
+                        metrics1.revert(mtoken1)
+                        metrics2.revert(mtoken2)
                 else:
                     stats['accepted'] += 1
                     if after is not None:
@@ -423,6 +449,18 @@ def compute_ensemble_prediction(tree_predictions, rf):
     Vectorised as one bincount over a sample-major offset array. The previous
     pure-Python double loop ran ~n_trees x n_samples interpreted iterations
     (~28k at n_trees=7, 4000 samples) twice per alignment candidate.
+
+    THIS FUNCTION IS THE TEST ORACLE, AND THAT IS WHY IT IS STILL HERE.
+    P3b T2b moved the alignment loop onto IncrementalMetrics, which maintains
+    the same hard vote incrementally, so this has no production caller left --
+    but it is deliberately kept as the from-scratch reference that the
+    incremental path is checked against, in
+    test_incremental_metrics.py's equivalence property tests and in
+    test_threshold_alignment.py's switch_predict / vote_winner agreement
+    tests. Deleting it as dead code deletes the only independent statement of
+    what the incremental state is supposed to compute, and takes those tests
+    with it. If it ever regains a production caller, say so here; do not
+    remove the oracle role.
     """
     n_trees, n_samples = tree_predictions.shape
     n_classes = rf.n_classes_

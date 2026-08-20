@@ -214,14 +214,18 @@ def test_delta_align_none_accepts_every_move_without_scoring(monkeypatch):
     is also why it is the cheapest arm to run."""
     from src.training import threshold_alignment as ta
 
+    # T2b: the scoring machinery is now IncrementalMetrics, constructed once
+    # per model and only on the delta_rel-is-not-None arm. Spying on the old
+    # ta.accuracy_metrics would pass vacuously -- the loop no longer calls it
+    # at all, so `scored` would be empty whatever the inf arm did.
     scored = []
-    real_metrics = ta.accuracy_metrics
+    real_init = ta.IncrementalMetrics.__init__
 
-    def spy(y_true, y_pred, task):
+    def spy(self, tree_predictions, rf, y_true, task):
         scored.append(task)
-        return real_metrics(y_true, y_pred, task)
+        return real_init(self, tree_predictions, rf, y_true, task)
 
-    monkeypatch.setattr(ta, 'accuracy_metrics', spy)
+    monkeypatch.setattr(ta.IncrementalMetrics, '__init__', spy)
 
     _call(encoding='joint',
           cfg=TrainConfig(delta_align=None, n_trials=6,

@@ -260,18 +260,31 @@ def test_a_candidate_that_moves_nothing_costs_no_prediction(monkeypatch):
     rf2, X2, y2 = _forest_and_data(seed=6)
     y2 = np.where(y2 == 0, -1, 1)
 
+    # T2b: the loop no longer calls compute_ensemble_prediction at all -- it
+    # reads the winner off IncrementalMetrics -- so counting THAT would make
+    # this test pass vacuously with an empty list. Count the metric updates
+    # instead: IncrementalMetrics.apply is the per-candidate work this test
+    # exists to prove the bail avoids.
     calls = []
-    real = ta.compute_ensemble_prediction
-    monkeypatch.setattr(ta, 'compute_ensemble_prediction',
-                        lambda tp, rf: (calls.append(1), real(tp, rf))[1])
+    real_apply = ta.IncrementalMetrics.apply
+
+    def counting_apply(self, tree_predictions, undo_info):
+        calls.append(1)
+        return real_apply(self, tree_predictions, undo_info)
+
+    monkeypatch.setattr(ta.IncrementalMetrics, 'apply', counting_apply)
 
     ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            overlap_threshold=0.5, delta_rel=0.05)
 
-    # Two initial predictions, then exactly two per candidate that actually
-    # moved something. An odd count, or a count that keeps growing when no
-    # candidate moves anything, means the bail is missing.
+    # Exactly two metric updates -- one per model -- per candidate that
+    # actually moved something. An odd count, or a count that keeps growing
+    # when no candidate moves anything, means the bail is missing.
     assert len(calls) % 2 == 0
+    # Non-vacuity: the old version of this test was anchored by two guaranteed
+    # initial predictions, which no longer exist. Without this line an empty
+    # `calls` would satisfy the assertion above and prove nothing.
+    assert calls, 'the fixture must reach at least one candidate that moves something'
 
 
 import copy
@@ -331,24 +344,45 @@ def test_the_incremental_cache_equals_a_from_scratch_recomputation():
 
 def test_a_rejected_alignment_restores_every_data_structure_exactly():
     """Rollback round-trip. Task 5's four independent guards make rejection far
-    more common than the single averaged guard did, so any leak here compounds."""
+    more common than the single averaged guard did, so any leak here compounds.
+
+    T2b adds two more structures the reject path has to restore: the vote
+    matrix / winner column and the confusion matrix owned by IncrementalMetrics.
+    They are exercised here in the real ordering the loop uses --
+    update_cache_for_modifications, then IncrementalMetrics.apply, then (on
+    reject) restore_thresholds + undo_cache_update + IncrementalMetrics.revert.
+    """
     rf, X, y = _forest_and_data()
     X32 = np.ascontiguousarray(X, dtype=np.float32)
     threshold_index = ta.build_threshold_index(rf)
     tree_predictions, node_to_samples = ta.build_prediction_cache(rf, X32)
+    metrics = ta.IncrementalMetrics(tree_predictions, rf, y, task='app')
 
     snap = _snapshot(rf, tree_predictions, node_to_samples, threshold_index)
+    votes_before = metrics.votes.copy()
+    pred_before = metrics.pred_idx.copy()
+    confusion_before = metrics.confusion.copy()
+    metrics_before = metrics.metrics()
 
     feature_idx, source, target = _first_movable_interval(rf)
     modifications = ta.adjust_range_boundaries(
         rf, feature_idx, source, target, threshold_index)
     undo_info = ta.update_cache_for_modifications(
         rf, X32, tree_predictions, node_to_samples, modifications)
+    token = metrics.apply(tree_predictions, undo_info)
 
     ta.restore_thresholds(rf, modifications)
     ta.undo_cache_update(tree_predictions, node_to_samples, undo_info)
+    metrics.revert(token)
 
     _assert_snapshot_restored(rf, tree_predictions, node_to_samples, threshold_index, snap)
+    assert np.array_equal(metrics.votes, votes_before)
+    assert np.array_equal(metrics.pred_idx, pred_before)
+    assert np.array_equal(metrics.confusion, confusion_before)
+    assert metrics.votes.dtype == votes_before.dtype
+    assert metrics.pred_idx.dtype == pred_before.dtype
+    assert metrics.confusion.dtype == confusion_before.dtype
+    assert metrics.metrics() == metrics_before
 
 
 def test_extract_feature_intervals_agrees_with_the_generator():
@@ -581,3 +615,181 @@ def test_a_zero_zero_candidate_produces_no_modifications_either_way():
         rf, feature_idx=0, source_range=(0, 0), target_range=target_b,
         threshold_index={})
     assert modifications_b == []
+
+
+# ---------------------------------------------------------------------------
+# T2 (part b): the incremental vote/confusion state wired into
+# align_rf_thresholds. This change is meant to be EXACTLY numerically neutral
+# -- it changes how (accuracy, weighted_f1) is computed, never what it is --
+# so the gate below pins the whole alignment output against values captured
+# from the pre-change implementation.
+# ---------------------------------------------------------------------------
+
+def _golden_alignment_pair(n=300):
+    """The fixture the golden values below were captured on. Deterministic end
+    to end: fixed rng seeds for the feature matrices, fixed random_state for
+    both forests, and dt_thresholds_float_to_int so every threshold is an
+    integer (which is why the golden arrays can be written as ints).
+
+    Deliberately a real App/DDoS pair -- rf1 fit on labels {0,1,2}, rf2 fit on
+    {-1,1} -- so the DDoS half exercises the negative label space through the
+    whole loop rather than only in a unit test.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+
+    rng1 = np.random.default_rng(5)
+    X1 = np.clip(rng1.integers(0, 90000, size=(n, 4)), 0, INFINITE).astype(float)
+    y1 = np.array([c % 3 for c in range(n)])
+    rf1 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=7, max_depth=5, min_samples_leaf=20, random_state=0).fit(X1, y1))
+
+    rng2 = np.random.default_rng(6)
+    X2 = np.clip(rng2.integers(0, 90000, size=(n, 4)), 0, INFINITE).astype(float)
+    y2 = np.where(np.arange(n) % 2 == 0, -1, 1)
+    rf2 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=7, max_depth=5, min_samples_leaf=20, random_state=0).fit(X2, y2))
+
+    return rf1, X1, y1, rf2, X2, y2
+
+
+# Captured by running align_rf_thresholds on _golden_alignment_pair() at commit
+# 0fb5ace -- i.e. from the from-scratch compute_ensemble_prediction +
+# sklearn accuracy_metrics implementation, BEFORE the incremental state was
+# wired in. Regenerating these from the post-change code would pin the change
+# against itself and prove nothing.
+#
+# Both delta_rel values matter: 0.0 rejects 8 of 21 candidates and 0.05 rejects
+# only 1, so the pair covers a reject-heavy and an accept-heavy trajectory.
+_ALIGNMENT_GOLDEN = {
+    0.0: {
+        'stats': {'attempted': 21, 'accepted': 13,
+                  'intervals_before': 95, 'intervals_after': 82},
+        't1': [
+            [49965, 37970, -2, 60939, 30237, -2, -2, -2, 29400, -2, 33384, -2,
+             -2],
+            [25153, 17906, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
+             -2],
+            [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
+             -2],
+            [11493, -2, 15571, -2, 26336, -2, 43169, 33744, -2, -2, 26063, -2,
+             -2],
+            [45724, 17518, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
+             49629, -2, -2],
+            [39753, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
+             50610, -2, -2, -2],
+            [40996, 17244, -2, 35130, -2, 58452, -2, -2, 52649, 65407, -2, -2,
+             -2],
+        ],
+        't2': [
+            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
+             -2],
+            [14536, -2, 27856, -2, 40996, -2, 61298, 38258, -2, -2, -2],
+            [27458, 47461, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
+             -2],
+            [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
+             53373, -2, -2],
+            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
+             60939, -2, -2],
+            [54408, 44768, 33744, -2, -2, 62045, -2, -2, 17244, -2, 41360, -2,
+             52649, -2, -2],
+            [54766, 50955, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
+             -2],
+        ],
+    },
+    0.05: {
+        'stats': {'attempted': 21, 'accepted': 20,
+                  'intervals_before': 95, 'intervals_after': 79},
+        't1': [
+            [49965, 37970, -2, 60939, 30237, -2, -2, -2, 29400, -2, 33384, -2,
+             -2],
+            [25153, 17906, 42582, -2, -2, -2, 21985, -2, 65407, 47461, -2, -2,
+             -2],
+            [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
+             -2],
+            [11493, -2, 15571, -2, 27458, -2, 43169, 33254, -2, -2, 27856, -2,
+             -2],
+            [45724, 8902, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
+             49629, -2, -2],
+            [39753, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
+             48048, -2, -2, -2],
+            [40996, 17244, -2, 39702, -2, 58452, -2, -2, 52649, 65407, -2, -2,
+             -2],
+        ],
+        't2': [
+            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
+             -2],
+            [14536, -2, 27856, -2, 40996, -2, 61298, 38258, -2, -2, -2],
+            [27458, 47461, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
+             -2],
+            [61422, 43169, 26336, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
+             53373, -2, -2],
+            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
+             60939, -2, -2],
+            [49629, 44768, 33254, -2, -2, 62045, -2, -2, 17244, -2, 41360, -2,
+             52649, -2, -2],
+            [54766, 50955, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
+             -2],
+        ],
+    },
+}
+
+
+@pytest.mark.parametrize('delta_rel', [0.0, 0.05])
+def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(delta_rel):
+    """The end-to-end numeric-neutrality gate for T2b.
+
+    Replacing sklearn's accuracy_score/f1_score with a confusion-matrix
+    formula, and the from-scratch ensemble vote with an incrementally
+    maintained one, must not move a single number. It cannot be checked by
+    "the metrics look close": accept_alignment compares against a per-task
+    ratchet, so a one-ULP disagreement flips a decision, the flipped decision
+    changes which thresholds move, and every later candidate sees a different
+    model. The observable consequence is the final threshold arrays and the
+    stats dict -- so pin those.
+    """
+    golden = _ALIGNMENT_GOLDEN[delta_rel]
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=delta_rel, align_stats=stats)
+
+    assert stats == golden['stats']
+    for key, rf in (('t1', rf1), ('t2', rf2)):
+        for tree_idx, (estimator, expected) in enumerate(
+                zip(rf.estimators_, golden[key])):
+            assert np.array_equal(estimator.tree_.threshold,
+                                  np.array(expected, dtype=np.float64)), (key, tree_idx)
+
+
+def test_the_two_delta_rel_arms_of_the_gate_are_not_the_same_trajectory():
+    """Non-vacuity guard for the gate above: if the two arms happened to
+    produce identical models, the gate would only be testing one trajectory
+    and the reject path would go unpinned. 0.0 rejects 8 candidates, 0.05
+    rejects 1 -- so the two must differ."""
+    assert _ALIGNMENT_GOLDEN[0.0]['stats']['accepted'] != \
+        _ALIGNMENT_GOLDEN[0.05]['stats']['accepted']
+    assert _ALIGNMENT_GOLDEN[0.0]['t1'] != _ALIGNMENT_GOLDEN[0.05]['t1']
+    # And a rejected candidate really does occur on the 0.0 arm.
+    assert _ALIGNMENT_GOLDEN[0.0]['stats']['accepted'] < \
+        _ALIGNMENT_GOLDEN[0.0]['stats']['attempted']
+
+
+def test_compute_ensemble_prediction_is_still_reachable_and_still_the_oracle():
+    """T2b removed compute_ensemble_prediction's last PRODUCTION caller -- the
+    alignment loop now reads its winner off IncrementalMetrics. The function
+    must survive anyway: it is the from-scratch oracle every equivalence test
+    in this file and in test_incremental_metrics.py compares against, and a
+    dead-code sweep that deletes it takes those tests with it.
+
+    So: it is still exported, it still computes the hard vote, and its
+    docstring still says out loud that it is the oracle.
+    """
+    assert callable(ta.compute_ensemble_prediction)
+    assert 'oracle' in ta.compute_ensemble_prediction.__doc__.lower()
+
+    rf, X, y = _forest_and_data()
+    tree_predictions, _ = ta.build_prediction_cache(rf, X)
+    from src.p4gen.switch_semantics import switch_predict
+    assert np.array_equal(ta.compute_ensemble_prediction(tree_predictions, rf),
+                          switch_predict(rf, X))

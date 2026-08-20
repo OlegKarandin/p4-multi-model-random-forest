@@ -1,10 +1,10 @@
-"""Exact confusion-matrix metric functions -- P3b plan Task T2, part (a) only
-(`task-2a-brief.md`, Ruling P3b-2).
+"""Exact confusion-matrix metric functions, plus the incremental state that
+maintains them across threshold moves -- P3b plan Task T2 (parts a and b).
 
 `align_rf_thresholds` (threshold_alignment.py) repeatedly proposes a
 threshold move, measures (accuracy, weighted_f1) on a validation set, and
-accepts or rejects the move by comparing metrics before/after. That
-measurement currently goes through `src.p4gen.evaluation.accuracy_metrics`,
+accepts or rejects the move by comparing metrics before/after. Until T2b that
+measurement went through `src.p4gen.evaluation.accuracy_metrics`,
 which calls sklearn's `accuracy_score` + `f1_score` -- measured at 4022us per
 call at n=4000, against 256us for the prediction those calls measure. Almost
 all of that is sklearn's fixed per-call overhead (`validate_params`,
@@ -13,10 +13,14 @@ not O(n) work (p3b-design-reference.md's cost table). This module replaces
 the measurement with the same numbers computed directly from a confusion
 matrix -- ~14.6x end to end even recomputed from scratch every candidate.
 
-These are PURE FUNCTIONS ONLY: no mutable state, nothing wired into the
-alignment loop. Task 2b adds the incremental state class that maintains the
-confusion matrix in O(#changed) as moves are accepted/rejected, and does the
-wiring; this module does not.
+The module is in two layers. The four functions below are PURE: no mutable
+state, no knowledge of the alignment loop, and they are the from-scratch
+oracle the layer above them is tested against. `IncrementalMetrics` is that
+layer -- one instance per model, owning the vote matrix, the per-sample
+winner and the confusion matrix, and updating all three in O(#changed) as
+`align_rf_thresholds` applies and rolls back candidate moves. Together they
+buy a further ~8x on top of the ~14.6x above, because the per-candidate cost
+stops scaling with the validation set at all.
 
 The bar is exact bit equality with sklearn's `accuracy_score` and
 `f1_score(..., average='weighted')`, not approximate agreement: these
@@ -149,3 +153,197 @@ def accuracy_from_confusion(confusion, n_samples):
     """
     assert n_samples > 0, "accuracy_from_confusion: n_samples must be > 0"
     return float(np.trace(confusion)) / n_samples
+
+
+# The label sets `evaluation.accuracy_metrics` scores each task over, mirrored
+# here so IncrementalMetrics takes the same `task` string its callers already
+# pass. Duplicated rather than imported because accuracy_metrics hardcodes them
+# inline in an if/elif; the equality is pinned by every equivalence test in
+# tests/test_incremental_metrics.py, which compares against accuracy_metrics
+# itself for both tasks.
+TASK_LABELS = {'app': [0, 1, 2], 'ddos': [-1, 1]}
+
+
+class IncrementalMetrics:
+    """(accuracy, weighted_f1) for one model on one validation set, maintained
+    in O(#changed) across the threshold moves `align_rf_thresholds` proposes.
+
+    WHY A CLASS, rather than the free functions above. The state is five
+    coupled arrays -- `votes (n, C)`, `pred_idx (n,)`, `confusion (k, k)`, plus
+    the static `y_uni` and `class_to_uni` maps -- with two invariants that must
+    hold BETWEEN calls, not merely inside one:
+
+        pred_idx  == argmax(votes, axis=1)
+        confusion == crosstab(y_uni, class_to_uni[pred_idx])
+
+    Threading those through free functions would add ~10 parameters at three
+    call sites times two models inside a loop body that is already ~120 lines,
+    and the branch most likely to update one array and not the other is the
+    `delta_rel is None` early-accept branch that skips the metric path
+    entirely. One object per model keeps the coupling in one place.
+
+    ORDERING CONTRACT -- `align_rf_thresholds` must respect all three:
+
+    1. `apply` runs AFTER `update_cache_for_modifications`: it reads the NEW
+       per-tree predictions out of `tree_predictions` and the OLD ones out of
+       `undo_info['predictions']`, so both have to be in their post-update
+       state.
+    2. `apply` runs BEFORE `undo_cache_update`, for the same reason -- once the
+       cache is rolled back, `tree_predictions` no longer holds the new values.
+    3. `revert(token)` undoes exactly the `apply` that produced `token`, and
+       only from the state that `apply` left behind. It is independent of
+       `undo_cache_update` (it restores its own arrays from a stored copy, not
+       from `tree_predictions`), so the two may run in either order -- but a
+       token must not be held across a second `apply`.
+
+    `n_samples == 0` is out of scope, as it is for `accuracy_from_confusion`.
+    """
+
+    def __init__(self, tree_predictions, rf, y_true, task):
+        _, n_samples = tree_predictions.shape
+        assert n_samples > 0, "IncrementalMetrics: n_samples must be > 0"
+
+        # Unconditional: y_val reaches align_rf_thresholds as splits.py's
+        # `y[idx_val_align]` today (a 1-D ndarray, so this is a no-op), but the
+        # positional indexing below would silently misbehave on a pandas Series
+        # with a non-positional index, and this costs nothing.
+        y_true = np.asarray(y_true)
+
+        if task not in TASK_LABELS:
+            raise ValueError(
+                "IncrementalMetrics: unknown task {!r}; expected one of {}".format(
+                    task, sorted(TASK_LABELS)))
+        lab = TASK_LABELS[task]
+        self.n_labels = len(lab)
+        self.n_samples = n_samples
+
+        # Static for the whole alignment run: neither rf.classes_ nor y_true
+        # changes under threshold mutation, only which class each tree votes
+        # for. So the universe and both index maps are built once here rather
+        # than per candidate -- that is most of what makes the metric path
+        # cheap (see incremental_metrics' module docstring).
+        universe = label_universe(lab, y_true, rf.classes_)
+        self.k = len(universe)
+        pos = {label: i for i, label in enumerate(universe)}
+        self.y_uni = np.array([pos[v] for v in y_true.tolist()], dtype=np.intp)
+        self.class_to_uni = np.array([pos[c] for c in rf.classes_.tolist()],
+                                     dtype=np.intp)
+
+        n_classes = rf.n_classes_
+        # Same sample-major offset trick as compute_ensemble_prediction: give
+        # every sample its own length-n_classes slot so the entire
+        # (n_trees, n_samples) block is counted in one bincount pass.
+        offsets = np.arange(n_samples, dtype=np.intp) * n_classes
+        self.votes = np.bincount(
+            (offsets[None, :] + tree_predictions).ravel(),
+            minlength=n_samples * n_classes
+        ).reshape(n_samples, n_classes).astype(np.int32)
+
+        self.pred_idx = np.argmax(self.votes, axis=1).astype(np.intp)
+        self.confusion = confusion_from_predictions(
+            self.y_uni, self.class_to_uni[self.pred_idx], self.k)
+
+    def metrics(self):
+        """(accuracy, weighted_f1) -- the same pair, in the same order, that
+        `evaluation.accuracy_metrics(y_true, y_pred, task)` returns, and
+        bit-identical to it."""
+        return (accuracy_from_confusion(self.confusion, self.n_samples),
+                weighted_f1_from_confusion(self.confusion, self.n_labels))
+
+    def apply(self, tree_predictions, undo_info):
+        """Fold one candidate's per-tree prediction changes into the votes,
+        the winners and the confusion matrix.
+
+        Returns an opaque token to hand to `revert`, or None when no per-tree
+        vote actually flipped (a threshold can move samples between nodes that
+        predict the same class, in which case there is nothing to update and
+        nothing to roll back).
+        """
+        rows_all, old_all, new_all = [], [], []
+        for tree_idx, (sample_indices, old) in undo_info['predictions'].items():
+            new = tree_predictions[tree_idx, sample_indices]
+            flipped = new != old
+            if not flipped.any():
+                continue
+            rows_all.append(sample_indices[flipped])
+            old_all.append(old[flipped])
+            new_all.append(new[flipped])
+
+        if not rows_all:
+            return None
+
+        changed_rows = np.concatenate(rows_all)
+        old_classes = np.concatenate(old_all)
+        new_classes = np.concatenate(new_all)
+
+        # The affected SAMPLES, sorted and deduplicated.
+        rows = np.unique(changed_rows)
+        # Fancy indexing already materialises a copy, so the rollback block is
+        # free. See revert for why rollback is by stored copy, not by inverse
+        # delta.
+        old_block = self.votes[rows]
+        token = (rows, old_block, self.pred_idx[rows].copy(), self.confusion.copy())
+
+        # searchsorted + bincount rather than np.add.at / plain fancy indexing.
+        # `undo_info` is keyed by TREE, so one sample can appear under several
+        # tree_idx entries and `changed_rows` genuinely has duplicates:
+        # `votes[rows, new] += 1` would apply only one of them. bincount sums
+        # duplicates by construction and leans on no uniqueness assumption
+        # about undo_info (update_cache_for_modifications happens to np.unique
+        # per tree today, but that is an invariant of a different function).
+        # np.add.at would also be correct, but is unbuffered and ~10x slower.
+        position = np.searchsorted(rows, changed_rows)
+        m, n_classes = len(rows), self.votes.shape[1]
+        slot = position * n_classes
+        delta = (np.bincount(slot + new_classes, minlength=m * n_classes)
+                 - np.bincount(slot + old_classes, minlength=m * n_classes)
+                 ).reshape(m, n_classes)
+        # int32 votes + int64 delta promotes to int64, and the assignment
+        # same-kind-downcasts back. Safe: every count is bounded by n_trees.
+        self.votes[rows] = old_block + delta
+
+        # Re-argmax the WHOLE row, never a shortcut against the classes that
+        # moved. The winner can change while the incumbent winner's own count
+        # is untouched -- [3,3,2] with a tree flipping 2 -> 1 becomes [3,4,1],
+        # moving the winner from 0 to 1. And ties must break to the smallest
+        # class index (np.argmax's first-maximal rule, which is exactly
+        # switch_semantics.vote_winner and the generated vote_<task> table);
+        # "keep the incumbent while it is still maximal" diverges the moment a
+        # flip creates a tie with a smaller-indexed class.
+        #
+        # Restricting the re-argmax to `rows` is complete because argmax is a
+        # pure function of the row, so a row with no flipped tree vote cannot
+        # change winner. That is the correctness licence for the whole design.
+        new_pred = np.argmax(self.votes[rows], axis=1).astype(np.intp)
+        old_pred = self.pred_idx[rows]      # fancy index -> a copy, so the
+        self.pred_idx[rows] = new_pred      # write below cannot clobber it
+
+        # Only rows whose WINNER moved contribute a net change here; rows where
+        # it did not cancel exactly between the two bincounts.
+        true_uni, k = self.y_uni[rows], self.k
+        self.confusion += (
+            np.bincount(true_uni * k + self.class_to_uni[new_pred], minlength=k * k)
+            - np.bincount(true_uni * k + self.class_to_uni[old_pred], minlength=k * k)
+        ).reshape(k, k)
+
+        return token
+
+    def revert(self, token):
+        """Undo the `apply` that returned `token`, byte for byte.
+
+        Restores from the stored pre-change copies rather than re-applying the
+        delta with the signs flipped. The vote block was already copied for
+        free by `apply`'s fancy index, and `confusion` is (k, k) int64 with k
+        at most 5 on this project's two tasks -- 200 bytes. So the copy is
+        cheap, and it makes the rollback exact BY
+        DEFINITION rather than by an algebraic argument that would have to be
+        re-proved every time the delta changes. A rejected candidate must leave
+        the state bit-identical: alignment's accept/reject trajectory is
+        path-dependent, so drift here compounds silently across candidates.
+        """
+        if token is None:
+            return
+        rows, votes_block, pred_block, confusion = token
+        self.votes[rows] = votes_block
+        self.pred_idx[rows] = pred_block
+        self.confusion = confusion
