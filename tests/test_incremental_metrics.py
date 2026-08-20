@@ -231,7 +231,7 @@ def _mutate(rng, tree_predictions, n_classes, n_trees_touched=None):
     `undo_info`-shaped dict that update_cache_for_modifications would have
     produced for exactly that change: `{'predictions': {tree_idx:
     (sample_indices, old_predictions)}}`, sample indices sorted-unique (which
-    is what update_cache_for_modifications:701's np.unique guarantees today).
+    is what update_cache_for_modifications:820's np.unique guarantees today).
 
     The replacement class is drawn freely, so a "flip" that leaves the value
     unchanged happens often -- that is deliberate: it exercises apply's
