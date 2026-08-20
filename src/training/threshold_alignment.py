@@ -14,18 +14,32 @@ def rel_deg(before, after):
 
 # Hard cap on the per-feature candidate-recompute loop (C3).
 #
-# This is a SAFETY NET, not a tuning parameter. The loop's real stopping rule
-# is `progressed`, which is an EXACT fixpoint test: a round that accepts
-# nothing changed no interval tuple, so the recomputed sweep would return the
+# A CYCLE GUARD, not a tuning parameter. The loop's real stopping rule is
+# `progressed`, which is an EXACT fixpoint test: a round that accepts nothing
+# changed no interval tuple, so the recomputed sweep would return the
 # identical candidate list with every member already retired in `seen`, and
-# the next round would do zero work. The cap therefore only ever fires on
-# genuine cycling -- which cannot be ruled out by proof, because no monotone
-# measure exists on interval count, list length, or union size (a single
-# accepted move can leave joint_interval_count flat or even RAISE it; see
-# test_a_single_accepted_move_can_RAISE_the_joint_interval_count). 8 is
-# unmeasured on real data; P3b Task 5 reports the observed maximum and this
-# constant is raised before the campaign if that number is anywhere near it.
-MAX_RECOMPUTE_ROUNDS = 8
+# the next round would do zero work. Every converging run therefore exits on
+# `progressed` BEFORE the cap is consulted, which is what makes a generous cap
+# close to free -- an unused round costs nothing at all, since it never runs.
+#
+# The cap exists because termination cannot be PROVED: no monotone measure
+# exists on interval count, list length, or union size (a single accepted move
+# can leave joint_interval_count flat or even RAISE it -- see
+# test_a_single_accepted_move_can_RAISE_the_joint_interval_count), so a
+# genuinely cycling value-pair sequence has to be caught rather than ruled
+# out.
+#
+# Why 32 and not 8 (P3b T3 measurement, ruling P3b-6). Measured with the cap
+# lifted to 64 so the numbers are true fixpoint depths rather than
+# truncations: on a realistic probe (4000x17 and 3000x17 samples, 7 trees,
+# max_depth=10, min_samples_leaf=5) the deepest feature converges in 6 to 8
+# rounds, hitting exactly 8 on 3 of 12 seed x arm configurations. At a cap of
+# 8 those runs converge on the very last permitted round, so a forest
+# converging one round later would abort a campaign split with
+# AlignmentInvariantError for no reason at all. 32 is ~4x the observed
+# maximum. Smaller fixtures are far below it: 2 to 4 rounds on the test
+# suite's forests.
+MAX_RECOMPUTE_ROUNDS = 32
 
 # (acc_app, f1_app, acc_ddos, f1_ddos) -- the order every 4-tuple in this
 # module uses. Named so a reader of accept_alignment knows what position 2 is.

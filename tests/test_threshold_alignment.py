@@ -939,14 +939,19 @@ def test_the_recompute_stops_as_soon_as_a_round_accepts_nothing(monkeypatch):
 
 
 def test_the_recompute_cap_raises_instead_of_looping_without_end(monkeypatch):
-    """MAX_RECOMPUTE_ROUNDS is a safety net, not a tuning parameter: there is
+    """MAX_RECOMPUTE_ROUNDS is a CYCLE GUARD, not a tuning parameter: there is
     no monotone measure on interval count or union size (see the counterexample
     below), so termination is ENFORCED rather than proved. Truncating a loop
     that was still accepting moves is an invariant violation, not a silent
     stop.
 
-    The motivating fixture needs three rounds (accept, accept, fixpoint), so a
-    cap of 2 truncates it mid-progress.
+    The cap is monkeypatched DOWN rather than exercised at its shipped value
+    on purpose. The shipped value is deliberately far above the measured
+    fixpoint depth (32 against an observed 6-8), so no reachable fixture would
+    ever trip it -- a test that waited for the real cap to fire would either
+    never run this branch or would have to be retuned every time the constant
+    moves. The motivating fixture needs three rounds (accept, accept,
+    fixpoint), so a cap of 2 truncates it mid-progress.
     """
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 2)
     rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
