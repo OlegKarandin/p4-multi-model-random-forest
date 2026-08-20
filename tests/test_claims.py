@@ -18,6 +18,7 @@ from src.reporting.claims import (
     INDEPENDENT_ARM_SLUG,
     JOINT_ARM_SLUGS,
     PRE_REGISTERED_FAMILY_SIZE,
+    SUBSTITUTION_FAMILY_SIZE,
     ablation_decomposition,
     arm_deltas,
     coverage_ratio_3d,
@@ -782,3 +783,151 @@ def test_delta_frontier_names_a_missing_metric_column_instead_of_failing_inside_
 
     with pytest.raises(KeyError, match='acc_app'):
         delta_frontier(df, metrics=('acc_app',))
+
+
+# ---------------------------------------------------------------------------
+# Review fix 1: the emitted `hypothesis` column must not claim a margin
+# nobody set.
+# ---------------------------------------------------------------------------
+
+def _hypothesis_at(margin):
+    rows = []
+    for split in range(20):
+        rows.append(_row(arm_slug=INDEPENDENT_ARM_SLUG, split=split, acc_app=0.85))
+        rows.append(_row(arm_slug='joint-d005', split=split, acc_app=0.84))
+    table = paired_tests(_frame(rows), arms=('joint-d005',), metrics=('acc_app',),
+                         margin=margin)
+    return table.iloc[0]['hypothesis']
+
+
+def test_hypothesis_column_says_no_detectable_loss_when_no_margin_was_set():
+    """The default margin is 0, so there is no non-inferiority margin to be
+    non-inferior to. The results table must say what the test actually did."""
+    hypothesis = _hypothesis_at(0.0)
+
+    assert 'no detectable loss' in hypothesis
+    assert 'no non-inferiority margin was set' in hypothesis
+
+
+def test_hypothesis_column_does_not_render_a_negative_zero_margin():
+    """`'{:g}'.format(0.0)` behind a literal minus renders `-0`, which reads
+    in a results table as though some margin exists."""
+    hypothesis = _hypothesis_at(0.0)
+
+    assert '-0' not in hypothesis
+
+
+def test_hypothesis_column_claims_non_inferiority_only_once_a_margin_exists():
+    hypothesis = _hypothesis_at(0.02)
+
+    assert 'non-inferiority of joint-d005 to independent' in hypothesis
+    assert 'margin of 0.02' in hypothesis
+    assert 'no detectable loss' not in hypothesis
+
+
+def test_zero_difference_counts_are_reported_before_and_after_the_margin_shift():
+    """`n_zero_differences` describes the raw deltas; `n_zero_in_test` is what
+    zsplit actually had to split. They diverge as soon as margin > 0."""
+    rows = []
+    for split in range(20):
+        rows.append(_row(arm_slug=INDEPENDENT_ARM_SLUG, split=split, acc_app=0.85))
+        rows.append(_row(arm_slug='joint-d005', split=split, acc_app=0.85))
+    table = paired_tests(_frame(rows), arms=('joint-d005',), metrics=('acc_app',),
+                         margin=0.01)
+
+    assert table.iloc[0]['n_zero_differences'] == 20
+    assert table.iloc[0]['n_zero_in_test'] == 0
+
+
+# ---------------------------------------------------------------------------
+# Review fix 2: the substitution family is separate from the 21, and
+# corrected within itself.
+# ---------------------------------------------------------------------------
+
+def _substitution_sweep_frame(seed, correlated_arm, rho, n=30):
+    """Every joint arm against one shared independent baseline. Only
+    `correlated_arm` carries a genuine negative association; the rest are
+    independent draws."""
+    rows = []
+    for i, slug in enumerate(JOINT_ARM_SLUGS):
+        r = rho if slug == correlated_arm else 0.0
+        rng = np.random.default_rng(seed + i)
+        x = rng.standard_normal(n)
+        z = rng.standard_normal(n)
+        y = r * x + np.sqrt(1.0 - r ** 2) * z
+        for j in range(n):
+            if i == 0:
+                rows.append(_row(arm_slug=INDEPENDENT_ARM_SLUG, split=j,
+                                 acc_app=0.90, acc_ddos=0.85, blocks=40.0))
+            rows.append(_row(arm_slug=slug, split=j,
+                             acc_app=0.90 + 0.01 * x[j],
+                             acc_ddos=0.85 + 0.01 * y[j],
+                             blocks=40.0 + j * 0.01))
+    return _frame(rows)
+
+
+def test_substitution_sweep_exposes_a_holm_column_over_its_own_seven_arms():
+    table = substitution_test_all_arms(_full_campaign_frame())
+
+    assert 'pearson_p_negative_one_sided_holm' in table.columns
+    assert 'substitution_detected_holm' in table.columns
+    assert table['n_substitution_comparisons'].eq(SUBSTITUTION_FAMILY_SIZE).all()
+    assert SUBSTITUTION_FAMILY_SIZE == 7
+
+
+def test_substitution_sweep_holm_column_is_the_holm_adjustment_of_the_raw_column():
+    table = substitution_test_all_arms(_full_campaign_frame())
+
+    assert holm_bonferroni(table['pearson_p_negative_one_sided'].to_numpy()) == \
+        pytest.approx(table['pearson_p_negative_one_sided_holm'].to_numpy())
+
+
+def test_substitution_sweep_holm_demotes_a_flag_that_only_fired_because_seven_ran():
+    """One arm carries a real but modest negative correlation: raw
+    p = 0.0079 fires at alpha = 0.05, Holm over the seven arms lifts it to
+    0.055 and it does not. Reading the seven raw flags across the sweep as
+    one test is exactly the error this column exists to prevent."""
+    table = substitution_test_all_arms(
+        _substitution_sweep_frame(seed=1, correlated_arm='joint-d010', rho=-0.35))
+
+    assert table['substitution_detected'].sum() == 1
+    assert table['substitution_detected_holm'].sum() == 0
+
+
+def test_substitution_sweep_corrected_flag_never_fires_where_the_raw_one_did_not():
+    """The correction may only ever demote; a Holm-adjusted p is never below
+    its raw p."""
+    table = substitution_test_all_arms(
+        _substitution_sweep_frame(seed=4, correlated_arm='joint-d020', rho=-0.9))
+
+    assert (table['pearson_p_negative_one_sided_holm']
+            >= table['pearson_p_negative_one_sided'] - 1e-12).all()
+    assert not (table['substitution_detected_holm']
+                & ~table['substitution_detected']).any()
+    assert table['substitution_detected_holm'].sum() == 1
+
+
+def test_substitution_sweep_excludes_an_undefined_arm_from_its_correction_family():
+    """An arm whose deltas are constant produced no test at all, not a null
+    result; counting it would inflate the family with a comparison nobody
+    ran."""
+    df = _substitution_sweep_frame(seed=2, correlated_arm='joint-d010', rho=-0.5)
+    flat = df['arm_slug'] == 'joint-d002'
+    df.loc[flat, 'acc_app'] = 0.90
+    df.loc[flat, 'acc_ddos'] = 0.85
+
+    table = substitution_test_all_arms(df)
+
+    assert table['n_substitution_comparisons'].eq(6).all()
+    flat_row = table[table['treatment'] == 'joint-d002'].iloc[0]
+    assert np.isnan(flat_row['pearson_r'])
+    assert bool(flat_row['substitution_detected_holm']) is False
+
+
+def test_substitution_test_reports_the_split_count_next_to_the_pair_count():
+    """The cell-dependence caveat is only checkable if both numbers are
+    there."""
+    result = substitution_test(_full_campaign_frame(n_splits=4), 'joint-d005')
+
+    assert result['n_pairs'] == 16
+    assert result['n_splits'] == 4

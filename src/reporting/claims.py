@@ -55,15 +55,18 @@ paired hypothesis tests are the deliberate exception, discussed below.
 **One-sided versus two-sided.** Accuracy is tested one-sided and blocks
 two-sided, and the two are not interchangeable:
 
-* `acc_app`, `acc_ddos`: non-inferiority. The alternative is
+* `acc_app`, `acc_ddos`: NO DETECTABLE LOSS. The alternative is
   `H1: median(joint - independent) > -margin`, i.e. `alternative='greater'`
   applied to `d + margin`. REJECTING H0 is the positive finding -- it says
   the joint arm is not worse by more than the margin. With the default
-  `margin = 0` this reduces to `H1: median(d) > 0` (the joint arm is
-  better); a non-zero margin gives the classical non-inferiority test.
-  Reversing this to `alternative='less'` would test whether the joint arm IS
-  worse, and reporting a large p-value from that as "non-inferiority
-  established" is a confident wrong answer, which is why
+  `margin = 0` this reduces to `H1: median(d) > 0`: the joint arm shows no
+  detectable loss against the baseline. That is deliberately NOT called
+  non-inferiority, because non-inferiority is a claim against a
+  pre-registered margin and no margin has been set; the word is used, in the
+  emitted `hypothesis` column as well as here, only on the `margin > 0`
+  branch, where it is earned. Reversing this to `alternative='less'` would
+  test whether the joint arm IS worse, and reporting a large p-value from
+  that as "no loss established" is a confident wrong answer, which is why
   `tests/test_claims.py` asserts the p-value in BOTH directions.
 * `blocks`: two-sided. Sharing feature intervals could plausibly cost blocks
   as well as save them (alignment adds intervals before it merges any), so
@@ -87,6 +90,32 @@ Pass `expected_family_size=PRE_REGISTERED_FAMILY_SIZE` to make a shrunken
 family (an arm missing from the frame) an error rather than a quietly weaker
 correction. Holm-Bonferroni is applied across all 21 at once -- not per task,
 not per arm.
+
+**The substitution tests are a SECOND, SEPARATE family, and they are not
+part of the 21.** `substitution_test` returns six p-value fields, and
+`substitution_test_all_arms` runs it at all seven joint arms; taken raw that
+is 42 uncorrected p-values and seven uncorrected decision flags, and under
+the null at least one of seven flags at alpha = 0.05 fires roughly 30% of
+the time. They are kept out of the pre-registered 21 deliberately -- folding
+them in would dilute the Holm correction protecting the primary accuracy
+claims with tests that answer a different question -- but
+kept out is not the same as unreported, so:
+
+* `substitution_test_all_arms` emits `pearson_p_negative_one_sided_holm`
+  and `substitution_detected_holm`, Holm-corrected across the seven arms
+  (`SUBSTITUTION_FAMILY_SIZE`), with `n_substitution_comparisons` recording
+  how many arms actually yielded a defined test. Report the corrected flag.
+* The other five p-value fields on each row stay uncorrected diagnostics
+  and must be read as such.
+* The correction direction here is self-penalising in a way the primary
+  family is not: a false positive argues AGAINST the thesis, so an
+  uncorrected flag errs towards over-reporting substitution rather than
+  towards hiding it. That is a reason to read the flags carefully, not a
+  reason to skip the correction.
+* The same `(M, split, k)` dependence caveat that applies to
+  `paired_tests` applies here: the correlations are computed over cells
+  that share a training split within a split, so their p-values are
+  anti-conservative relative to the number of independent splits.
 
 `ablation_decomposition` deliberately reports NO p-values. Its two contrasts
 (`joint-off - independent` and `joint-delta - joint-off`) are a descriptive
@@ -158,8 +187,14 @@ METRIC_ALTERNATIVE = {
 # against the arm grid, and asserted against the derived family below.
 PRE_REGISTERED_FAMILY_SIZE = 21
 
+# The SEPARATE substitution family: one one-sided correlation test per joint
+# arm. Explicitly not folded into the 21 -- see the module docstring -- but
+# Holm-corrected across its own seven so the seven decision flags are not
+# read raw.
+SUBSTITUTION_FAMILY_SIZE = 7
+
 # Wilcoxon zero handling. The default 'wilcox' DISCARDS tied pairs, which
-# throws away the observations that most directly support a non-inferiority
+# throws away the observations that most directly support a no-detectable-loss
 # claim and shrinks n; 'pratt' keeps them but raises outright when every
 # difference is zero (a perfectly possible outcome for the joint-off arm on
 # a metric it cannot move). 'zsplit' keeps the zeros and splits their ranks
@@ -242,7 +277,7 @@ def pareto_front_3d(df, objectives=FRONT_OBJECTIVES, maximize=FRONT_MAXIMIZE):
     return df.loc[~dominated].copy()
 
 
-def pareto_projections(front, objectives=FRONT_OBJECTIVES):
+def pareto_projections(front):
     """The three 2-D planes of a 3-D front, for plotting.
 
     These are PROJECTIONS of the 3-D front, not fronts recomputed within each
@@ -250,6 +285,10 @@ def pareto_projections(front, objectives=FRONT_OBJECTIVES):
     3-D front -- e.g. a solution with the best App accuracy but poor DDoS
     accuracy disappears from a (blocks, acc_ddos) 2-D front while remaining a
     genuine non-dominated trade-off. Dropping it would hide the trade.
+
+    The three planes are fixed by `_PROJECTION_PLANES` and are not
+    re-targetable -- an earlier signature took an `objectives` argument it
+    never read, which would have told the figures task otherwise.
 
     Returns {plane_name: DataFrame}, each sorted ascending on its x axis so a
     line plot through the points is well defined, and carrying whichever of
@@ -435,6 +474,22 @@ def substitution_test(df, treatment, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05):
     count is too small -- an undefined correlation must not be reported as
     "no association", and `substitution_detected` is False in that case
     because nothing was detected.
+
+    TWO CAVEATS ON THE p-VALUES THIS RETURNS, both of which the caller owns:
+
+    1. They are UNCORRECTED. This function returns six p-value fields, and
+       `substitution_test_all_arms` runs it at seven arms; none of those 42
+       values, and not `substitution_detected` either, belong to the
+       pre-registered 21-comparison family that `paired_tests` corrects (see
+       the module docstring for why they are kept separate). Under the null,
+       at least one of seven raw flags fires roughly 30% of the time. Prefer
+       `substitution_test_all_arms`, which adds a Holm-corrected flag across
+       the seven arms.
+    2. The pairs are `(M, split, k)` cells, and cells inside one split share
+       a training split, so they are not independent observations. The
+       effective sample size is smaller than `n_pairs` and the p-values are
+       anti-conservative -- the same caveat `paired_tests` carries.
+       `n_splits` is returned alongside `n_pairs` so the gap is visible.
     """
     deltas = arm_deltas(df, treatment, baseline)
     d_app = deltas['d_acc_app'].to_numpy(dtype='float64')
@@ -485,6 +540,32 @@ def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
     tolerance"; testing only the extreme would leave the interesting middle
     of the sweep unexamined. Arms absent from `df` are skipped, so a partial
     campaign still produces a table.
+
+    THIS IS A SEPARATE FAMILY FROM THE PRE-REGISTERED 21. Running one
+    one-sided test per arm means seven decision flags, and at alpha = 0.05
+    at least one fires under the null roughly 30% of the time, so the raw
+    `substitution_detected` must not be read across the sweep as if it were
+    a single test. Two extra columns fix that:
+
+    * `pearson_p_negative_one_sided_holm` -- the flag-driving p-value,
+      Holm-corrected across the arms in THIS table only. It is deliberately
+      not pooled with `paired_tests`' 21: folding a different question into
+      that family would dilute the correction protecting the primary
+      accuracy claims.
+    * `substitution_detected_holm` -- the corrected decision. Report this
+      one; `substitution_detected` is kept alongside as the uncorrected
+      per-arm result, not as a second opinion.
+
+    `n_substitution_comparisons` records how many arms yielded a DEFINED
+    test and were therefore corrected over: an arm whose deltas were
+    constant produced no test at all (NaN, not a null result), so including
+    it would inflate the family with a comparison nobody ran. That count is
+    `SUBSTITUTION_FAMILY_SIZE` on a complete campaign.
+
+    The `(M, split, k)` dependence caveat from `substitution_test` applies to
+    every p-value here, corrected or not: cells inside a split share a
+    training split, so these p-values are anti-conservative relative to the
+    number of independent splits.
     """
     arms = _arms_present(df, arms)
     rows = []
@@ -493,7 +574,20 @@ def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
         quadrants = result.pop('quadrants')
         result.update({'quadrant_{}'.format(k): v for k, v in quadrants.items()})
         rows.append(result)
-    return pd.DataFrame(rows)
+    table = pd.DataFrame(rows)
+    if len(table) == 0:
+        return table
+
+    raw = table['pearson_p_negative_one_sided'].to_numpy(dtype='float64')
+    defined = np.isfinite(raw)
+    corrected = np.full(raw.shape, float('nan'))
+    if defined.any():
+        corrected[defined] = holm_bonferroni(raw[defined])
+    table['pearson_p_negative_one_sided_holm'] = corrected
+    table['n_substitution_comparisons'] = int(defined.sum())
+    table['substitution_detected_holm'] = (
+        table['substitution_detected'] & (corrected < alpha))
+    return table
 
 
 # ---------------------------------------------------------------------------
@@ -769,9 +863,13 @@ def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
       `median(d) <= -margin` and the alternative is `median(d) > -margin`, so
       a SMALL p-value is the positive finding: the joint arm is not worse by
       more than `margin`. With the default `margin = 0` this is
-      `H1: median(d) > 0`. Reversing it to `alternative='less'` would test
-      whether the joint arm IS worse, and a large p-value from that says
-      nothing about non-inferiority.
+      `H1: median(d) > 0` -- NO DETECTABLE LOSS, which is what the emitted
+      `hypothesis` column says at that default. It is not called
+      non-inferiority there: non-inferiority is a claim against a
+      pre-registered margin, and `margin = 0` sets none. Pass `margin > 0`
+      and the column says non-inferiority and names the margin. Reversing the
+      test to `alternative='less'` would ask whether the joint arm IS worse,
+      and a large p-value from that establishes nothing.
     * `blocks`: TWO-SIDED. Alignment adds intervals before it merges any, so
       sharing can cost blocks as well as save them and no direction may be
       assumed. `margin` is not applied to `blocks`.
@@ -816,10 +914,26 @@ def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
             alternative = METRIC_ALTERNATIVE.get(metric, 'two-sided')
             if alternative == 'greater':
                 tested = values + margin
-                hypothesis = ('H0: median({0}) <= -{1:g}  vs  '
-                              'H1: median({0}) > -{1:g}  '
-                              '(non-inferiority of {2} to {3})').format(
-                                  column, margin, treatment, contrast_baseline)
+                if margin > 0:
+                    # Only here is "non-inferiority" earned: a margin was
+                    # actually set, so the claim is against something.
+                    hypothesis = (
+                        'H0: median({0}) <= -{1:g}  vs  H1: median({0}) > -{1:g}  '
+                        '(non-inferiority of {2} to {3} within a margin of '
+                        '{1:g})').format(column, margin, treatment,
+                                         contrast_baseline)
+                else:
+                    # margin == 0: the null is against zero, so render it as
+                    # plain `0` -- '{:g}'.format(0.0) prefixed by a literal
+                    # minus gives `-0`, which reads in a results table as
+                    # though some margin exists. And the claim is "no
+                    # detectable loss", not non-inferiority, because no
+                    # margin was pre-registered.
+                    hypothesis = (
+                        'H0: median({0}) <= 0  vs  H1: median({0}) > 0  '
+                        '(no detectable loss for {1} against {2}; no '
+                        'non-inferiority margin was set)').format(
+                            column, treatment, contrast_baseline)
                 applied_margin = margin
             else:
                 tested = values
@@ -843,7 +957,11 @@ def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
                 'n_pairs': n_pairs,
                 'n_splits': n_splits,
                 'n_tested': int(len(values)),
+                # Two counts, because they differ once margin > 0:
+                # n_zero_differences describes the raw deltas, while
+                # n_zero_in_test is what zsplit actually had to split.
                 'n_zero_differences': int(np.sum(values == 0)),
+                'n_zero_in_test': int(np.sum(tested == 0)),
                 'median_diff': float(np.median(values)) if len(values) else float('nan'),
                 'mean_diff_split_level': mean,
                 'ci_low': low,
