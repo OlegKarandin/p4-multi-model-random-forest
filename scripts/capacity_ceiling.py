@@ -93,7 +93,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
-from src.main import remove_correlated_features_both_datasets
+# `src.main` is imported inside `collect()`, not here. It is needed only by
+# the MEASUREMENT half of this script, and importing it transitively imports
+# `src.reporting.plotting`, which mutates global matplotlib state at import
+# (`plt.style.use('default')` / `sns.set_palette`, plotting.py:7-8). The
+# REPORTING half (per_cell / print_* / select / report) is imported by
+# `src/reporting/figures.py` to persist this script's markdown without
+# re-running the ~10-minute measurement, and it must not inherit that leak.
 from src.p4gen.build_p4_script import (
     INFINITE, MAX_CODEWORD_LENGTH, dt_thresholds_float_to_int,
     get_feature_intervals_from_thresholds, get_feature_thresholds, get_nodes,
@@ -208,6 +214,8 @@ def fit(X, y, n_estimators, max_depth, corner):
 
 def collect():
     """One row per (n_trees, max_depth, split, corner)."""
+    from src.main import remove_correlated_features_both_datasets
+
     df_app = read_app_dataset(SELECTED_FEATURES, INFINITE)
     df_ddos = read_DDOS_dataset(SELECTED_FEATURES, INFINITE)
     X_app, X_ddos, names = remove_correlated_features_both_datasets(df_app, df_ddos)
@@ -457,14 +465,16 @@ def select(cells):
     return int(chosen.n_trees), int(chosen.max_depth)
 
 
-def main():
-    frame = collect()
-    os.makedirs('results', exist_ok=True)
-    path = os.path.join('results', 'capacity_ceiling.csv')
-    frame.to_csv(path, index=False)
-    print('\nwrote {} ({} rows)'.format(path, len(frame)))
+def report(cells):
+    """Print every markdown table this script reports, and return the
+    adopted (n_trees, max_depth).
 
-    cells = per_cell(frame)
+    Split out of `main()` so the reporting half can be replayed from
+    `results/capacity_ceiling.csv` alone -- `src/reporting/figures.py`
+    captures this output to persist appendix 6 (spec C.5 deliverable 6),
+    which was previously printed and then lost. Nothing here re-measures
+    anything: `collect()` is the measurement and is called only by `main()`.
+    """
     splits = len(SPLIT_INDICES)
     for corner in CORNERS:
         print_grid(cells, corner, 'joint_cw_max',
@@ -487,7 +497,16 @@ def main():
                    'count exists.')
     print_where_the_limit_binds(cells)
     print_cell_table(cells)
-    select(cells)
+    return select(cells)
+
+
+def main():
+    frame = collect()
+    os.makedirs('results', exist_ok=True)
+    path = os.path.join('results', 'capacity_ceiling.csv')
+    frame.to_csv(path, index=False)
+    print('\nwrote {} ({} rows)'.format(path, len(frame)))
+    report(per_cell(frame))
 
 
 if __name__ == '__main__':
