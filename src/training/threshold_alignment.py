@@ -12,6 +12,21 @@ def rel_deg(before, after):
     return (before - after) / max(1e-9, 1.0 - before)
 
 
+# Hard cap on the per-feature candidate-recompute loop (C3).
+#
+# This is a SAFETY NET, not a tuning parameter. The loop's real stopping rule
+# is `progressed`, which is an EXACT fixpoint test: a round that accepts
+# nothing changed no interval tuple, so the recomputed sweep would return the
+# identical candidate list with every member already retired in `seen`, and
+# the next round would do zero work. The cap therefore only ever fires on
+# genuine cycling -- which cannot be ruled out by proof, because no monotone
+# measure exists on interval count, list length, or union size (a single
+# accepted move can leave joint_interval_count flat or even RAISE it; see
+# test_a_single_accepted_move_can_RAISE_the_joint_interval_count). 8 is
+# unmeasured on real data; P3b Task 5 reports the observed maximum and this
+# constant is raised before the campaign if that number is anywhere near it.
+MAX_RECOMPUTE_ROUNDS = 8
+
 # (acc_app, f1_app, acc_ddos, f1_ddos) -- the order every 4-tuple in this
 # module uses. Named so a reader of accept_alignment knows what position 2 is.
 METRIC_NAMES = ('acc_app', 'f1_app', 'acc_ddos', 'f1_ddos')
@@ -189,28 +204,66 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         #print('Ranges A: {}'.format(current_ranges1))
         #print('Ranges B: {}'.format(current_ranges2))
         
-        overlaps = find_partially_overlapping_ranges(current_ranges1, current_ranges2)
+        # C3. Candidate ORDER, stated once because nothing documented it
+        # before:
+        #   features, descending by combined interval count (unchanged);
+        #   then ROUNDS, each recomputing the overlap list from the CURRENT,
+        #     already-mutated interval lists -- this is what makes an overlap
+        #     CREATED by an earlier accepted move reachable at all. Aligning
+        #     range i widens its neighbours (the target is
+        #     (max(s1,s2), min(e1,e2)), so whatever the aligned range gives up
+        #     its neighbours take), and a widened neighbour can overlap a
+        #     range in the other model that nothing overlapped before. With a
+        #     single fixed overlap list those pairs were unreachable, however
+        #     many times the list was re-read;
+        #   then, within a round, the sweep's (i ascending, j ascending)
+        #     order -- which is the old nested scan's order exactly (T1).
+        #
+        # Affordable only because T1 made the sweep O(n+m): a round costs one
+        # linear pass over two interval lists, not a quadratic rescan.
+        #
+        # `seen` keys on VALUE pairs, not index pairs: an accepted move
+        # rewrites tuples in place (it never inserts or deletes one), so the
+        # same index pair names a different candidate in a later round, and
+        # the same candidate can turn up at a different index. It is reset per
+        # feature -- features are structurally independent, each owning its
+        # own interval lists and its own threshold-index keys.
+        #
+        # `progressed` is the real stopping rule and it is EXACT, not a
+        # heuristic: a round that accepts nothing changed no tuple, so the
+        # recomputed sweep returns the identical list, every member of which
+        # is already in `seen`, so the next round would do zero work.
+        # MAX_RECOMPUTE_ROUNDS is only the backstop for genuine cycling.
+        seen = set()
+        progressed = True
+        rounds = 0
 
-        '''alignment_stats['feature_details'][feature_idx] = {
-            'ranges_rf1': intervals1[feature_idx],  # Store original ranges
-            'ranges_rf2': intervals2[feature_idx],  # Store original ranges
-            'pure_overlaps': len(overlaps),
-            'alignments': []
-        }'''
-        
-        # Apply alignment for each overlap
-        for (idx1, idx2) in overlaps:
-            range1 = current_ranges1[idx1]
-            range2 = current_ranges2[idx2]
+        while progressed and rounds < MAX_RECOMPUTE_ROUNDS:
+            progressed = False
+            rounds += 1
 
-            if range1 == range2:
-                continue
-            
-            overlap_ratio = calculate_range_overlap(range1, range2)
+            overlaps = find_partially_overlapping_ranges(current_ranges1,
+                                                         current_ranges2)
 
-            #print(range1, range2, overlap_ratio, overlap_ratio >= overlap_threshold)
+            # Apply alignment for each overlap
+            for (idx1, idx2) in overlaps:
+                # Re-read: an accepted move earlier in THIS round may have
+                # rewritten either tuple.
+                range1 = current_ranges1[idx1]
+                range2 = current_ranges2[idx2]
 
-            if overlap_ratio >= overlap_threshold:
+                if range1 == range2:
+                    continue
+
+                if (range1, range2) in seen:
+                    continue
+                seen.add((range1, range2))
+
+                overlap_ratio = calculate_range_overlap(range1, range2)
+
+                if overlap_ratio < overlap_threshold:
+                    continue
+
                 target = calculate_target_range(range1, range2)
 
                 # Purely diagnostic now -- only computed when a candidate_log
@@ -272,6 +325,13 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 if candidate_log is not None:
                     candidate_log.append({
                         'feature_idx': int(feature_idx),
+                        # Which recompute round found this candidate. Diagnostic
+                        # only, and deliberately here rather than in align_stats
+                        # -- that dict's key set is pinned exactly, while
+                        # candidate_log is the structure meant to grow. round 1
+                        # is the pre-C3 candidate set; anything above 1 is a
+                        # candidate an accepted move created.
+                        'round': rounds,
                         'range1': tuple(range1),
                         'range2': tuple(range2),
                         'overlap_ratio': float(overlap_ratio),
@@ -312,6 +372,11 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         metrics1.revert(mtoken1)
                         metrics2.revert(mtoken2)
                 else:
+                    # Only an ACCEPTED move can change the candidate set: a
+                    # reject restores thresholds, both caches, the metric
+                    # state and the interval lists, so a rescan after one
+                    # would return exactly the list already being iterated.
+                    progressed = True
                     stats['accepted'] += 1
                     if after is not None:
                         marks = ratchet(marks, after)
@@ -338,6 +403,22 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         'overlap_ratio': overlap_ratio,
                     })
                     alignment_stats['total_aligned_ranges'] += 1'''
+
+        if progressed and rounds > 1:
+            # Truncated while still accepting moves: the loop never reached a
+            # fixpoint, so the result depends on where it was cut off. That is
+            # an invariant violation, not a slower run.
+            #
+            # `rounds > 1` is the "recomputation was actually running" test:
+            # at MAX_RECOMPUTE_ROUNDS == 1 the loop is DELIBERATELY reduced to
+            # the single pre-C3 pass (that is the configuration the regression
+            # gate in test_threshold_alignment.py pins against pre-C3 golden
+            # values), and truncation there is the point rather than an
+            # anomaly.
+            raise AlignmentInvariantError(
+                'feature {} did not reach an alignment fixpoint within '
+                'MAX_RECOMPUTE_ROUNDS={} rounds'.format(
+                    feature_idx, MAX_RECOMPUTE_ROUNDS))
 
     stats['intervals_after'] = joint_interval_count(
         extract_feature_intervals(rf1), extract_feature_intervals(rf2))

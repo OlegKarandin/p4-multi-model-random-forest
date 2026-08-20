@@ -138,17 +138,18 @@ def test_alignment_reports_its_acceptance_rate_and_interval_counts():
         assert stats['accepted'] <= stats['attempted']
         assert stats['intervals_after'] <= stats['intervals_before']
 
-    # NOT delta-invariant in general, and that's expected rather than a bug:
-    # the candidate INDEX-PAIR list (find_partially_overlapping_ranges) is
-    # computed once per feature from the untouched initial intervals, so it
-    # doesn't depend on delta_rel -- but whether a given candidate still
-    # produces a non-empty `modifications` (and so counts as "attempted")
-    # depends on current_ranges1/current_ranges2, which EARLIER accepted
-    # moves in the same feature mutate in place via
-    # update_neighboring_ranges_and_index. So attempted-count depends on the
-    # accept/reject trajectory whenever a feature has more than one overlap --
-    # pre-existing behaviour from Tasks 1-4, not something this task's
-    # accept_alignment/ratchet swap introduced.
+    # NOT delta-invariant in general, and that's expected rather than a bug.
+    # Since C3 (P3b T3) the candidate set is RE-DERIVED from the current,
+    # already-mutated interval lists after every accepted move, and the loop
+    # runs rounds until one accepts nothing. So the whole candidate set --
+    # not just whether a candidate still produces a non-empty `modifications`
+    # -- depends on the accept/reject trajectory, and therefore on delta_rel:
+    # an accepted move widens the aligned range's neighbours, and a widened
+    # neighbour can overlap a range in the other model that nothing overlapped
+    # before. Those pairs used to be unreachable (the overlap list was
+    # computed once per feature and never refreshed); now they are attempted,
+    # which is why `attempted` and `accepted` are both larger than they were
+    # before C3.
     assert stats_loose['accepted'] >= stats_strict['accepted']
 
 

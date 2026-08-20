@@ -735,8 +735,18 @@ _ALIGNMENT_GOLDEN = {
 
 
 @pytest.mark.parametrize('delta_rel', [0.0, 0.05])
-def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(delta_rel):
-    """The end-to-end numeric-neutrality gate for T2b.
+def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
+        delta_rel, monkeypatch):
+    """The end-to-end numeric-neutrality gate for T2b, and the REGRESSION side
+    of T3's two-sided gate.
+
+    T3 (C3) recomputes the candidate set after every accepted move, which
+    legitimately moves these numbers -- so this test pins the loop at
+    MAX_RECOMPUTE_ROUNDS = 1, where C3 is required to be a bit-identical
+    no-op: one round, in sweep order (== the old nested order), with `seen`
+    never firing. The literal below is therefore still the PRE-C3 output; it
+    was NOT regenerated from post-C3 code, which would have turned the gate
+    into a tautology. What it now pins is "round-1 C3 == pre-C3", exactly.
 
     Replacing sklearn's accuracy_score/f1_score with a confusion-matrix
     formula, and the from-scratch ensemble vote with an incrementally
@@ -748,6 +758,7 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(delt
     stats dict -- so pin those.
     """
     golden = _ALIGNMENT_GOLDEN[delta_rel]
+    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
 
@@ -793,3 +804,313 @@ def test_compute_ensemble_prediction_is_still_reachable_and_still_the_oracle():
     from src.p4gen.switch_semantics import switch_predict
     assert np.array_equal(ta.compute_ensemble_prediction(tree_predictions, rf),
                           switch_predict(rf, X))
+
+
+# ---------------------------------------------------------------------------
+# T3 (C3): the candidate set is recomputed after every ACCEPTED move.
+#
+# Before C3 the overlap list was computed once per feature and iterated while
+# update_neighboring_ranges_and_index mutated the underlying interval lists in
+# place. Aligning range i widens its neighbours; a widened neighbour can newly
+# overlap a range in the other model, and that pair was never enumerated. The
+# tests below pin both sides of the gate: one round alone must reproduce the
+# pre-C3 result bit for bit, and the full loop may only APPEND to it.
+# ---------------------------------------------------------------------------
+
+def _hand_built_forest(thresholds):
+    """A forest whose feature-0 interval list is exactly the one asked for.
+
+    One feature, one depth-1 tree per threshold (bootstrap=False so every tree
+    really does get its split), then the thresholds are overwritten by hand --
+    the same trick _one_split_forest uses. `thresholds` must be ascending, and
+    the resulting intervals are (0,t0),(t0+1,t1),...,(tlast+1,INFINITE).
+    """
+    from sklearn.ensemble import RandomForestClassifier
+
+    X = np.array([[0.0], [10.0], [20.0], [30.0], [40.0], [50.0]])
+    y = np.array([0, 0, 0, 1, 1, 1])
+    rf = RandomForestClassifier(n_estimators=len(thresholds), max_depth=1,
+                                bootstrap=False, random_state=0).fit(X, y)
+    for tree_idx, threshold in enumerate(thresholds):
+        tree = rf.estimators_[tree_idx].tree_
+        assert tree.node_count == 3 and tree.feature[0] == 0
+        tree.threshold[0] = float(threshold)
+    return rf
+
+
+def _neighbour_widening_pair():
+    """The motivating fixture: one accepted move provably CREATES a candidate.
+
+        I1 = [(0,99), (100,999), (1000,5999), (6000,INF)]
+        I2 = [(0,99), (100,999), (1000,2999), (3000,5999), (6000,INF)]
+
+    Round 1 has exactly one eligible candidate, (1000,5999) vs (3000,5999) at
+    ratio 0.5999. Accepting it drags I1's left neighbour out to (100,2999),
+    which then overlaps I2's (1000,2999) at ratio 0.6896 -- a pair that did
+    not overlap AT ALL before the move (it was (100,999) vs (1000,2999)), so
+    no amount of re-reading the original overlap list could reach it.
+    """
+    rf1 = _hand_built_forest([99, 999, 5999])
+    rf2 = _hand_built_forest([99, 999, 2999, 5999])
+    X = np.array([[0.0], [50.0], [500.0], [1500.0],
+                  [2500.0], [4000.0], [7000.0], [65535.0]])
+    y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1])
+    y2 = np.array([-1, 1, -1, 1, -1, 1, -1, 1])
+    return rf1, rf2, X, y1, y2
+
+
+def _count_rounds(monkeypatch):
+    """Rounds actually run, keyed by feature.
+
+    The recompute loop calls find_partially_overlapping_ranges exactly once
+    per round, and each feature's ranges list is a distinct list object owned
+    by intervals1 -- so id(ranges1) identifies the feature.
+    """
+    real = ta.find_partially_overlapping_ranges
+    rounds = {}
+
+    def spy(ranges1, ranges2):
+        rounds[id(ranges1)] = rounds.get(id(ranges1), 0) + 1
+        return real(ranges1, ranges2)
+
+    monkeypatch.setattr(ta, 'find_partially_overlapping_ranges', spy)
+    return rounds
+
+
+def test_a_widened_neighbour_becomes_a_candidate_only_after_the_recompute(monkeypatch):
+    """THE motivating test for C3: without the rescan this pair is unreachable.
+
+    With the recompute disabled (a single round) the fixture attempts exactly
+    the one candidate the original overlap list held. With it enabled, the
+    pair the accepted move CREATED is attempted too -- in round 2, the only
+    place it could ever appear.
+    """
+    new_pair = ((100, 2999), (1000, 2999))
+
+    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
+    rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
+    stats_one_round, log_one_round = {}, []
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+                           delta_rel=None, align_stats=stats_one_round,
+                           candidate_log=log_one_round)
+
+    assert [(e['range1'], e['range2']) for e in log_one_round] == \
+        [((1000, 5999), (3000, 5999))]
+    assert stats_one_round['attempted'] == 1
+
+    monkeypatch.undo()
+    rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
+    stats, log = {}, []
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+                           delta_rel=None, align_stats=stats,
+                           candidate_log=log)
+
+    assert [(e['range1'], e['range2']) for e in log] == \
+        [((1000, 5999), (3000, 5999)), new_pair]
+    assert [e['round'] for e in log] == [1, 2]
+    assert stats['attempted'] == 2 and stats['accepted'] == 2
+
+
+def test_the_recompute_stops_as_soon_as_a_round_accepts_nothing(monkeypatch):
+    """Termination is by fixpoint, not by exhausting the cap: a round that
+    accepts nothing changed no tuple, so the recomputed sweep would yield the
+    identical list with every member already retired in `seen`. A feature with
+    no eligible candidate at all therefore costs exactly ONE sweep."""
+    rounds = _count_rounds(monkeypatch)
+
+    # I1 = [(0,999),(1000,1999),(2000,INF)]
+    # I2 = [(0,999),(1000,1499),(1500,1999),(2000,INF)]
+    # The shared head and tail intervals are identical (excluded by the
+    # sweep), and both remaining pairs score 499/999 = 0.4995 -- just under
+    # the 0.5 threshold. So nothing is ever accepted.
+    rf1 = _hand_built_forest([999, 1999])
+    rf2 = _hand_built_forest([999, 1499, 1999])
+    X = np.array([[0.0], [50.0], [500.0], [1500.0],
+                  [2500.0], [4000.0], [7000.0], [65535.0]])
+    y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1])
+    y2 = np.array([-1, 1, -1, 1, -1, 1, -1, 1])
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+                           delta_rel=None, align_stats=stats)
+
+    assert stats['accepted'] == 0
+    assert set(rounds.values()) == {1}
+    assert max(rounds.values()) < ta.MAX_RECOMPUTE_ROUNDS
+
+
+def test_the_recompute_cap_raises_instead_of_looping_without_end(monkeypatch):
+    """MAX_RECOMPUTE_ROUNDS is a safety net, not a tuning parameter: there is
+    no monotone measure on interval count or union size (see the counterexample
+    below), so termination is ENFORCED rather than proved. Truncating a loop
+    that was still accepting moves is an invariant violation, not a silent
+    stop.
+
+    The motivating fixture needs three rounds (accept, accept, fixpoint), so a
+    cap of 2 truncates it mid-progress.
+    """
+    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 2)
+    rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
+
+    with pytest.raises(AlignmentInvariantError) as excinfo:
+        ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+                               delta_rel=None)
+
+    assert 'fixpoint' in str(excinfo.value).lower()
+
+
+def test_the_recompute_never_evaluates_the_same_value_pair_twice(monkeypatch):
+    """`seen` keys on VALUE pairs, not index pairs -- an accepted move rewrites
+    tuples in place, so the same index pair names a different candidate in a
+    later round and the same candidate can move to a different index. Without
+    it every round would re-offer every pair it had already judged."""
+    judged = []
+    real = ta.calculate_range_overlap
+
+    def spy(range1, range2):
+        judged.append((range1, range2))
+        return real(range1, range2)
+
+    monkeypatch.setattr(ta, 'calculate_range_overlap', spy)
+    rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+                           delta_rel=None)
+
+    # A single-feature fixture, so every judgement belongs to the same feature
+    # and the per-feature `seen` set covers all of them.
+    assert judged, 'the fixture must produce candidates'
+    assert len(judged) == len(set(judged)), judged
+
+
+def test_the_partition_invariant_survives_the_multi_round_recompute(monkeypatch):
+    """C5's invariant under the condition most likely to break it: repeated
+    rounds at delta_rel=None, the maximum-mutation arm. More accepted moves is
+    exactly when update_neighboring_ranges_and_index's
+    RuntimeError('Smth is very-very wrong') would newly fire, and this tiling
+    is what the generator's TCAM ranges are built from."""
+    rounds = _count_rounds(monkeypatch)
+    rf1, rf2 = _aligned_forest_pair()
+
+    assert max(rounds.values()) > 1, 'the fixture must actually recompute'
+    for rf in (rf1, rf2):
+        for feature_idx, intervals in ta.extract_feature_intervals(rf).items():
+            assert intervals[0][0] == 0, (feature_idx, intervals)
+            assert intervals[-1][1] == INFINITE, (feature_idx, intervals)
+            for (_, prev_max), (next_min, _) in zip(intervals, intervals[1:]):
+                assert next_min == prev_max + 1, (feature_idx, intervals)
+
+
+def test_a_single_accepted_move_can_RAISE_the_joint_interval_count():
+    """Counterexample A, encoded verbatim (controller ruling P3b-4).
+
+    `stats['intervals_after'] <= stats['intervals_before']` is asserted a few
+    tests over and reads like a theorem. It is not one, and C3 -- which
+    evaluates strictly more candidates -- raises the chance of tripping it. If
+    it ever does trip, this is the mechanism, and it is a pre-existing latent
+    property surfacing rather than a C3 bug.
+
+    joint = |I1| + |I2| - |set(I1) & set(I2)|, and |I1|, |I2| are constant
+    (alignment relocates thresholds, it never adds or deletes one). The
+    aligned pair always contributes +1 to the intersection, but the boundary
+    shift also rewrites neighbours: at most one of {L1, L2} changes (the
+    target min is max(s1, s2), which leaves the larger-start side's left
+    neighbour alone) and at most one of {R1, R2}. So up to TWO previously
+    matching tuples are destroyed against ONE gained -- net -1 in the
+    intersection, hence +1 in the joint count.
+    """
+    I1 = [(0, 9), (10, 49), (50, INFINITE)]
+    I2 = [(0, 9), (10, 19), (20, 44), (45, 49), (50, INFINITE)]
+    assert ta.joint_interval_count({0: I1}, {0: I2}) == 6
+
+    range1, range2 = (10, 49), (20, 44)
+    assert ta.calculate_range_overlap(range1, range2) == pytest.approx(0.6153846)
+    target = ta.calculate_target_range(range1, range2)
+    assert target == (20, 44)
+
+    # The nodes those two boundaries come from; only (0, 9) and (0, 49) are
+    # read, but a real index holds every threshold of the feature.
+    threshold_index = {(0, 9): [(0, 0)], (0, 49): [(0, 1)],
+                       (0, 19): [(0, 2)], (0, 44): [(0, 3)]}
+    ta.update_neighboring_ranges_and_index(I1, 1, range1, target, 0, threshold_index)
+
+    assert I1 == [(0, 19), (20, 44), (45, INFINITE)]
+    assert ta.joint_interval_count({0: I1}, {0: I2}) == 7
+
+
+def _align_golden_pair(delta_rel, cap, monkeypatch):
+    """One run of the golden fixture at a given MAX_RECOMPUTE_ROUNDS."""
+    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', cap)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats, log = {}, []
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=delta_rel, align_stats=stats,
+                           candidate_log=log)
+    monkeypatch.undo()
+    return stats, log
+
+
+def _accepted_moves(log):
+    return [(e['feature_idx'], e['range1'], e['range2'])
+            for e in log if e['accepted']]
+
+
+def _is_subsequence(small, big):
+    """Every element of `small`, in order, somewhere in `big`."""
+    it = iter(big)
+    return all(item in it for item in small)
+
+
+@pytest.mark.parametrize('delta_rel', [None, 0.0, 0.05])
+def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, monkeypatch):
+    """The legitimate-change side of the two-sided gate.
+
+    C3 reaches strictly more candidates, so `attempted` and `accepted` rise
+    weakly. What it must NEVER do is reorder or drop work that the single
+    pre-C3 pass already did. Stated precisely, because "the single-round
+    sequence is a global prefix of the C3 sequence" is the wrong shape and
+    fails on real fixtures: C3 appends its extra rounds INSIDE each feature's
+    block, before moving on to the next feature. So the append-only property
+    is
+      - per feature: round 1's accepted moves for feature f are a PREFIX of
+        C3's accepted moves for f;
+      - globally: the whole round-1 sequence is a SUBSEQUENCE of C3's, and
+        the order in which features contribute their first move is unchanged
+        (`sorted_features` does not depend on the loop).
+    Any diff not explained by "extra moves appended inside a feature's block"
+    is a regression rather than a result change.
+
+    Only the delta_rel=None arm is a theorem. On the guarded arms an extra
+    move accepted in an earlier feature ratchets `marks` up (spec B.4), which
+    may legitimately flip a later feature's decisions -- features are
+    structurally independent (each owns its interval lists and its
+    threshold-index keys) but the per-task high-water marks are global. It
+    holds on this fixture for all three arms, and is asserted for all three;
+    if a future change breaks it on a guarded arm only, that is the mechanism
+    to check before assuming a bug.
+    """
+    stats_r1, log_r1 = _align_golden_pair(delta_rel, 1, monkeypatch)
+    stats_c3, log_c3 = _align_golden_pair(delta_rel, ta.MAX_RECOMPUTE_ROUNDS, monkeypatch)
+
+    # No new stats key -- 'round' lives in the candidate_log instead.
+    assert set(stats_c3) == {'attempted', 'accepted', 'intervals_before', 'intervals_after'}
+    assert stats_c3['intervals_before'] == stats_r1['intervals_before']
+    assert stats_c3['attempted'] >= stats_r1['attempted']
+    assert stats_c3['accepted'] >= stats_r1['accepted']
+
+    moves_r1, moves_c3 = _accepted_moves(log_r1), _accepted_moves(log_c3)
+    assert moves_r1, 'the fixture must accept something in the single-round pass'
+    assert len(moves_c3) > len(moves_r1), 'C3 must find something new here'
+
+    features_r1 = list(dict.fromkeys(f for f, _, _ in moves_r1))
+    features_c3 = list(dict.fromkeys(f for f, _, _ in moves_c3))
+    assert features_c3 == features_r1
+
+    for feature_idx in features_r1:
+        head = [m for m in moves_r1 if m[0] == feature_idx]
+        full = [m for m in moves_c3 if m[0] == feature_idx]
+        assert full[:len(head)] == head, feature_idx
+
+    assert _is_subsequence(moves_r1, moves_c3)
+    # Every round-1 candidate is round 1 in the C3 run too -- the rounds above
+    # 1 are the appended work and nothing else.
+    assert [e['round'] for e in log_r1] == [1] * len(log_r1)
+    assert max(e['round'] for e in log_c3) > 1

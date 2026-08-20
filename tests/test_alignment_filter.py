@@ -62,8 +62,15 @@ def test_the_candidate_log_records_one_row_per_candidate_with_both_predictors():
     for entry in log:
         assert set(entry) == {'feature_idx', 'range1', 'range2', 'overlap_ratio',
                              'endpoint_ratio', 'shift_mass_1', 'shift_mass_2',
-                             'rel_deg', 'accepted', 'error_app', 'error_ddos'}
+                             'rel_deg', 'accepted', 'error_app', 'error_ddos',
+                             'round'}
         assert 0.0 <= entry['shift_mass_1'] <= 1.0
+        # C3's recompute round this candidate was found in. It lives here and
+        # not in align_stats deliberately: the stats dict's key set is pinned
+        # exactly, while candidate_log is the diagnostic structure meant to
+        # grow. Round 1 is the pre-C3 candidate set; anything above 1 is a
+        # candidate an accepted move created.
+        assert entry['round'] >= 1
         assert len(entry['rel_deg']) == 4
         assert isinstance(entry['accepted'], bool)
 
