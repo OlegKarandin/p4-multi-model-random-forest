@@ -114,19 +114,17 @@ def test_no_scored_label_present_takes_the_unweighted_average_branch_without_rai
     assert f1 == expected_f1
 
 
-def test_accuracy_from_confusion_matches_accuracy_score_exactly_including_a_true_label_outside_lab():
-    lab = [0, 1, 2]
-    y_true = [3, 3]  # true label outside lab entirely
-    y_pred = [3, 3]
+def test_accuracy_from_confusion_matches_accuracy_score_exactly_on_a_plain_in_domain_case():
+    """The true-label-outside-lab edge case (lab=[0,1,2], y_true=y_pred=[3,3])
+    is already pinned by test_no_scored_label_present_takes_the_unweighted_
+    average_branch_without_raising via the same _sklearn_acc_and_f1 (which
+    itself calls mt.accuracy_score) -- repeating it here added nothing, so
+    only the plain in-domain case survives."""
+    lab = [-1, 1]
+    y_true = [-1, 1, -1, 1, 1]
+    y_pred = [-1, -1, -1, 1, 1]
     acc, _ = _acc_and_f1(lab, y_true, y_pred, classes=lab)
-    assert acc == mt.accuracy_score(y_true, y_pred) == 1.0
-
-    # A plain in-domain case too, so this test isn't only exercising the edge.
-    lab2 = [-1, 1]
-    y_true2 = [-1, 1, -1, 1, 1]
-    y_pred2 = [-1, -1, -1, 1, 1]
-    acc2, _ = _acc_and_f1(lab2, y_true2, y_pred2, classes=lab2)
-    assert acc2 == mt.accuracy_score(y_true2, y_pred2)
+    assert acc == mt.accuracy_score(y_true, y_pred)
 
 
 def test_accuracy_from_confusion_rejects_zero_samples():

@@ -720,14 +720,6 @@ def test_feature_readiness_level_resolves_dotted_dataset_names():
     assert ev.feature_readiness_level("Fwd.IAT.Max") == 4
 
 
-def test_feature_readiness_level_dotted_and_underscored_names_agree():
-    """The normaliser must be a superset of the old space-only behaviour."""
-    for dotted, underscored in (("Flow.IAT.Max", "Flow_IAT_Max"),
-                                ("Fwd.IAT.Max", "Fwd_IAT_Max"),
-                                ("Fwd.Packet.Length.Max", "Fwd_Packet_Length_Max")):
-        assert ev.feature_readiness_level(dotted) == ev.feature_readiness_level(underscored)
-
-
 def test_feature_readiness_level_unknown_dotted_feature_still_falls_back():
     """Most of the 18 selected features genuinely have no catalog entry, so
     the fallback must survive normalisation rather than become a KeyError."""

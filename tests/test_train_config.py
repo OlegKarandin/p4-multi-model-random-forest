@@ -76,23 +76,19 @@ def test_overlap_threshold_label_is_what_goes_in_the_row():
     """Spec C.1: overlap_threshold is a float, or "" when alignment did not
     run -- mirrors delta_align_label, since overlap_threshold is only
     consulted by align_rf_thresholds, which is never called for the
-    independent arm or the joint-off ablation."""
+    independent arm or the joint-off ablation.
+
+    Also covers the disjoint-encoding suppression that arm_slug and
+    delta_align_label each get their own test for (mirrors
+    arm_slug('disjoint') / delta_align_label('disjoint')): the independent
+    arm never runs alignment, so its row must not carry the joint arm's
+    overlap_threshold setting, even though TrainConfig()'s default (0.5) is
+    shared by both arms' configs.
+    """
     assert TrainConfig(overlap_threshold=0.5).overlap_threshold_label() == '0.5'
     assert TrainConfig(overlap_threshold=0.75).overlap_threshold_label('joint') == '0.75'
     assert TrainConfig(alignment_enabled=False).overlap_threshold_label() == ''
-
-
-def test_overlap_threshold_label_disjoint_encoding_suppresses_it_like_arm_slug():
-    """Mirrors arm_slug('disjoint') and delta_align_label('disjoint'): the
-    independent arm never runs alignment, so its row must not carry the
-    joint arm's overlap_threshold setting -- even though TrainConfig()'s
-    default (0.5) is shared by both arms' configs."""
-    cfg = TrainConfig()
-    assert cfg.overlap_threshold == 0.5
-
-    assert cfg.overlap_threshold_label('disjoint') == ''
-    assert cfg.overlap_threshold_label('joint') == '0.5'
-    assert cfg.overlap_threshold_label() == '0.5'
+    assert TrainConfig().overlap_threshold_label('disjoint') == ''
 
 
 def test_negative_tolerances_are_rejected():
