@@ -402,7 +402,58 @@ def test_dataset_py_clips_outliers_to_threshold_not_hardcoded_19bit_value():
     with open(source_file) as f:
         source = f.read()
     assert "(2**19)-2" not in source.replace(" ", "")
-    assert source.count("threshold if x > threshold else x") == 2
+
+
+def test_read_app_dataset_clips_outliers_to_threshold(monkeypatch):
+    # Behavioural check for the live clipping path (dataset.py's
+    # `df.clip(upper=threshold)` in read_app_dataset), replacing a
+    # source-text grep that used to assert on `load_dataset`'s clipping --
+    # dead code with no caller, since deleted.
+    import pandas as pd
+    from src.training import dataset as dataset_mod
+
+    threshold = 100
+    fake_df = pd.DataFrame({
+        'ProtocolName': ['SKYPE', 'DROPBOX', 'GOOGLE'],
+        'Feat1': [50, 150, 30],
+    })
+    monkeypatch.setattr(dataset_mod.pd, 'read_csv', lambda *a, **k: fake_df.copy())
+
+    result = dataset_mod.read_app_dataset(['Feat1'], threshold)
+
+    assert result['Feat1'].max() <= threshold
+    # The 150 -> 100 outlier survived filtering (it's a real SKYPE/Dropbox/
+    # Google row, not negative or NaN), so its presence at exactly
+    # `threshold` proves clip() actually fired rather than the input simply
+    # never exceeding the bound.
+    assert (result['Feat1'] == threshold).any()
+
+
+def test_read_DDOS_dataset_clips_outliers_to_threshold(monkeypatch):
+    # Behavioural check for the live clipping path (dataset.py's
+    # `df.clip(upper=threshold)` in read_DDOS_dataset). This function
+    # hard-samples exactly 10000 rows per class, so the synthetic frame
+    # needs >= 10000 rows in each of the two classes it keeps (BENIGN,
+    # DoS Hulk). `idx` makes every row unique and is never itself clipped
+    # (it stays far below `threshold`), so drop_duplicates() never removes
+    # a row and the class-balance sampling always has enough to draw from.
+    import numpy as np
+    import pandas as pd
+    from src.training import dataset as dataset_mod
+
+    threshold = 10 ** 6
+    n = 10000
+    idx = np.arange(2 * n)
+    feat1 = np.full(2 * n, 5.0)
+    feat1[0] = threshold + 12345  # the one outlier clip() must catch
+    labels = ['BENIGN'] * n + ['DoS Hulk'] * n
+    fake_df = pd.DataFrame({'Feat1': feat1, 'idx': idx, 'Label': labels})
+    monkeypatch.setattr(dataset_mod.pd, 'read_csv', lambda *a, **k: fake_df.copy())
+
+    result = dataset_mod.read_DDOS_dataset(['Feat1', 'idx'], threshold)
+
+    assert result['Feat1'].max() <= threshold
+    assert (result['Feat1'] == threshold).any()
 
 
 # ---------------------------------------------------------------------------
