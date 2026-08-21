@@ -1002,7 +1002,9 @@ def test_generate_P4_code_disjoint_namespaces_when_intervals_differ():
 
 def test_generate_P4_code_writes_to_injectable_path(tmp_path):
   clf_ddos = _tiny_ddos_forest()  # reuse this file's existing tiny-forest fixture helper
-  feature_intervals = {"F": [(0, 100), (101, 65535)]}
+  # "flow_iat_max": has a real FEATURE_REGISTER_CATALOG entry (F2's raise
+  # would otherwise reject a purely synthetic feature name like the old "F").
+  feature_intervals = {"flow_iat_max": [(0, 100), (101, 65535)]}
   out_dir = str(tmp_path) + os.sep
   written_path = bps.generate_P4_code(
       num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
@@ -1017,7 +1019,7 @@ def test_generate_P4_code_writes_to_injectable_path(tmp_path):
 
 def test_generate_P4_code_default_path_unchanged():
   clf_ddos = _tiny_ddos_forest()
-  feature_intervals = {"F": [(0, 100), (101, 65535)]}
+  feature_intervals = {"flow_iat_max": [(0, 100), (101, 65535)]}
   written_path = bps.generate_P4_code(
       num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
       feature_intervals_app={}, feature_intervals_ddos=feature_intervals,
@@ -1077,7 +1079,9 @@ def test_generate_P4_tables_and_apply_invalid_match_type_raises():
 
 def test_generate_P4_code_match_type_exact_propagates_to_generated_p4(tmp_path):
   clf_ddos = _tiny_ddos_forest()
-  feature_intervals = {"F": [(0, 100), (101, 65535)]}
+  # "flow_iat_max": has a real FEATURE_REGISTER_CATALOG entry (F2's raise
+  # would otherwise reject a purely synthetic feature name like the old "F").
+  feature_intervals = {"flow_iat_max": [(0, 100), (101, 65535)]}
   out_dir = str(tmp_path) + os.sep
   written_path = bps.generate_P4_code(
       num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
@@ -1088,20 +1092,20 @@ def test_generate_P4_code_match_type_exact_propagates_to_generated_p4(tmp_path):
   with open(written_path, "r") as f:
     generated = f.read()
   # The classification table's own field key must be exact...
-  assert "meta.code_f : exact;" in generated
+  assert "meta.code_flow_iat_max : exact;" in generated
   # ...and no leftover ternary classification key text. (Note:
   # generate_voting_code's vote_ddos table also legitimately uses
   # ": exact;" on meta.class_tree_ddos_0 -- that table is unrelated to
   # match_type and always exact, so this test checks the classification
   # key specifically rather than asserting ": ternary;" is wholly absent.)
-  assert "meta.code_f : ternary;" not in generated
+  assert "meta.code_flow_iat_max : ternary;" not in generated
 
 
 def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
   # Regression guard: generate_P4_code's own default (no match_type passed)
   # must remain byte-identical to every pre-Task-8 caller.
   clf_ddos = _tiny_ddos_forest()
-  feature_intervals = {"F": [(0, 100), (101, 65535)]}
+  feature_intervals = {"flow_iat_max": [(0, 100), (101, 65535)]}
   out_dir = str(tmp_path) + os.sep
   written_path = bps.generate_P4_code(
       num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
@@ -1110,10 +1114,10 @@ def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
   )
   with open(written_path, "r") as f:
     generated = f.read()
-  assert "meta.code_f : ternary;" in generated
+  assert "meta.code_flow_iat_max : ternary;" in generated
   # (generate_voting_code's vote_ddos table legitimately uses ": exact;" on
   # meta.class_tree_ddos_0 regardless of match_type -- see note above.)
-  assert "meta.code_f : exact;" not in generated
+  assert "meta.code_flow_iat_max : exact;" not in generated
 
 
 # ---------------------------------------------------------------------------

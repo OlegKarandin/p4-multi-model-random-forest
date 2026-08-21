@@ -1404,7 +1404,25 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   # of RAW feature names, never the (possibly namespaced) resolved names --
   # a raw value register must not be generated twice just because two
   # resolved entries share it.
-  registers_code, register_actions_code, feature_update_apply_code = generate_P4_registers_and_apply(raw_feature_intervals)
+  registers_code, register_actions_code, feature_update_apply_code, resolved = (
+      generate_P4_registers_and_apply(raw_feature_intervals))
+
+  # F2: a feature with no FEATURE_REGISTER_CATALOG entry is silently skipped
+  # by generate_P4_registers_and_apply above, but everything else in this
+  # function (metadata_code's bit<16> <f>_val declaration, its
+  # @pa_container_size pragma, and its range table below) is built from
+  # raw_feature_intervals regardless -- so an uncatalogued feature would
+  # otherwise compile to a field that is declared, keyed on, and NEVER
+  # WRITTEN, silently reading 0 for every packet forever. Fail loudly at
+  # generation time instead of letting that ship as a silent
+  # misclassification.
+  missing = sorted(set(raw_feature_intervals) - resolved)
+  if missing:
+    raise ValueError(
+        "no register catalog entry for {} -- the generated program would declare "
+        "<feature>_val, key a range table on it, and never write it, so it would "
+        "read 0 for every packet. Add the feature to FEATURE_REGISTER_CATALOG "
+        "(src/p4gen/feature_registers.py) or drop it from the feature set.".format(missing))
 
   # generate_P4_actions only needs resolved_name -> intervals: it writes
   # meta.code_<resolved_name>, one action per resolved entry, and is
@@ -1649,13 +1667,21 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       Exposed as a parameter so tests can exercise the generator against a
       synthetic catalog without monkeypatching module state.
 
-  Feature names absent from `catalog` are silently skipped (later
-  milestones will call this with a catalog that isn't fully populated yet
-  for every feature they select -- that must not crash).
+  Feature names absent from `catalog` are silently skipped by THIS function
+  (later milestones will call this with a catalog that isn't fully
+  populated yet for every feature they select -- that must not crash here).
+  F2: it is the CALLER's job to decide whether a silent skip is acceptable
+  -- generate_P4_code, the only production caller, is not: it diffs its own
+  requested feature set against this function's `resolved` return value
+  (below) and raises ValueError if anything didn't resolve, because letting
+  an uncatalogued feature's <feature>_val field compile silently would read
+  0 for every packet forever (see generate_P4_code's own F2 comment).
 
-  Returns a 3-tuple of P4 source strings, one per marker payload a future
-  TNA template will substitute this function's output into:
-    (registers_code, register_actions_code, feature_update_apply_code)
+  Returns a 4-tuple of P4 source strings plus a resolution set, one source
+  string per marker payload a future TNA template will substitute this
+  function's output into, and `resolved` for callers (generate_P4_code) to
+  detect what did NOT resolve:
+    (registers_code, register_actions_code, feature_update_apply_code, resolved)
 
     - registers_code: `Register<bit<W>, bit<32>>(MAX_NUM_FLOWS) <name>_reg;`
       declarations (TNA syntax), plus the ONE `Hash<>` instance the
@@ -1740,6 +1766,15 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       reports exactly 1 touch for M2's feature set (flow_iat_max +
       flow_iat_mean sharing it), matching the single real `.execute()` call
       site _execute_lines actually emits for it.
+    - resolved: the `set` of INPUT feature names (i.e. keys of the
+      `feature_intervals` argument, not catalog keys) this call emitted
+      registers for -- exactly `matched_features` above, converted to a
+      set (see the code right before the `return` for why that's exact,
+      not approximate). Empty when `feature_intervals` is empty or when
+      none of its keys are in `catalog`. Lets a caller (generate_P4_code)
+      diff its own full requested feature set against this to find what
+      silently did NOT resolve (F2), without this function itself having
+      to decide whether that's acceptable.
 
   Raises RuntimeError, at generation time (not left to fail later at `p4c`
   invocation), if resolving `catalog` against `feature_intervals` would
@@ -1774,7 +1809,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     )
 
   if not matched_features:
-    return "", "", ""
+    return "", "", "", set()
 
   # ---- Resolve the deduplicated, ordered register set + touch counts ----
 
@@ -1948,4 +1983,15 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
 
   apply_code = "\n".join(apply_lines) + "\n"
 
-  return registers_code, register_actions_code, apply_code
+  # `matched_features` (built above) is already exactly the set of INPUT
+  # feature names this call emitted registers for: it was built by filtering
+  # feature_intervals.keys() (each already .lower()'d, a no-op post-Task-4
+  # normalisation) down to the ones present in `catalog` -- so catalog key
+  # == input name and matched_features IS the resolved set, not merely a
+  # proxy for it. Returned as a set (matched_features is a list, kept in
+  # iteration order for everything above) so callers can cheaply diff it
+  # against their full requested feature set (see generate_P4_code's F2
+  # check) without caring about order or duplicates.
+  resolved = set(matched_features)
+
+  return registers_code, register_actions_code, apply_code, resolved

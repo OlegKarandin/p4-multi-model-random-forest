@@ -231,7 +231,7 @@ def test_m1_register_declarations_match_spike(m1_generated):
   # registers are still compared against it. The bookkeeping register
   # itself (`flow_forward_srcaddr_reg`, width 32) is checked directly
   # against the new symmetric-hash design instead of the M1 spike.
-  registers_code, _, _ = m1_generated
+  registers_code, _, _, _ = m1_generated
   generated = _extract_register_declarations(registers_code)
   spike = _extract_register_declarations(SPIKE_CONTROL)
 
@@ -284,7 +284,7 @@ def test_symmetric_hash_bookkeeping_design(m1_generated):
   # "test other, then set self" bookkeeping (see
   # p4/tofino_spike/tna_m2_symmetric_hash_spike.p4 for the validated ground
   # truth this codegen change transcribes).
-  registers_code, register_actions_code, apply_code = m1_generated
+  registers_code, register_actions_code, apply_code, _ = m1_generated
 
   # Exactly one Hash<> instance now (was two: flow_hash_calc_self/_other).
   assert registers_code.count("Hash<bit<32>>(HashAlgorithm_t.CRC32)") == 1
@@ -317,7 +317,7 @@ def test_flow_orientation_action_matches_spike(m1_generated):
   # -- compare against tna_m2_symmetric_hash_spike.p4 (the validated ground
   # truth for the new design), not the M1 spike (which still reflects the
   # old two-hash design).
-  _, register_actions_code, _ = m1_generated
+  _, register_actions_code, _, _ = m1_generated
   generated_body = _extract_action_body(register_actions_code, "flow_orientation_action")
   spike_body = _extract_action_body(M2_SYMMETRIC_HASH_SPIKE, "flow_orientation_action")
   assert _normalize(generated_body) == _normalize(spike_body)
@@ -327,14 +327,14 @@ def test_flow_orientation_action_executed_exactly_once(m1_generated):
   # Task 3: the old design's two-touch ("test other, then set self") pattern
   # is gone -- there is now only one call site per packet, so there is no
   # more "which runs first" ordering to assert, only a single-touch count.
-  _, _, apply_code = m1_generated
+  _, _, apply_code, _ = m1_generated
 
   assert apply_code.count("flow_orientation_action.execute(meta.flow_hash)") == 1
 
 
 @pytest.mark.skipif(SPIKE_CONTROL is None, reason="tna_m1_flows_iat_spike.p4pp fixture is missing, see SPIKE_PATH")
 def test_calc_timestamp_emitted_and_matches_spike(m1_generated):
-  _, register_actions_code, _ = m1_generated
+  _, register_actions_code, _, _ = m1_generated
   assert "action calc_timestamp() {" in register_actions_code
 
   spike_body = _extract_calc_timestamp_body(SPIKE_CONTROL)
@@ -344,7 +344,7 @@ def test_calc_timestamp_emitted_and_matches_spike(m1_generated):
 
 
 def test_fwd_gating_structure(m1_generated):
-  _, _, apply_code = m1_generated
+  _, _, apply_code, _ = m1_generated
 
   fwd_block_idx = apply_code.index("if (meta.fwd == 1) {")
 
@@ -366,14 +366,14 @@ def test_fwd_gating_structure(m1_generated):
 
 
 def test_dependency_registers_assigned_to_current_iat(m1_generated):
-  _, _, apply_code = m1_generated
+  _, _, apply_code, _ = m1_generated
   # Both IAT features' dependency registers (flow_last_arrival_time,
   # fwd_last_arrival_time) feed the shared meta.current_iat scratch field.
   assert apply_code.count("meta.current_iat = ") == 2
 
 
 def test_value_registers_assigned_with_val_suffix(m1_generated):
-  _, _, apply_code = m1_generated
+  _, _, apply_code, _ = m1_generated
   # Post-fix convention (matches the spike's metadata_t field naming):
   # every "value" register's .execute() result is assigned to
   # meta.<feature>_val, consistently for all three M1 features -- including
@@ -411,7 +411,7 @@ def test_shared_dependency_register_executed_exactly_once(m2_mean_generated):
   # _execute_lines emitted one .execute() call per (feature, register)
   # pair -- two calls for one register. After the fix, exactly one call
   # site must appear, regardless of how many features reference it.
-  _, _, apply_code = m2_mean_generated
+  _, _, apply_code, _ = m2_mean_generated
   assert apply_code.count("flow_last_arrival_time_action.execute(meta.flow_hash)") == 1
 
   # Both features' own "value" registers must still each get their own
@@ -423,7 +423,7 @@ def test_shared_dependency_register_executed_exactly_once(m2_mean_generated):
 
 
 def test_mathunit_declaration_emitted_before_register_action(m2_mean_generated):
-  _, register_actions_code, _ = m2_mean_generated
+  _, register_actions_code, _, _ = m2_mean_generated
   mathunit_idx = register_actions_code.index(
       "MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) flow_iat_mean_halve_unit;")
   action_idx = register_actions_code.index(
@@ -442,7 +442,7 @@ def test_dedup_does_not_cross_contaminate_flow_and_fwd_namespaces(m2_mean_plus_f
   # register (only fwd_iat_max references it) -- confirming the dedup fix
   # tracks *register names*, not e.g. a blanket "first dependency only" rule
   # that would incorrectly also swallow fwd's independent dependency.
-  _, _, apply_code = m2_mean_plus_fwd_generated
+  _, _, apply_code, _ = m2_mean_plus_fwd_generated
   assert apply_code.count("flow_last_arrival_time_action.execute(meta.flow_hash)") == 1
   assert apply_code.count("fwd_last_arrival_time_action.execute(meta.flow_hash)") == 1
   # Two distinct dependency registers (flow_*, fwd_*), each executed once =
@@ -456,17 +456,53 @@ def test_dedup_does_not_cross_contaminate_flow_and_fwd_namespaces(m2_mean_plus_f
 # ---------------------------------------------------------------------------
 
 def test_empty_feature_intervals_returns_empty_strings():
-  assert generate_P4_registers_and_apply({}) == ("", "", "")
+  # Empty genuinely means "nothing to do": there is no missing/uncatalogued
+  # feature to raise about, so this path is untouched by the F2 fix below
+  # and still returns empty strings (plus an empty resolved set).
+  assert generate_P4_registers_and_apply({}) == ("", "", "", set())
 
 
-def test_all_unknown_features_returns_empty_strings():
-  assert generate_P4_registers_and_apply({"Totally_Bogus_Feature": None}) == ("", "", "")
+def test_all_unknown_features_raises():
+  # F2: a feature entirely absent from the catalog used to be silently
+  # skipped, leaving a <feature>_val field declared, keyed on by a range
+  # table, and never written -- reading 0 for every packet forever. The
+  # raise itself lives one layer up from generate_P4_registers_and_apply
+  # (which still just silently resolves whatever it can -- see its own
+  # docstring; that contract is unchanged): generate_P4_code diffs the
+  # requested feature set against what actually resolved and raises the
+  # moment anything is missing. clf_app/clf_ddos=None ("no task", the same
+  # convention generate_P4_code's own docstring uses for a missing task) is
+  # enough to reach that raise -- feature resolution runs before any
+  # tree/model-dependent work.
+  # generate_P4_code needs real (non-None) interval lists ahead of the F2
+  # check (it computes each resolved entry's codeword width from
+  # len(intervals) before reaching the missing-feature diff) -- unlike
+  # M1_FEATURE_INTERVALS above, whose None values are fine only for calling
+  # generate_P4_registers_and_apply directly (it ignores values entirely).
+  with pytest.raises(ValueError, match="Totally_Bogus_Feature"):
+    bps.generate_P4_code(
+        num_class_app=0, num_class_ddos=0,
+        clf_app=None, clf_ddos=None,
+        feature_intervals_app={"Totally_Bogus_Feature": [(0, 10), (11, 20)]},
+        feature_intervals_ddos={},
+    )
 
 
-def test_unknown_feature_mixed_with_known_is_skipped(m1_generated):
-  mixed_intervals = dict(M1_FEATURE_INTERVALS)
-  mixed_intervals["Totally_Bogus_Feature"] = None
-  assert generate_P4_registers_and_apply(mixed_intervals) == m1_generated
+def test_unknown_feature_mixed_with_known_raises():
+  # Same F2 raise, but mixed with a feature that DOES resolve -- confirms
+  # the raise fires on the presence of ANY uncatalogued feature, not just
+  # an all-unknown set.
+  mixed_intervals = {
+      "flow_iat_max": [(0, 100), (101, 500), (501, 9999)],
+      "Totally_Bogus_Feature": [(0, 10), (11, 20)],
+  }
+  with pytest.raises(ValueError, match="Totally_Bogus_Feature"):
+    bps.generate_P4_code(
+        num_class_app=0, num_class_ddos=0,
+        clf_app=None, clf_ddos=None,
+        feature_intervals_app=mixed_intervals,
+        feature_intervals_ddos={},
+    )
 
 
 def test_case_insensitive_feature_lookup(m1_generated):
@@ -556,7 +592,7 @@ def test_shared_dependency_does_not_trip_touch_guard_even_with_many_sharers():
   }
   feature_intervals = {"Synthetic_Feature_{0}".format(i): None for i in range(5)}
 
-  _, _, apply_code = generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
+  _, _, apply_code, _ = generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
 
   # And the emitted code backs up the count: exactly one real .execute()
   # call site for the shared register, regardless of 5 features referencing
