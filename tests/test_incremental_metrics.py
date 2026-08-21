@@ -129,6 +129,15 @@ def test_accuracy_from_confusion_matches_accuracy_score_exactly_including_a_true
     assert acc2 == mt.accuracy_score(y_true2, y_pred2)
 
 
+def test_accuracy_from_confusion_rejects_zero_samples():
+    # `n_samples == 0` is out of scope (Ruling P3b-1): asserted, not defined.
+    # It used to be a bare `assert`, which `python -O` strips entirely,
+    # silently returning nan from a 0/0 division instead of failing loudly.
+    confusion = np.zeros((2, 2), dtype=np.intp)
+    with pytest.raises(ValueError):
+        im.accuracy_from_confusion(confusion, 0)
+
+
 def test_the_ddos_label_space_is_not_treated_as_array_indices():
     """Regression test for the specific risk called out in the task: -1 is a
     valid label but an invalid raw array index (or a silently-wrong one --
@@ -212,6 +221,15 @@ class _FakeForest:
     def __init__(self, classes):
         self.classes_ = np.asarray(classes)
         self.n_classes_ = len(self.classes_)
+
+
+def test_incremental_metrics_rejects_zero_samples():
+    # Same guard as accuracy_from_confusion, and for the same reason: this
+    # used to be a bare `assert`, silently disabled under `python -O`.
+    rf = _FakeForest([0, 1, 2])
+    tree_predictions = np.zeros((3, 0), dtype=np.intp)
+    with pytest.raises(ValueError):
+        IncrementalMetrics(tree_predictions, rf, np.array([]), 'app')
 
 
 def _oracle(y_true, tree_predictions, rf, task):

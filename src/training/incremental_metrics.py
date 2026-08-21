@@ -151,7 +151,8 @@ def accuracy_from_confusion(confusion, n_samples):
 
     `n_samples == 0` is out of scope (Ruling P3b-1): asserted, not defined.
     """
-    assert n_samples > 0, "accuracy_from_confusion: n_samples must be > 0"
+    if n_samples <= 0:
+        raise ValueError("accuracy_from_confusion: n_samples must be > 0")
     return float(np.trace(confusion)) / n_samples
 
 
@@ -201,7 +202,8 @@ class IncrementalMetrics:
 
     def __init__(self, tree_predictions, rf, y_true, task):
         _, n_samples = tree_predictions.shape
-        assert n_samples > 0, "IncrementalMetrics: n_samples must be > 0"
+        if n_samples <= 0:
+            raise ValueError("IncrementalMetrics: n_samples must be > 0")
 
         # Unconditional: y_val reaches align_rf_thresholds as splits.py's
         # `y[idx_val_align]` today (a 1-D ndarray, so this is a no-op), but the
