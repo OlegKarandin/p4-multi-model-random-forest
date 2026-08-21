@@ -321,6 +321,10 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     front_frames = []
     coverage = {}
     baseline_front = None
+    # Note: unlike figure_3 and figure_2, this function does NOT call
+    # require_baseline. It overlays arms independently rather than pairing them,
+    # so it stays meaningful without a baseline -- the figure shows the fronts
+    # of whatever arms are present.
     if baseline in arms:
         baseline_front = claims.pareto_front_3d(df[df['arm_slug'] == baseline])
 
@@ -357,7 +361,11 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     figure.tight_layout()
 
     coverage_sentence = ''
-    if coverage:
+    if baseline not in arms:
+        coverage_sentence = (
+            ' NOTE: baseline arm {!r} is not present in this frame, so no '
+            'coverage ratios are computed.'.format(baseline))
+    elif coverage:
         coverage_sentence = (
             ' Coverage ratio (Zitzler C, 3-D, strict) of the {} front by each '
             'joint arm: {}.'.format(

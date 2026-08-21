@@ -434,7 +434,10 @@ def _quadrant_fractions(d_app, d_ddos):
     often) are put in their own `on_axis` bucket rather than being forced
     into a quadrant by a sign convention -- a cell where one task did not
     move is not evidence of substitution in either direction. All five
-    fractions are over the same denominator and sum to 1.
+    fractions are over the same denominator and sum to 1, provided no input
+    delta is NaN -- a NaN delta falls into none of the five buckets (since
+    NaN comparisons are all False) and the fractions sum to less than 1 in
+    that case.
     """
     n = len(d_app)
     if n == 0:
@@ -499,11 +502,8 @@ def substitution_test(df, treatment, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05):
     pearson_r, pearson_p = _safe_pearson(d_app, d_ddos)
     spearman_rho, spearman_p = _safe_spearman(d_app, d_ddos)
     partial_r, partial_p = _partial_correlation(d_app, d_ddos, d_blocks)
-    if len(d_app) >= 4:
-        partial_rank_r, partial_rank_p = _partial_correlation(
-            stats.rankdata(d_app), stats.rankdata(d_ddos), stats.rankdata(d_blocks))
-    else:
-        partial_rank_r, partial_rank_p = float('nan'), float('nan')
+    partial_rank_r, partial_rank_p = _partial_correlation(
+        stats.rankdata(d_app), stats.rankdata(d_ddos), stats.rankdata(d_blocks))
 
     pearson_negative_p = _one_sided_negative_p(pearson_r, pearson_p)
     detected = bool(
