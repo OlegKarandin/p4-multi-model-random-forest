@@ -107,3 +107,16 @@ def test_negative_tolerances_are_rejected():
 def test_unknown_encoding_is_rejected_by_arm_slug():
     with pytest.raises(ValueError, match='encoding'):
         TrainConfig().arm_slug('mixed')
+
+
+def test_unknown_encoding_is_rejected_by_delta_align_label():
+    # delta_align_label and overlap_threshold_label used to fall through
+    # their if/else on any unrecognized `encoding` -- including a typo --
+    # and silently return the joint-arm value instead of failing.
+    with pytest.raises(ValueError, match='encoding'):
+        TrainConfig().delta_align_label('mixed')
+
+
+def test_unknown_encoding_is_rejected_by_overlap_threshold_label():
+    with pytest.raises(ValueError, match='encoding'):
+        TrainConfig().overlap_threshold_label('mixed')

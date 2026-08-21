@@ -10,6 +10,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+def _validate_encoding(encoding):
+    """Shared guard for `TrainConfig.arm_slug` / `delta_align_label` /
+    `overlap_threshold_label`: all three branch on `encoding == 'disjoint'`
+    vs. everything else, so an unrecognized string (a typo, say) used to fall
+    through to the joint-arm behaviour silently instead of failing loudly."""
+    if encoding not in ('joint', 'disjoint'):
+        raise ValueError("encoding must be 'joint' or 'disjoint', got {!r}".format(encoding))
+
+
 @dataclass(frozen=True)
 class TrainConfig:
     """Frozen so a ProcessPoolExecutor worker cannot mutate the arm it is
@@ -76,10 +85,9 @@ class TrainConfig:
         alignment runs in the joint arm only, so two independent runs differing
         only in delta_align are the SAME arm and must share one output file.
         """
+        _validate_encoding(encoding)
         if encoding == 'disjoint':
             return 'independent'
-        if encoding != 'joint':
-            raise ValueError("encoding must be 'joint' or 'disjoint', got {!r}".format(encoding))
         if not self.alignment_enabled:
             return 'joint-off'
         if self.delta_align is None:
@@ -94,6 +102,7 @@ class TrainConfig:
         alignment runs in the joint arm only, so an independent-arm row must
         not carry the joint arm's alignment settings.
         """
+        _validate_encoding(encoding)
         if encoding == 'disjoint' or not self.alignment_enabled:
             return ''
         if self.delta_align is None:
@@ -109,6 +118,7 @@ class TrainConfig:
         is never called -- suppressed the same way delta_align_label is: for
         the disjoint (independent) arm, and for the joint-off ablation.
         """
+        _validate_encoding(encoding)
         if encoding == 'disjoint' or not self.alignment_enabled:
             return ''
         return '{:g}'.format(self.overlap_threshold)
