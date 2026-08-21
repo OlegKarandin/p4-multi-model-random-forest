@@ -24,6 +24,23 @@ def _splits(seed=0):
             make_task_splits(X_ddos, y_ddos, random_state=42))
 
 
+def _stub_train_result(model_A, model_B, **overrides):
+    """The 7-line TrainResult(...) boilerplate pasted at every fake trainer in
+    this file (and in test_feature_selection.py, which keeps its own copy
+    with different defaults -- the two files don't share a conftest.py).
+    Every call site only cares about a handful of fields differing from the
+    common "everything succeeded, nothing special" shape; **overrides
+    substitutes just those."""
+    fields = dict(
+        model_A=model_A, model_B=model_B, stages=1, blocks=1,
+        acc_sel_A=0.71, acc_sel_B=0.91, best_params={'n_estimators_A': 1},
+        rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+        align_attempted=None, align_accepted=None,
+        intervals_before=None, intervals_after=None)
+    fields.update(overrides)
+    return TrainResult(**fields)
+
+
 def _fake_trainer(raise_at_k=(), record=None):
     """Stands in for the TrainResult-returning trainer (P5 gap 2 -- was a
     7-tuple prior to Task 7)."""
@@ -44,12 +61,7 @@ def _fake_trainer(raise_at_k=(), record=None):
             n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
         model_B = RandomForestClassifier(
             n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
-        return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
-            acc_sel_A=0.71, acc_sel_B=0.91, best_params={'n_estimators_A': 1},
-            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
-            align_attempted=None, align_accepted=None,
-            intervals_before=None, intervals_after=None)
+        return _stub_train_result(model_A, model_B)
     return trainer
 
 
@@ -210,12 +222,7 @@ def test_rows_completed_before_a_raise_survive_in_the_caller_owned_list(monkeypa
             n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
         model_B = RandomForestClassifier(
             n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
-        return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
-            acc_sel_A=0.71, acc_sel_B=0.91, best_params={'n_estimators_A': 1},
-            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
-            align_attempted=None, align_accepted=None,
-            intervals_before=None, intervals_after=None)
+        return _stub_train_result(model_A, model_B)
 
     monkeypatch.setattr(
         'src.training.train_model.train_multi_RF_Optuna_multi_constrained', trainer)
@@ -313,10 +320,8 @@ def test_feasible_rows_carry_provenance_and_alignment_fields_including_a_real_ze
             n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
         model_B = RandomForestClassifier(
             n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
-        from src.training.train_model import TrainResult
-        return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
-            acc_sel_A=0.71, acc_sel_B=0.91, best_params={'a': 1},
+        return _stub_train_result(
+            model_A, model_B, best_params={'a': 1},
             rel_shortfall=0.05, n_trials_run=7, n_feasible=4,
             align_attempted=3, align_accepted=0,
             intervals_before=12, intervals_after=9)
@@ -381,13 +386,7 @@ def test_infeasible_row_best_params_is_empty_string_not_the_previous_ks_params(m
             n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
         model_B = RandomForestClassifier(
             n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
-        from src.training.train_model import TrainResult
-        return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
-            acc_sel_A=0.71, acc_sel_B=0.91, best_params={'k': k},
-            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
-            align_attempted=None, align_accepted=None,
-            intervals_before=None, intervals_after=None)
+        return _stub_train_result(model_A, model_B, best_params={'k': k})
 
     monkeypatch.setattr(
         'src.training.train_model.train_multi_RF_Optuna_multi_constrained', trainer)

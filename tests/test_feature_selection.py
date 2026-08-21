@@ -57,6 +57,23 @@ def _fit_tiny_rf(X, y, n_estimators=1, max_depth=2, seed=0):
     return bps.dt_thresholds_float_to_int(clf)
 
 
+def _stub_train_result(model_A, model_B, **overrides):
+    """The 7-line TrainResult(...) boilerplate pasted at every fake trainer in
+    this file (and in test_run_elimination.py, which keeps its own copy with
+    different defaults -- the two files don't share a conftest.py). Every
+    call site only cares about a handful of fields differing from the common
+    "everything succeeded, nothing special" shape; **overrides substitutes
+    just those."""
+    fields = dict(
+        model_A=model_A, model_B=model_B, stages=1, blocks=1,
+        acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
+        rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+        align_attempted=None, align_accepted=None,
+        intervals_before=None, intervals_after=None)
+    fields.update(overrides)
+    return TrainResult(**fields)
+
+
 # ---------------------------------------------------------------------------
 # Step 1/2: full _process_single_split behavior (adapted from the brief to
 # the real signature/shape at feature_selection.py:439-453).
@@ -83,12 +100,7 @@ def test_process_single_split_without_hardware_validation_has_none_fields(monkey
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
-            acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
-            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
-            align_attempted=None, align_accepted=None,
-            intervals_before=None, intervals_after=None)
+        return _stub_train_result(model_A, model_B)
 
     monkeypatch.setattr(
         'src.training.train_model.train_multi_RF_Optuna_multi_constrained', _fake_train)
@@ -159,12 +171,7 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
-            acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
-            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
-            align_attempted=None, align_accepted=None,
-            intervals_before=None, intervals_after=None)
+        return _stub_train_result(model_A, model_B)
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         # Task 3: both loops now write ONE combined file per iteration
@@ -257,12 +264,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
-            acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
-            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
-            align_attempted=None, align_accepted=None,
-            intervals_before=None, intervals_after=None)
+        return _stub_train_result(model_A, model_B)
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         return type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
@@ -485,12 +487,7 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
         model_B = bps.dt_thresholds_float_to_int(
             RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
-        return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
-            acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
-            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
-            align_attempted=None, align_accepted=None,
-            intervals_before=None, intervals_after=None)
+        return _stub_train_result(model_A, model_B)
 
     def _fake_compile_async(p4_path, log_dir, **kwargs):
         return type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(
