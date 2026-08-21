@@ -116,36 +116,39 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     if encoding == 'joint':
         feature_intervals = _derive_joint_feature_intervals(
             model_app, model_ddos, feature_names_app, feature_names_ddos)
-
-        filename = f"split{split_idx}_{method}_k{k}.p4"
-        written_path = generate_P4_code(
-            3, 2, model_app, model_ddos,
-            feature_intervals_app=feature_intervals, feature_intervals_ddos=feature_intervals,
-            output_dir=hardware_output_dir, output_filename=filename,
-            selected_features_app=feature_names_app,
-            selected_features_ddos=feature_names_ddos,
-            config=config)
-        log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
-        return compile_p4_async(written_path, log_dir)
-
+        feature_intervals_app = feature_intervals
+        feature_intervals_ddos = feature_intervals
     elif encoding == 'disjoint':
         feature_intervals_app = _derive_feature_intervals(model_app, feature_names_app)
         feature_intervals_ddos = _derive_feature_intervals(model_ddos, feature_names_ddos)
-
-        filename = f"split{split_idx}_{method}_k{k}.p4"
-        written_path = generate_P4_code(
-            3, 2, model_app, model_ddos,
-            feature_intervals_app=feature_intervals_app,
-            feature_intervals_ddos=feature_intervals_ddos,
-            output_dir=hardware_output_dir, output_filename=filename,
-            selected_features_app=feature_names_app,
-            selected_features_ddos=feature_names_ddos,
-            config=config)
-        log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
-        return compile_p4_async(written_path, log_dir)
-
     else:
         raise ValueError(f"Unknown encoding for hardware validation: {encoding!r}")
+
+    filename = f"split{split_idx}_{method}_k{k}.p4"
+    written_path = generate_P4_code(
+        3, 2, model_app, model_ddos,
+        feature_intervals_app=feature_intervals_app,
+        feature_intervals_ddos=feature_intervals_ddos,
+        output_dir=hardware_output_dir, output_filename=filename,
+        selected_features_app=feature_names_app,
+        selected_features_ddos=feature_names_ddos,
+        config=config)
+    log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
+    return compile_p4_async(written_path, log_dir)
+
+
+def _join_pending_compile(handle, row):
+    """Blocks on one pending hardware-validation compile handle and writes its
+    numbers into `row`. Shared splice used by both `_advance_pending_compile`
+    (mid-loop) and `_join_final_pending_compile` (post-loop) -- the two
+    differ only in when they call this (and, for
+    `_advance_pending_compile`, what happens when there is nothing pending
+    yet).
+    """
+    compile_result = handle.result(timeout=600)
+    row['stages_real'] = compile_result.stages
+    row['tcam_real'] = compile_result.tcam
+    row['compile_errors'] = compile_result.errors
 
 
 def _advance_pending_compile(current_row, pending_previous, pending_next):
@@ -179,10 +182,7 @@ def _advance_pending_compile(current_row, pending_previous, pending_next):
     """
     if pending_previous is not None:
         handle, row = pending_previous
-        compile_result = handle.result(timeout=600)
-        row['stages_real'] = compile_result.stages
-        row['tcam_real'] = compile_result.tcam
-        row['compile_errors'] = compile_result.errors
+        _join_pending_compile(handle, row)
     else:
         current_row['stages_real'] = None
         current_row['tcam_real'] = None
@@ -204,10 +204,7 @@ def _join_final_pending_compile(pending_previous):
     """
     if pending_previous is not None:
         handle, row = pending_previous
-        compile_result = handle.result(timeout=600)
-        row['stages_real'] = compile_result.stages
-        row['tcam_real'] = compile_result.tcam
-        row['compile_errors'] = compile_result.errors
+        _join_pending_compile(handle, row)
 
 
 def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
