@@ -681,52 +681,6 @@ def shift_mass(sorted_col, old_thr, new_thr):
                  - np.searchsorted(sorted_col, lo, 'right')) / len(sorted_col)
 
 
-def shift_mass_cap(delta_rel, before_acc, slack=2.0):
-    """The largest shift_mass that can be permitted at tolerance `delta_rel`.
-
-    Derived, not tuned -- for the CORE bound. Only samples inside the moved
-    window can change ANY prediction -- however many tree nodes share that
-    threshold, the affected sample set is the same set. So a move relocating
-    fraction p satisfies delta_accuracy <= p, hence rel_deg <= p / error.
-    Requiring p <= delta_rel * error (i.e. slack = 1) therefore guarantees:
-    any candidate that PASSES that cap is itself guaranteed -- by the physical
-    fact above, not by assumption -- to satisfy the accuracy bound at EXACTLY
-    delta_rel. At the shipped default slack = 2.0, the same argument only
-    guarantees the bound at slack * delta_rel = 2 * delta_rel, not delta_rel
-    itself -- every test of this specific claim in the test suite therefore
-    uses slack=1.0 explicitly; the shipped default is a deliberately looser,
-    UNtested-for-exactness setting.
-
-    This does NOT by itself prove the reverse (that every VETOED candidate
-    would truly have been rejected by the full per-task guard in
-    align_rf_thresholds): shift_mass is an upper bound on possible damage, not
-    a lower bound, so a large-mass move could in principle have had small real
-    damage. Treat this as a well-motivated, empirically-supported heuristic
-    (P3 Task 6's instrumentation found zero violations of the local
-    delta_accuracy <= p bound, though only a weak Pearson correlation between
-    shift_mass and actual damage -- r~+0.14 for app, r~+0.01 for ddos), not a
-    proof that a filter built on this cap never discards a move the full
-    guard would have kept.
-
-    NOTE (P3 Task 8): this function is currently UNUSED for filtering --
-    align_rf_thresholds no longer vetoes candidates on shift_mass at all (a
-    final whole-branch review found the cap is identically 0 whenever
-    delta_rel = 0, silently discarding confirmed-harmless moves; the project
-    owner chose removal over patching the edge case). It remains here, tested,
-    in case a future phase wants to reintroduce a pre-filter.
-
-    `slack` widens the cap beyond the exact-accuracy bound above; it is NOT a
-    proven safety margin for weighted F1. F1 can move further than accuracy
-    per flip when flips concentrate in one class -- which argues, if anything,
-    for a TIGHTER cap to protect F1, not a looser one. The honest
-    justification for slack > 1 is simply "lean permissive and let the real
-    oracle decide" rather than any F1-specific soundness claim.
-    """
-    if delta_rel is None:
-        return float('inf')
-    return slack * delta_rel * (1.0 - before_acc)
-
-
 def calculate_range_overlap(range1, range2):
     """Overlap ratio between two ranges; 0.0 also means 'vetoed'.
 
@@ -734,8 +688,9 @@ def calculate_range_overlap(range1, range2):
     and "vetoed". The zero-side and INFINITE-side vetoes below are structural
     (adjust_range_boundaries cannot move those boundaries at all). The old
     endpoint-ratio-cap heuristic pre-filter that used to live here is gone as
-    of Task 7, replaced by the delta-derived shift_mass_cap veto in the
-    candidate loop of align_rf_thresholds.
+    of Task 7; align_rf_thresholds does not veto candidates on shift_mass
+    either (removed in P3 Task 8), so no heuristic pre-filter remains --
+    only the two structural vetoes below.
     """
     min1, max1 = range1
     min2, max2 = range2

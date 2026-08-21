@@ -1,5 +1,7 @@
 """First tests for threshold_alignment.py -- the module the spec identifies as
 the sole source of the joint-vs-independent accuracy delta (C2, C5)."""
+import copy
+
 import numpy as np
 import pytest
 
@@ -339,9 +341,6 @@ def test_a_candidate_that_moves_nothing_costs_no_prediction(monkeypatch):
     # initial predictions, which no longer exist. Without this line an empty
     # `calls` would satisfy the assertion above and prove nothing.
     assert calls, 'the fixture must reach at least one candidate that moves something'
-
-
-import copy
 
 
 def _snapshot(rf, tree_predictions, node_to_samples, threshold_index):

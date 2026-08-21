@@ -1,4 +1,8 @@
-"""The endpoint_ratio_cap: made observable here, replaced in Task 7."""
+"""endpoint_ratio and shift_mass as pure diagnostics (no filtering happens on
+them -- the endpoint-ratio-cap heuristic was replaced in Task 7 and the
+shift_mass-based veto was removed outright in P3 Task 8), plus
+calculate_range_overlap's remaining structural-only vetoes and
+align_rf_thresholds' candidate_log."""
 import numpy as np
 import pytest
 
@@ -87,53 +91,8 @@ def test_calculate_range_overlap_is_a_pure_measurement_again():
     assert ta.calculate_range_overlap((10, INFINITE), (10, 40000)) == 0.0
 
 
-def test_the_cap_derives_from_delta_and_the_tasks_own_error():
-    """Spec table: delta x error, so it widens with the swept variable and can
-    never be the thing that makes the frontier saturate."""
-    assert ta.shift_mass_cap(0.02, before_acc=0.76, slack=1.0) == pytest.approx(0.0048)
-    assert ta.shift_mass_cap(0.05, before_acc=0.76, slack=1.0) == pytest.approx(0.0120)
-    assert ta.shift_mass_cap(0.20, before_acc=0.76, slack=1.0) == pytest.approx(0.0480)
-    assert ta.shift_mass_cap(0.02, before_acc=0.96, slack=1.0) == pytest.approx(0.0008)
-    assert ta.shift_mass_cap(0.05, before_acc=0.96, slack=1.0) == pytest.approx(0.0020)
-    assert ta.shift_mass_cap(0.20, before_acc=0.96, slack=1.0) == pytest.approx(0.0080)
-
-
-def test_the_slack_factor_widens_the_cap_for_f1():
-    """The p >= delta_accuracy bound is exact for accuracy. Weighted F1 can move
-    further per flip when flips concentrate in one class, so the default 2x
-    slack keeps the filter sound-for-accuracy and a tight heuristic for F1."""
-    assert ta.shift_mass_cap(0.05, 0.96, slack=2.0) == pytest.approx(0.0040)
-
-
-def test_delta_none_makes_the_cap_infinite_so_it_never_binds():
-    """This is what makes spec A.2's claim about the inf anchor TRUE. With a
-    fixed cap in force, the inf arm accepted only what the constant let
-    through, so the frontier's upper anchor was set by an untuned number."""
-    assert ta.shift_mass_cap(None, before_acc=0.96, slack=2.0) == float('inf')
-
-
-def test_a_high_mass_candidate_is_one_that_might_exceed_delta():
-    """NOT a soundness proof (see shift_mass_cap's docstring) -- a candidate
-    with mass > cap is one where the mass bound cannot RULE OUT exceeding
-    delta; it does not prove the real guard would have rejected it. This test
-    just pins the algebra: mass > cap implies mass/error > delta, at slack=1
-    where the accuracy-only bound is exact."""
-    col = np.sort(np.array([float(v) for v in range(1000)]))
-    error = 0.04
-    before_acc = 1.0 - error
-
-    for delta in (0.0, 0.02, 0.05, 0.10, 0.20):
-        cap = ta.shift_mass_cap(delta, before_acc, slack=1.0)
-        for old, new in ((100, 101), (100, 140), (100, 500), (0, 999)):
-            mass = ta.shift_mass(col, old, new)
-            if mass > cap:
-                assert mass / error > delta, (delta, old, new, mass)
-
-
 def test_the_candidate_log_is_off_by_default():
     import inspect
 
     signature = inspect.signature(ta.align_rf_thresholds)
     assert signature.parameters['candidate_log'].default is None
-    assert 'shift_mass_slack' not in signature.parameters
-    assert 'endpoint_ratio_cap' not in signature.parameters
