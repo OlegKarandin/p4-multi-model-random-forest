@@ -190,6 +190,51 @@ def test_an_infeasible_first_k_breaks_with_one_row(monkeypatch):
     assert rows[0]['k'] == 3
 
 
+def test_rows_completed_before_a_raise_survive_in_the_caller_owned_list(monkeypatch):
+    """F3a: `_run_elimination` must append into a caller-owned `rows` list
+    (passed in by the caller), not accumulate locally and return only on a
+    clean exit -- otherwise an unhandled exception mid-loop (e.g.
+    AlignmentInvariantError from alignment, or a determinism AssertionError
+    from train_model.py -- anything that is NOT NoFeasibleSolution, which is
+    already caught and handled per-k) discards every row already produced
+    for that split. Two rows must survive a raise on the third k."""
+    import pytest
+
+    def trainer(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                val_select_A, val_select_B, features_A, features_B,
+                max_blocks, encoding, cfg, warm_start_params=None):
+        k = X_A.shape[1]
+        if k == 1:
+            raise AssertionError('simulated determinism failure')
+        model_A = RandomForestClassifier(
+            n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A)
+        model_B = RandomForestClassifier(
+            n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
+        return TrainResult(
+            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            acc_sel_A=0.71, acc_sel_B=0.91, best_params={'n_estimators_A': 1},
+            rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
+            align_attempted=None, align_accepted=None,
+            intervals_before=None, intervals_after=None)
+
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained', trainer)
+
+    app, ddos = _splits()
+    rows = []
+    with pytest.raises(AssertionError, match='simulated determinism failure'):
+        fs._run_elimination(
+            arm='independent', split_idx=10, app=app, ddos=ddos,
+            feature_names=list(FEATURE_NAMES), max_blocks=25, cfg=TrainConfig(),
+            rows=rows)
+
+    # The two rows completed (k=3, k=2) before the k=1 raise must be in the
+    # SAME list object the caller passed in -- not lost with a locally-
+    # accumulated `rows` that's only returned on a clean exit.
+    assert len(rows) == 2
+    assert sorted(r['k'] for r in rows) == [2, 3]
+
+
 def test_hardware_validation_survives_an_interleaved_infeasible_row(monkeypatch):
     """Regression test for 8a4746d ("Decouple hardware-validation joins from
     results list position"): an infeasible row between two feasible ones must

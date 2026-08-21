@@ -227,7 +227,7 @@ def _join_final_pending_compile(pending_previous):
 
 def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
                      validate_on_hardware=False, hardware_output_dir=None,
-                     config=None):
+                     config=None, rows=None):
     """Recursive feature elimination for ONE arm.
 
     Replaces two ~90-line near-duplicate loops that differed in exactly three
@@ -245,6 +245,22 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
 
     Both arms drop exactly one feature per task per iteration, so the two
     feature lists always have equal length and one `k` describes the row.
+
+    rows : list, optional
+        Caller-owned accumulator. When given, each completed row is appended
+        directly into THIS list (by reference) as soon as it's produced,
+        instead of a local list only handed back on a clean return. That
+        matters because `train_multi_RF_Optuna_multi_constrained` can raise
+        something other than `NoFeasibleSolution` (e.g. an
+        `AlignmentInvariantError` from alignment, or a determinism
+        `AssertionError`) mid-loop -- with a purely local accumulator, that
+        exception would propagate out of this function with every row
+        already completed for this split silently discarded. Passing the
+        caller's own list (`_process_single_split` passes its `results`)
+        means those rows survive the raise. Defaults to a fresh list when
+        omitted, preserving the previous return-only-on-clean-exit behavior
+        for callers that don't need mid-raise durability (this function
+        still returns `rows` either way).
     """
     from src.training.train_model import train_multi_RF_Optuna_multi_constrained
     from src.p4gen.evaluation import accuracy_metrics
@@ -262,7 +278,8 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     names_app = list(feature_names)
     names_ddos = list(feature_names)
 
-    rows = []
+    if rows is None:
+        rows = []
     warm_start_params = None
     pending_previous = None
     # F3b: importance vectors positionally aligned with remaining_*, carried so
@@ -475,11 +492,18 @@ def _process_single_split(
         app = make_task_splits(X_app, y_app, split_random_state)
         ddos = make_task_splits(X_ddos, y_ddos, split_random_state)
 
-        results.extend(_run_elimination(
+        # `results` is passed in as `_run_elimination`'s caller-owned `rows`
+        # accumulator (not built from its return value via `.extend`): if
+        # elimination raises mid-loop, every row completed before the raise
+        # is already IN `results` by reference, so the `except` branch below
+        # still returns them instead of silently discarding a split's worth
+        # of completed work (F3a).
+        _run_elimination(
             arm=arm, split_idx=split_idx, app=app, ddos=ddos,
             feature_names=feature_names, max_blocks=max_blocks, cfg=cfg,
             validate_on_hardware=validate_on_hardware,
-            hardware_output_dir=hardware_output_dir, config=config))
+            hardware_output_dir=hardware_output_dir, config=config,
+            rows=results)
 
         return SplitResult(split_idx=split_idx, results=results)
 
