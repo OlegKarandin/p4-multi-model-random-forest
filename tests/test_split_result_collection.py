@@ -76,7 +76,7 @@ def test_process_single_split_keeps_rows_completed_before_an_unhandled_raise(mon
     result = fs._process_single_split(
         split_idx=0, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
         max_blocks=50, feature_names=['f0', 'f1', 'f2'],
-        random_state=42, verbose=False, arm='independent')
+        random_state=42, arm='independent')
 
     assert len(result.results) == 2
     assert sorted(r['k'] for r in result.results) == [2, 3]

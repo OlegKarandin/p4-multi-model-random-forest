@@ -195,8 +195,6 @@ def train_multi_RF_Optuna_multi_constrained(
         align_stats = {}
         model_A, model_B = fit_pair(rf_params(trial, 'A'), rf_params(trial, 'B'),
                                    align_stats=align_stats)
-        for name, value in align_stats.items():
-            trial.set_user_attr('align_' + name, value)
 
         # (b) Constraint, on the shipped artifact -- exact, no proxy.
         try:

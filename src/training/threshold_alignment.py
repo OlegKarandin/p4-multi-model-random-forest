@@ -51,8 +51,7 @@ def rel_deg(before, after):
 MAX_RECOMPUTE_ROUNDS = 32
 
 # (acc_app, f1_app, acc_ddos, f1_ddos) -- the order every 4-tuple in this
-# module uses. Named so a reader of accept_alignment knows what position 2 is.
-METRIC_NAMES = ('acc_app', 'f1_app', 'acc_ddos', 'f1_ddos')
+# module uses.
 
 
 def accept_alignment(before, after, delta_rel):

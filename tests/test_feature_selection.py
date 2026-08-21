@@ -96,7 +96,7 @@ def test_process_single_split_without_hardware_validation_has_none_fields(monkey
     result = fs._process_single_split(
         split_idx=0, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
         max_blocks=50, feature_names=["f0", "f1", "f2"],
-        random_state=42, verbose=False,
+        random_state=42,
     )
     assert result.error is None
     assert len(result.results) > 0
@@ -192,13 +192,13 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
         result_single = fs._process_single_split(
             split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, feature_names=["f0", "f1", "f2", "f3"],
-            random_state=42, verbose=False, arm='independent',
+            random_state=42, arm='independent',
             validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
         )
         result_multi = fs._process_single_split(
             split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, feature_names=["f0", "f1", "f2", "f3"],
-            random_state=42, verbose=False, arm='joint',
+            random_state=42, arm='joint',
             validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
         )
 
@@ -276,7 +276,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
         result_kwargs = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, arm=arm,
-            feature_names=["f0", "f1"], random_state=42, verbose=False,
+            feature_names=["f0", "f1"], random_state=42,
             validate_on_hardware=True, hardware_output_dir=kwargs_dir,
         )
 
@@ -286,7 +286,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
         result_config = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, arm=arm,
-            feature_names=["f0", "f1"], random_state=42, verbose=False,
+            feature_names=["f0", "f1"], random_state=42,
             config=cfg,
         )
 
@@ -509,11 +509,11 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
         result_single = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, feature_names=["f0", "f1", "f2"],
-            random_state=42, verbose=False, arm='independent', config=cfg)
+            random_state=42, arm='independent', config=cfg)
         result_multi = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, feature_names=["f0", "f1", "f2"],
-            random_state=42, verbose=False, arm='joint', config=cfg)
+            random_state=42, arm='joint', config=cfg)
 
     assert result_single.error is None
     assert result_multi.error is None

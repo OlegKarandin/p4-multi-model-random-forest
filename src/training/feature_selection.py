@@ -431,7 +431,6 @@ def _process_single_split(
     max_blocks: int,
     feature_names: List[str],
     random_state: int,
-    verbose: bool,
     arm: str = 'independent',
     cfg: Optional[TrainConfig] = None,
     validate_on_hardware: bool = False,
@@ -550,7 +549,7 @@ def compare_feature_selection_approaches_parallel(
     n_splits,
     arm,
     cfg,
-    random_state=42, verbose=False,
+    random_state=42,
     max_workers=None,
     config: Optional[p4_gen_config.P4GenConfig] = None,
 ):
@@ -581,8 +580,6 @@ def compare_feature_selection_approaches_parallel(
         Number of train/test splits
     random_state : int
         Random seed (default: 42)
-    verbose : bool
-        Print progress (default: False)
     max_workers : int, optional
         Maximum number of parallel workers. Defaults to min(n_splits, cpu_count - 1).
     config : p4_gen_config.P4GenConfig, optional
@@ -624,7 +621,7 @@ def compare_feature_selection_approaches_parallel(
                 X_app, X_ddos, y_app, y_ddos,
                 max_blocks,
                 feature_names,
-                random_state, verbose,
+                random_state,
                 arm, cfg,
                 config=config,
             ): split_idx
