@@ -266,9 +266,13 @@ def train_multi_RF_Optuna_multi_constrained(
     # catch=() deliberately: the ONLY expected RuntimeError is the codeword
     # violation, and the objective already handles that itself. The previous
     # catch=(RuntimeError,) also swallowed align_rf_thresholds' own
-    # RuntimeError("Smth is very-very wrong"), hiding corrupted interval
-    # bookkeeping for a whole campaign. F3a/F3b make a dead split survivable,
-    # so surfacing the error costs one split's tail rather than a silent lie.
+    # AlignmentInvariantError (raised as a bare RuntimeError("Smth is
+    # very-very wrong") before it was given its own type), hiding corrupted
+    # interval bookkeeping for a whole campaign. AlignmentInvariantError does
+    # not subclass RuntimeError, so catch=(RuntimeError,) would no longer
+    # swallow it either way -- but catch=() stays the deliberate choice, since
+    # F3a/F3b make a dead split survivable, so surfacing the error costs one
+    # split's tail rather than a silent lie.
     study.optimize(
         objective,
         n_trials=cfg.n_trials,

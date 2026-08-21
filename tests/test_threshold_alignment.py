@@ -89,6 +89,22 @@ def test_neighbor_update_refuses_to_write_a_boundary_that_was_not_moved():
     assert ranges[0] == (0, 100)
 
 
+def test_neighbor_update_raises_alignment_invariant_error_on_inversion():
+    """When absorbing a target range's boundary move would flip a neighboring
+    range's own min above its max, that neighbor cannot be written back --
+    this used to be a bare `raise RuntimeError("Smth is very-very wrong")`,
+    which is indistinguishable from a bug in `ranges`/`threshold_index`
+    bookkeeping unrelated to this invariant. It must now be the module's own
+    AlignmentInvariantError, like every other invariant site here."""
+    ranges = [(10, 20), (7, 9)]
+    threshold_index = {(0, 9): [(0, 0)]}
+
+    with pytest.raises(AlignmentInvariantError):
+        ta.update_neighboring_ranges_and_index(
+            ranges, target_idx=0, old_range=(10, 20), new_range=(5, 20),
+            feature_idx=0, threshold_index=threshold_index)
+
+
 def test_aligned_intervals_still_tile_zero_to_infinite():
     """The partition invariant C5 broke: after alignment, each feature's
     intervals must still tile [0, INFINITE] with no gap and no overlap."""
@@ -1046,8 +1062,8 @@ def test_the_partition_invariant_survives_the_multi_round_recompute(monkeypatch)
     """C5's invariant under the condition most likely to break it: repeated
     rounds at delta_rel=None, the maximum-mutation arm. More accepted moves is
     exactly when update_neighboring_ranges_and_index's
-    RuntimeError('Smth is very-very wrong') would newly fire, and this tiling
-    is what the generator's TCAM ranges are built from."""
+    AlignmentInvariantError (a neighboring range inverting) would newly fire,
+    and this tiling is what the generator's TCAM ranges are built from."""
     rounds = _count_rounds(monkeypatch)
     rf1, rf2 = _aligned_forest_pair()
 

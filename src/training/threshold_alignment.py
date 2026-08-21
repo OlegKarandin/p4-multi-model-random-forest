@@ -986,7 +986,12 @@ def update_neighboring_ranges_and_index(ranges, target_idx, old_range, new_range
                 new_range_min = effective_max + 1
 
             if new_range_min > new_range_max:
-                raise RuntimeError("Smth is very-very wrong")
+                raise AlignmentInvariantError(
+                    'neighboring range {} would invert to ({}, {}) while '
+                    'absorbing the boundary move of target range {} -> {} '
+                    'for feature {}'.format(
+                        (range_min, range_max), new_range_min, new_range_max,
+                        old_range, new_range, feature_idx))
 
             # Update the range tuple if needed
             if new_range_min != range_min or new_range_max != range_max:
