@@ -101,7 +101,7 @@ def get_tree_textual_representation(clf, feature_names, verbose=False):
   return tree_textual_representation
 
 
-def get_nodes(tree_text, tree_idx = -1):
+def get_nodes(tree_text):
   '''
    Inputs: Tree textual representation generated with export_text(tree_classifier, feature_names)
    Outputs: Dictionary containing the information of the different tree nodes (leaf or internal)
@@ -134,7 +134,6 @@ def get_nodes(tree_text, tree_idx = -1):
 
       #New Leaf Node
       nodes[node_id]={"node": node_id,
-                      "tree": tree_idx,
                       "father_node": father_node_id,
                       "class": line.split("class: ")[-1],
                       "depth": depth,
@@ -166,7 +165,6 @@ def get_nodes(tree_text, tree_idx = -1):
       if "<=" in line:
         # New Internal Node
         nodes[node_id]={"node": node_id,
-                        "tree": tree_idx,
                         "father_node": father_node_id,
                         "feature": feature_name,
                         "depth": depth,
@@ -264,7 +262,7 @@ def get_feature_intervals(model, selected_features):
 
   tree_nodes = {}
   for tree in trees:
-    tree_nodes[tree] = get_nodes(trees[tree], tree)
+    tree_nodes[tree] = get_nodes(trees[tree])
 
   feature_thresholds = get_feature_thresholds(tree_nodes)
   feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
@@ -286,12 +284,12 @@ def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
 
   tree_nodes = {}
   for tree_a in trees_a:
-    tree_nodes[tree_a] = get_nodes(trees_a[tree_a], tree_a)
+    tree_nodes[tree_a] = get_nodes(trees_a[tree_a])
 
   offset = len(tree_nodes)
 
   for tree_b in trees_b:
-    tree_nodes[tree_b + offset] = get_nodes(trees_b[tree_b], tree_b + offset)
+    tree_nodes[tree_b + offset] = get_nodes(trees_b[tree_b])
 
   feature_thresholds = get_feature_thresholds(tree_nodes)
   feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
