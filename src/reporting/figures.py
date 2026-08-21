@@ -525,7 +525,7 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
     # `delta_align` string, which must not be ordered or compared.
     # `arms` is empty whenever `table` is, so these lookups only ever run on
     # a populated table.
-    per_arm = table.drop_duplicates('arm_slug').set_index('arm_slug')         if len(table) else table
+    per_arm = table.drop_duplicates('arm_slug').set_index('arm_slug') if len(table) else table
     tick_labels = [
         _delta_tick_label(
             arm,

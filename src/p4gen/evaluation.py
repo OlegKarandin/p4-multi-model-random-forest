@@ -17,8 +17,6 @@ def accuracy_metrics(y_true, y_pred, task):
             "accuracy_metrics: unknown task {!r}; expected 'app' or 'ddos'".format(task))
 
     accuracy = mt.accuracy_score(y_true, y_pred)
-    #precision = mt.precision_score(y_true, y_pred, labels=lab, average='weighted') #F: average=None gives per-class results
-    #recall = mt.recall_score(y_true, y_pred, labels=lab, average='weighted')
     f1score = mt.f1_score(y_true, y_pred, labels=lab, average='weighted')
 
     return accuracy, f1score
@@ -192,8 +190,6 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
     ternary_entries += tree_entry_count
     ternary_blocks += tree_blocks
     ternary_table_specs.append((tree_blocks, table_bytes))
-
-    #print('{} TCAM entries for {} codewords of length {}'.format(math.ceil(len(codewords[tree]) / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor, len(codewords[tree]), codeword_length))
 
   return ternary_entries, ternary_blocks, codeword_length, ternary_table_specs
 

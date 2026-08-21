@@ -84,13 +84,29 @@ def library_versions():
 
 
 _NO_PREFILTER_NOTE = (
-    "No candidate pre-filter is in effect for this run. The delta-derived "
-    "shift_mass pre-filter (and, before it, the endpoint_ratio_cap ratio "
-    "cap) was removed in P3 (Tasks 7-8): every alignment candidate that "
-    "clears overlap_threshold is now presented to the accept/reject "
-    "guards unfiltered. overlap_threshold itself still governs which range "
-    "pairs are CANDIDATES in the first place; that is a separate concern "
-    "recorded per-arm below, not a pre-filter on top of it."
+    "No candidate pre-filter is in effect for this run. Two heuristic "
+    "pre-filters existed historically and both are gone: the original "
+    "endpoint_ratio_cap ratio-based cap (removed P3 Task 7, replaced by a "
+    "delta-derived shift_mass_cap veto) and that veto itself (removed P3 "
+    "Task 8, because it silently discarded confirmed-harmless moves at "
+    "delta_align=0). shift_mass_cap's now-dead implementation lingered as "
+    "unused code after Task 8 until this cleanup campaign's own Task 6 "
+    "deleted it outright. Every alignment candidate that clears "
+    "overlap_threshold is now presented to the accept/reject guards "
+    "unfiltered. endpoint_ratio and shift_mass themselves were never "
+    "removed -- both remain as pure diagnostics (visible via "
+    "candidate_log), not filters; do not confuse them with the removed "
+    "*_cap veto mechanisms. overlap_threshold itself still governs which "
+    "range pairs are CANDIDATES in the first place; that is a separate "
+    "concern recorded per-arm below, not a pre-filter on top of it.\n\n"
+    "Separately, a provenance caveat for reading the results CSV alongside "
+    "this manifest: manifests recorded before commit 8065df9 (this cleanup "
+    "campaign's Task 1, the joint_interval_count fix) have an accompanying "
+    "results CSV whose intervals_before/intervals_after columns were "
+    "computed by an incorrect tuple-union formula; manifests from 8065df9 "
+    "onward accompany a CSV using the corrected pooled-threshold formula. "
+    "Compare this manifest's git.sha against 8065df9 before comparing "
+    "those two columns across runs from different points in the campaign."
 )
 
 

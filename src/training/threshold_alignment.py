@@ -147,8 +147,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         rf1/rf2 themselves are left untouched (C8) -- the return value is the
         only way to get the aligned models; discarding it discards the
         alignment.
-    alignment_stats : dict
-        Statistics about the alignment process
     """
 
     # C8: deepcopy before anything below reads or mutates rf1/rf2, and
@@ -187,10 +185,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         sorted_cols1 = np.sort(X_val1, axis=0)
         sorted_cols2 = np.sort(X_val2, axis=0)
 
-    #print('Threshold index 1')
     threshold_index1 = build_threshold_index(rf1)
 
-    #print('Threshold index 2')
     threshold_index2 = build_threshold_index(rf2)
 
     intervals1 = extract_feature_intervals(rf1)
@@ -244,9 +240,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         current_ranges1 = intervals1[feature_idx]
         current_ranges2 = intervals2[feature_idx]
 
-        #print('Ranges A: {}'.format(current_ranges1))
-        #print('Ranges B: {}'.format(current_ranges2))
-        
         # C3. Candidate ORDER, stated once because nothing documented it
         # before:
         #   features, descending by combined interval count (unchanged);
@@ -322,12 +315,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 modifications1 = adjust_range_boundaries(
                     rf1, feature_idx, range1, target, threshold_index1
                 )
-                #print('Mods1', modifications1)
 
                 modifications2 = adjust_range_boundaries(
                     rf2, feature_idx, range2, target, threshold_index2
                 )
-                #print('Mods2', modifications2)
 
                 if not modifications1 and not modifications2:
                     # P5: adjust_range_boundaries declined every move (source
@@ -435,9 +426,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         feature_idx, threshold_index2
                     )
 
-                    #print('Resulting Ranges A: {}'.format(current_ranges1))
-                    #print('Resulting Ranges B: {}'.format(current_ranges2))
-
         if progressed and rounds > 1:
             # Truncated while still accepting moves: the loop never reached a
             # fixpoint, so the result depends on where it was cut off. That is
@@ -510,8 +498,7 @@ def build_threshold_index(rf):
                 if key not in threshold_index:
                     threshold_index[key] = []
                 threshold_index[key].append((tree_idx, node_idx))
-                #print('{}: {}'.format(key, (tree_idx, node_idx)))
-    
+
     return threshold_index
 
 
@@ -755,9 +742,6 @@ def adjust_range_boundaries(rf, feature_idx, source_range, target_range, thresho
                     '{} missing from threshold_index'.format((feature_idx, threshold_source)))
 
             for tree_idx, node_idx in threshold_index[(feature_idx, threshold_source)]:
-
-                #print('Modifying threshold {} of feature {} in tree {} node {} to {}'.format(threshold_source, feature_idx, node_idx, tree_idx, threshold_target))
-
                 tree = rf.estimators_[tree_idx].tree_
                 modifications.append((tree_idx, node_idx, threshold_source))
                 tree.threshold[node_idx] = threshold_target
@@ -873,12 +857,9 @@ def restore_thresholds(rf, modifications):
     rf : RandomForest model
         The model to restore thresholds to
     modifications : list of tuples
-        List of (tree_idx, node_idx, original_threshold, new_threshold) to restore
+        List of (tree_idx, node_idx, original_threshold) to restore
     """
     for tree_idx, node_idx, original_threshold in modifications:
-
-        #print('Restoring threshold {} in tree {} node {} to the original value {}'.format(rf.estimators_[tree_idx].tree_.threshold[node_idx], tree_idx, node_idx, original_threshold))
-
         rf.estimators_[tree_idx].tree_.threshold[node_idx] = original_threshold
 
 
@@ -950,7 +931,6 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
             '{} missing from threshold_index'.format((feature_idx, old_threshold)))
 
     nodes = threshold_index.pop((feature_idx, old_threshold))
-    ##print('Updating threshold {} to {} for nodes {}'.format(old_threshold, new_threshold, nodes))
     if (feature_idx, new_threshold) in threshold_index:
         existing = set(threshold_index[(feature_idx, new_threshold)])
         existing.update(nodes)
