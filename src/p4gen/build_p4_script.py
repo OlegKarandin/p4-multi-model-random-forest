@@ -275,7 +275,12 @@ def get_feature_intervals_from_thresholds(feature_thresholds):
 
 def _reject_colliding_feature_names(selected_features):
   canonical = {}
-  for name in selected_features:
+  # Dedupe exact-string repeats first: the same raw name appearing twice
+  # (e.g. a feature genuinely shared, with IDENTICAL spelling, between two
+  # models' selected-feature lists in get_joint_feature_intervals) is not a
+  # collision -- only two DIFFERENT raw spellings landing on the same
+  # normalised key are.
+  for name in dict.fromkeys(selected_features):
     canonical.setdefault(normalise_feature_name(name), []).append(name)
   collisions = {k: v for k, v in canonical.items() if len(v) > 1}
   if collisions:
@@ -307,8 +312,15 @@ def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
   times (evaluation.multi_model_memory_evaluation's 'joint' branch,
   feature_selection._derive_joint_feature_intervals, and
   main.implement_tree_models_in_P4); this is the single canonical copy."""
-  _reject_colliding_feature_names(features_a)
-  _reject_colliding_feature_names(features_b)
+  # Checked as ONE union, not two independent lists: get_feature_thresholds
+  # below merges both models' tree_nodes into a single feature_intervals
+  # dict, so a collision across features_a/features_b (e.g. 'Flow.IAT.Max'
+  # in one, 'Flow IAT Max' in the other) would silently fold together
+  # exactly like a collision within one list would. A feature genuinely
+  # shared between both models arrives with IDENTICAL spelling in both
+  # lists (same dataset.py naming convention feeds both), so that case is
+  # deduped rather than flagged -- only a genuine spelling mismatch raises.
+  _reject_colliding_feature_names(list(features_a) + list(features_b))
   trees_a = get_tree_textual_representation(model_a, features_a)
   trees_b = get_tree_textual_representation(model_b, features_b)
 

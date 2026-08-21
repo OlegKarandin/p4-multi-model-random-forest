@@ -1215,6 +1215,32 @@ def test_get_feature_intervals_rejects_feature_names_colliding_after_normalisati
     bps.get_feature_intervals(clf, colliding_names)
 
 
+def test_get_joint_feature_intervals_rejects_feature_names_colliding_across_models():
+  # get_feature_thresholds merges BOTH models' tree_nodes into one shared
+  # feature_intervals dict, so a collision across features_a/features_b is
+  # just as dangerous as one within a single model's own list -- and
+  # get_feature_intervals's own per-list guard cannot catch it, since
+  # neither list has an internal collision on its own.
+  clf_a = _forest_over(['Flow.IAT.Max'], [0, 1, 2], seed=0)
+  clf_b = _forest_over(['Flow IAT Max'], [-1, 1], seed=1)
+
+  with pytest.raises(ValueError, match="collide"):
+    bps.get_joint_feature_intervals(clf_a, ['Flow.IAT.Max'], clf_b, ['Flow IAT Max'])
+
+
+def test_get_joint_feature_intervals_allows_identically_spelled_shared_feature():
+  # A feature genuinely shared between both models, with IDENTICAL spelling
+  # in both selected-feature lists (the real production case -- both models'
+  # names come from the same dataset.py naming convention), must NOT be
+  # flagged as a collision. Only a spelling MISMATCH is a bug.
+  clf_a = _forest_over(['Flow.IAT.Max'], [0, 1, 2], seed=0)
+  clf_b = _forest_over(['Flow.IAT.Max'], [-1, 1], seed=1)
+
+  feature_intervals = bps.get_joint_feature_intervals(
+      clf_a, ['Flow.IAT.Max'], clf_b, ['Flow.IAT.Max'])
+  assert list(feature_intervals) == ['flow_iat_max']
+
+
 def test_generate_P4_code_discount_emits_no_const_default_action_for_either_task(tmp_path):
   # Same fixture that previously produced one
   # `const default_action = classify_flow_codeword_<task>_<i>(<class>);` per
