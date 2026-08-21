@@ -1076,9 +1076,9 @@ def test_a_single_accepted_move_can_leave_the_joint_interval_count_flat():
     one of the two models' current threshold sets for that feature, never a
     new one. So the pooled threshold SET for a feature can only shrink or
     stay the same, never grow, and neither can the interval count derived
-    from it. (Verified empirically too: 240 alignment runs over varied
-    forests/deltas in this task's investigation produced zero raises, all
-    flat or strictly decreasing.)
+    from it. See test_joint_interval_count_never_rises_across_random_alignment_runs
+    below for a real, re-runnable sweep corroborating this on generated
+    forests, not just the hand-built case here.
 
     It is NOT strictly decreasing on every move, though -- this is the
     counterexample for that weaker claim, and it is what
@@ -1106,6 +1106,51 @@ def test_a_single_accepted_move_can_leave_the_joint_interval_count_flat():
 
     assert I1 == [(0, 19), (20, 44), (45, INFINITE)]
     assert ta.joint_interval_count({0: I1}, {0: I2}) == 5
+
+
+def test_joint_interval_count_never_rises_across_random_alignment_runs():
+    """Real, re-runnable corroboration for the structural claim in
+    test_a_single_accepted_move_can_leave_the_joint_interval_count_flat's
+    docstring and for #27's kept assertion
+    (test_alignment_acceptance.py's stats['intervals_after'] <=
+    stats['intervals_before']): every accepted move relocates a threshold to
+    a value already present in one of the two models' current threshold
+    sets, so joint_interval_count can only fall or stay flat, never rise.
+
+    Sweeps varied forest shapes (sample count, feature count, depth) and
+    every delta_rel arm (None/0.0/0.05/0.2) rather than relying on a single
+    hand-built case -- this is what actually failed (assert 5 == 6) on the
+    OLD union-of-tuples joint_interval_count before this task's fix, so it
+    is a genuine regression guard, not decoration.
+    """
+    violations = []
+
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        n = 200 + (seed % 5) * 50
+        nf = 3 + (seed % 3)
+        X1 = np.clip(rng.integers(0, 90000, size=(n, nf)), 0, INFINITE).astype(float)
+        y1 = np.array([c % 3 for c in range(n)])
+        X2 = np.clip(rng.integers(0, 90000, size=(n, nf)), 0, INFINITE).astype(float)
+        y2 = np.where(np.arange(n) % 2 == 0, -1, 1)
+
+        from sklearn.ensemble import RandomForestClassifier
+        rf1 = dt_thresholds_float_to_int(RandomForestClassifier(
+            n_estimators=5, max_depth=4 + (seed % 3), min_samples_leaf=5,
+            random_state=seed).fit(X1, y1))
+        rf2 = dt_thresholds_float_to_int(RandomForestClassifier(
+            n_estimators=5, max_depth=4 + (seed % 3), min_samples_leaf=5,
+            random_state=seed + 1).fit(X2, y2))
+
+        for delta in (None, 0.0, 0.05, 0.2):
+            stats = {}
+            ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                   overlap_threshold=0.5, delta_rel=delta,
+                                   align_stats=stats)
+            if stats['intervals_after'] > stats['intervals_before']:
+                violations.append((seed, delta, stats))
+
+    assert violations == []
 
 
 def _align_golden_pair(delta_rel, cap, monkeypatch):
