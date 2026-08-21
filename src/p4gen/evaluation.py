@@ -567,6 +567,11 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
         readiness_levels_for(get_feature_intervals(clf_app, selected_features_app)) +
         readiness_levels_for(get_feature_intervals(clf_ddos, selected_features_ddos)))
 
+  else:
+    raise ValueError(
+        "multi_model_memory_evaluation: unknown encoding {!r}; "
+        "expected 'joint' or 'disjoint'".format(encoding))
+
   # Range-matching tables and ternary classification tables are physically
   # distinct table pools (build_p4_script.py generates them separately), so
   # each pool is packed on its own and the two stage counts are summed. Both

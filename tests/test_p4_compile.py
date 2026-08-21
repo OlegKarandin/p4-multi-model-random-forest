@@ -186,10 +186,11 @@ def test_parse_table_entry_count_accepts_logs_dir_directly(tmp_path):
     assert pc.parse_table_entry_count(str(log_dir), "SwitchIngress.probe_range_table") == 3
 
 
-def _fake_completed_process(stdout="", stderr=""):
+def _fake_completed_process(stdout="", stderr="", returncode=0):
     proc = MagicMock()
     proc.stdout = stdout
     proc.stderr = stderr
+    proc.returncode = returncode
     return proc
 
 
@@ -324,6 +325,33 @@ def test_compile_p4_errors_and_warnings_degrade_to_none_when_summary_absent(tmp_
 
     assert result.errors is None
     assert result.warnings is None
+
+
+def test_compile_p4_raises_when_summary_absent_and_returncode_nonzero(tmp_path):
+    # When p4c does not run at all (returncode nonzero) but the summary line
+    # is missing, we have a toolchain failure (e.g. p4c not installed), not
+    # a compile error. Must raise RuntimeError to distinguish this from
+    # exit(0) + no summary (which means validation was not requested).
+    fake_proc = _fake_completed_process(stdout="a hard crash before any summary line\n",
+                                         returncode=1)
+
+    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc):
+        with pytest.raises(RuntimeError, match="p4c did not run"):
+            pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
+
+
+def test_compile_p4_parses_errors_even_when_returncode_nonzero(tmp_path):
+    # A real compile error has p4c successfully running (summary line present)
+    # but reporting errors. returncode may be nonzero in this case, but we
+    # still parse the error count from the summary line, not raise an exception.
+    fake_proc = _fake_completed_process(stdout="5 errors, 3 warnings generated.\n",
+                                         returncode=1)
+
+    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc):
+        result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
+
+    assert result.errors == 5
+    assert result.warnings == 3
 
 
 @pytest.mark.slow

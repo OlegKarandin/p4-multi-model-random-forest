@@ -344,6 +344,16 @@ def test_multi_model_memory_evaluation_end_to_end_on_real_forests(encoding):
     assert blocks <= 24 * stages
 
 
+def test_multi_model_memory_evaluation_raises_on_unknown_encoding():
+    features = ["f0", "f1", "f2", "f3"]
+    clf_app = _tiny_forest([0, 1, 2], seed=0)
+    clf_ddos = _tiny_forest([-1, 1], seed=7)
+
+    with pytest.raises(ValueError, match="unknown encoding"):
+        ev.multi_model_memory_evaluation(
+            clf_app, clf_ddos, features, features, encoding='shared')
+
+
 def test_single_model_memory_evaluation_tuple_is_self_consistent():
     features = ["f0", "f1", "f2", "f3"]
     clf = _tiny_forest([0, 1, 2], seed=3)

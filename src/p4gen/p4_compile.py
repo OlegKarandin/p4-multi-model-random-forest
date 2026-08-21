@@ -262,8 +262,11 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     # pytest-only failure hit while writing the slow integration test below
     # -- that was output_dir pre-creation (see the comment above); this is
     # just good hygiene kept alongside it.
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds,
-                           stdin=subprocess.DEVNULL)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds,
+                               stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as e:
+        raise
 
     result = parse_compile_logs(output_dir)
 
@@ -281,6 +284,11 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     if m:
         result.errors = int(m.group(1))
         result.warnings = int(m.group(2))
+    elif proc.returncode != 0:
+        raise RuntimeError(
+            "p4c did not run (exit %d) -- no 'N errors, M warnings generated' line "
+            "in its output, so this is a toolchain failure, not a compile failure:\n%s"
+            % (proc.returncode, combined_output[-2000:]))
 
     return result
 
