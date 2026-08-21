@@ -44,14 +44,12 @@ import numpy as np
 # the test suite's forests.
 MAX_RECOMPUTE_ROUNDS = 32
 
-# (acc_app, f1_app, acc_ddos, f1_ddos) -- the order every 4-tuple in this
-# module uses.
-
 
 def accept_alignment(before, after, delta_rel):
     """Whether an alignment may stand, judged PER TASK (spec B.4).
 
-    before, after : 4-tuples (acc_app, f1_app, acc_ddos, f1_ddos).
+    before, after : 4-tuples (acc_app, f1_app, acc_ddos, f1_ddos) -- the
+    order every 4-tuple in this module uses.
     delta_rel : permitted relative-error degradation per metric, or None to
         accept unconditionally.
 
@@ -218,7 +216,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         metrics1 = IncrementalMetrics(tree_predictions1, rf1, y_val1, task="app")
         metrics2 = IncrementalMetrics(tree_predictions2, rf2, y_val2, task="ddos")
 
-        # Four independent high-water marks, in METRIC_NAMES order.
+        # Four independent high-water marks, in (acc_app, f1_app, acc_ddos,
+        # f1_ddos) order.
         marks = metrics1.metrics() + metrics2.metrics()
         # Last-ACCEPTED state -- the model's actual current metrics, as opposed
         # to marks' running per-task max. Before any candidate, both coincide.

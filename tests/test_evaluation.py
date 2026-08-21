@@ -363,7 +363,6 @@ def test_single_model_memory_evaluation_tuple_is_self_consistent():
     assert 0 < codeword_length <= bps.MAX_CODEWORD_LENGTH
 
 
-import inspect
 from pathlib import Path
 
 

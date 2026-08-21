@@ -685,7 +685,7 @@ def attach_delta_columns(table, df):
     mapping = df.loc[:, ['arm_slug'] + delta_columns].drop_duplicates()
     if mapping['arm_slug'].duplicated().any():
         raise ValueError(
-            'delta_frontier: an arm_slug carries more than one parsed '
+            'attach_delta_columns: an arm_slug carries more than one parsed '
             'delta_align value:\n{}'.format(mapping.to_string(index=False)))
     return table.merge(mapping, on='arm_slug', how='left')
 

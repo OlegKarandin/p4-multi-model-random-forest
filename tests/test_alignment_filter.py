@@ -7,18 +7,17 @@ import numpy as np
 import pytest
 
 from src.p4gen.build_p4_script import INFINITE
-from src.training.config import TrainConfig
 from src.training import threshold_alignment as ta
 
 
-def test_the_cap_waves_through_a_far_larger_absolute_shift():
+def test_endpoint_ratio_is_tiny_for_a_far_larger_absolute_shift():
     """(1000, 4000) vs (3900, 4000): endpoint ratio 3.9, so the cap passes it,
     despite a 2900-unit drag on a 3%-overlapping pair. Backwards near zero."""
     assert ta.endpoint_ratio((1000, 4000), (3900, 4000)) < 5.0
     assert ta.endpoint_ratio((1, 100), (10, 100)) > 5.0
 
 
-def test_the_cap_is_maximally_permissive_at_the_clip_atom():
+def test_endpoint_ratio_is_near_one_at_the_clip_atom():
     """dataset.py clips every feature at INFINITE = 65535, so a large fraction
     of rows sit at exactly that value. Moving 65534 -> 65535 has an endpoint
     ratio of ~1.00002 -- the most permissive reading available -- while

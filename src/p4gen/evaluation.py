@@ -521,10 +521,11 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
     for tree_ddos in trees_ddos:
       tree_nodes[tree_ddos+offset] = get_nodes(trees_ddos[tree_ddos])
 
-    # tree_nodes above (built with the default -1 tree tag) is still needed
-    # for get_root_to_leaf_paths below; get_joint_feature_intervals
-    # recomputes its own copy internally (with real tree indices) for the
-    # canonical offset-merge interval derivation -- see build_p4_script.py.
+    # tree_nodes above is still needed for get_root_to_leaf_paths below;
+    # get_joint_feature_intervals recomputes its own copy internally, but
+    # that's the canonical offset-merge interval-derivation chain -- see
+    # build_p4_script.py -- so the two derivations are behaviourally
+    # identical.
     feature_intervals = get_joint_feature_intervals(
         clf_app, selected_features_app, clf_ddos, selected_features_ddos)
     range_entries, range_blocks, range_table_specs = range_matching_resource_usage(feature_intervals)

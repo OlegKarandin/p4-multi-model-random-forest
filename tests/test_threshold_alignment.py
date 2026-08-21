@@ -856,7 +856,7 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
                                   np.array(expected, dtype=np.float64)), (key, tree_idx)
 
 
-def test_compute_ensemble_prediction_is_still_reachable_and_still_the_oracle():
+def test_compute_ensemble_prediction_is_still_reachable_and_returns_the_right_shape():
     """T2b removed compute_ensemble_prediction's last PRODUCTION caller -- the
     alignment loop now reads its winner off IncrementalMetrics. The function
     must survive anyway: it is the from-scratch oracle every equivalence test
