@@ -1,16 +1,10 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
+from src.training.trial_selection import rel_deg
 import copy
 import sklearn
 import numpy as np
-
-
-def rel_deg(before, after):
-    """Degradation as a fraction of `before`'s error. Same definition as
-    trial_selection.rel_deg -- duplicated rather than imported to keep this
-    module free of a training-package dependency it otherwise does not need."""
-    return (before - after) / max(1e-9, 1.0 - before)
 
 
 # Hard cap on the per-feature candidate-recompute loop (C3).
@@ -745,35 +739,29 @@ def adjust_range_boundaries(rf, feature_idx, source_range, target_range, thresho
     threshold_target_max = target_max
         
     modifications = []
-    
-    if threshold_source_min != threshold_target_min and threshold_source_min != 0:
 
-        if (feature_idx, threshold_source_min) not in threshold_index:
-            raise AlignmentInvariantError(
-                '{} missing from threshold_index'.format((feature_idx, threshold_source_min)))
+    # Min side (sentinel 0) and max side (sentinel INFINITE): identical guard
+    # shape, identical AlignmentInvariantError, identical mutation loop --
+    # differing only in which sentinel refuses the move and which
+    # source/target pair is used.
+    for threshold_source, threshold_target, sentinel in (
+        (threshold_source_min, threshold_target_min, 0),
+        (threshold_source_max, threshold_target_max, INFINITE),
+    ):
+        if threshold_source != threshold_target and threshold_source != sentinel:
 
-        for tree_idx, node_idx in threshold_index[(feature_idx, threshold_source_min)]:
-            
-            #print('Modifying threshold {} of feature {} in tree {} node {} to {}'.format(threshold_source_min, feature_idx, node_idx, tree_idx, threshold_target_min))
+            if (feature_idx, threshold_source) not in threshold_index:
+                raise AlignmentInvariantError(
+                    '{} missing from threshold_index'.format((feature_idx, threshold_source)))
 
-            tree = rf.estimators_[tree_idx].tree_
-            modifications.append((tree_idx, node_idx, threshold_source_min))
-            tree.threshold[node_idx] = threshold_target_min
-    
-    if threshold_source_max != threshold_target_max and threshold_source_max != INFINITE:
+            for tree_idx, node_idx in threshold_index[(feature_idx, threshold_source)]:
 
-        if (feature_idx, threshold_source_max) not in threshold_index:
-            raise AlignmentInvariantError(
-                '{} missing from threshold_index'.format((feature_idx, threshold_source_max)))
+                #print('Modifying threshold {} of feature {} in tree {} node {} to {}'.format(threshold_source, feature_idx, node_idx, tree_idx, threshold_target))
 
-        for tree_idx, node_idx in threshold_index[(feature_idx, threshold_source_max)]:
+                tree = rf.estimators_[tree_idx].tree_
+                modifications.append((tree_idx, node_idx, threshold_source))
+                tree.threshold[node_idx] = threshold_target
 
-            #print('Modifying threshold {} of feature {} in tree {} node {} to {}'.format(threshold_source_max, feature_idx, node_idx, tree_idx, threshold_target_max))
-
-            tree = rf.estimators_[tree_idx].tree_
-            modifications.append((tree_idx, node_idx, threshold_source_max))
-            tree.threshold[node_idx] = threshold_target_max
-    
     return modifications
 
 
