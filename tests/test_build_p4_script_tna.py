@@ -105,8 +105,8 @@ def test_resolve_disjoint_feature_plan_handles_model_exclusive_features():
 # ---------------------------------------------------------------------------
 
 FEATURE_INTERVALS_2F = {
-    "Flow_IAT_Max": [(0, 5), (6, 10), (11, INFINITE)],          # width 2
-    "Fwd_Packet_Length_Max": [(0, 3), (4, INFINITE)],           # width 1
+    "flow_iat_max": [(0, 5), (6, 10), (11, INFINITE)],          # width 2
+    "fwd_packet_length_max": [(0, 3), (4, INFINITE)],           # width 1
 }
 
 
@@ -611,7 +611,7 @@ def test_range_table_key_field_name_matches_generated_p4_exactly(tmp_path):
   # would just talk past each other, and every real bf_rt insertion would
   # fail at deploy time with an unknown-field error. Generate both halves
   # from the SAME feature_intervals and compare by string equality.
-  feature_intervals = {"Flow_IAT_Max": [(0, 50), (51, 900), (901, INFINITE)]}
+  feature_intervals = {"flow_iat_max": [(0, 50), (51, 900), (901, INFINITE)]}
 
   written_path = bps.generate_P4_code(
       0, 2, None, _tiny_ddos_forest(),
@@ -861,9 +861,9 @@ def test_generate_voting_code_voting_decisions_match_vote_winner_for_all_combos(
 # The real M1 (DDoS-only) feature set, hand-built small synthetic intervals
 # (no real trained model needed for this unit test).
 M1_FEATURE_INTERVALS = {
-    "Flow_IAT_Max": [(0, 100), (101, 500), (501, INFINITE)],
-    "Fwd_IAT_Max": [(0, 50), (51, INFINITE)],
-    "Fwd_Packet_Length_Max": [(0, 64), (65, 1500), (1501, INFINITE)],
+    "flow_iat_max": [(0, 100), (101, 500), (501, INFINITE)],
+    "fwd_iat_max": [(0, 50), (51, INFINITE)],
+    "fwd_packet_length_max": [(0, 64), (65, 1500), (1501, INFINITE)],
 }
 
 _OUTPUT_FILE = os.path.join(OUTPUT_PATH, "p4_code_RF_models.p4")
@@ -948,7 +948,7 @@ def test_generate_P4_code_disjoint_shares_when_intervals_match():
     # Both models pick the same intervals for a shared feature name --
     # must produce exactly ONE set_code_<feature> table, not two.
     clf_ddos = _tiny_ddos_forest()
-    shared = {"Flow_IAT_Max": [(0, 100), (101, 65535)]}
+    shared = {"flow_iat_max": [(0, 100), (101, 65535)]}
     written_path = bps.generate_P4_code(
         0, 2, None, clf_ddos, feature_intervals_app=shared, feature_intervals_ddos=shared)
     with open(written_path) as f:
@@ -970,8 +970,8 @@ def test_generate_P4_code_disjoint_namespaces_when_intervals_differ():
     # SAME generated file (one combined pipeline, not two programs).
     clf_app = _tiny_app_forest()  # reuse this file's existing tiny-forest fixture helper
     clf_ddos = _tiny_ddos_forest()
-    app_intervals = {"Flow_IAT_Max": [(0, 50), (51, 65535)]}
-    ddos_intervals = {"Flow_IAT_Max": [(0, 200), (201, 65535)]}
+    app_intervals = {"flow_iat_max": [(0, 50), (51, 65535)]}
+    ddos_intervals = {"flow_iat_max": [(0, 200), (201, 65535)]}
     written_path = bps.generate_P4_code(
         3, 2, clf_app, clf_ddos,
         feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals)
@@ -1134,7 +1134,7 @@ def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
 # REAL fitted forests: sklearn's export_text is what turns a model into the
 # tree text the codeword derivation parses.
 
-_DISCOUNT_FEATURE_NAMES = ["Flow_IAT_Max", "Fwd_Packet_Length_Max"]
+_DISCOUNT_FEATURE_NAMES = ["flow_iat_max", "fwd_packet_length_max"]
 
 
 def _fit_real_forest(labels, seed, n_estimators, value_scale):
@@ -1166,6 +1166,53 @@ def _derive_intervals(clf):
   trees = bps.get_tree_textual_representation(clf, _DISCOUNT_FEATURE_NAMES)
   tree_nodes = {tree: bps.get_nodes(trees[tree]) for tree in trees}
   return bps.get_feature_intervals_from_thresholds(bps.get_feature_thresholds(tree_nodes))
+
+
+_P4_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _forest_over(names, labels, seed):
+  import numpy as np
+  from sklearn.ensemble import RandomForestClassifier
+  rnd = np.random.RandomState(seed)
+  X = rnd.randint(0, 65535, size=(40, len(names)))
+  y = np.array([labels[i % len(labels)] for i in range(40)])
+  X[:, 0] += np.array([16000 * (labels.index(v) + 1) for v in y])
+  return bps.dt_thresholds_float_to_int(
+      RandomForestClassifier(n_estimators=2, max_depth=3, random_state=seed).fit(X, y))
+
+
+def test_generated_identifiers_are_valid_p4_for_live_dotted_feature_names(tmp_path):
+  # main.py:307-313's spelling -- the names dataset.py actually produces.
+  live_names = ['Fwd.Packet.Length.Max', 'Flow.IAT.Max', 'Flow.IAT.Mean', 'Fwd.IAT.Max']
+  clf_app = _forest_over(live_names, [0, 1, 2], seed=0)
+  clf_ddos = _forest_over(live_names, [-1, 1], seed=1)
+  feature_intervals = bps.get_feature_intervals(clf_app, live_names)
+
+  assert all(_P4_IDENT_RE.match(k) for k in feature_intervals), feature_intervals.keys()
+
+  path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=feature_intervals, feature_intervals_ddos=feature_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename='live_names.p4',
+      selected_features_app=live_names, selected_features_ddos=live_names)
+  text = open(path).read()
+
+  # The three shapes the review caught emitting dots.
+  assert 'bit<16> flow.iat.max_val' not in text
+  for ident in re.findall(r'meta\.([A-Za-z0-9_.]+)', text):
+    assert _P4_IDENT_RE.match(ident), ident
+
+
+def test_get_feature_intervals_rejects_feature_names_colliding_after_normalisation():
+  # 'Flow.IAT.Max' and 'Flow IAT Max' both normalise to 'flow_iat_max' -- if
+  # this weren't rejected, their thresholds would silently merge into one
+  # feature_intervals entry.
+  colliding_names = ['Flow.IAT.Max', 'Flow IAT Max']
+  clf = _forest_over(colliding_names, [0, 1, 2], seed=0)
+
+  with pytest.raises(ValueError, match="collide"):
+    bps.get_feature_intervals(clf, colliding_names)
 
 
 def test_generate_P4_code_discount_emits_no_const_default_action_for_either_task(tmp_path):
@@ -1300,7 +1347,7 @@ def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
   intervals_app = _derive_intervals(clf_app)
   intervals_ddos = _derive_intervals(clf_ddos)
   # Precondition of this test: the intervals really do differ per model.
-  assert intervals_app["Flow_IAT_Max"] != intervals_ddos["Flow_IAT_Max"]
+  assert intervals_app["flow_iat_max"] != intervals_ddos["flow_iat_max"]
 
   written_path = bps.generate_P4_code(
       3, 2, clf_app, clf_ddos,
@@ -1376,9 +1423,9 @@ def _sha256_of_default_generate_P4_code_call(tmp_path, filename, **extra):
 
   written_path = bps.generate_P4_code(
       3, 2, _tiny_app_forest(), _tiny_ddos_forest(),
-      feature_intervals_app={"Flow_IAT_Max": [(0, 50), (51, INFINITE)]},
-      feature_intervals_ddos={"Flow_IAT_Max": [(0, 200), (201, INFINITE)],
-                              "Fwd_Packet_Length_Max": [(0, 64), (65, INFINITE)]},
+      feature_intervals_app={"flow_iat_max": [(0, 50), (51, INFINITE)]},
+      feature_intervals_ddos={"flow_iat_max": [(0, 200), (201, INFINITE)],
+                              "fwd_packet_length_max": [(0, 64), (65, INFINITE)]},
       output_dir=str(tmp_path) + os.sep, output_filename=filename, **extra)
   with open(written_path, "rb") as f:
     return hashlib.sha256(f.read()).hexdigest()
@@ -1434,7 +1481,7 @@ def test_generate_P4_code_feature_table_size_is_real_interval_count(tmp_path):
   # Each range-matching table gets exactly one entry per interval
   # (get_table_entries' section 1), so its size must be that count -- not 200.
   clf_ddos = _tiny_ddos_forest()
-  intervals = {"Flow_IAT_Max": [(0, 50), (51, 120), (121, 900), (901, INFINITE)]}
+  intervals = {"flow_iat_max": [(0, 50), (51, 120), (121, 900), (901, INFINITE)]}
   written_path = bps.generate_P4_code(
       0, 2, None, clf_ddos,
       feature_intervals_app={}, feature_intervals_ddos=intervals,
@@ -1442,7 +1489,7 @@ def test_generate_P4_code_feature_table_size_is_real_interval_count(tmp_path):
   with open(written_path) as f:
     sizes = _table_sizes(f.read())
 
-  assert sizes["table_0_flow_iat_max"] == len(intervals["Flow_IAT_Max"]) == 4
+  assert sizes["table_0_flow_iat_max"] == len(intervals["flow_iat_max"]) == 4
 
 
 def test_generate_P4_code_feature_table_sizes_are_per_feature(tmp_path):
@@ -1450,8 +1497,8 @@ def test_generate_P4_code_feature_table_sizes_are_per_feature(tmp_path):
   # sizes -- proving the size really tracks each table's own entry count.
   clf_ddos = _tiny_ddos_forest()
   intervals = {
-      "Flow_IAT_Max": [(0, 50), (51, INFINITE)],
-      "Fwd_Packet_Length_Max": [(0, 8), (9, 64), (65, 512), (513, 1024), (1025, INFINITE)],
+      "flow_iat_max": [(0, 50), (51, INFINITE)],
+      "fwd_packet_length_max": [(0, 8), (9, 64), (65, 512), (513, 1024), (1025, INFINITE)],
   }
   written_path = bps.generate_P4_code(
       0, 2, None, clf_ddos,
@@ -1688,9 +1735,9 @@ def test_generate_P4_code_default_call_changes_only_table_sizes(tmp_path):
 
   written_path = bps.generate_P4_code(
       3, 2, _tiny_app_forest(), _tiny_ddos_forest(),
-      feature_intervals_app={"Flow_IAT_Max": [(0, 50), (51, INFINITE)]},
-      feature_intervals_ddos={"Flow_IAT_Max": [(0, 200), (201, INFINITE)],
-                              "Fwd_Packet_Length_Max": [(0, 64), (65, INFINITE)]},
+      feature_intervals_app={"flow_iat_max": [(0, 50), (51, INFINITE)]},
+      feature_intervals_ddos={"flow_iat_max": [(0, 200), (201, INFINITE)],
+                              "fwd_packet_length_max": [(0, 64), (65, INFINITE)]},
       output_dir=str(tmp_path) + os.sep, output_filename="only_sizes_changed.p4")
   with open(written_path, "rb") as f:
     raw = f.read()
@@ -1759,8 +1806,8 @@ _PA_PRAGMA_RE = re.compile(
 def test_generate_P4_code_pins_every_feature_value_field_to_a_16_bit_container(tmp_path):
   clf_ddos = _tiny_ddos_forest()
   intervals = {
-      "Flow_IAT_Max": [(0, 50), (51, INFINITE)],
-      "Fwd_Packet_Length_Max": [(0, 8), (9, INFINITE)],
+      "flow_iat_max": [(0, 50), (51, INFINITE)],
+      "fwd_packet_length_max": [(0, 8), (9, INFINITE)],
   }
   written_path = bps.generate_P4_code(
       0, 2, None, clf_ddos,
@@ -1781,9 +1828,9 @@ def test_generate_P4_code_pins_exactly_the_declared_value_fields(tmp_path):
   # metadata fields the generator declared.
   clf_ddos = _tiny_ddos_forest()
   intervals = {
-      "Flow_IAT_Max": [(0, 50), (51, INFINITE)],
-      "Fwd_IAT_Max": [(0, 7), (8, 900), (901, INFINITE)],
-      "Fwd_Packet_Length_Max": [(0, 8), (9, INFINITE)],
+      "flow_iat_max": [(0, 50), (51, INFINITE)],
+      "fwd_iat_max": [(0, 7), (8, 900), (901, INFINITE)],
+      "fwd_packet_length_max": [(0, 8), (9, INFINITE)],
   }
   written_path = bps.generate_P4_code(
       0, 2, None, clf_ddos,
@@ -1805,8 +1852,8 @@ def test_generate_P4_code_pins_a_shared_raw_field_only_once(tmp_path):
   # A duplicate @pa_container_size for the same field is a compile error.
   clf_app = _tiny_app_forest()
   clf_ddos = _tiny_ddos_forest()
-  app_intervals = {"Flow_IAT_Max": [(0, 50), (51, INFINITE)]}
-  ddos_intervals = {"Flow_IAT_Max": [(0, 200), (201, INFINITE)]}
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)]}
   written_path = bps.generate_P4_code(
       3, 2, clf_app, clf_ddos,
       feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,

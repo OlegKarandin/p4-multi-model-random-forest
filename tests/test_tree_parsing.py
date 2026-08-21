@@ -75,7 +75,7 @@ def _assert_matches_sklearn(clf, features, probes, intervals, codewords):
 
 @pytest.mark.parametrize("depth", [12, 14])
 def test_deep_tree_parses_every_leaf(depth):
-    features = ["Feat_0", "Feat_1", "Feat_2"]
+    features = ["feat_0", "feat_1", "feat_2"]
     clf, _ = _fit(len(features), depth, seed=depth, n_samples=20000)
     assert clf.estimators_[0].get_depth() >= 12, "fixture did not build a deep tree"
 
@@ -86,7 +86,7 @@ def test_deep_tree_parses_every_leaf(depth):
 
 
 def test_deep_tree_classifies_identically_to_sklearn():
-    features = ["Feat_0", "Feat_1", "Feat_2"]
+    features = ["feat_0", "feat_1", "feat_2"]
     clf, _ = _fit(len(features), 13, seed=99, n_samples=20000)
     assert clf.estimators_[0].get_depth() >= 12, "fixture did not build a deep tree"
     _, intervals, codewords = _parse(clf, features)
@@ -119,7 +119,7 @@ def _zero_split_forest():
 
 
 def test_zero_threshold_is_kept_as_its_own_interval():
-    features = ["Feat_0", "Feat_1"]
+    features = ["feat_0", "feat_1"]
     clf = _zero_split_forest()
     tree_nodes, intervals, _ = _parse(clf, features)
 
@@ -134,7 +134,7 @@ def test_zero_threshold_is_kept_as_its_own_interval():
 
 
 def test_zero_threshold_classifies_identically_to_sklearn():
-    features = ["Feat_0", "Feat_1"]
+    features = ["feat_0", "feat_1"]
     clf = _zero_split_forest()
     _, intervals, codewords = _parse(clf, features)
 
@@ -150,7 +150,7 @@ def test_zero_threshold_classifies_identically_to_sklearn():
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
 def test_shallow_multi_tree_forest_classifies_identically_to_sklearn(seed):
-    features = ["Feat_0", "Feat_1", "Feat_2"]
+    features = ["feat_0", "feat_1", "feat_2"]
     clf, _ = _fit(len(features), 5, seed=seed, n_estimators=3)
     _, intervals, codewords = _parse(clf, features)
 

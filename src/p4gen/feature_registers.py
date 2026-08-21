@@ -13,17 +13,17 @@ header comment before changing anything here.
 Key casing
 ----------
 Catalog keys are lowercase, underscore-joined feature names (e.g.
-"flow_iat_max", "fwd_iat_max", "fwd_packet_length_max") -- NOT the raw
-casing produced elsewhere in this codebase. `feature_intervals` (built by
-`get_nodes()`/`get_feature_intervals()` in build_p4_script.py) actually has
-Title_Case_With_Underscores keys (e.g. "Flow_IAT_Max"), because
-`get_nodes()`'s feature-name extraction
-(`line...split("<=")[0].strip().replace(" ", "_")`) never calls
-`.lower()`. Every other place in build_p4_script.py that turns a feature
-name into a P4 identifier calls `.lower()` at the point of use (e.g.
-`generate_P4_actions`: `"set_code_" + feature.replace(" ", "_").lower()`).
-Callers of this catalog must follow the same convention: `.lower()` the
-feature name before looking it up here.
+"flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"). `feature_intervals`
+(built by `get_nodes()`/`get_feature_intervals()` in build_p4_script.py) now
+uses exactly this casing too: `get_nodes()`'s feature-name extraction runs
+every parsed name through `normalise_feature_name()`, which lowercases it
+and collapses every run of non-alphanumeric characters (spaces, dots,
+underscores alike -- dataset.py ships dot-separated names like
+"Flow.IAT.Max") to a single "_". So a `feature_intervals` key can be looked
+up in this catalog directly, with no further transformation needed. Callers
+that build a feature_intervals-shaped dict by hand rather than via
+get_nodes should still route the key through
+`build_p4_script.normalise_feature_name()` first, for the same reason.
 
 Entry shape
 -----------

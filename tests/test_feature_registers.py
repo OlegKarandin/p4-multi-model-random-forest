@@ -86,19 +86,20 @@ M2_SYMMETRIC_HASH_SPIKE = _load_m2_symmetric_hash_spike()
 
 # The M1 feature set as generate_P4_registers_and_apply's real caller
 # (build_p4_script.get_nodes()/get_feature_intervals()) actually produces
-# it: Title_Case_With_Underscores keys, values unused.
+# it: lowercase, underscore-joined keys (normalise_feature_name()), values
+# unused.
 M1_FEATURE_INTERVALS = {
-    "Flow_IAT_Max": None,
-    "Fwd_IAT_Max": None,
-    "Fwd_Packet_Length_Max": None,
+    "flow_iat_max": None,
+    "fwd_iat_max": None,
+    "fwd_packet_length_max": None,
 }
 
 # M2-B1: flow_iat_max + flow_iat_mean share one dependency register
 # (flow_last_arrival_time) -- the shared-dependency dedup scenario this task
 # fixes.
 M2_MEAN_FEATURE_INTERVALS = {
-    "Flow_IAT_Max": None,
-    "Flow_IAT_Mean": None,
+    "flow_iat_max": None,
+    "flow_iat_mean": None,
 }
 
 # M2-B1: all three of M1's flow_iat_max, fwd_iat_max, plus M2's flow_iat_mean
@@ -106,9 +107,9 @@ M2_MEAN_FEATURE_INTERVALS = {
 # flow_iat_mean) and fwd_last_arrival_time (independent, fwd_iat_max only)
 # don't cross-contaminate each other's dedup accounting.
 M2_MEAN_PLUS_FWD_FEATURE_INTERVALS = {
-    "Flow_IAT_Max": None,
-    "Fwd_IAT_Max": None,
-    "Flow_IAT_Mean": None,
+    "flow_iat_max": None,
+    "fwd_iat_max": None,
+    "flow_iat_mean": None,
 }
 
 # Spike hand-wrote its own RegisterAction names; map each catalog register
@@ -435,7 +436,7 @@ def test_mathunit_declaration_emitted_before_register_action(m2_mean_generated):
 
 
 def test_dedup_does_not_cross_contaminate_flow_and_fwd_namespaces(m2_mean_plus_fwd_generated):
-  # Flow_IAT_Max + Fwd_IAT_Max + Flow_IAT_Mean together: flow_last_arrival_time
+  # flow_iat_max + fwd_iat_max + flow_iat_mean together: flow_last_arrival_time
   # is shared (flow_iat_max + flow_iat_mean) and deduped to one execute call;
   # fwd_last_arrival_time is a wholly separate, independently-touched
   # register (only fwd_iat_max references it) -- confirming the dedup fix
@@ -469,11 +470,13 @@ def test_unknown_feature_mixed_with_known_is_skipped(m1_generated):
 
 
 def test_case_insensitive_feature_lookup(m1_generated):
-  # feature_intervals keys are Title_Case_With_Underscores in real callers;
-  # the catalog's keys are lowercase. Confirm .lower()-based resolution
-  # works and produces byte-identical output either way.
-  lowercase_intervals = {name.lower(): value for name, value in M1_FEATURE_INTERVALS.items()}
-  assert generate_P4_registers_and_apply(lowercase_intervals) == m1_generated
+  # M1_FEATURE_INTERVALS is already canonical (lowercase, underscore-joined
+  # -- what get_nodes()/get_feature_intervals() actually produce). This
+  # function's own .lower() is a defensive fallback for callers that build
+  # a feature_intervals dict by hand rather than via get_nodes; confirm a
+  # Title_Case caller still resolves to byte-identical output.
+  titlecase_intervals = {name.title(): value for name, value in M1_FEATURE_INTERVALS.items()}
+  assert generate_P4_registers_and_apply(titlecase_intervals) == m1_generated
 
 
 # ---------------------------------------------------------------------------
@@ -589,4 +592,4 @@ def test_generate_P4_registers_raises_when_flow_iat_mean_selected_without_flow_i
   This guard raises ValueError to prevent that scenario.
   """
   with pytest.raises(ValueError, match="flow_iat_max"):
-    generate_P4_registers_and_apply({"Flow_IAT_Mean": None})
+    generate_P4_registers_and_apply({"flow_iat_mean": None})

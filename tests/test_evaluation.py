@@ -689,14 +689,14 @@ def test_range_matching_resource_usage_default_width_is_the_project_16_bit():
 
 def test_feature_readiness_level_counts_hash_gating_and_chain_depth():
     # ungated, 2-deep chain (last_arrival_time -> max): 1 + 0 + 2
-    assert ev.feature_readiness_level("Flow_IAT_Max") == 3
+    assert ev.feature_readiness_level("flow_iat_max") == 3
     # ungated, 2-deep chain (shared last_arrival_time -> mean): 1 + 0 + 2
-    assert ev.feature_readiness_level("Flow_IAT_Mean") == 3
+    assert ev.feature_readiness_level("flow_iat_mean") == 3
     # fwd-gated, 1-deep chain: 1 + 1 + 1
-    assert ev.feature_readiness_level("Fwd_Packet_Length_Max") == 3
+    assert ev.feature_readiness_level("fwd_packet_length_max") == 3
     # fwd-gated, 2-deep chain: 1 + 1 + 2 -- the deepest, and the one the real
     # compiler pushed into a stage of its own
-    assert ev.feature_readiness_level("Fwd_IAT_Max") == 4
+    assert ev.feature_readiness_level("fwd_iat_max") == 4
 
 
 def test_feature_readiness_level_unknown_feature_is_ready_after_the_hash():
@@ -709,8 +709,8 @@ def test_readiness_levels_follow_feature_intervals_order():
     # Must align positionally with range_matching_resource_usage's specs,
     # which follow feature_intervals iteration order.
     feature_intervals = {
-        "Fwd_IAT_Max": [(0, 5)],
-        "Flow_IAT_Max": [(0, 5)],
+        "fwd_iat_max": [(0, 5)],
+        "flow_iat_max": [(0, 5)],
         "Not_A_Catalog_Feature": [(0, 5)],
     }
 
@@ -774,10 +774,10 @@ def test_range_and_ternary_pools_reproduce_the_measured_m2_stage_count():
     # The real M2 feature set. Real compile: range tables in 2 stages,
     # classification tables in 1 -> 3 stages of match tables.
     feature_intervals = {
-        "Flow_IAT_Max": [(0, 100), (101, 65535)],
-        "Flow_IAT_Mean": [(0, 100), (101, 65535)],
-        "Fwd_IAT_Max": [(0, 100), (101, 65535)],
-        "Fwd_Packet_Length_Max": [(0, 100), (101, 65535)],
+        "flow_iat_max": [(0, 100), (101, 65535)],
+        "flow_iat_mean": [(0, 100), (101, 65535)],
+        "fwd_iat_max": [(0, 100), (101, 65535)],
+        "fwd_packet_length_max": [(0, 100), (101, 65535)],
     }
     _, _, range_specs = ev.range_matching_resource_usage(feature_intervals)
     range_levels = ev.readiness_levels_for(feature_intervals)
@@ -813,13 +813,13 @@ def _forest_using_all_four_catalog_features(labels, seed):
     return bps.dt_thresholds_float_to_int(clf)
 
 
-_M2_CATALOG_FEATURES = ["Flow_IAT_Max", "Flow_IAT_Mean",
-                        "Fwd_IAT_Max", "Fwd_Packet_Length_Max"]
+_M2_CATALOG_FEATURES = ["flow_iat_max", "flow_iat_mean",
+                        "fwd_iat_max", "fwd_packet_length_max"]
 
 
 def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
     # End-to-end: the reported stage count must include the extra stage that
-    # Fwd_IAT_Max's deeper register chain forces, matching the real compile
+    # fwd_iat_max's deeper register chain forces, matching the real compile
     # (range tables over 2 stages + classification tables in 1 = 3), not the
     # pure packer's 2.
     clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
@@ -830,7 +830,7 @@ def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
         "fixture did not split on every catalog feature: {}".format(sorted(intervals)))
     # Pin the baseline: without dependency levels these range tables all pack
     # into ONE stage, so a result of 3 below can only come from the extra
-    # stage Fwd_IAT_Max's deeper chain forces -- this test cannot pass for
+    # stage fwd_iat_max's deeper chain forces -- this test cannot pass for
     # the wrong reason.
     _, _, range_specs = ev.range_matching_resource_usage(intervals)
     assert ev.crossbar_stages_needed(range_specs) == 1

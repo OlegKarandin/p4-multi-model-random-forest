@@ -185,8 +185,8 @@ def test_run_plot_mode_passes_the_existing_capacity_ceiling_csv_through(tmp_path
 # ALREADY-TRAINED models, so callers own their own training.
 # ---------------------------------------------------------------------------
 
-_P4_FEATURES = ["Flow_IAT_Max", "Flow_IAT_Mean",
-                "Fwd_IAT_Max", "Fwd_Packet_Length_Max"]
+_P4_FEATURES = ["flow_iat_max", "flow_iat_mean",
+                "fwd_iat_max", "fwd_packet_length_max"]
 
 
 def _trained_pair():

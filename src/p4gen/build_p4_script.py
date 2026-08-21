@@ -1,5 +1,6 @@
 import os
 import math
+import re
 from sklearn.tree import export_text
 import csv
 import json
@@ -38,6 +39,21 @@ PATH_TABLE_CLASSIFICATION_TEMPLATE_P4 = PATH + 'table_classification.p4'
 # are meant to express.
 PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4 = PATH + 'table_classification_exact.p4'
 PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
+
+
+_IDENT_RE = re.compile(r'[^0-9a-z]+')
+
+
+def normalise_feature_name(name):
+  """Canonical form for both FEATURE_REGISTER_CATALOG keys and P4 identifiers.
+
+  Dataset columns arrive dot-separated ('Flow.IAT.Max' -- dataset.py renames
+  every column with .replace(' ', '.')), older fixtures arrive space- or
+  underscore-separated. Every run of non-alphanumeric characters collapses to a
+  single '_' so all three spellings land on one key, and that key is a legal P4
+  identifier. Leading/trailing separators are stripped so 'Flow.IAT.Max.' cannot
+  become a distinct key."""
+  return _IDENT_RE.sub('_', name.lower()).strip('_')
 
 
 
@@ -159,7 +175,8 @@ def get_nodes(tree_text):
     # B) Node is Child
     else:
 
-      feature_name  = line.replace("|---","").replace("|   ","").split("<=")[0].strip().replace(" ","_")
+      feature_name  = normalise_feature_name(
+          line.replace("|---", "").replace("|   ", "").split("<=")[0])
       threshold     = line.replace("|---","").replace("|   ","").split("<=")[-1].strip()
 
       if "<=" in line:
@@ -168,7 +185,7 @@ def get_nodes(tree_text):
                         "father_node": father_node_id,
                         "feature": feature_name,
                         "depth": depth,
-                        "action_name": "classify_"+feature_name.lower(),
+                        "action_name": "classify_"+feature_name,
                         "threshold": int(float(threshold)),
                         "left_child": node_id + 1,
                         "right_child": None,
@@ -256,7 +273,19 @@ def get_feature_intervals_from_thresholds(feature_thresholds):
   return feature_intervals
 
 
+def _reject_colliding_feature_names(selected_features):
+  canonical = {}
+  for name in selected_features:
+    canonical.setdefault(normalise_feature_name(name), []).append(name)
+  collisions = {k: v for k, v in canonical.items() if len(v) > 1}
+  if collisions:
+    raise ValueError(
+        "feature names collide after normalisation, their intervals would "
+        "silently merge: {}".format(collisions))
+
+
 def get_feature_intervals(model, selected_features):
+  _reject_colliding_feature_names(selected_features)
   trees = get_tree_textual_representation(model, selected_features)
 
   tree_nodes = {}
@@ -278,6 +307,8 @@ def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
   times (evaluation.multi_model_memory_evaluation's 'joint' branch,
   feature_selection._derive_joint_feature_intervals, and
   main.implement_tree_models_in_P4); this is the single canonical copy."""
+  _reject_colliding_feature_names(features_a)
+  _reject_colliding_feature_names(features_b)
   trees_a = get_tree_textual_representation(model_a, features_a)
   trees_b = get_tree_textual_representation(model_b, features_b)
 
@@ -341,9 +372,9 @@ def get_root_to_leaf_paths(tree_nodes):
   Outputs: Dictionary of dictionaries, including the path and final class of each leaf node in the Random Forest.
             First key is the tree_id (0, 1, etc.). Second key is the leaf_node_id (0, 1, etc.).
 
-  Example Output: { "class": "1.0", "path": [ {"node_id": 2, "feature": "Flow_IAT_Max", "threshold": 504078, "condition": "<="},
-                                              {"node_id": 1, "feature": "Bwd_Packet_Length_Max", "threshold": 12, "condition": "<="},
-                                              {"node_id": 0, "feature": "Bwd_Packet_Length_Max", "threshold": 3513, "condition": "<="} ] }
+  Example Output: { "class": "1.0", "path": [ {"node_id": 2, "feature": "flow_iat_max", "threshold": 504078, "condition": "<="},
+                                              {"node_id": 1, "feature": "bwd_packet_length_max", "threshold": 12, "condition": "<="},
+                                              {"node_id": 0, "feature": "bwd_packet_length_max", "threshold": 3513, "condition": "<="} ] }
   '''
 
   leaf_nodes_per_tree = {}
@@ -618,7 +649,7 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
     order has to match `feature_intervals`' iteration order) is NOT
     namespace-aware: it matches each `feature_intervals` key directly
     against the RAW feature names recorded in each tree path (e.g.
-    "Flow_IAT_Max"). A resolved/namespaced key like "app_flow_iat_max"
+    "flow_iat_max"). A resolved/namespaced key like "app_flow_iat_max"
     will never match a real tree-path step name, so that feature is
     silently treated as absent from every path and wildcarded in every
     codeword -- wrong codewords, with no error raised.
@@ -1592,13 +1623,14 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   selected features and wire output into resources/p4_template.p4.
 
   Parameters:
-    feature_intervals: dict whose keys are selected feature names, in the
-      same Title_Case_With_Underscores casing produced elsewhere in this
-      file by get_nodes()/get_feature_intervals() (e.g. "Flow_IAT_Max").
-      Only the keys are consulted; values are ignored. Each key is
-      .lower()'d before being looked up in `catalog`, matching the
-      convention used everywhere else in this file that turns a feature
-      name into a P4 identifier.
+    feature_intervals: dict whose keys are selected feature names, already
+      normalised (lowercase, underscore-joined -- normalise_feature_name())
+      by get_nodes()/get_feature_intervals() elsewhere in this file (e.g.
+      "flow_iat_max"). Only the keys are consulted; values are ignored.
+      Each key is still .lower()'d before being looked up in `catalog`; on
+      an already-normalised key that is a no-op, kept only because this
+      function can also be called directly with a raw_feature_names-style
+      dict that hasn't been through get_nodes.
     catalog: feature -> register dependency catalog to resolve against
       (see feature_registers.FEATURE_REGISTER_CATALOG for the expected
       shape). Defaults to feature_registers.FEATURE_REGISTER_CATALOG.
@@ -1712,9 +1744,11 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
 
-  # feature_intervals keys are Title_Case_With_Underscores (see get_nodes());
-  # normalize to the catalog's lowercase snake_case keys, preserving
-  # feature_intervals' iteration order.
+  # feature_intervals keys are already lowercase, underscore-joined (see
+  # get_nodes()'s normalise_feature_name()), so .lower() here is normally a
+  # no-op; kept as a defensive normalisation for callers that pass a
+  # feature_intervals dict built by hand rather than via get_nodes.
+  # Preserves feature_intervals' iteration order.
   matched_features = [f for f in (name.lower() for name in feature_intervals.keys()) if f in catalog]
 
   # Guard: flow_iat_mean shares flow_last_arrival_time dependency with

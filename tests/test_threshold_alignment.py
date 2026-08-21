@@ -5,7 +5,7 @@ import copy
 import numpy as np
 import pytest
 
-from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
+from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, normalise_feature_name
 from src.training import threshold_alignment as ta
 from src.training.errors import AlignmentInvariantError
 
@@ -494,9 +494,9 @@ def test_extract_feature_intervals_agrees_with_the_generator():
     ours = ta.extract_feature_intervals(rf)
     theirs = get_feature_intervals(rf, names)
 
-    assert {names[idx] for idx in ours} == set(theirs)
+    assert {normalise_feature_name(names[idx]) for idx in ours} == set(theirs)
     for feature_idx, intervals in ours.items():
-        assert intervals == theirs[names[feature_idx]], names[feature_idx]
+        assert intervals == theirs[normalise_feature_name(names[feature_idx])], names[feature_idx]
 
 
 def test_a_forest_with_a_zero_threshold_is_representable_in_the_fixtures():
