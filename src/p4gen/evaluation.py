@@ -473,11 +473,10 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
   for tree in trees:
     tree_nodes[tree] = get_nodes(trees[tree])
 
-  # get_feature_intervals recomputes trees/tree_nodes internally (with a
-  # real tree_idx rather than this function's own -1-tagged copy above),
-  # but that's the canonical single-model interval-derivation chain -- see
-  # build_p4_script.py -- and nothing downstream reads the "tree" key, so
-  # the two derivations are behaviourally identical.
+  # get_feature_intervals recomputes trees/tree_nodes internally, but
+  # that's the canonical single-model interval-derivation chain -- see
+  # build_p4_script.py -- so the two derivations are behaviourally
+  # identical.
   feature_intervals = get_feature_intervals(clf, selected_features)
   range_entries, range_blocks, range_table_specs = range_matching_resource_usage(feature_intervals)
 
