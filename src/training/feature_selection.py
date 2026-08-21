@@ -207,6 +207,77 @@ def _join_final_pending_compile(pending_previous):
         _join_pending_compile(handle, row)
 
 
+def _empty_if_none(value):
+    """`value`, or the CSV sentinel `''` if `value` is None.
+
+    A real 0 (e.g. `align_accepted == 0`) must survive unchanged -- a naive
+    falsy check would wrongly collapse it to `''` too, silently erasing a
+    real "0 intervals accepted" result. Only literal None -- "this was never
+    computed" -- becomes `''`.
+    """
+    return value if value is not None else ''
+
+
+def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
+                       infeasible_reason=None,
+                       acc_app=None, f1_app=None, acc_ddos=None, f1_ddos=None,
+                       acc_sel_app=None, acc_sel_ddos=None,
+                       stages=None, blocks=None,
+                       best_params=None, rel_shortfall=None,
+                       n_trials_run=None, n_feasible=None,
+                       align_attempted=None, align_accepted=None,
+                       intervals_before=None, intervals_after=None):
+    """Builds one elimination-loop result row (23 keys). Shared by both the
+    infeasible branch (`NoFeasibleSolution`) and the feasible branch of
+    `_run_elimination`'s loop, which used to write this dict as two
+    hand-duplicated literals that had drifted to use different "not
+    computed" sentinels for the same conceptual fields -- a wrong key or
+    wrong default here silently corrupts every downstream campaign CSV row,
+    so any new column belongs in exactly ONE place: this signature and the
+    dict below.
+
+    The 23 keys split into three groups:
+    - `arm`/`method`/`split`/`k`/`features_app`/`features_ddos`: always
+      present with a real value, never a sentinel.
+    - 8 metrics (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `acc_sel_app`,
+      `acc_sel_ddos`, `stages`, `blocks`): default None, which stays literal
+      None when not overridden -- the infeasible branch's contract (a
+      completed test asserts `row['acc_app'] is None`, not `== ''`).
+    - 9 "'' means not computed" fields (`infeasible`, `best_params`,
+      `rel_shortfall`, `n_trials_run`, `n_feasible`, `align_attempted`,
+      `align_accepted`, `intervals_before`, `intervals_after`): each passed
+      through `_empty_if_none`, so the caller need only pass None (or omit
+      the argument) for "not applicable" -- covering both the infeasible
+      branch (nothing ran) and the feasible branch's alignment fields
+      (`TrainResult.align_*`/`intervals_*` are None when alignment itself
+      never ran for this arm/config).
+
+    `stages_real`/`tcam_real`/`compile_errors` are deliberately NOT part of
+    this row: they're always attached afterward -- directly in the
+    infeasible branch (no hardware validation ever runs for it) or via
+    `_advance_pending_compile` (feasible branch, possibly still pending) --
+    see those call sites; folding them in here would require this builder to
+    know about async compile state it has no business knowing about.
+    """
+    return {
+        'arm': arm, 'method': method, 'split': split_idx, 'k': k,
+        'acc_app': acc_app, 'f1_app': f1_app,
+        'acc_ddos': acc_ddos, 'f1_ddos': f1_ddos,
+        'acc_sel_app': acc_sel_app, 'acc_sel_ddos': acc_sel_ddos,
+        'stages': stages, 'blocks': blocks,
+        'infeasible': _empty_if_none(infeasible_reason),
+        'features_app': ';'.join(names_app), 'features_ddos': ';'.join(names_ddos),
+        'best_params': _empty_if_none(best_params),
+        'rel_shortfall': _empty_if_none(rel_shortfall),
+        'n_trials_run': _empty_if_none(n_trials_run),
+        'n_feasible': _empty_if_none(n_feasible),
+        'align_attempted': _empty_if_none(align_attempted),
+        'align_accepted': _empty_if_none(align_accepted),
+        'intervals_before': _empty_if_none(intervals_before),
+        'intervals_after': _empty_if_none(intervals_after),
+    }
+
+
 def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
                      validate_on_hardware=False, hardware_output_dir=None,
                      config=None, rows=None):
@@ -285,23 +356,18 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
                 max_blocks, encoding, cfg,
                 warm_start_params)
         except NoFeasibleSolution as exc:
-            rows.append({
-                'arm': arm, 'method': method, 'split': split_idx, 'k': k,
-                'acc_app': None, 'f1_app': None, 'acc_ddos': None, 'f1_ddos': None,
-                'acc_sel_app': None, 'acc_sel_ddos': None,
-                'stages': None, 'blocks': None,
-                'infeasible': str(exc),
-                'stages_real': None, 'tcam_real': None, 'compile_errors': None,
-                'features_app': ';'.join(names_app), 'features_ddos': ';'.join(names_ddos),
-                # best_params is deliberately '', NOT json.dumps(warm_start_params):
-                # warm_start_params is still bound from the previous (feasible) k
-                # here, so writing it would silently attribute the previous k's
-                # parameters to this infeasible one.
-                'best_params': '',
-                'rel_shortfall': '', 'n_trials_run': '', 'n_feasible': '',
-                'align_attempted': '', 'align_accepted': '',
-                'intervals_before': '', 'intervals_after': '',
-            })
+            row = _build_result_row(
+                arm, method, split_idx, k, names_app, names_ddos,
+                infeasible_reason=str(exc))
+            # best_params is deliberately left at its None default (-> ''),
+            # NOT json.dumps(warm_start_params): warm_start_params is still
+            # bound from the previous (feasible) k here, so writing it would
+            # silently attribute the previous k's parameters to this
+            # infeasible one.
+            row['stages_real'] = None
+            row['tcam_real'] = None
+            row['compile_errors'] = None
+            rows.append(row)
             if carried_app is None or k == 1:
                 break  # No ranking to continue from, or nothing left to drop.
             remaining_app, names_app, carried_app = _drop_least_important(
@@ -326,26 +392,25 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             acc_ddos, f1_ddos = accuracy_metrics(
                 ddos.y_test, switch_predict(model_ddos, ddos.X_test[:, remaining_ddos]), task="ddos")
 
-        rows.append({
-            'arm': arm, 'method': method, 'split': split_idx, 'k': k,
-            'acc_app': acc_app, 'f1_app': f1_app,
-            'acc_ddos': acc_ddos, 'f1_ddos': f1_ddos,
-            'acc_sel_app': acc_sel_app, 'acc_sel_ddos': acc_sel_ddos,
-            'stages': stages, 'blocks': blocks,
-            'infeasible': '',
-            'features_app': ';'.join(names_app), 'features_ddos': ';'.join(names_ddos),
-            'best_params': json.dumps(best_params),
-            'rel_shortfall': train_result.rel_shortfall,
-            'n_trials_run': train_result.n_trials_run,
-            'n_feasible': train_result.n_feasible,
-            # None (not 0) means alignment never ran for this arm/config --
-            # preserve that distinction as '' rather than erasing it with a
-            # falsy test (a real align_accepted of 0 must stay 0, not '').
-            'align_attempted': train_result.align_attempted if train_result.align_attempted is not None else '',
-            'align_accepted': train_result.align_accepted if train_result.align_accepted is not None else '',
-            'intervals_before': train_result.intervals_before if train_result.intervals_before is not None else '',
-            'intervals_after': train_result.intervals_after if train_result.intervals_after is not None else '',
-        })
+        # None (not 0) means alignment never ran for this arm/config --
+        # _build_result_row preserves that distinction as '' rather than
+        # erasing it with a falsy test (a real align_accepted of 0 must
+        # stay 0, not '').
+        rows.append(_build_result_row(
+            arm, method, split_idx, k, names_app, names_ddos,
+            acc_app=acc_app, f1_app=f1_app,
+            acc_ddos=acc_ddos, f1_ddos=f1_ddos,
+            acc_sel_app=acc_sel_app, acc_sel_ddos=acc_sel_ddos,
+            stages=stages, blocks=blocks,
+            best_params=json.dumps(best_params),
+            rel_shortfall=train_result.rel_shortfall,
+            n_trials_run=train_result.n_trials_run,
+            n_feasible=train_result.n_feasible,
+            align_attempted=train_result.align_attempted,
+            align_accepted=train_result.align_accepted,
+            intervals_before=train_result.intervals_before,
+            intervals_after=train_result.intervals_after,
+        ))
 
         pending_next = _kickoff_hardware_validation(
             validate_on_hardware, hardware_output_dir, split_idx, method, k,
