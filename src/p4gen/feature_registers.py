@@ -140,14 +140,11 @@ FEATURE_REGISTER_CATALOG = {
     # Deliberately lists "flow_last_arrival_time" as its dependency -- the
     # SAME dependency register "flow_iat_max" (above) already declares.
     # generate_P4_registers_and_apply() dedupes shared dependency registers
-    # so this is safe: whichever selected feature is resolved first
+    # by name, so this is safe: whichever selected feature is resolved first
     # .execute()s flow_last_arrival_time_reg once, and both features'
     # "value" registers consume that single meta.current_iat result.
-    # Known limitation (not fixed here, flagged per M2-B1 brief point 4):
-    # if a future milestone ever selects "flow_iat_mean" WITHOUT
-    # "flow_iat_max" also selected, this dependency register would never
-    # get executed and meta.current_iat would silently hold garbage.
-    # M2's actual feature set always selects both, so this is not live yet.
+    # A catalog entry that lists its own dependency register can safely stand
+    # alone -- its dependency will be executed when that feature is resolved.
     "flow_iat_mean": {
         "registers": [
             {

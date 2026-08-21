@@ -1190,21 +1190,21 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
                       use_default_action_discount=False,
                       selected_features_app=None, selected_features_ddos=None,
                       config: "p4_gen_config.P4GenConfig" = None):
-  """match_type: Task 8 -- passed straight through to
-  generate_P4_tables_and_apply. 'ternary' (the default) is byte-identical
-  to every caller before this task; 'exact' switches only the
-  classification tables to resources/table_classification_exact.p4 /
-  `: exact;` keys (feature-range tables stay ternary/range either way).
+  """match_type: passed straight through to
+  generate_P4_tables_and_apply. 'ternary' (the default) switches
+  classification tables to resources/table_classification.p4 with ternary
+  keys; 'exact' switches only the classification tables to
+  resources/table_classification_exact.p4 / `: exact;` keys (feature-range
+  tables stay ternary/range either way).
 
-  config: Task 4 -- additive convenience. When given, `config.match_type`
+  config: additive convenience. When given, `config.match_type`
   and `config.use_default_action_discount` take precedence over the
   individual `match_type` / `use_default_action_discount` keyword arguments
-  above (which remain the source of truth when `config` is None, so every
-  existing caller is unaffected).
+  above (which remain the source of truth when `config` is None).
 
   use_default_action_discount, selected_features_app, selected_features_ddos:
-  follow-up to the 2026-08-03 plan -- the live path that actually produces
-  the Planter-style default-action discount. When the flag is True (passed
+  the live path that produces the Planter-style default-action discount.
+  When the flag is True (passed
   directly or via `config`), this function recomputes each model's codewords
   internally; every leaf carrying its tree's majority class then comes off
   that classification table's declared `size` here, and off its explicit
@@ -1236,10 +1236,9 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   model's list is missing -- silently guessing an order would produce
   wrong-but-plausible codewords.
 
-  TABLE SIZING (follow-up to the 2026-08-03 plan): every table this function
-  emits is sized from its REAL entry count, not the fixed
-  SIZE_FEATURE_TABLE=200 / SIZE_CLASSIFICATION_TABLE=400 literals
-  generate_P4_tables_and_apply used to stamp everywhere -- range-matching
+  TABLE SIZING: every table this function emits is sized from its REAL entry
+  count, not the fixed SIZE_FEATURE_TABLE=200 / SIZE_CLASSIFICATION_TABLE=400
+  literals generate_P4_tables_and_apply used to stamp everywhere -- range-matching
   feature tables from their interval count, classification tables from their
   codeword count (minus the entries use_default_action_discount folds into
   the default action). Because computing codewords needs the ordered
@@ -1269,17 +1268,13 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   exact-match entries for those wildcarded codewords still need to be
   generated as follow-on work before 'exact' output can actually be loaded.
 
-  Task 3: feature_intervals_app / feature_intervals_ddos are each model's
-  OWN, independently-derived feature_intervals dict (raw feature name ->
-  interval list) -- no longer a single shared dict, since real production
-  deployment always runs ONE combined pipeline for both tasks, and disjoint
-  encoding lets the two independently-trained models pick different
-  discretization thresholds for a feature they both happen to select. A
-  task with no active model passes {} for its side (e.g. an App-only or
-  DDoS-only run passes {} for the other model's feature_intervals, exactly
-  mirroring clf_app/clf_ddos=None for "no task"). A joint-encoded caller
-  (both models sharing one discretization) passes the SAME dict for both
-  parameters, reproducing every pre-Task-3 caller's output byte-for-byte.
+  feature_intervals_app / feature_intervals_ddos are each model's OWN,
+  independently-derived feature_intervals dict (raw feature name -> interval
+  list). A task with no active model passes {} for its side (e.g. an
+  App-only or DDoS-only run passes {} for the other model's feature_intervals,
+  exactly mirroring clf_app/clf_ddos=None for "no task"). A joint-encoded
+  caller (both models sharing one discretization) passes the SAME dict for both
+  parameters.
 
   Internally this resolves both dicts, once, via
   _resolve_disjoint_feature_plan: a feature both models select with
@@ -1509,9 +1504,9 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
 # targets the TNA architecture validated in
 # p4/tofino_spike/tna_m1_flows_iat_spike.p4 (compiled successfully this
 # session with the real Tofino compiler: `p4c -b tofino -a tna`, 0 errors).
-# It is standalone, new capability: it is NOT called from generate_P4_code()
-# and does NOT touch resources/p4_template.p4. A later task rewrites the
-# whole template for TNA and wires this function's output into it.
+# It is called from generate_P4_code() (line 1369) to resolve selected features
+# to the TNA registers, RegisterActions, and per-packet update logic needed for
+# Milestone 1's flow- and IAT-tracking design.
 # ---------------------------------------------------------------------------
 
 # Tofino stateful-ALU limit: the number of distinct RegisterAction
@@ -1593,9 +1588,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   Resolve a selected feature set to the TNA registers, RegisterActions, and
   per-packet update logic needed for Milestone 1's flow- and IAT-tracking
   design (ground truth: p4/tofino_spike/tna_m1_flows_iat_spike.p4, compiled
-  with the real Tofino p4c). Standalone codegen -- not wired into
-  generate_P4_code()/resources/p4_template.p4 yet; a later task rewrites
-  that template for TNA and consumes this function's output.
+  with the real Tofino p4c). Called from generate_P4_code() (line 1369) to
+  resolve selected features and wire output into resources/p4_template.p4.
 
   Parameters:
     feature_intervals: dict whose keys are selected feature names, in the
