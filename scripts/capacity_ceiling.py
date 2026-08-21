@@ -108,8 +108,7 @@ from sklearn.ensemble import RandomForestClassifier
 # own.)
 from src.p4gen.build_p4_script import (
     INFINITE, MAX_CODEWORD_LENGTH, dt_thresholds_float_to_int,
-    get_feature_intervals_from_thresholds, get_feature_thresholds, get_nodes,
-    get_tree_textual_representation)
+    get_feature_intervals, get_joint_feature_intervals)
 from src.p4gen.evaluation import multi_model_memory_evaluation
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.training.splits import make_task_splits
@@ -161,25 +160,8 @@ def cardinality_of(n_trees, max_depth):
     return -(-n_trees // 2) * (max_depth - 1)
 
 
-def tree_nodes_of(clf, feature_names):
-    """One model's parsed nodes, via the same path evaluation.py uses."""
-    trees = get_tree_textual_representation(clf, feature_names)
-    return {tree: get_nodes(trees[tree]) for tree in trees}
-
-
-def joint_tree_nodes(clf_app, clf_ddos, feature_names):
-    """Both models' nodes merged into one dict, mirroring
-    `multi_model_memory_evaluation`'s 'joint' branch offset trick exactly --
-    the merged set is what the shared discretization is derived from."""
-    nodes = tree_nodes_of(clf_app, feature_names)
-    offset = len(nodes)
-    for tree, tree_node in tree_nodes_of(clf_ddos, feature_names).items():
-        nodes[tree + offset] = tree_node
-    return nodes
-
-
-def codeword_length_of(tree_nodes):
-    """Bits in one codeword for the discretization these nodes induce.
+def codeword_length_of(feature_intervals):
+    """Bits in one codeword for this discretization.
 
     `generate_codewords` emits `len(feature_intervals[f]) - 1` characters per
     feature f, for every leaf of every tree (build_p4_script.py:397, 405), so
@@ -188,9 +170,7 @@ def codeword_length_of(tree_nodes):
     recorded instead of lost; `measure` asserts it against the length the
     evaluator itself reports whenever the evaluator raises.
     """
-    intervals = get_feature_intervals_from_thresholds(
-        get_feature_thresholds(tree_nodes))
-    return sum(len(ranges) - 1 for ranges in intervals.values())
+    return sum(len(ranges) - 1 for ranges in feature_intervals.values())
 
 
 def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
@@ -251,9 +231,9 @@ def collect():
                     clf_ddos = fit(ddos.X_train, ddos.y_train, n_trees, max_depth, corner)
 
                     joint_len = codeword_length_of(
-                        joint_tree_nodes(clf_app, clf_ddos, names))
-                    app_len = codeword_length_of(tree_nodes_of(clf_app, names))
-                    ddos_len = codeword_length_of(tree_nodes_of(clf_ddos, names))
+                        get_joint_feature_intervals(clf_app, names, clf_ddos, names))
+                    app_len = codeword_length_of(get_feature_intervals(clf_app, names))
+                    ddos_len = codeword_length_of(get_feature_intervals(clf_ddos, names))
                     # Each model gets its own ternary table under disjoint
                     # encoding, so the limit binds per model: the pair is
                     # compilable iff the LONGER of the two fits.

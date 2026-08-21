@@ -39,46 +39,31 @@ class SplitResult:
 
 
 def _derive_feature_intervals(clf, feature_names):
-    """Derives a `feature_intervals` dict for one model, via the exact same
-    tree_nodes -> thresholds -> intervals code path
-    `evaluation.single_model_memory_evaluation` uses internally (mirrored
-    here rather than imported, since that function also computes range/
-    ternary usage we don't need -- `generate_P4_code` recomputes codewords
-    from `clf`/`feature_intervals` on its own).
+    """Derives a `feature_intervals` dict for one model, via
+    `build_p4_script.get_feature_intervals` -- the exact same tree_nodes ->
+    thresholds -> intervals code path `evaluation.single_model_memory_evaluation`
+    uses internally (`generate_P4_code` recomputes codewords from
+    `clf`/`feature_intervals` on its own, so only the intervals are needed
+    here).
     """
-    from src.p4gen.build_p4_script import get_tree_textual_representation, get_nodes, \
-        get_feature_thresholds, get_feature_intervals_from_thresholds
+    from src.p4gen.build_p4_script import get_feature_intervals
 
-    trees = get_tree_textual_representation(clf, feature_names)
-    tree_nodes = {tree: get_nodes(trees[tree]) for tree in trees}
-    feature_thresholds = get_feature_thresholds(tree_nodes)
-    return get_feature_intervals_from_thresholds(feature_thresholds)
+    return get_feature_intervals(clf, feature_names)
 
 
 def _derive_joint_feature_intervals(model_app, model_ddos, feature_names_app, feature_names_ddos):
-    """Derives ONE shared `feature_intervals` dict for both models, mirroring
-    `evaluation.multi_model_memory_evaluation`'s 'joint' branch exactly (same
-    offset trick merging both models' trees into one `tree_nodes` dict
-    before deriving intervals) -- this is the analytical model the real
-    compiled numbers are meant to validate against, so the real program must
-    be built from the same interval derivation, not a re-invented one.
+    """Derives ONE shared `feature_intervals` dict for both models, via
+    `build_p4_script.get_joint_feature_intervals` -- the same offset trick
+    `evaluation.multi_model_memory_evaluation`'s 'joint' branch uses
+    internally, merging both models' trees into one keyed structure before
+    deriving intervals -- this is the analytical model the real compiled
+    numbers are meant to validate against, so the real program must be built
+    from the same interval derivation, not a re-invented one.
     """
-    from src.p4gen.build_p4_script import get_tree_textual_representation, get_nodes, \
-        get_feature_thresholds, get_feature_intervals_from_thresholds
+    from src.p4gen.build_p4_script import get_joint_feature_intervals
 
-    trees_app = get_tree_textual_representation(model_app, feature_names_app)
-    trees_ddos = get_tree_textual_representation(model_ddos, feature_names_ddos)
-
-    tree_nodes = {}
-    for tree_app in trees_app:
-        tree_nodes[tree_app] = get_nodes(trees_app[tree_app])
-
-    offset = len(tree_nodes)
-    for tree_ddos in trees_ddos:
-        tree_nodes[tree_ddos + offset] = get_nodes(trees_ddos[tree_ddos])
-
-    feature_thresholds = get_feature_thresholds(tree_nodes)
-    return get_feature_intervals_from_thresholds(feature_thresholds)
+    return get_joint_feature_intervals(
+        model_app, feature_names_app, model_ddos, feature_names_ddos)
 
 
 def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, split_idx, method, k,

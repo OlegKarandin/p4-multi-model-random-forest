@@ -272,6 +272,33 @@ def get_feature_intervals(model, selected_features):
   return feature_intervals
 
 
+def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
+  """The joint-encoding counterpart of get_feature_intervals: derives ONE
+  shared feature_intervals dict from the union of both models' trees, via
+  the same offset trick used to keep the two models' node IDs from
+  colliding (model_b's tree indices are shifted by len(model_a's trees)
+  before merging). This was previously reimplemented identically three
+  times (evaluation.multi_model_memory_evaluation's 'joint' branch,
+  feature_selection._derive_joint_feature_intervals, and
+  main.implement_tree_models_in_P4); this is the single canonical copy."""
+  trees_a = get_tree_textual_representation(model_a, features_a)
+  trees_b = get_tree_textual_representation(model_b, features_b)
+
+  tree_nodes = {}
+  for tree_a in trees_a:
+    tree_nodes[tree_a] = get_nodes(trees_a[tree_a], tree_a)
+
+  offset = len(tree_nodes)
+
+  for tree_b in trees_b:
+    tree_nodes[tree_b + offset] = get_nodes(trees_b[tree_b], tree_b + offset)
+
+  feature_thresholds = get_feature_thresholds(tree_nodes)
+  feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
+
+  return feature_intervals
+
+
 def feature_intervals_to_csv(feature_intervals, path_to_output=INTERMEDIATE, output_filename = "feature_intervals.csv"):
   rows = []
 
