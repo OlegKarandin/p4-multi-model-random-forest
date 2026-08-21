@@ -12,6 +12,7 @@ toolchain end to end and is not run by the default `pytest` invocation.
 import json
 import os
 import shlex
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -352,6 +353,17 @@ def test_compile_p4_parses_errors_even_when_returncode_nonzero(tmp_path):
 
     assert result.errors == 5
     assert result.warnings == 3
+
+
+def test_compile_p4_converts_timeout_expired_to_runtime_error(tmp_path):
+    # When subprocess.run times out, it raises subprocess.TimeoutExpired.
+    # compile_p4 must convert this to RuntimeError with a descriptive message
+    # (not pass through the bare TimeoutExpired), so timeouts are treated
+    # consistently with other toolchain failures.
+    with patch("src.p4gen.p4_compile.subprocess.run",
+               side_effect=subprocess.TimeoutExpired("cmd", 300)):
+        with pytest.raises(RuntimeError, match="p4c compilation timed out after 300 seconds"):
+            pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
 
 
 @pytest.mark.slow

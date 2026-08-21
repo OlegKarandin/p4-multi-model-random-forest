@@ -237,6 +237,9 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     installed compiler's own `--help-targets` output (reviews/
     t11_tofino_port_and_env.md Part L). `p4c` internally defines
     `__TARGET_TOFINO__` from `-b`, so no extra `-D` flag is needed here.
+
+    Raises RuntimeError if the compiler times out or fails to run (no output line
+    containing error/warning count despite nonzero exit code).
     """
     # Deliberately NOT pre-creating output_dir here (neither via os.makedirs
     # nor a WSL-side `mkdir -p`): p4c behaves differently -- and fails its
@@ -266,7 +269,9 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds,
                                stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired as e:
-        raise
+        raise RuntimeError(
+            "p4c compilation timed out after %d seconds"
+            % (timeout_seconds,)) from e
 
     result = parse_compile_logs(output_dir)
 
