@@ -374,18 +374,19 @@ def arm_deltas(df, treatment, baseline=INDEPENDENT_ARM_SLUG, metrics=DEFAULT_MET
 # Substitution
 # ---------------------------------------------------------------------------
 
-def _safe_pearson(x, y):
+def _safe_correlation(x, y, corr_func):
     if len(x) < 3 or np.std(x) == 0 or np.std(y) == 0:
         return float('nan'), float('nan')
-    result = stats.pearsonr(x, y)
+    result = corr_func(x, y)
     return float(result[0]), float(result[1])
+
+
+def _safe_pearson(x, y):
+    return _safe_correlation(x, y, stats.pearsonr)
 
 
 def _safe_spearman(x, y):
-    if len(x) < 3 or np.std(x) == 0 or np.std(y) == 0:
-        return float('nan'), float('nan')
-    result = stats.spearmanr(x, y)
-    return float(result[0]), float(result[1])
+    return _safe_correlation(x, y, stats.spearmanr)
 
 
 def _partial_correlation(x, y, z):
@@ -668,11 +669,11 @@ def delta_frontier(df, metrics=DEFAULT_METRICS,
 
     table = pd.DataFrame(rows)
     if 'arm_slug' in group_columns:
-        table = _attach_delta_columns(table, df)
+        table = attach_delta_columns(table, df)
     return table
 
 
-def _attach_delta_columns(table, df):
+def attach_delta_columns(table, df):
     """Carry the parsed delta (`delta_align_num`, `delta_align_is_inf`) onto
     an arm-keyed table. Raises if an arm_slug carries more than one parsed
     delta, which would mean two different treatments were filed under one arm
@@ -727,11 +728,10 @@ def ablation_decomposition(df, metrics=DEFAULT_METRICS, confidence=0.95):
     """
     contrasts = [('sharing', 'joint-off', INDEPENDENT_ARM_SLUG)]
     present = set(df['arm_slug'].unique())
-    for slug in JOINT_ARM_SLUGS:
+    for slug in _arms_present(df, None):
         if slug == 'joint-off':
             continue
-        if slug in present:
-            contrasts.append(('alignment', slug, 'joint-off'))
+        contrasts.append(('alignment', slug, 'joint-off'))
 
     rows = []
     for component, treatment, baseline in contrasts:

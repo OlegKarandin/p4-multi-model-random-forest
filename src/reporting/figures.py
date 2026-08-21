@@ -253,6 +253,14 @@ def _markdown_table(frame, float_format='{:.6g}'):
     return '\n'.join(lines)
 
 
+def _project_columns(table, columns):
+    """Select `columns` from `table` in order, silently dropping any that
+    are absent -- shared by every markdown-table renderer so a table missing
+    an optional column (e.g. a partial campaign) still renders instead of
+    raising a KeyError."""
+    return table.loc[:, [column for column in columns if column in table.columns]]
+
+
 def _write(deliverable, output_dir):
     """Write one deliverable's artifacts and return it with `paths` filled.
 
@@ -458,14 +466,7 @@ def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
         return pd.DataFrame(columns=['arm_slug', 'M', 'split', 'k']
                             + list(FRONTIER_METRICS))
     long = pd.concat(frames, ignore_index=True)
-
-    delta_columns = [column for column in
-                     ('delta_align_num', 'delta_align_is_inf')
-                     if column in df.columns]
-    if delta_columns:
-        mapping = df.loc[:, ['arm_slug'] + delta_columns].drop_duplicates()
-        long = long.merge(mapping, on='arm_slug', how='left')
-    return long
+    return claims.attach_delta_columns(long, df)
 
 
 def delta_frontier_table(df, baseline=claims.INDEPENDENT_ARM_SLUG,
@@ -489,12 +490,7 @@ def delta_frontier_table(df, baseline=claims.INDEPENDENT_ARM_SLUG,
     split_means = long.groupby(group_columns, as_index=False)[
         list(FRONTIER_METRICS)].mean()
 
-    delta_columns = [column for column in
-                     ('delta_align_num', 'delta_align_is_inf')
-                     if column in long.columns]
-    if delta_columns:
-        mapping = long.loc[:, ['arm_slug'] + delta_columns].drop_duplicates()
-        split_means = split_means.merge(mapping, on='arm_slug', how='left')
+    split_means = claims.attach_delta_columns(split_means, long)
 
     return claims.delta_frontier(
         split_means, metrics=FRONTIER_METRICS, group_columns=('arm_slug',),
@@ -796,8 +792,7 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
             'd + {:g}'.format(margin) if margin > 0 else 'd', family_note))
 
     markdown = _markdown_table(
-        table.loc[:, [column for column in _PAIRED_TEST_MARKDOWN_COLUMNS
-                      if column in table.columns]])
+        _project_columns(table, _PAIRED_TEST_MARKDOWN_COLUMNS))
     body = '\n'.join([markdown, '', family_note, '',
                       'Hypotheses, verbatim from `claims.paired_tests`:', ''] +
                      ['* `{}` / `{}` / `{}`: {}'.format(
@@ -847,8 +842,7 @@ def table_5_ablation(df, output_dir=DEFAULT_FIGURE_DIR, confidence=0.95):
         'observations.'.format(confidence))
 
     body = _markdown_table(
-        table.loc[:, [column for column in _ABLATION_MARKDOWN_COLUMNS
-                      if column in table.columns]])
+        _project_columns(table, _ABLATION_MARKDOWN_COLUMNS))
 
     return _write(Deliverable(
         number=5, slug='ablation_decomposition',
