@@ -78,7 +78,7 @@ p4/tofino_spike/tna_m1_flows_iat_spike.p4. Milestone 2 adds one more
 validated feature, flow_iat_mean (the App task's mean/EWMA feature),
 traced against and validated by compiling
 p4/tofino_spike/tna_m2_mean_spike.p4 -- see that entry's own comment below
-for the dependency-sharing limitation it introduces. Do not add entries
+for the dependency-sharing design. Do not add entries
 for features not yet validated by a real p4c compile (bwd_*, other
 candidates) -- resolving those is explicitly deferred to whichever later
 milestone needs them, not guessed up front.

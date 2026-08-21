@@ -1504,7 +1504,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
 # targets the TNA architecture validated in
 # p4/tofino_spike/tna_m1_flows_iat_spike.p4 (compiled successfully this
 # session with the real Tofino compiler: `p4c -b tofino -a tna`, 0 errors).
-# It is called from generate_P4_code() (line 1369) to resolve selected features
+# It is called from generate_P4_code() to resolve selected features
 # to the TNA registers, RegisterActions, and per-packet update logic needed for
 # Milestone 1's flow- and IAT-tracking design.
 # ---------------------------------------------------------------------------
@@ -1588,8 +1588,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   Resolve a selected feature set to the TNA registers, RegisterActions, and
   per-packet update logic needed for Milestone 1's flow- and IAT-tracking
   design (ground truth: p4/tofino_spike/tna_m1_flows_iat_spike.p4, compiled
-  with the real Tofino p4c). Called from generate_P4_code() (line 1369) to
-  resolve selected features and wire output into resources/p4_template.p4.
+  with the real Tofino p4c). Called from generate_P4_code() to resolve
+  selected features and wire output into resources/p4_template.p4.
 
   Parameters:
     feature_intervals: dict whose keys are selected feature names, in the
