@@ -210,11 +210,10 @@ def get_feature_thresholds(tree_nodes):
       nodes.append(tree_nodes[tree][node])
   #Join all feature thresholds (splits) that are consulted at each node
   for node in nodes:
-    try:
-      feature_thresholds.append((node["feature"],
+    if node["is_leaf"]:
+      continue
+    feature_thresholds.append((node["feature"],
                             node["threshold"]))
-    except:
-      pass
   #Sort feature thresholds by feature
   return sorted(feature_thresholds, key=lambda x: (x[0], x[1]))
 
@@ -418,11 +417,8 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
 
         #If feature is not in  the path, we add * to codeword
         if feature not in features_involved:
-          try: # Only add * if feature is used in the tree
-            for i in range(len(feature_intervals[feature])-1):
-              codeword.append('*')
-          except:
-            pass
+          for i in range(len(feature_intervals[feature])-1):
+            codeword.append('*')
 
         # If feature is in Path, generate bits
         else:
@@ -460,7 +456,6 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
           for c in code:
             codeword.append(c)
 
-      code_ = ''.join(codeword)
       codewords[tree][''.join(codeword)]=current_leaf_node['class']
 
   return codewords
@@ -652,14 +647,6 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
   '''
 
   feature_code_length = {}
-  # Obtain features involved in RF classification
-  features_involved = []
-  for tree in paths_leaf_nodes_per_tree:
-    for leaf_node in paths_leaf_nodes_per_tree[tree]:
-      for step in paths_leaf_nodes_per_tree[tree][leaf_node]["path"]:
-        features_involved.append(step["feature"])
-
-  features_involved = sorted(set(features_involved))
 
   table_entries = []
   feature_idx = 0
@@ -861,10 +848,7 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
   feature_names = feature_intervals.keys()
   codeword_bits_per_feature = {}
   for feature in feature_names:
-    try:
-      codeword_bits_per_feature[feature]=len(feature_intervals[feature])-1
-    except:
-      pass
+    codeword_bits_per_feature[feature]=len(feature_intervals[feature])-1
 
 
   action_templates = "" #Stores P4 actions
@@ -904,17 +888,15 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
 
     action_templates += classification_action_template_ddos
 
+  with open(PATH_ACTION_TEMPLATE_P4, 'r') as action_template_file:
+    action_template_source = action_template_file.read()
 
   for feature in feature_names:
-    try:
-      with open(PATH_ACTION_TEMPLATE_P4, 'r') as action_template_file:
-        action_template = action_template_file.read()
-        action_template = action_template.replace("<ACTION_NAME>","set_code_"+feature.replace(" ","_").lower())
-        action_template = action_template.replace("<ACTION_CODE_LENGTH>", str(codeword_bits_per_feature[feature]))
-        action_template = action_template.replace("<FEATURE_NAME>", feature.replace(" ","_").lower())
-        action_templates += action_template
-    except:
-      pass
+    action_template = action_template_source
+    action_template = action_template.replace("<ACTION_NAME>", "set_code_" + feature.replace(" ", "_").lower())
+    action_template = action_template.replace("<ACTION_CODE_LENGTH>", str(codeword_bits_per_feature[feature]))
+    action_template = action_template.replace("<FEATURE_NAME>", feature.replace(" ", "_").lower())
+    action_templates += action_template
 
   return action_templates
 

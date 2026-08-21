@@ -220,6 +220,17 @@ def test_generate_P4_actions_num_trees_app_1_now_named_with_tree_suffix():
   assert "bit<1> tree" not in action_templates
 
 
+def test_generate_P4_actions_missing_action_template_raises_oserror(monkeypatch):
+  # If resources/action.p4 is missing or unreadable, the error must propagate,
+  # not be silently caught. Monkeypatch to a nonexistent path and verify OSError.
+  monkeypatch.setattr(bps, "PATH_ACTION_TEMPLATE_P4", "/nonexistent/path/to/action.p4")
+  with pytest.raises(OSError):
+    generate_P4_actions(
+        FEATURE_INTERVALS_2F, num_trees_app=1, num_trees_ddos=0,
+        bit_per_classes_app=1, bit_per_classes_ddos=0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # get_table_entries
 # ---------------------------------------------------------------------------
