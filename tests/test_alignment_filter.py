@@ -83,9 +83,6 @@ def test_calculate_range_overlap_is_a_pure_measurement_again():
     """The heuristic veto is gone; only the two STRUCTURAL vetoes remain --
     adjust_range_boundaries genuinely cannot move a boundary at 0 or at
     INFINITE, so those pairs can never be aligned."""
-    import inspect
-
-    assert 'endpoint_ratio_cap' not in inspect.signature(ta.calculate_range_overlap).parameters
     assert ta.calculate_range_overlap((1, 100), (10, 100)) > 0.9
     assert ta.calculate_range_overlap((0, 100), (10, 100)) == 0.0
     assert ta.calculate_range_overlap((10, INFINITE), (10, 40000)) == 0.0

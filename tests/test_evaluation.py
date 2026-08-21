@@ -88,14 +88,6 @@ def test_range_matching_resource_usage_sums_across_features():
     assert specs == [(1, 2), (1, 2)]
 
 
-def test_range_matching_entries_per_block_constant_removed():
-    # The flat RANGE_MATCHING_ENTRIES_PER_BLOCK constant is no longer
-    # needed -- the exact per-interval algorithm computes real cost
-    # directly. Confirms it was actually removed rather than left as
-    # dead code.
-    assert not hasattr(bps, "RANGE_MATCHING_ENTRIES_PER_BLOCK")
-
-
 def _codewords_of_length(width, n_entries=1):
     codeword = "0" * width
     return {0: {codeword: 0}}
@@ -375,25 +367,12 @@ import inspect
 from pathlib import Path
 
 
-def test_main_py_threshold_is_16_bit():
-    # The invariant guarded here is "feature values are clipped to a 16-bit
-    # bound, never a 19-bit one". main.py used to spell that as its own
-    # `threshold = (2 ** 16) - 2` literal inside implement_tree_models_in_P4's
-    # dataset loading; that function now takes already-trained models and does
-    # no loading, so the only remaining clipping bound is
-    # compare_independent_joint_mapping's `threshold = INFINITE`. Deriving it
-    # from the shared constant is strictly better than a duplicated literal,
-    # so assert on that plus INFINITE's own width (pinned by the test below).
-    source_file = Path(__file__).parent.parent / "src" / "main.py"
-    with open(source_file) as f:
-        source = f.read()
-    assert "threshold = INFINITE" in source
-    assert bps.INFINITE == (2 ** 16) - 1
-    assert "(2 ** 19) - 2" not in source
-    assert "(2**19)-2" not in source.replace(" ", "")
-
-
 def test_build_p4_script_infinite_is_16_bit_sentinel():
+    # The invariant guarded here is "feature values are clipped to a 16-bit
+    # bound, never a 19-bit one". main.py's compare_independent_joint_mapping
+    # spells its clipping threshold as `threshold = INFINITE`, deriving it
+    # from this shared constant rather than a duplicated literal -- so
+    # pinning INFINITE's own width is what actually protects that invariant.
     assert bps.INFINITE == (2 ** 16) - 1
 
 

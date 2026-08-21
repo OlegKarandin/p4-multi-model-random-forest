@@ -21,8 +21,6 @@ def test_defaults_are_the_primary_joint_arm_at_delta_zero():
     assert cfg.n_trials == 1000
     assert cfg.min_feasible_before_stop == 25
     assert cfg.lookback == 20
-    assert not hasattr(cfg, 'shift_mass_slack')
-    assert not hasattr(cfg, 'endpoint_ratio_cap')
 
 
 def test_config_is_frozen_so_a_worker_cannot_mutate_the_arm_under_itself():

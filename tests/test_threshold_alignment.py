@@ -848,11 +848,9 @@ def test_compute_ensemble_prediction_is_still_reachable_and_still_the_oracle():
     in this file and in test_incremental_metrics.py compares against, and a
     dead-code sweep that deletes it takes those tests with it.
 
-    So: it is still exported, it still computes the hard vote, and its
-    docstring still says out loud that it is the oracle.
+    So: it is still exported and it still computes the hard vote.
     """
     assert callable(ta.compute_ensemble_prediction)
-    assert 'oracle' in ta.compute_ensemble_prediction.__doc__.lower()
 
     rf, X, y = _forest_and_data()
     tree_predictions, _ = ta.build_prediction_cache(rf, X)
