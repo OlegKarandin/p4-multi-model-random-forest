@@ -125,14 +125,23 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
         raise ValueError(f"Unknown encoding for hardware validation: {encoding!r}")
 
     filename = f"split{split_idx}_{method}_k{k}.p4"
-    written_path = generate_P4_code(
-        3, 2, model_app, model_ddos,
-        feature_intervals_app=feature_intervals_app,
-        feature_intervals_ddos=feature_intervals_ddos,
-        output_dir=hardware_output_dir, output_filename=filename,
-        selected_features_app=feature_names_app,
-        selected_features_ddos=feature_names_ddos,
-        config=config)
+    try:
+        written_path = generate_P4_code(
+            3, 2, model_app, model_ddos,
+            feature_intervals_app=feature_intervals_app,
+            feature_intervals_ddos=feature_intervals_ddos,
+            output_dir=hardware_output_dir, output_filename=filename,
+            selected_features_app=feature_names_app,
+            selected_features_ddos=feature_names_ddos,
+            config=config)
+    except ValueError as e:
+        # No register catalog entry for some selected feature (F2). Hardware
+        # validation is unavailable for this feature set; the row records why
+        # rather than the split dying. FEATURE_REGISTER_CATALOG only covers 4
+        # of this project's 18 real features today (Phase 1), so this is
+        # currently the COMMON outcome for most trials, not a rare one --
+        # see _run_elimination's per-split 'unavailable' count.
+        return ('unavailable', str(e))
     log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
     return compile_p4_async(written_path, log_dir)
 
@@ -144,7 +153,22 @@ def _join_pending_compile(handle, row):
     differ only in when they call this (and, for
     `_advance_pending_compile`, what happens when there is nothing pending
     yet).
+
+    F2 degrade path: `handle` is normally the raw Future
+    `_kickoff_hardware_validation` got back from `compile_p4_async`, but it
+    is instead the 2-tuple `('unavailable', reason)` when that call caught a
+    ValueError from `generate_P4_code` (some selected feature has no
+    FEATURE_REGISTER_CATALOG entry) -- there is no real compile to join in
+    that case, so `stages_real`/`tcam_real` stay None and `reason` (already a
+    human-readable string) is written into `compile_errors` directly, rather
+    than the real compiler's int error count.
     """
+    if isinstance(handle, tuple) and handle[0] == 'unavailable':
+        reason = handle[1]
+        row['stages_real'] = None
+        row['tcam_real'] = None
+        row['compile_errors'] = reason
+        return
     compile_result = handle.result(timeout=600)
     row['stages_real'] = compile_result.stages
     row['tcam_real'] = compile_result.tcam
@@ -340,6 +364,14 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     # ranking. None until the first feasible iteration.
     carried_app = None
     carried_ddos = None
+    # F2 degrade path: counts how many of this split's iterations landed on
+    # the 'unavailable' branch (some selected feature had no
+    # FEATURE_REGISTER_CATALOG entry). Reported once at the end of the split
+    # (see below), not per-iteration -- with only 4 of 18 real features
+    # catalogued today (Phase 1), most iterations take this branch, and a
+    # per-trial log line for that would be pure spam until Phase 2 grows the
+    # catalog.
+    n_unavailable = 0
 
     while True:
         k = len(remaining_app)
@@ -415,6 +447,8 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
         pending_next = _kickoff_hardware_validation(
             validate_on_hardware, hardware_output_dir, split_idx, method, k,
             model_app, model_ddos, names_app, names_ddos, encoding, config=config)
+        if isinstance(pending_next, tuple) and pending_next[0] == 'unavailable':
+            n_unavailable += 1
         if pending_next is not None:
             pending_next = (pending_next, rows[-1])
         pending_previous = _advance_pending_compile(rows[-1], pending_previous, pending_next)
@@ -455,6 +489,14 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             remaining_ddos, names_ddos, carried_ddos)
 
     _join_final_pending_compile(pending_previous)
+
+    if n_unavailable > 0:
+        print(
+            f"[split {split_idx} arm={arm}] hardware validation unavailable for "
+            f"{n_unavailable} iteration(s) (uncatalogued feature -- see F2 in "
+            f"generate_P4_code)."
+        )
+
     return rows
 
 

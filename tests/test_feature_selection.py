@@ -137,9 +137,17 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
     and the last iteration (filled in by the post-loop final join, since
     there is no next iteration to overlap with).
 
-    Uses 4 starting features so both the disjoint ('single') and joint
-    ('multi') loops each run exactly 4 iterations (k=4,3,2,1), touching all
-    three cases. `p4_compile.compile_p4_async` is faked to encode the k it
+    Uses 3 starting features -- FEATURE_REGISTER_CATALOG's three
+    dependency-free entries (flow_iat_max, fwd_iat_max,
+    fwd_packet_length_max; the catalog's fourth entry, flow_iat_mean,
+    requires flow_iat_max to also survive elimination alongside it -- see
+    generate_P4_registers_and_apply's guard -- so it's avoided here to keep
+    this test's real-compile path independent of elimination order) -- so
+    both the disjoint ('single') and joint ('multi') loops each run exactly
+    3 iterations (k=3,2,1), touching all three splice cases: first (no
+    pending yet), middle (fills the previous iteration's pending AND kicks
+    its own), and last (filled by the post-loop final join).
+    `p4_compile.compile_p4_async` is faked to encode the k it
     was called for (parsed back out of the .p4 filename
     `_kickoff_hardware_validation` builds) into its returned CompileResult,
     so each row can be checked against the specific compile result that
@@ -156,7 +164,8 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
     from sklearn.ensemble import RandomForestClassifier
     from src.p4gen import build_p4_script as bps
 
-    X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=40, n_features=4)
+    X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=40, n_features=3)
+    _CATALOG_FEATURES = ["flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"]
 
     def _fake_train(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
                      val_select_A, val_select_B, features_A, features_B,
@@ -198,13 +207,13 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
          patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_single = fs._process_single_split(
             split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            max_blocks=50, feature_names=["f0", "f1", "f2", "f3"],
+            max_blocks=50, feature_names=_CATALOG_FEATURES,
             random_state=42, arm='independent',
             validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
         )
         result_multi = fs._process_single_split(
             split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            max_blocks=50, feature_names=["f0", "f1", "f2", "f3"],
+            max_blocks=50, feature_names=_CATALOG_FEATURES,
             random_state=42, arm='joint',
             validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
         )
@@ -217,11 +226,11 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
     multi_rows = sorted((r for r in result_multi.results if r['method'] == 'multi'),
                          key=lambda r: -r['k'])
 
-    # 4 starting features -> k=4,3,2,1 for each loop: first iteration,
-    # (at least one) middle iteration, and the last (post-loop-join)
-    # iteration are all exercised.
-    assert [r['k'] for r in single_rows] == [4, 3, 2, 1]
-    assert [r['k'] for r in multi_rows] == [4, 3, 2, 1]
+    # 3 starting features -> k=3,2,1 for each loop: first iteration, the
+    # middle iteration, and the last (post-loop-join) iteration are all
+    # exercised.
+    assert [r['k'] for r in single_rows] == [3, 2, 1]
+    assert [r['k'] for r in multi_rows] == [3, 2, 1]
 
     # Disjoint ('single') rows: one combined program per k -- 100+k.
     for row in single_rows:
@@ -278,7 +287,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
         result_kwargs = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, arm=arm,
-            feature_names=["f0", "f1"], random_state=42,
+            feature_names=["flow_iat_max", "fwd_iat_max"], random_state=42,
             validate_on_hardware=True, hardware_output_dir=kwargs_dir,
         )
 
@@ -288,7 +297,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
         result_config = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, arm=arm,
-            feature_names=["f0", "f1"], random_state=42,
+            feature_names=["flow_iat_max", "fwd_iat_max"], random_state=42,
             config=cfg,
         )
 
@@ -312,6 +321,77 @@ def test_kickoff_hardware_validation_returns_none_when_disabled():
     ) is None
 
 
+def test_kickoff_hardware_validation_uncatalogued_feature_returns_unavailable(tmp_path):
+    # F2: generate_P4_code raises ValueError when a selected feature has no
+    # FEATURE_REGISTER_CATALOG entry. _kickoff_hardware_validation must
+    # catch that and degrade to ('unavailable', reason) instead of letting
+    # the split die -- "f0"/"f1" are not catalogued (the real catalog only
+    # has flow_iat_max, fwd_iat_max, fwd_packet_length_max, flow_iat_mean).
+    X = np.random.RandomState(0).randint(0, 65535, size=(60, 2))
+    y_app = np.random.RandomState(0).randint(0, 3, size=60)
+    y_ddos = np.random.RandomState(1).choice([-1, 1], size=60)
+    clf_app = _fit_tiny_rf(X, y_app, seed=0)
+    clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
+
+    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
+        handle = fs._kickoff_hardware_validation(
+            True, str(tmp_path) + "/", 0, 'single', 2,
+            clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], 'disjoint')
+
+    assert mock_compile.call_count == 0  # never reached: caught before compiling
+    assert handle[0] == 'unavailable'
+    assert isinstance(handle[1], str) and handle[1]  # non-empty reason
+    assert "f0" in handle[1] or "f1" in handle[1]
+
+
+def test_join_pending_compile_unavailable_leaves_stages_and_tcam_none():
+    # Direct unit test of _join_pending_compile's F2 branch: an
+    # ('unavailable', reason) handle must not be treated as a real Future
+    # (calling .result() on the tuple would AttributeError) -- stages_real/
+    # tcam_real stay None and the reason lands verbatim in compile_errors.
+    row = {}
+    fs._join_pending_compile(('unavailable', 'no catalog entry for X'), row)
+    assert row['stages_real'] is None
+    assert row['tcam_real'] is None
+    assert row['compile_errors'] == 'no catalog entry for X'
+
+
+def test_process_single_split_uncatalogued_feature_degrades_not_aborts(tmp_path):
+    # Step 4's end-to-end guarantee: a split whose feature set includes an
+    # uncatalogued feature must still COMPLETE (validate_on_hardware=True)
+    # -- every row's hardware-validation fields record 'unavailable'
+    # (stages_real/tcam_real None, a non-empty reason in compile_errors)
+    # instead of the whole split raising.
+    from sklearn.ensemble import RandomForestClassifier
+    from src.p4gen import build_p4_script as bps
+
+    X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=40, n_features=2)
+
+    def _fake_train(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                     val_select_A, val_select_B, features_A, features_B,
+                     max_blocks, encoding, cfg, warm_start_params=None):
+        model_A = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X_A, y_A))
+        model_B = bps.dt_thresholds_float_to_int(
+            RandomForestClassifier(n_estimators=1, max_depth=2, random_state=1).fit(X_B, y_B))
+        return _stub_train_result(model_A, model_B)
+
+    with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train):
+        result = fs._process_single_split(
+            split_idx=0, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+            max_blocks=50, feature_names=["f0", "f1"],
+            random_state=42, arm='independent',
+            validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
+        )
+
+    assert result.error is None
+    assert len(result.results) > 0
+    for row in result.results:
+        assert row['stages_real'] is None
+        assert row['tcam_real'] is None
+        assert isinstance(row['compile_errors'], str) and row['compile_errors']
+
+
 def test_kickoff_hardware_validation_joint_makes_one_compile_call(tmp_path):
     X = np.random.RandomState(0).randint(0, 65535, size=(60, 2))
     y_app = np.random.RandomState(0).randint(0, 3, size=60)
@@ -325,7 +405,7 @@ def test_kickoff_hardware_validation_joint_makes_one_compile_call(tmp_path):
 
         handle = fs._kickoff_hardware_validation(
             True, str(tmp_path) + "/", 0, 'multi', 2,
-            clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], 'joint')
+            clf_app, clf_ddos, ["flow_iat_max", "fwd_iat_max"], ["flow_iat_max", "fwd_iat_max"], 'joint')
 
     assert mock_compile.call_count == 1
     result = handle.result(timeout=1)
@@ -350,7 +430,7 @@ def test_kickoff_hardware_validation_disjoint_makes_one_compile_call_and_writes_
 
         handle = fs._kickoff_hardware_validation(
             True, str(tmp_path) + "/", 0, 'single', 2,
-            clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], 'disjoint')
+            clf_app, clf_ddos, ["flow_iat_max", "fwd_iat_max"], ["flow_iat_max", "fwd_iat_max"], 'disjoint')
 
     assert mock_compile.call_count == 1
     # One combined .p4 file was actually written to disk (not two).
@@ -414,13 +494,13 @@ def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
 
         fs._kickoff_hardware_validation(
             True, str(tmp_path) + "/", 0, method, 2,
-            clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], encoding, config=cfg)
+            clf_app, clf_ddos, ["flow_iat_max", "fwd_iat_max"], ["flow_iat_max", "fwd_iat_max"], encoding, config=cfg)
 
     assert spy_generate.call_count == 1
     kwargs = spy_generate.call_args.kwargs
     assert kwargs["config"] is cfg
-    assert kwargs["selected_features_app"] == ["f0", "f1"]
-    assert kwargs["selected_features_ddos"] == ["f0", "f1"]
+    assert kwargs["selected_features_app"] == ["flow_iat_max", "fwd_iat_max"]
+    assert kwargs["selected_features_ddos"] == ["flow_iat_max", "fwd_iat_max"]
 
     text = (tmp_path / "split0_{}_k2.p4".format(method)).read_text()
     # The generated program declares no default action at all, discount or not.
@@ -447,7 +527,7 @@ def test_kickoff_hardware_validation_without_config_is_unchanged(tmp_path):
 
         fs._kickoff_hardware_validation(
             True, str(tmp_path) + "/", 0, 'single', 2,
-            clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], 'disjoint')
+            clf_app, clf_ddos, ["flow_iat_max", "fwd_iat_max"], ["flow_iat_max", "fwd_iat_max"], 'disjoint')
 
     text = (tmp_path / "split0_single_k2.p4").read_text()
     assert "const default_action" not in text
@@ -503,13 +583,17 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
          patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async), \
          patch.object(fs, "_kickoff_hardware_validation",
                       side_effect=real_kickoff) as spy_kickoff:
+        # FEATURE_REGISTER_CATALOG's three dependency-free entries (see
+        # test_process_single_split_splices_compile_results_onto_correct_iteration
+        # above for why flow_iat_mean is avoided here).
+        catalog_features = ["flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"]
         result_single = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            max_blocks=50, feature_names=["f0", "f1", "f2"],
+            max_blocks=50, feature_names=catalog_features,
             random_state=42, arm='independent', config=cfg)
         result_multi = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
-            max_blocks=50, feature_names=["f0", "f1", "f2"],
+            max_blocks=50, feature_names=catalog_features,
             random_state=42, arm='joint', config=cfg)
 
     assert result_single.error is None
