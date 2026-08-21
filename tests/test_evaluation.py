@@ -5,6 +5,24 @@ from src.p4gen import build_p4_script as bps
 import pytest
 
 
+def test_accuracy_metrics_rejects_unknown_task():
+    # Before this guard, an unrecognized `task` fell through the if/elif with
+    # `lab` never assigned, and blew up with an UnboundLocalError deep inside
+    # f1_score(...) instead of a clear error at the call site.
+    with pytest.raises(ValueError):
+        ev.accuracy_metrics([0, 1], [0, 1], 'not-a-task')
+
+
+def test_accuracy_metrics_app_and_ddos_still_work():
+    accuracy, f1score = ev.accuracy_metrics([0, 1, 2], [0, 1, 2], 'app')
+    assert accuracy == 1.0
+    assert f1score == 1.0
+
+    accuracy, f1score = ev.accuracy_metrics([-1, 1], [-1, 1], 'ddos')
+    assert accuracy == 1.0
+    assert f1score == 1.0
+
+
 def test_range_entry_count_reproduces_10_300_worked_example():
     # reviews/cited_papers/tofino_results_2.odt.pdf slide 11: matching
     # [10,300] on a 16-bit field needs exactly 4 physical TCAM entries

@@ -8,16 +8,18 @@ def accuracy_metrics(y_true, y_pred, task):
 
     if task == 'app':
         lab = [0, 1, 2]
-        av = 'weighted'
 
     elif task == 'ddos':
         lab = [-1, 1]
-        av = 'weighted'
+
+    else:
+        raise ValueError(
+            "accuracy_metrics: unknown task {!r}; expected 'app' or 'ddos'".format(task))
 
     accuracy = mt.accuracy_score(y_true, y_pred)
-    #precision = mt.precision_score(y_true, y_pred, labels=lab, average=av) #F: average=None gives per-class results
-    #recall = mt.recall_score(y_true, y_pred, labels=lab, average=av)
-    f1score = mt.f1_score(y_true, y_pred, labels=lab, average=av)
+    #precision = mt.precision_score(y_true, y_pred, labels=lab, average='weighted') #F: average=None gives per-class results
+    #recall = mt.recall_score(y_true, y_pred, labels=lab, average='weighted')
+    f1score = mt.f1_score(y_true, y_pred, labels=lab, average='weighted')
 
     return accuracy, f1score
 
