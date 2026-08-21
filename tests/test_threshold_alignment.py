@@ -701,7 +701,7 @@ def _golden_alignment_pair(n=300):
 _ALIGNMENT_GOLDEN = {
     0.0: {
         'stats': {'attempted': 21, 'accepted': 13,
-                  'intervals_before': 95, 'intervals_after': 82},
+                  'intervals_before': 91, 'intervals_after': 73},
         't1': [
             [49965, 37970, -2, 60939, 30237, -2, -2, -2, 29400, -2, 33384, -2,
              -2],
@@ -736,7 +736,7 @@ _ALIGNMENT_GOLDEN = {
     },
     0.05: {
         'stats': {'attempted': 21, 'accepted': 20,
-                  'intervals_before': 95, 'intervals_after': 79},
+                  'intervals_before': 91, 'intervals_after': 68},
         't1': [
             [49965, 37970, -2, 60939, 30237, -2, -2, -2, 29400, -2, 33384, -2,
              -2],
@@ -1060,27 +1060,38 @@ def test_the_partition_invariant_survives_the_multi_round_recompute(monkeypatch)
                 assert next_min == prev_max + 1, (feature_idx, intervals)
 
 
-def test_a_single_accepted_move_can_RAISE_the_joint_interval_count():
-    """Counterexample A, encoded verbatim (controller ruling P3b-4).
+def test_a_single_accepted_move_can_leave_the_joint_interval_count_flat():
+    """Counterexample A, re-derived under the corrected pooled-threshold
+    joint_interval_count (controller ruling P3b-4 named this counterexample;
+    the arithmetic below is new -- the old union-of-tuples version claimed a
+    RAISE from 6 to 7, which does not survive the fix: see
+    joint_interval_count's docstring).
 
-    `stats['intervals_after'] <= stats['intervals_before']` is asserted a few
-    tests over and reads like a theorem. It is not one, and C3 -- which
-    evaluates strictly more candidates -- raises the chance of tripping it. If
-    it ever does trip, this is the mechanism, and it is a pre-existing latent
-    property surfacing rather than a C3 bug.
+    Under the corrected definition, `stats['intervals_after'] <=
+    stats['intervals_before']` IS a theorem: joint_interval_count is the size
+    of the common refinement of both models' pooled thresholds per feature,
+    and every write adjust_range_boundaries/update_neighboring_ranges_and_index
+    perform relocates a threshold to a value drawn from {min1, min2, max1,
+    max2} of the CURRENT candidate pair -- i.e. a value already present in
+    one of the two models' current threshold sets for that feature, never a
+    new one. So the pooled threshold SET for a feature can only shrink or
+    stay the same, never grow, and neither can the interval count derived
+    from it. (Verified empirically too: 240 alignment runs over varied
+    forests/deltas in this task's investigation produced zero raises, all
+    flat or strictly decreasing.)
 
-    joint = |I1| + |I2| - |set(I1) & set(I2)|, and |I1|, |I2| are constant
-    (alignment relocates thresholds, it never adds or deletes one). The
-    aligned pair always contributes +1 to the intersection, but the boundary
-    shift also rewrites neighbours: at most one of {L1, L2} changes (the
-    target min is max(s1, s2), which leaves the larger-start side's left
-    neighbour alone) and at most one of {R1, R2}. So up to TWO previously
-    matching tuples are destroyed against ONE gained -- net -1 in the
-    intersection, hence +1 in the joint count.
+    It is NOT strictly decreasing on every move, though -- this is the
+    counterexample for that weaker claim, and it is what
+    MAX_RECOMPUTE_ROUNDS's docstring cites as the reason interval count can't
+    serve as a per-round descent measure that bounds the round count: I1's
+    two thresholds {9, 49} are already a SUBSET of I2's {9, 19, 44, 49}
+    before the move, so the pooled set (and the joint count) is driven
+    entirely by I2 and does not move even though a real move is accepted and
+    I1's own tiling changes shape.
     """
     I1 = [(0, 9), (10, 49), (50, INFINITE)]
     I2 = [(0, 9), (10, 19), (20, 44), (45, 49), (50, INFINITE)]
-    assert ta.joint_interval_count({0: I1}, {0: I2}) == 6
+    assert ta.joint_interval_count({0: I1}, {0: I2}) == 5
 
     range1, range2 = (10, 49), (20, 44)
     assert ta.calculate_range_overlap(range1, range2) == pytest.approx(0.6153846)
@@ -1094,7 +1105,7 @@ def test_a_single_accepted_move_can_RAISE_the_joint_interval_count():
     ta.update_neighboring_ranges_and_index(I1, 1, range1, target, 0, threshold_index)
 
     assert I1 == [(0, 19), (20, 44), (45, INFINITE)]
-    assert ta.joint_interval_count({0: I1}, {0: I2}) == 7
+    assert ta.joint_interval_count({0: I1}, {0: I2}) == 5
 
 
 def _align_golden_pair(delta_rel, cap, monkeypatch):

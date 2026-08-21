@@ -23,12 +23,15 @@ def rel_deg(before, after):
 # `progressed` BEFORE the cap is consulted, which is what makes a generous cap
 # close to free -- an unused round costs nothing at all, since it never runs.
 #
-# The cap exists because termination cannot be PROVED: no monotone measure
-# exists on interval count, list length, or union size (a single accepted move
-# can leave joint_interval_count flat or even RAISE it -- see
-# test_a_single_accepted_move_can_RAISE_the_joint_interval_count), so a
-# genuinely cycling value-pair sequence has to be caught rather than ruled
-# out.
+# The cap exists because termination cannot be PROVED: list length is not
+# strictly decreasing per round, and even joint_interval_count -- which,
+# under the corrected pooled-threshold definition (see its own docstring),
+# is provably non-increasing move-by-move, since every write relocates a
+# threshold to a value already present in the pooled set rather than
+# introducing a new one -- can go an entire round without decreasing at all
+# (see test_a_single_accepted_move_can_leave_the_joint_interval_count_flat),
+# so a genuinely cycling value-pair sequence has to be caught rather than
+# ruled out.
 #
 # Why 32 and not 8 (P3b T3 measurement, ruling P3b-6, superseded by the P3b
 # Task 5 measurement below). Measured with the cap lifted to 64 so the
@@ -88,21 +91,42 @@ def ratchet(before, after):
 
 def joint_interval_count(intervals1, intervals2):
     """Total TCAM-relevant interval count under JOINT encoding: for a feature
-    both models split on, a shared interval list needs only ONE set of TCAM
-    entries -- so the count is the size of the UNION of the two models'
-    interval tuples, not their sum. For a feature only one model splits on,
-    there is nothing to share, so its own interval count is added directly.
+    both models split on, the two models' TCAM entries are pooled into one
+    table keyed on that feature, so the count is the size of the COMMON
+    REFINEMENT of both models' thresholds for that feature -- exactly what
+    evaluation.py's multi_model_memory_evaluation builds (via
+    get_feature_intervals_from_thresholds) from the pooled thresholds of the
+    merged tree set. For a feature only one model splits on, there is nothing
+    to pool, so its own interval count is added directly.
 
-    This -- not a flat sum of each model's own interval count -- is the
-    quantity that actually shrinks when alignment succeeds: a successful move
-    makes two previously-different interval lists for the same feature
-    IDENTICAL, collapsing their union. Alignment only ever relocates a
-    threshold, never deletes one, so each model's OWN interval count never
-    changes; a stat built from per-model sums alone is structurally constant
-    and cannot reflect any TCAM savings at all.
+    This is NOT the union of the two models' interval TUPLES: pooling
+    thresholds {10} and {5} on the same feature partitions it into 3 ranges
+    -- (0,5),(6,10),(11,INF) -- but as tuples (0,10) != (0,5) and
+    (11,INF) != (6,INF), so a tuple union overcounts to 4. The two answers
+    coincide only when both models already split the feature at exactly the
+    same points.
+
+    This -- not a flat sum of each model's own interval count, and not the
+    tuple union either -- is the quantity that actually shrinks when
+    alignment succeeds: a successful move relocates one model's threshold to
+    coincide with the other's, shrinking the pooled threshold SET for that
+    feature. Alignment only ever relocates a threshold, never deletes one, so
+    each model's OWN interval count never changes; a stat built from
+    per-model sums alone is structurally constant and cannot reflect any TCAM
+    savings at all.
     """
     common = set(intervals1) & set(intervals2)
-    total = sum(len(set(intervals1[f]) | set(intervals2[f])) for f in common)
+
+    pooled = []
+    for f in common:
+        thresholds = set()
+        for intervals in (intervals1[f], intervals2[f]):
+            thresholds.update(hi for _, hi in intervals if hi != INFINITE)
+        pooled.extend((f, t) for t in thresholds)
+    pooled.sort()
+
+    total = sum(len(v) for v in
+                get_feature_intervals_from_thresholds(pooled).values())
     total += sum(len(v) for f, v in intervals1.items() if f not in common)
     total += sum(len(v) for f, v in intervals2.items() if f not in common)
     return total

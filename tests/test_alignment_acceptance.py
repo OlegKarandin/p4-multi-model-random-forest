@@ -2,7 +2,8 @@
 import numpy as np
 import pytest
 
-from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
+from src.p4gen.build_p4_script import (
+    INFINITE, dt_thresholds_float_to_int, get_feature_intervals_from_thresholds)
 from src.training import threshold_alignment as ta
 
 # (acc_app, f1_app, acc_ddos, f1_ddos). App error ~0.22, DDoS error ~0.04 --
@@ -136,6 +137,18 @@ def test_alignment_reports_its_acceptance_rate_and_interval_counts():
     for stats in (stats_strict, stats_loose):
         assert set(stats) == {'attempted', 'accepted', 'intervals_before', 'intervals_after'}
         assert stats['accepted'] <= stats['attempted']
+        # #27: under the OLD union-of-interval-tuples joint_interval_count this
+        # read like a theorem but was not one (a single accepted move could
+        # RAISE it -- see the since-rewritten
+        # test_a_single_accepted_move_can_leave_the_joint_interval_count_flat
+        # in test_threshold_alignment.py). Under the corrected pooled-threshold
+        # definition it genuinely IS an invariant, not merely a fixture
+        # coincidence: every write in align_rf_thresholds relocates a
+        # threshold to a value already present in one of the two models'
+        # CURRENT threshold sets for that feature (never a new one), so the
+        # pooled threshold set -- and the interval count derived from it --
+        # can only shrink or stay flat, per feature and therefore in total.
+        # Kept as a real regression guard, not removed.
         assert stats['intervals_after'] <= stats['intervals_before']
 
     # NOT delta-invariant in general, and that's expected rather than a bug.
@@ -153,27 +166,88 @@ def test_alignment_reports_its_acceptance_rate_and_interval_counts():
     assert stats_loose['accepted'] >= stats_strict['accepted']
 
 
-def test_joint_interval_count_prefers_the_union_over_the_sum():
+def test_joint_interval_count_prefers_the_common_refinement_over_the_sum():
     """The bug this replaces: summing each model's OWN interval count can
     never move, since alignment relocates a threshold, it never deletes one.
-    The TCAM-relevant quantity is the union size for features both models
-    split on -- which DOES shrink once alignment makes two interval lists
-    identical."""
+    The TCAM-relevant quantity, for a feature both models split on, is the
+    size of the COMMON REFINEMENT of both models' thresholds -- i.e. what you
+    get by pooling both models' threshold values for that feature and
+    re-partitioning, exactly as evaluation.py's joint-encoding cost model
+    does over the merged tree set (NOT the union of the two models' interval
+    TUPLES, which overcounts: {10}-only and {5}-only both cut the same axis
+    into thirds once pooled -- (0,5),(6,10),(11,INF) -- but as tuples
+    (0,10) != (0,5) and (11,INF) != (6,INF), so a naive union sees 4 distinct
+    tuples where the true partition has 3)."""
     # Feature 0: both models split it, currently DIFFERENT ranges (no sharing
-    # possible yet) -- union is all 4 distinct tuples.
+    # possible yet). Pooled thresholds {100, 150} -> 3 intervals
+    # ((0,100),(101,150),(151,65535)), not the 4-tuple union.
     before1 = {0: [(0, 100), (101, 65535)]}
     before2 = {0: [(0, 150), (151, 65535)]}
-    assert ta.joint_interval_count(before1, before2) == 4
+    assert ta.joint_interval_count(before1, before2) == 3
 
     # After alignment succeeds, both models split feature 0 identically --
-    # union collapses to the 2 shared tuples. This is the real savings signal
-    # a flat per-model sum (2 + 2 = 4, unchanged) could never show.
+    # pooled thresholds collapse to {100} -> 2 intervals. This is the real
+    # savings signal a flat per-model sum (2 + 2 = 4, unchanged) could never
+    # show.
     after1 = {0: [(0, 100), (101, 65535)]}
     after2 = {0: [(0, 100), (101, 65535)]}
     assert ta.joint_interval_count(after1, after2) == 2
 
     # A feature only one model splits on can't be shared -- added directly,
-    # not unioned away.
+    # not pooled away.
     only1 = {0: [(0, 100), (101, 65535)], 1: [(0, 65535)]}
     only2 = {0: [(0, 100), (101, 65535)]}
     assert ta.joint_interval_count(only1, only2) == 2 + 1
+
+
+def test_joint_interval_count_review_counterexample_10_and_5():
+    """The review's worked counterexample, kept verbatim as a unit case:
+    thresholds {10} and {5} on the same feature pool into 3 intervals under
+    the true common refinement -- (0,5),(6,10),(11,INF) -- not 4."""
+    intervals1 = {0: [(0, 10), (11, INFINITE)]}
+    intervals2 = {0: [(0, 5), (6, INFINITE)]}
+    assert ta.joint_interval_count(intervals1, intervals2) == 3
+
+
+def test_joint_interval_count_matches_the_pooled_threshold_cost_model():
+    """The stat and the real joint-encoding cost model
+    (evaluation.py's multi_model_memory_evaluation, which pools both models'
+    thresholds through get_feature_intervals_from_thresholds over the merged
+    tree set) must agree BY CONSTRUCTION: build the expected value completely
+    independently -- read every (feature, threshold) split straight off both
+    forests' raw trees, pool them, and run them through the exact function
+    the cost model calls -- rather than trusting joint_interval_count's own
+    internals to have gotten it right."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    rng = np.random.default_rng(21)
+    n = 300
+    X1 = np.clip(rng.integers(0, 90000, size=(n, 4)), 0, INFINITE).astype(float)
+    y1 = np.array([c % 3 for c in range(n)])
+    X2 = np.clip(rng.integers(0, 90000, size=(n, 4)), 0, INFINITE).astype(float)
+    y2 = np.where(np.arange(n) % 2 == 0, -1, 1)
+
+    rf1 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=5, max_depth=5, min_samples_leaf=10, random_state=2).fit(X1, y1))
+    rf2 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=5, max_depth=5, min_samples_leaf=10, random_state=3).fit(X2, y2))
+
+    # Independently reconstruct the pooled (feature, threshold) list straight
+    # from both forests' raw tree arrays -- deliberately NOT going through
+    # extract_feature_intervals or joint_interval_count for this half of the
+    # computation, so the expected value is derived a genuinely different way
+    # than the code under test.
+    pooled = []
+    for estimator in list(rf1.estimators_) + list(rf2.estimators_):
+        tree = estimator.tree_
+        for node_idx in range(tree.node_count):
+            if tree.feature[node_idx] >= 0:
+                pooled.append((int(tree.feature[node_idx]),
+                               int(round(tree.threshold[node_idx]))))
+    pooled.sort()
+    expected = sum(len(v) for v in
+                   get_feature_intervals_from_thresholds(pooled).values())
+
+    intervals1 = ta.extract_feature_intervals(rf1)
+    intervals2 = ta.extract_feature_intervals(rf2)
+    assert ta.joint_interval_count(intervals1, intervals2) == expected
