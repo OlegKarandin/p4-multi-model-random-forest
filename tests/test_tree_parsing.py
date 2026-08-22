@@ -172,142 +172,31 @@ def test_shallow_multi_tree_forest_classifies_identically_to_sklearn(seed):
 
 
 # ---------------------------------------------------------------------------
-# Old vs. new get_nodes (Task 15)
+# Old vs. new get_nodes (Task 15) -- historical
 #
 # get_nodes() used to render each tree with export_text and re-parse the
-# text (a state machine keyed on "|" counts and the literal strings "class"
-# and "<="). It now reads estimator.tree_'s C-level arrays directly. The old
-# implementation is kept as _get_nodes_from_text (fed pre-rendered text) so
-# this suite can compare the two against real fitted forests and prove they
-# agree, node dict for node dict, before _get_nodes_from_text is deleted in
-# the following commit.
+# text; it now reads estimator.tree_'s C-level arrays directly. Commit
+# 838acf6 ("test: characterise get_nodes against a direct tree_ walk") added
+# a suite here that ran both implementations (the new get_nodes and the old
+# one, kept temporarily as _get_nodes_from_text) against real fitted forests
+# -- several n_estimators/max_depth combinations, including depths deep
+# enough to trip export_text's own max_depth=10 truncation default -- and
+# proved their node dicts agree, reconciling three differences: "class" as
+# export_text's printed string vs. get_nodes' int index (asserted explicitly
+# via int(old["class"]) == new["class"]), node-id assignment order (proved
+# to coincide, not assumed -- both are pre-order walks of the same tree),
+# and a depth-numbering base (export_text's rendered root already carries
+# one "|", so the old depth was 1-based against tree_'s 0-based depth --
+# confirmed dead weight no caller anywhere reads back). A dedicated test in
+# that commit also fed export_text's OWN default (max_depth=10, not sized to
+# the tree) into the old parser to prove it silently drops real leaves past
+# that depth, while get_nodes (reading tree_ directly) does not.
 #
-# Two shape differences are deliberate and reconciled explicitly below:
-#   - "class": _get_nodes_from_text keeps export_text's printed STRING
-#     ("2.0"); get_nodes returns int(np.argmax(...)), a class INDEX. Asserted
-#     via int(old["class"]) == new["class"], not skipped.
-#   - node ids: _get_nodes_from_text numbers nodes in export_text's print
-#     order (a fresh counter); get_nodes uses sklearn's own tree_ node ids.
-#     Both are pre-order traversals of the same tree, so they coincide --
-#     proved below by asserting the two node dicts have IDENTICAL key sets
-#     across every forest tested, not assumed.
-#
-# A third, non-obvious difference was found while writing this suite and is
-# reconciled the same way: "depth" is off by a constant +1 in the old
-# scheme. export_text's rendered root line already contains one "|"
-# character (from its "|--- " branch marker), and _get_nodes_from_text's
-# depth is literally line.count("|"), so its root is depth 1; tree_'s own
-# depth is 0-based, so get_nodes' root is depth 0 -- every node down the
-# tree inherits the same +1 offset. This is NOT one of the two shape
-# differences the brief names, so it is called out here rather than folded
-# in silently. It cannot affect any observable output: grepping the whole
-# tree for node["depth"]/node['depth'] usage outside get_nodes and
-# _get_nodes_from_text themselves (both here and across build_p4_script.py,
-# evaluation.py, main.py) turns up nothing -- "depth" is write-only
-# bookkeeping neither implementation's own callers ever read back.
+# _get_nodes_from_text is deleted in the following commit now that this
+# equivalence is proven, so the comparison tests that called it are removed
+# with it -- their target no longer exists, and their proof is preserved in
+# commit 838acf6's diff rather than kept here as dead code referencing a
+# deleted function. get_tree_textual_representation itself is kept (see its
+# own docstring): it renders correctly and has no other defect, only no
+# remaining caller now that the comparison it enabled is done.
 # ---------------------------------------------------------------------------
-
-def _assert_same_node_dicts(old_nodes, new_nodes):
-    assert set(old_nodes.keys()) == set(new_nodes.keys()), (
-        "node id sets differ -- the pre-order coincidence between "
-        "_get_nodes_from_text's print-order numbering and get_nodes' raw "
-        "tree_ indices does not hold for this tree")
-
-    for node_id in new_nodes:
-        old, new = old_nodes[node_id], new_nodes[node_id]
-
-        assert old["is_leaf"] == new["is_leaf"], (node_id, old, new)
-        assert old["father_node"] == new["father_node"], (node_id, old, new)
-        # Reconciled depth-numbering-base difference, see module comment above.
-        assert old["depth"] - 1 == new["depth"], (node_id, old, new)
-
-        if new["is_leaf"]:
-            # Reconciled class-as-string-vs-index difference (brief's shape
-            # difference #1), asserted explicitly rather than skipped.
-            assert int(float(old["class"])) == new["class"], (node_id, old, new)
-        else:
-            assert old["feature"] == new["feature"], (node_id, old, new)
-            assert old["threshold"] == new["threshold"], (node_id, old, new)
-            assert old["left_child"] == new["left_child"], (node_id, old, new)
-            assert old["right_child"] == new["right_child"], (node_id, old, new)
-
-
-def _old_and_new_nodes(clf, features):
-    trees = bps.get_tree_textual_representation(clf, features)
-    old_nodes = {i: bps._get_nodes_from_text(trees[i]) for i in trees}
-    new_nodes = {i: bps.get_nodes(est, features)
-                 for i, est in enumerate(clf.estimators_)}
-    return old_nodes, new_nodes
-
-
-@pytest.mark.parametrize("n_estimators,max_depth,seed", [
-    (1, 3, 0),
-    (1, 5, 1),
-    (3, 5, 2),
-    (5, 8, 3),
-    (1, 10, 4),   # exactly export_text's own truncation default
-    (1, 12, 12),  # deep enough to trigger export_text's default truncation
-    (3, 14, 14),  # deep, multi-tree
-    (1, None, 7),  # fully unbounded depth
-])
-def test_get_nodes_agrees_with_text_parse(n_estimators, max_depth, seed):
-    features = ["feat_0", "feat_1", "feat_2"]
-    clf, _ = _fit(len(features), max_depth, seed=seed, n_samples=20000,
-                  n_estimators=n_estimators)
-
-    old_nodes, new_nodes = _old_and_new_nodes(clf, features)
-
-    assert set(old_nodes.keys()) == set(new_nodes.keys())
-    for tree_id in new_nodes:
-        _assert_same_node_dicts(old_nodes[tree_id], new_nodes[tree_id])
-
-
-def test_get_nodes_agrees_with_text_parse_on_zero_threshold_forest():
-    # The threshold==0 fixture above exercises a real corner of
-    # get_feature_intervals_from_thresholds/generate_codewords, not of
-    # get_nodes itself -- but it is still worth confirming the two
-    # implementations agree on it, since a threshold of exactly 0 is where
-    # int(math.floor(...)) (new) and int(float(...)) (old, on export_text's
-    # printed "0.50" text after dt_thresholds_float_to_int has already
-    # floored it to "0.00") would be most likely to disagree if they ever did.
-    features = ["feat_0", "feat_1"]
-    clf = _zero_split_forest()
-    old_nodes, new_nodes = _old_and_new_nodes(clf, features)
-    for tree_id in new_nodes:
-        _assert_same_node_dicts(old_nodes[tree_id], new_nodes[tree_id])
-
-
-# ---------------------------------------------------------------------------
-# The truncation hazard itself, exploited directly
-#
-# get_tree_textual_representation always sizes export_text's max_depth to
-# the tree's OWN depth, so production never actually hit the truncation
-# bug even before Task 15 -- but the bug class it existed to guard against
-# is real: export_text's own default (max_depth=10, undocumented-by-keyword
-# but confirmed by sklearn's source) truncates anything deeper. This test
-# calls export_text directly, the way get_tree_textual_representation would
-# WITHOUT its explicit max_depth= argument, to prove that gap concretely:
-# _get_nodes_from_text silently loses leaves under it, while get_nodes
-# (reading tree_ directly, no text involved) is immune by construction.
-# ---------------------------------------------------------------------------
-
-def test_export_text_default_max_depth_truncates_a_deep_tree():
-    from sklearn.tree import export_text
-
-    features = ["feat_0", "feat_1", "feat_2"]
-    clf, _ = _fit(len(features), 13, seed=99, n_samples=20000)
-    tree = clf.estimators_[0]
-    assert tree.get_depth() > 10, "fixture did not build a tree deeper than export_text's default"
-
-    truncated_text = export_text(tree, feature_names=features)  # no max_depth= -> sklearn default of 10
-    truncated_nodes = bps._get_nodes_from_text(truncated_text)
-    truncated_leaves = sum(1 for n in truncated_nodes.values() if n["is_leaf"])
-
-    new_nodes = bps.get_nodes(tree, features)
-    new_leaves = sum(1 for n in new_nodes.values() if n["is_leaf"])
-
-    assert new_leaves == tree.get_n_leaves(), (
-        "get_nodes must recover every real leaf regardless of tree depth")
-    assert truncated_leaves < new_leaves, (
-        "fixture must actually exercise export_text's truncation for this test to "
-        "prove anything -- if this fails, the tree was not deep enough")

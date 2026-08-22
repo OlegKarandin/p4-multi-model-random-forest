@@ -11,12 +11,11 @@ from src.p4gen.build_p4_script import (
     generate_codewords,
     get_feature_intervals,
     get_joint_feature_intervals,
+    get_nodes,
     get_root_to_leaf_paths,
-    get_tree_textual_representation,
     most_common_class_and_dropped_codewords,
     normalise_feature_name,
 )
-from src.p4gen.build_p4_script import _get_nodes_from_text
 from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 from p4.range_expansion import range_entry_count
 
@@ -486,11 +485,8 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
   ternary_matching_resource_usage (which has implemented the Planter-style
   discount since Task 7 but was never reachable from this estimator). False
   -- the default -- reproduces every pre-existing caller's numbers exactly."""
-  trees = get_tree_textual_representation(clf, selected_features)
-
-  tree_nodes = {}
-  for tree in trees:
-    tree_nodes[tree] = _get_nodes_from_text(trees[tree])
+  tree_nodes = {i: get_nodes(est, selected_features)
+                for i, est in enumerate(clf.estimators_)}
 
   # get_feature_intervals recomputes trees/tree_nodes internally, but
   # that's the canonical single-model interval-derivation chain -- see
@@ -544,17 +540,13 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
   exactly."""
 
   if encoding == 'joint':
-    trees_app = get_tree_textual_representation(clf_app, selected_features_app)
-    trees_ddos = get_tree_textual_representation(clf_ddos, selected_features_ddos)
-
-    tree_nodes = {}
-    for tree_app in trees_app:
-      tree_nodes[tree_app] = _get_nodes_from_text(trees_app[tree_app])
+    tree_nodes = {i: get_nodes(est, selected_features_app)
+                  for i, est in enumerate(clf_app.estimators_)}
 
     offset = len(tree_nodes)
 
-    for tree_ddos in trees_ddos:
-      tree_nodes[tree_ddos+offset] = _get_nodes_from_text(trees_ddos[tree_ddos])
+    tree_nodes.update({i + offset: get_nodes(est, selected_features_ddos)
+                        for i, est in enumerate(clf_ddos.estimators_)})
 
     # tree_nodes above is still needed for get_root_to_leaf_paths below;
     # get_joint_feature_intervals recomputes its own copy internally, but

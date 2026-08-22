@@ -431,11 +431,11 @@ def test_compile_p4_against_real_toolchain(tmp_path):
         RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X, y_ddos))
 
     feature_names = ["flow_iat_max", "fwd_iat_max"]
-    trees_app = bps.get_tree_textual_representation(clf_app, feature_names)
-    trees_ddos = bps.get_tree_textual_representation(clf_ddos, feature_names)
-    tree_nodes = {i: bps._get_nodes_from_text(t) for i, t in trees_app.items()}
+    tree_nodes = {i: bps.get_nodes(est, feature_names)
+                  for i, est in enumerate(clf_app.estimators_)}
     offset = len(tree_nodes)
-    tree_nodes.update({i + offset: bps._get_nodes_from_text(t) for i, t in trees_ddos.items()})
+    tree_nodes.update({i + offset: bps.get_nodes(est, feature_names)
+                       for i, est in enumerate(clf_ddos.estimators_)})
     feature_intervals = bps.get_feature_intervals_from_thresholds(bps.get_feature_thresholds(tree_nodes))
 
     bps.generate_P4_code(3, 2, clf_app, clf_ddos,

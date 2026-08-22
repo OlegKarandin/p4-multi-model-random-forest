@@ -100,27 +100,33 @@ def dt_thresholds_float_to_int(clf):
 def get_tree_textual_representation(clf, feature_names, verbose=False):
   """Renders each estimator's tree as export_text's indented text.
 
-  No production code parses this any more (Task 15 replaced that with
-  get_nodes(), which reads estimator.tree_'s C-level arrays directly and so
-  cannot hit export_text's own truncation default -- see the comment below).
-  Kept only because tests/test_tree_parsing.py's characterisation suite
-  still renders this text and parses it with _get_nodes_from_text() to prove
-  the two extraction methods agree, and as the reference implementation that
-  proof is checked against."""
+  No code anywhere in this repo parses this any more: Task 15 replaced the
+  export_text-and-reparse path (the removed _get_nodes_from_text, which this
+  function's rendered text used to feed) with get_nodes(), which reads
+  estimator.tree_'s C-level arrays directly and so cannot hit export_text's
+  own truncation default (see the comment below). Kept anyway -- not deleted
+  alongside _get_nodes_from_text -- because it is a correct, general-purpose
+  "render this fitted tree as text" utility with no defect of its own, and
+  because tests/test_tree_parsing.py's characterisation suite used it
+  (commit 838acf6) to prove get_nodes() agrees with the old parser before
+  that parser was deleted; kept available for the same kind of manual
+  re-characterisation if get_nodes() itself ever needs re-verifying against
+  a human-readable rendering."""
   tree_textual_representation = {}
 
   for idx,tree in enumerate(clf.estimators_):
     # max_depth MUST be passed explicitly: sklearn's export_text defaults to
     # max_depth=10 and renders anything deeper as
-    # "|--- truncated branch of depth N" lines. Those lines contain neither
-    # "class" nor "<=", so _get_nodes_from_text() below drops them silently --
-    # no error, just a structurally wrong tree. Measured: a real depth-12
-    # tree with 350 leaves parsed as 168, and on a depth-14 tree 2516 of 4000
-    # probe inputs then matched no table entry at all. Sizing to the tree's
-    # own depth is exact and cannot be "not quite big enough" for some future
-    # deeper model. (get_nodes() -- the production path since Task 15 --
-    # reads tree_ arrays directly and is immune to this class of bug
-    # entirely: there is no rendered text to under-size.)
+    # "|--- truncated branch of depth N" lines -- see commit 838acf6's
+    # test_export_text_default_max_depth_truncates_a_deep_tree (since
+    # removed alongside _get_nodes_from_text, the parser it was
+    # characterising) for the measured effect: a real depth-12 tree with 350
+    # leaves parsed as 168, and on a depth-14 tree 2516 of 4000 probe inputs
+    # then matched no table entry at all. Sizing to the tree's own depth
+    # keeps this function's OWN output exact regardless. (get_nodes() -- the
+    # production path since Task 15 -- reads tree_ arrays directly and is
+    # immune to this class of bug entirely: there is no rendered text to
+    # under-size.)
     tree_textual_representation[idx] = export_text(
         tree, feature_names=feature_names, max_depth=max(1, tree.get_depth()))
 
@@ -165,13 +171,15 @@ def get_nodes(estimator, feature_names):
   training-time export, extract_feature_intervals rounds; they agreed only
   by ordering).
 
-  Replaces the export_text round-trip (_get_nodes_from_text, below) as of
-  Task 15: that function rendered the tree to indented text and re-parsed
-  it, which cost a max_depth truncation hazard (see
-  get_tree_textual_representation's comment), a rounding-order bug, an
-  O(n^2) rescan per node to find its right child, a state-machine parser,
-  and dependence on export_text's exact "class: <value>" line format.
-  Reading estimator.tree_ directly has none of those: every node's parent,
+  Replaces the export_text round-trip that used to render the tree to
+  indented text and re-parse it (Task 15) -- that approach cost a max_depth
+  truncation hazard (see get_tree_textual_representation's comment), a
+  rounding-order bug, an O(n^2) rescan per node to find its right child, a
+  state-machine parser, and dependence on export_text's exact
+  "class: <value>" line format. Proved equivalent to that approach across
+  real fitted forests before the old parser (_get_nodes_from_text) was
+  deleted -- see tests/test_tree_parsing.py and commit 838acf6. Reading
+  estimator.tree_ directly has none of those costs: every node's parent,
   depth, and both children fall straight out of the C-level arrays sklearn
   already built while fitting."""
   t = estimator.tree_
@@ -190,107 +198,6 @@ def get_nodes(estimator, feature_names):
       node["left_child"] = int(t.children_left[i])
       node["right_child"] = int(t.children_right[i])
     nodes[i] = node
-  return nodes
-
-
-def _get_nodes_from_text(tree_text):
-  '''Superseded by get_nodes() (Task 15) as the production node-extraction
-  path -- kept only as the reference implementation that
-  tests/test_tree_parsing.py's characterisation suite checks get_nodes()
-  against (both are exercised on real fitted forests and their node dicts
-  compared, reconciling two deliberate shape differences: "class" as a
-  string here vs. an int index there, and node-id assignment order).
-
-   Inputs: Tree textual representation generated with export_text(tree_classifier, feature_names)
-   Outputs: Dictionary containing the information of the different tree nodes (leaf or internal)
-   '''
-
-  nodes = {}
-  # Store each of the lines of the tree textual representation in a List
-  tree_lines = tree_text.strip().split('\n')
-
-  ##### TABLE FEATURES #####
-  node_id                  = 0
-  previous_depth           = 1
-  previous_node_was_leaf   = False
-  #father_node_id           = -1
-  parent_stack = [-1]  # stack of parent node IDs at each depth
-  ##########################
-
-  for line in tree_lines:
-    # Calculate Current Node's Depth based on number of "|" ocurrences in the line
-    depth = line.count("|")
-
-    # Trim stack to current depth
-    while len(parent_stack) > depth:
-        parent_stack.pop()
-
-    father_node_id = parent_stack[-1] if parent_stack else -1
-
-    # A) Node is Internal (Not Leaf)
-    if "class" in line:
-
-      #New Leaf Node
-      nodes[node_id]={"node": node_id,
-                      "father_node": father_node_id,
-                      "class": line.split("class: ")[-1],
-                      "depth": depth,
-                      "action_name": "classify_flow",
-                      "is_leaf": True}
-
-      ########### Assign Right Child ################
-      if previous_node_was_leaf: #If previous node also was leaf
-        # Iterate the already defined nodes.
-        # We look for a node from the immediate upper layer of the current node, which is not a leaf, and has not an already assigned right child
-        for aux_node_id in nodes:
-          if (nodes[aux_node_id]["depth"] == depth - 1) and not nodes[aux_node_id]["is_leaf"] and nodes[aux_node_id]["right_child"]==None:
-            nodes[aux_node_id]["right_child"] = node_id
-            nodes[node_id]["father_node"] = aux_node_id
-      ################################################
-
-      # Update Parameters
-      previous_node_was_leaf = True
-      previous_depth = depth
-      node_id += 1
-      #father_node_id += 1
-
-    # B) Node is Child
-    else:
-
-      feature_name  = normalise_feature_name(
-          line.replace("|---", "").replace("|   ", "").split("<=")[0])
-      threshold     = line.replace("|---","").replace("|   ","").split("<=")[-1].strip()
-
-      if "<=" in line:
-        # New Internal Node
-        nodes[node_id]={"node": node_id,
-                        "father_node": father_node_id,
-                        "feature": feature_name,
-                        "depth": depth,
-                        "action_name": "classify_"+feature_name,
-                        "threshold": int(float(threshold)),
-                        "left_child": node_id + 1,
-                        "right_child": None,
-                        "is_leaf": False}
-
-        ##### Assign Right Child ######
-        if depth < previous_depth or previous_node_was_leaf:
-        # Iterate the already defined nodes.
-        # We look for a node from the immediate upper layer of the current node, which is not a leaf, and has not an already assigned right child
-          for aux_node_id in nodes:
-            if (nodes[aux_node_id]["depth"] == depth - 1) and not nodes[aux_node_id]["is_leaf"] and nodes[aux_node_id]["right_child"]==None:
-              nodes[aux_node_id]["right_child"] = node_id
-              nodes[node_id]["father_node"] = aux_node_id
-        ###############################
-
-        # Update Parameters
-        previous_node_was_leaf = False
-        previous_depth = depth
-
-        parent_stack.append(node_id)
-        node_id += 1
-        #father_node_id += 1
-
   return nodes
 
 
@@ -373,11 +280,9 @@ def _reject_colliding_feature_names(selected_features):
 
 def get_feature_intervals(model, selected_features):
   _reject_colliding_feature_names(selected_features)
-  trees = get_tree_textual_representation(model, selected_features)
 
-  tree_nodes = {}
-  for tree in trees:
-    tree_nodes[tree] = _get_nodes_from_text(trees[tree])
+  tree_nodes = {i: get_nodes(est, selected_features)
+                for i, est in enumerate(model.estimators_)}
 
   feature_thresholds = get_feature_thresholds(tree_nodes)
   feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
@@ -403,17 +308,14 @@ def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
   # lists (same dataset.py naming convention feeds both), so that case is
   # deduped rather than flagged -- only a genuine spelling mismatch raises.
   _reject_colliding_feature_names(list(features_a) + list(features_b))
-  trees_a = get_tree_textual_representation(model_a, features_a)
-  trees_b = get_tree_textual_representation(model_b, features_b)
 
-  tree_nodes = {}
-  for tree_a in trees_a:
-    tree_nodes[tree_a] = _get_nodes_from_text(trees_a[tree_a])
+  tree_nodes = {i: get_nodes(est, features_a)
+                for i, est in enumerate(model_a.estimators_)}
 
   offset = len(tree_nodes)
 
-  for tree_b in trees_b:
-    tree_nodes[tree_b + offset] = _get_nodes_from_text(trees_b[tree_b])
+  tree_nodes.update({i + offset: get_nodes(est, features_b)
+                      for i, est in enumerate(model_b.estimators_)})
 
   feature_thresholds = get_feature_thresholds(tree_nodes)
   feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
@@ -1569,8 +1471,8 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   codewords = {}
   if clf_app is not None:
     if selected_features_app is not None:
-      trees_app = get_tree_textual_representation(clf_app, selected_features_app)
-      tree_nodes_app = {tree: _get_nodes_from_text(trees_app[tree]) for tree in trees_app}
+      tree_nodes_app = {i: get_nodes(est, selected_features_app)
+                        for i, est in enumerate(clf_app.estimators_)}
       paths_app = get_root_to_leaf_paths(tree_nodes_app)
       codewords.update(generate_codewords(paths_app, feature_intervals_app))
     elif use_default_action_discount:
@@ -1580,8 +1482,8 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
           "without the exact ordered training-feature-name list")
   if clf_ddos is not None:
     if selected_features_ddos is not None:
-      trees_ddos = get_tree_textual_representation(clf_ddos, selected_features_ddos)
-      tree_nodes_ddos = {tree: _get_nodes_from_text(trees_ddos[tree]) for tree in trees_ddos}
+      tree_nodes_ddos = {i: get_nodes(est, selected_features_ddos)
+                         for i, est in enumerate(clf_ddos.estimators_)}
       paths_ddos = get_root_to_leaf_paths(tree_nodes_ddos)
       codewords_ddos_0indexed = generate_codewords(paths_ddos, feature_intervals_ddos)
       codewords.update({tree_id + num_trees_app: tree_codewords

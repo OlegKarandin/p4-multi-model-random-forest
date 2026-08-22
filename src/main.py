@@ -8,11 +8,10 @@ from src.p4gen.build_p4_script import (
     generate_P4_code,
     generate_codewords,
     get_joint_feature_intervals,
+    get_nodes,
     get_root_to_leaf_paths,
     get_table_entries,
-    get_tree_textual_representation,
 )
-from src.p4gen.build_p4_script import _get_nodes_from_text
 from src.training.feature_selection import compare_feature_selection_approaches_parallel
 from src.training.config import TrainConfig
 
@@ -153,20 +152,15 @@ def implement_tree_models_in_P4(clf_app, clf_ddos, selected_features,
     clf_app = dt_thresholds_float_to_int(clf_app)
     clf_ddos = dt_thresholds_float_to_int(clf_ddos)
 
-    # export the trees into textual format
-    trees_app = get_tree_textual_representation(clf_app, selected_features)
-    trees_ddos = get_tree_textual_representation(clf_ddos, selected_features)
-
-    # extract node features (leaf or internal)
-    tree_nodes = {}
-
-    for tree_app in trees_app:
-        tree_nodes[tree_app] = _get_nodes_from_text(trees_app[tree_app])
+    # extract node features (leaf or internal) straight off each estimator's
+    # tree_ arrays
+    tree_nodes = {i: get_nodes(est, selected_features)
+                  for i, est in enumerate(clf_app.estimators_)}
 
     offset = len(tree_nodes)
 
-    for tree_ddos in trees_ddos:
-        tree_nodes[tree_ddos + offset] = _get_nodes_from_text(trees_ddos[tree_ddos])
+    tree_nodes.update({i + offset: get_nodes(est, selected_features)
+                        for i, est in enumerate(clf_ddos.estimators_)})
 
     # tree_nodes/offset above are still needed below (get_root_to_leaf_paths,
     # get_table_entries); get_joint_feature_intervals recomputes its own
