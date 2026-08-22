@@ -14,8 +14,10 @@ Uses small synthetic feature_intervals/codewords/model stand-ins throughout
 """
 
 import csv
+import importlib
 import json
 import os
+import pathlib
 import re
 from itertools import product
 
@@ -325,6 +327,48 @@ def test_action_and_table_templates_are_loaded_once_at_import():
                "_TABLE_CLASSIFICATION_EXACT_TEMPLATE"):
     value = getattr(bps, name)
     assert isinstance(value, str) and value, "{} must be a non-empty string".format(name)
+
+
+def test_missing_template_file_fails_at_import(monkeypatch):
+  # Task 19 review fix: the "does not reopen" tests above prove templates
+  # aren't re-read per call -- they don't prove a missing template still
+  # fails LOUDLY (at import/load time) rather than being silently swallowed.
+  # This test proves that property directly: reload build_p4_script with
+  # pathlib.Path.read_text patched to simulate table_classification.p4 being
+  # missing (the first template constant the module reads), and confirm the
+  # reload itself raises FileNotFoundError, unswallowed, straight out of the
+  # module-level `_TABLE_TEMPLATE = Path(...).read_text()` statement -- no
+  # surrounding try/except anywhere on that path.
+  real_read_text = pathlib.Path.read_text
+
+  def _read_text_simulating_missing_classification_template(self, *args, **kwargs):
+    if self.name == "table_classification.p4":
+      raise FileNotFoundError("simulated missing template: {}".format(self))
+    return real_read_text(self, *args, **kwargs)
+
+  monkeypatch.setattr(pathlib.Path, "read_text",
+                       _read_text_simulating_missing_classification_template)
+  try:
+    with pytest.raises(FileNotFoundError):
+      importlib.reload(bps)
+  finally:
+    # Undo the patch BEFORE reloading again, so this recovery reload reads
+    # the real files and leaves the module -- and every name already bound
+    # to it elsewhere (e.g. this file's own `from ... import
+    # generate_P4_actions`, which shares build_p4_script's module __dict__
+    # and therefore its globals) -- pointing at fully-initialized, correct
+    # template constants again for every test that runs after this one.
+    monkeypatch.undo()
+    importlib.reload(bps)
+
+  # The recovery reload actually worked: templates are loaded again, and a
+  # real call still succeeds.
+  assert isinstance(bps._TABLE_TEMPLATE, str) and bps._TABLE_TEMPLATE
+  action_templates = bps.generate_P4_actions(
+      FEATURE_INTERVALS_2F, num_trees_app=1, num_trees_ddos=0,
+      bit_per_classes_app=1, bit_per_classes_ddos=0,
+  )
+  assert "action classify_flow_codeword_app_0(bit<1> class){" in action_templates
 
 
 # ---------------------------------------------------------------------------
