@@ -395,6 +395,50 @@ def test_single_model_memory_evaluation_tuple_is_self_consistent():
     assert 0 < codeword_length <= bps.MAX_CODEWORD_LENGTH
 
 
+def test_single_model_memory_evaluation_raises_on_colliding_feature_names():
+    # Final-review finding #1: Task 16 swapped this function's internal
+    # get_feature_intervals(...) call for a direct tree_nodes_for(...) +
+    # feature_intervals_from_nodes(...) pair, which skips
+    # _reject_colliding_feature_names -- the guard lives inside
+    # get_feature_intervals, not inside tree_nodes_for/
+    # feature_intervals_from_nodes. Two differently-spelled feature names
+    # that normalise to the same canonical key ('Flow.IAT.Max' and
+    # 'Flow IAT Max' both -> 'flow_iat_max') used to silently merge their
+    # intervals with no raise when reached THROUGH this function -- even
+    # though get_feature_intervals itself already raised for the exact same
+    # input. This test exercises the gap that let that regression through:
+    # calling get_feature_intervals directly would not have caught it.
+    features = ["Flow.IAT.Max", "Flow IAT Max", "f2", "f3"]
+    clf = _tiny_forest([0, 1, 2], seed=3)
+
+    with pytest.raises(ValueError, match="collide"):
+        ev.single_model_memory_evaluation(clf, features)
+
+
+def test_multi_model_memory_evaluation_joint_raises_on_cross_model_colliding_feature_names():
+    # Same regression as test_single_model_memory_evaluation_raises_on_
+    # colliding_feature_names above, but for multi_model_memory_evaluation's
+    # 'joint' branch, which also swapped get_joint_feature_intervals(...)
+    # for a direct merge_tree_nodes(tree_nodes_for(...), tree_nodes_for(...))
+    # pair -- skipping the SAME guard. The collision here is CROSS-model:
+    # neither features_app nor features_ddos collides within itself, only
+    # their union does ('Flow.IAT.Max' in features_app, 'Flow IAT Max' in
+    # features_ddos). get_joint_feature_intervals checks exactly this union
+    # already; this test proves multi_model_memory_evaluation's joint branch
+    # does too, reached through the real entry point, not the helper
+    # directly. (The 'disjoint' branch already re-calls get_feature_intervals
+    # for range_levels, so it incidentally still raises -- not tested here,
+    # only the joint branch actually had the gap.)
+    features_app = ["Flow.IAT.Max", "a1", "a2", "a3"]
+    features_ddos = ["d0", "Flow IAT Max", "d2", "d3"]
+    clf_app = _tiny_forest([0, 1, 2], seed=0)
+    clf_ddos = _tiny_forest([-1, 1], seed=7)
+
+    with pytest.raises(ValueError, match="collide"):
+        ev.multi_model_memory_evaluation(
+            clf_app, clf_ddos, features_app, features_ddos, encoding='joint')
+
+
 from pathlib import Path
 
 

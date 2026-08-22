@@ -340,6 +340,14 @@ def _reject_colliding_feature_names(selected_features):
 
 
 def get_feature_intervals(model, selected_features):
+  """feature_intervals dict for one fitted model's selected features --
+  tree_nodes_for(...) + feature_intervals_from_nodes(...), gated by
+  _reject_colliding_feature_names so two differently-spelled names that
+  normalise to the same key (e.g. 'Flow.IAT.Max' and 'Flow IAT Max') raise
+  instead of silently merging their intervals into one entry. Callers that
+  derive tree_nodes/feature_intervals directly (bypassing this function)
+  must run the same guard themselves -- see single_model_memory_evaluation
+  and multi_model_memory_evaluation's joint branch in evaluation.py."""
   _reject_colliding_feature_names(selected_features)
   tree_nodes = tree_nodes_for(model, selected_features)
   return feature_intervals_from_nodes(tree_nodes)
@@ -353,7 +361,14 @@ def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
   before merging). This was previously reimplemented identically three
   times (evaluation.multi_model_memory_evaluation's 'joint' branch,
   feature_selection._derive_joint_feature_intervals, and
-  main.implement_tree_models_in_P4); this is the single canonical copy."""
+  main.implement_tree_models_in_P4); this was the single canonical copy of
+  that derivation until Task 16 re-inlined an equivalent tree_nodes_for(...)
+  + merge_tree_nodes(...) + feature_intervals_from_nodes(...) sequence
+  directly into multi_model_memory_evaluation's joint branch (to share the
+  merged tree_nodes with that function's other consumers) -- so this is now
+  ONE of two call sites deriving the same joint feature_intervals, not the
+  sole one; both apply the same collision guard (see
+  _reject_colliding_feature_names), just via different call paths."""
   # Checked as ONE union, not two independent lists: get_feature_thresholds
   # below merges both models' tree_nodes into a single feature_intervals
   # dict, so a collision across features_a/features_b (e.g. 'Flow.IAT.Max'

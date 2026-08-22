@@ -8,6 +8,7 @@ from src.p4gen.build_p4_script import (
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
+    _reject_colliding_feature_names,
     feature_intervals_from_nodes,
     generate_codewords,
     get_feature_intervals,
@@ -302,7 +303,13 @@ def feature_readiness_level(feature_name, catalog=None):
 
   A feature absent from the catalog gets no registers emitted at all
   (generate_P4_registers_and_apply silently skips it), so nothing gates its
-  table beyond the hash itself.
+  table beyond the hash itself -- true of THIS estimator's own placement
+  logic, which still happily prices such a feature set. Task 5's F2 check
+  closes the gap one level up, at generate_P4_code: it raises a hard error
+  for exactly this case (an uncatalogued feature would otherwise compile to
+  a declared-but-never-written field), so a design this function readily
+  estimates a stage/block count for may be one the generator now refuses to
+  emit at all.
 
   Validated against a real compile: this yields 3/3/3/4 for M2's feature set,
   matching the compiler's observed stage offsets 0/0/0/1 exactly."""
@@ -460,6 +467,12 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
   ternary_matching_resource_usage (which has implemented the Planter-style
   discount since Task 7 but was never reachable from this estimator). False
   -- the default -- reproduces every pre-existing caller's numbers exactly."""
+  # Same guard get_feature_intervals runs before its own tree_nodes_for call
+  # (Task 4) -- this function bypasses get_feature_intervals entirely (Task
+  # 16) so it must run the check itself, or two differently-spelled feature
+  # names that normalise to the same key silently merge their intervals with
+  # no raise (final-review finding #1).
+  _reject_colliding_feature_names(selected_features)
   tree_nodes = tree_nodes_for(clf, selected_features)
   feature_intervals = feature_intervals_from_nodes(tree_nodes)
   range_entries, range_blocks, range_table_specs = range_matching_resource_usage(feature_intervals)
@@ -509,6 +522,14 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
   exactly."""
 
   if encoding == 'joint':
+    # Same union-based guard get_joint_feature_intervals runs before its own
+    # tree_nodes_for calls (Task 4) -- this branch bypasses
+    # get_joint_feature_intervals entirely (Task 16) so it must run the
+    # check itself, on the SAME union both models' selected features form,
+    # or a cross-model spelling collision (e.g. 'Flow.IAT.Max' in one model,
+    # 'Flow IAT Max' in the other) silently merges with no raise
+    # (final-review finding #1).
+    _reject_colliding_feature_names(list(selected_features_app) + list(selected_features_ddos))
     tree_nodes = merge_tree_nodes(
         tree_nodes_for(clf_app, selected_features_app),
         tree_nodes_for(clf_ddos, selected_features_ddos))
