@@ -145,10 +145,11 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     except ValueError as e:
         # No register catalog entry for some selected feature (F2). Hardware
         # validation is unavailable for this feature set; the row records why
-        # rather than the split dying. FEATURE_REGISTER_CATALOG only covers 4
-        # of this project's 18 real features today (Phase 1), so this is
-        # currently the COMMON outcome for most trials, not a rare one --
-        # see _run_elimination's per-split 'unavailable' count.
+        # rather than the split dying. FEATURE_REGISTER_CATALOG now covers
+        # all 18 of this project's real features (grown from 4 in Phase 2),
+        # so this is the RARE outcome -- only a selected feature outside that
+        # 18, or a future catalog regression, lands here -- not the common
+        # one anymore. See _run_elimination's per-split 'unavailable' count.
         return ('unavailable', str(e))
     log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
     return compile_p4_async(written_path, log_dir)
@@ -396,10 +397,10 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     # F2 degrade path: counts how many of this split's iterations landed on
     # the 'unavailable' branch (some selected feature had no
     # FEATURE_REGISTER_CATALOG entry). Reported once at the end of the split
-    # (see below), not per-iteration -- with only 4 of 18 real features
-    # catalogued today (Phase 1), most iterations take this branch, and a
-    # per-trial log line for that would be pure spam until Phase 2 grows the
-    # catalog.
+    # (see below), not per-iteration -- with all 18 of this project's real
+    # features catalogued (since Phase 2), this branch is now rare, so a
+    # per-trial log line for it would mostly be spam; the once-per-split
+    # count still surfaces it when it does happen.
     n_unavailable = 0
 
     while True:
