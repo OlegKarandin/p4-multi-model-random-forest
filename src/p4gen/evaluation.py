@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 import sklearn.metrics as mt
 from src.p4gen.build_p4_script import (
     MAX_CODEWORD_LENGTH,
@@ -27,6 +28,21 @@ class CrossbarKeyTooWide(RuntimeError):
   """One table's match key exceeds the per-stage ternary crossbar byte budget;
   the compiler rejects such a table outright rather than splitting it.
   args = (message, byte_width)."""
+
+
+@dataclass(frozen=True)
+class StagePlan:
+  """crossbar_stages_needed's placement, not just its size -- F10: the stage
+  a pool is DONE at (depth) is not the same quantity as how many stages it
+  OCCUPIES (occupied): a stage can fill at the 8-table crossbar cap and spill
+  a table forward past every level actually requested, so depth must be read
+  from where tables landed, not from max(readiness_levels) + 1."""
+  occupied: int          # how many stage indices hold a table from this pool
+  depth: int             # max(occupied index) + 1 -- the quantity a 12-stage ceiling reads
+  indices: frozenset     # for assertions and debugging
+
+  def __int__(self):     # transitional: `stages` is still the occupancy count
+    return self.occupied
 
 
 def accuracy_metrics(y_true, y_pred, task):
@@ -401,7 +417,8 @@ def _stage_shards(block_count, byte_width):
 
 def crossbar_stages_needed(table_specs, readiness_levels=None):
   """Packs independent match tables into pipeline stages under ALL three
-  per-stage hardware limits simultaneously, and returns the stage count.
+  per-stage hardware limits simultaneously, and returns a StagePlan
+  describing where the tables landed (not just how many stages that took).
 
   table_specs is one (block_count, byte_width) pair per independent P4
   table -- one per tree for the ternary classification tables
@@ -472,7 +489,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None):
       else:
         stages.append([blocks, width, 1])
 
-    return len(stages)
+    return StagePlan(occupied=len(stages), depth=len(stages),
+                      indices=frozenset(range(len(stages))))
 
   # Dependency-aware placement. Two differences from the packer above, both
   # chosen to track the REAL compiler rather than the theoretical optimum:
@@ -500,7 +518,9 @@ def crossbar_stages_needed(table_specs, readiness_levels=None):
     else:
       by_index[index] = [blocks, width, 1]
 
-  return len(by_index)
+  return StagePlan(occupied=len(by_index),
+                    depth=(max(by_index) + 1) if by_index else 0,
+                    indices=frozenset(by_index.keys()))
 
 
 def single_model_memory_evaluation(clf, selected_features, use_default_action_discount=False):
@@ -617,11 +637,26 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
   # Validated against a real compile of the M2 program: 2 range stages + 1
   # classification stage = 3, exactly the compiler's own placement. The pure
   # packer predicted 2.
-  range_stages = crossbar_stages_needed(range_table_specs,
-                                        readiness_levels=range_levels)
-  ternary_level = (max(range_levels) + 1) if range_levels else FLOW_HASH_LEVEL + 1
-  ternary_stages = crossbar_stages_needed(
+  #
+  # F10: the classification boundary must be derived from where the range
+  # pool's tables actually LANDED (StagePlan.depth), not from one past the
+  # earliest stage a range table was merely ALLOWED to start
+  # (max(range_levels) + 1) -- the 8-table crossbar cap can spill a range
+  # table forward past its level, and reusing max(range_levels) + 1 would
+  # then schedule a classification table into a stage a range table still
+  # occupies.
+  range_plan = crossbar_stages_needed(range_table_specs,
+                                      readiness_levels=range_levels)
+  ternary_level = range_plan.depth if range_table_specs else FLOW_HASH_LEVEL + 1
+  ternary_plan = crossbar_stages_needed(
       ternary_table_specs,
       readiness_levels=[ternary_level] * len(ternary_table_specs))
 
-  return range_stages + ternary_stages, range_blocks + ternary_blocks
+  # The property that makes summing occupancies below meaningful: the two
+  # pools must never claim the same stage index.
+  assert not (range_plan.indices & ternary_plan.indices), (
+      "range and classification pools overlap at stages {}; summing their "
+      "occupancies is only meaningful while they are disjoint".format(
+          sorted(range_plan.indices & ternary_plan.indices)))
+
+  return range_plan.occupied + ternary_plan.occupied, range_blocks + ternary_blocks

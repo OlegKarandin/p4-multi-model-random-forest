@@ -196,8 +196,8 @@ def test_crossbar_stages_needed_flat_table_cap_at_16_bit():
     # factor = ceil((16+4)/44) = 1) fit in 1 stage; a 9th forces a 2nd
     # stage -- the flat 8-table cap binds here since 9*2=18 bytes is
     # nowhere near the 64-byte budget and 9 blocks is well under 24.
-    assert ev.crossbar_stages_needed([(1, 2)] * 8) == 1
-    assert ev.crossbar_stages_needed([(1, 2)] * 9) == 2
+    assert ev.crossbar_stages_needed([(1, 2)] * 8).occupied == 1
+    assert ev.crossbar_stages_needed([(1, 2)] * 9).occupied == 2
 
 
 def test_crossbar_stages_needed_byte_budget_at_256_bit():
@@ -205,16 +205,16 @@ def test_crossbar_stages_needed_byte_budget_at_256_bit():
     # (2*32=64, an exact fit to the byte budget), a 3rd forces a 2nd
     # stage. The byte budget binds here, not the 8-table cap and not the
     # 24-block cap (each table is ceil((256+4)/44) = 6 blocks).
-    assert ev.crossbar_stages_needed([(6, 32), (6, 32)]) == 1
-    assert ev.crossbar_stages_needed([(6, 32)] * 3) == 2
+    assert ev.crossbar_stages_needed([(6, 32), (6, 32)]).occupied == 1
+    assert ev.crossbar_stages_needed([(6, 32)] * 3).occupied == 2
 
 
 def test_crossbar_stages_needed_512_bit_saturates_alone():
     # RM-7: one 512-bit table (64 bytes) already uses the entire 64-byte
     # budget -- a 2nd such table cannot share its stage. (Block count kept
     # small so the byte budget is unambiguously what binds.)
-    assert ev.crossbar_stages_needed([(1, 64)]) == 1
-    assert ev.crossbar_stages_needed([(1, 64), (1, 64)]) == 2
+    assert ev.crossbar_stages_needed([(1, 64)]).occupied == 1
+    assert ev.crossbar_stages_needed([(1, 64), (1, 64)]).occupied == 2
 
 
 def test_crossbar_stages_needed_mixed_widths_pack_together():
@@ -222,7 +222,7 @@ def test_crossbar_stages_needed_mixed_widths_pack_together():
     # vs ddos trees with different codeword lengths) should share a
     # stage via bin-packing whenever every budget allows it
     # (32 + 6 + 6 + 6 = 50 <= 64 bytes, 4 tables <= 8, 9 blocks <= 24).
-    assert ev.crossbar_stages_needed([(6, 32), (1, 6), (1, 6), (1, 6)]) == 1
+    assert ev.crossbar_stages_needed([(6, 32), (1, 6), (1, 6), (1, 6)]).occupied == 1
 
 
 def test_crossbar_stages_needed_blocks_bind_before_crossbar():
@@ -230,7 +230,7 @@ def test_crossbar_stages_needed_blocks_bind_before_crossbar():
     # enforced inside the same packing. Three 9-block, 2-byte tables are
     # trivially fine for the crossbar (3 tables, 6 bytes) but 27 blocks
     # do not fit one stage.
-    assert ev.crossbar_stages_needed([(9, 2)] * 3) == 2
+    assert ev.crossbar_stages_needed([(9, 2)] * 3).occupied == 2
 
 
 def test_crossbar_stages_needed_beats_max_of_two_relaxations():
@@ -239,15 +239,15 @@ def test_crossbar_stages_needed_beats_max_of_two_relaxations():
     # ceil(41/24) = 2, crossbar-only says 2 ({60} | {5,5}), so the old
     # max() reported 2 -- but no two of these three tables fit one stage
     # (20+20 = 40 blocks > 24; 5+60 = 65 bytes > 64). Truth is 3.
-    assert ev.crossbar_stages_needed([(20, 5), (20, 5), (1, 60)]) == 3
+    assert ev.crossbar_stages_needed([(20, 5), (20, 5), (1, 60)]).occupied == 3
 
 
 def test_crossbar_stages_needed_single_oversized_table_spans_stages():
     # A table needing more blocks than a whole stage holds must span
     # several stages -- packing it as one indivisible item would report 1
     # stage and under-count.
-    assert ev.crossbar_stages_needed([(50, 2)]) == 3
-    assert ev.crossbar_stages_needed([]) == 0
+    assert ev.crossbar_stages_needed([(50, 2)]).occupied == 3
+    assert ev.crossbar_stages_needed([]).occupied == 0
 
 
 def test_crossbar_stages_needed_output_respects_all_three_limits():
@@ -265,7 +265,7 @@ def test_crossbar_stages_needed_output_respects_all_three_limits():
     for _ in range(200):
         specs = [(rnd.randint(1, 30), rnd.randint(1, bps.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE))
                  for _ in range(rnd.randint(1, 20))]
-        stages = ev.crossbar_stages_needed(specs)
+        stages = ev.crossbar_stages_needed(specs).occupied
         # A valid packing can never use fewer stages than either
         # single-dimension lower bound.
         assert stages >= math.ceil(sum(b for b, _ in specs) / bps.TCAM_BLOCKS_PER_STAGE)
@@ -832,24 +832,38 @@ def test_readiness_levels_for_real_dataset_feature_names():
 def test_crossbar_stages_needed_separates_tables_by_readiness_level():
     # Four trivially small tables that the pure packer puts in one stage.
     specs = [(1, 2)] * 4
-    assert ev.crossbar_stages_needed(specs) == 1
+    assert ev.crossbar_stages_needed(specs).occupied == 1
 
     # The same four, with one not ready until a later level, must occupy two
     # distinct stages -- exactly the M2 range-pool case.
-    assert ev.crossbar_stages_needed(specs, readiness_levels=[3, 3, 3, 4]) == 2
+    assert ev.crossbar_stages_needed(specs, readiness_levels=[3, 3, 3, 4]).occupied == 2
 
 
 def test_crossbar_stages_needed_counts_occupied_stages_not_the_span():
     # A single late table occupies ONE stage, however deep its level is --
     # the earlier stage indices belong to other work (registers), not to this
     # table pool.
-    assert ev.crossbar_stages_needed([(1, 2)], readiness_levels=[7]) == 1
+    assert ev.crossbar_stages_needed([(1, 2)], readiness_levels=[7]).occupied == 1
 
 
 def test_crossbar_stages_needed_spills_past_its_level_when_full():
     # Nine same-level tables cannot share one stage (8-table crossbar cap),
     # so one spills into the next stage even though its level allows earlier.
-    assert ev.crossbar_stages_needed([(1, 2)] * 9, readiness_levels=[3] * 9) == 2
+    assert ev.crossbar_stages_needed([(1, 2)] * 9, readiness_levels=[3] * 9).occupied == 2
+
+
+def test_classification_tables_are_placed_after_the_last_occupied_range_stage():
+    """Nine features at one readiness level: the ninth range table spills past the
+    8-table crossbar cap into the next stage, so classification must start one
+    stage later than max(levels)+1 would say."""
+    range_specs = [(1, 2)] * 9
+    levels = [3] * 9
+
+    plan = ev.crossbar_stages_needed(range_specs, readiness_levels=levels)
+
+    assert plan.indices == frozenset({3, 4})
+    assert plan.depth == 5              # max index + 1 -- NOT max(levels) + 1 == 4
+    assert plan.occupied == 2
 
 
 def test_range_and_ternary_pools_reproduce_the_measured_m2_stage_count():
@@ -864,16 +878,20 @@ def test_range_and_ternary_pools_reproduce_the_measured_m2_stage_count():
     _, _, range_specs = ev.range_matching_resource_usage(feature_intervals)
     range_levels = ev.readiness_levels_for(feature_intervals)
 
-    range_stages = ev.crossbar_stages_needed(range_specs, readiness_levels=range_levels)
+    range_plan = ev.crossbar_stages_needed(range_specs, readiness_levels=range_levels)
     # Classification tables read every feature's codeword, so they cannot be
-    # placed until one stage after the last range table.
-    ternary_level = max(range_levels) + 1
-    ternary_stages = ev.crossbar_stages_needed([(2, 11)] * 4,
-                                               readiness_levels=[ternary_level] * 4)
+    # placed until one stage after the last range table actually landed
+    # (F10: range_plan.depth, not max(range_levels) + 1).
+    ternary_level = range_plan.depth
+    ternary_plan = ev.crossbar_stages_needed([(2, 11)] * 4,
+                                             readiness_levels=[ternary_level] * 4)
 
-    assert range_stages == 2
-    assert ternary_stages == 1
-    assert range_stages + ternary_stages == 3
+    assert range_plan.indices == frozenset({3, 4})
+    assert ternary_plan.indices == frozenset({5})
+    assert not (range_plan.indices & ternary_plan.indices)
+    assert range_plan.occupied == 2
+    assert ternary_plan.occupied == 1
+    assert range_plan.occupied + ternary_plan.occupied == 3
 
 
 def _forest_using_all_four_catalog_features(labels, seed):
@@ -915,7 +933,7 @@ def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
     # stage fwd_iat_max's deeper chain forces -- this test cannot pass for
     # the wrong reason.
     _, _, range_specs = ev.range_matching_resource_usage(intervals)
-    assert ev.crossbar_stages_needed(range_specs) == 1
+    assert ev.crossbar_stages_needed(range_specs).occupied == 1
 
     stages, blocks = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, "joint")
