@@ -168,6 +168,7 @@ pcap/
 *.p4i
 *.json
 p4/*.p4
+!p4/p4_code_RF_models_shared.p4
 p4/tofino_spike/tna_*.p4
 compile_logs*/
 

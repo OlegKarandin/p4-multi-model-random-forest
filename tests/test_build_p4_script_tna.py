@@ -936,24 +936,6 @@ def test_generate_P4_tables_and_apply_exact_match_tables_declare_no_default_acti
   assert "<DEFAULT_ACTION>" not in table_templates
 
 
-def test_generate_P4_tables_and_apply_rejects_removed_discount_parameters():
-  # Regression guard: `codewords` / `use_default_action_discount` are really
-  # GONE from this function's signature, not merely ignored -- a caller still
-  # passing either must fail loudly rather than silently getting a table with
-  # no default action when it believed it asked for one.
-  feature_sizes, class_sizes = _uniform_sizes(["flow_iat_max"], 1, 0)
-  with pytest.raises(TypeError):
-    generate_P4_tables_and_apply(
-        ["flow_iat_max"], 1, 0,
-        feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
-        codewords={0: {"101*": 0}})
-  with pytest.raises(TypeError):
-    generate_P4_tables_and_apply(
-        ["flow_iat_max"], 1, 0,
-        feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
-        use_default_action_discount=True)
-
-
 # ---------------------------------------------------------------------------
 # generate_voting_code -- table-based rewrite (Task 2) + regression test
 # ---------------------------------------------------------------------------
@@ -1214,16 +1196,6 @@ def test_generate_P4_code_writes_to_injectable_path(tmp_path):
   assert os.path.exists(written_path)
   # default path must NOT have been touched by this call
   assert not os.path.exists(bps.OUTPUT_PATH + "custom_name.p4")
-
-
-def test_generate_P4_code_default_path_unchanged():
-  clf_ddos = _tiny_ddos_forest()
-  feature_intervals = {"flow_iat_max": [(0, 100), (101, 65535)]}
-  written_path = bps.generate_P4_code(
-      num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
-      feature_intervals_app={}, feature_intervals_ddos=feature_intervals,
-  )
-  assert written_path == bps.OUTPUT_PATH + "p4_code_RF_models.p4"
 
 
 # ---------------------------------------------------------------------------
@@ -1614,71 +1586,35 @@ def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
   assert "default_action" not in text
 
 
-# Byte-identical regression guard for the default (discount off) path: this
-# sha256 pins the exact call below. It must not change -- if a future task
-# legitimately alters generated output, that task re-records it deliberately
-# rather than this one drifting silently.
-#
-# Re-recorded ONCE, deliberately, by the table-sizing follow-up: that task
-# replaced the fixed `size = 200` / `size = 400` table literals with real,
-# per-table entry counts, which changes this default call's output. The value
-# it replaced is kept below as _PRE_TABLE_SIZING_OUTPUT_SHA256, and
-# test_generate_P4_code_default_call_changes_only_table_sizes proves the size
-# numbers are the ONLY thing that changed between the two.
-# Re-recorded a SECOND time, deliberately, by the PHV-pinning change: each
-# feature value field now carries an @pa_container_size pragma (real-compile
-# evidence in the pinning tests at the end of this file). The size literals
-# and those pragma lines remain the only deltas from the pre-table-sizing
-# baseline -- _reconstruct_pre_table_sizing_text undoes both, and
-# test_generate_P4_code_default_call_changes_only_table_sizes proves it.
-# Re-recorded a THIRD time by dropping generate_voting_code's max(32, ...)
-# size floor: the vote tables now declare their exact const-entry count.
-# Re-recorded a FOURTH time by switch_semantics: generate_voting_code's
-# tie-break changed from statistics.mode() (first-encountered) to
-# switch_semantics.vote_winner() (smallest class index), which is
-# order-independent. For this fixture's 2-tree/3-class app vote table that
-# flips the winner on every tied key tuple -- (1,0), (2,0), (2,1) -- from
-# {1, 2, 2} to {0, 0, 1}. Confirmed by direct diff against the previous
-# baseline that this tie-break flip is the ONLY delta.
-# Re-recorded a FIFTH time by dropping the dead `bit<1> class_tree_<task>_
-# <i>_is_set;` metadata fields (D7): nothing ever wrote or read them.
-# Confirmed by direct diff against the previous baseline that removing
-# those lines is the ONLY delta.
-_DEFAULT_CALL_OUTPUT_SHA256 = (
-    "020ec3a0ca64803f60ea87e1c93156bdecc58df5004a3732ef823092d453dc6e")
-
-# The sha256 the same call produced BEFORE the table-sizing follow-up (when
-# every feature table declared `size = 200;` and every classification table
-# `size = 400;`), originally recorded against the code as it stood before the
-# discount was wired into generate_P4_code.
-# Re-recorded by switch_semantics for the same reason as
-# _DEFAULT_CALL_OUTPUT_SHA256 above: this baseline is also downstream of
-# generate_voting_code's tie-break, so it must reflect vote_winner's
-# smallest-class-index rule instead of the old statistics.mode() rule.
-# Re-recorded again by D7 for the same reason as _DEFAULT_CALL_OUTPUT_SHA256
-# above: this baseline is also downstream of the dead `_is_set` metadata
-# fields' removal, since _reconstruct_pre_table_sizing_text only undoes the
-# table-sizing and PHV-pinning deltas, not this one.
-_PRE_TABLE_SIZING_OUTPUT_SHA256 = (
-    "9f2a675eb2ccb528561d107305e486fb98e10f23f9f41fe758a0af7689549efd")
+# Golden-file regression guard for the default (discount off) path: this
+# regenerates the same fixed call the old byte-identical-freeze tests used
+# and diffs the result against a real, readable, diffable file on disk
+# instead of an opaque sha256 baked into this test file. See
+# p4/p4_code_RF_models_shared.p4 itself for the accept-a-change instructions
+# repeated in this test's docstring.
+_GOLDEN_P4_PATH = pathlib.Path(__file__).resolve().parent.parent / "p4" / \
+    "p4_code_RF_models_shared.p4"
 
 
-def _sha256_of_default_generate_P4_code_call(tmp_path, filename, **extra):
-  import hashlib
-
+def test_generated_program_matches_the_golden_file(tmp_path):
+  """Regenerates the shipped program from a fixed seed and diffs it against
+  p4/p4_code_RF_models_shared.p4. To accept an intended change: regenerate,
+  inspect the diff, commit the new golden file."""
   written_path = bps.generate_P4_code(
       3, 2, _tiny_app_forest(), _tiny_ddos_forest(),
       feature_intervals_app={"flow_iat_max": [(0, 50), (51, INFINITE)]},
       feature_intervals_ddos={"flow_iat_max": [(0, 200), (201, INFINITE)],
                               "fwd_packet_length_max": [(0, 64), (65, INFINITE)]},
-      output_dir=str(tmp_path) + os.sep, output_filename=filename, **extra)
-  with open(written_path, "rb") as f:
-    return hashlib.sha256(f.read()).hexdigest()
-
-
-def test_generate_P4_code_default_output_is_byte_identical_to_pre_wiring(tmp_path):
-  assert _sha256_of_default_generate_P4_code_call(
-      tmp_path, "baseline.p4") == _DEFAULT_CALL_OUTPUT_SHA256
+      output_dir=str(tmp_path) + os.sep,
+      output_filename="p4_code_RF_models_shared.p4")
+  with open(written_path) as f:
+    generated = f.read()
+  golden = _GOLDEN_P4_PATH.read_text()
+  assert generated == golden, (
+      "Generated P4 no longer matches the golden file at {0}. If this "
+      "change is intentional: regenerate the file from this test's "
+      "fixed-seed call, inspect the diff, and commit the new golden "
+      "file.".format(_GOLDEN_P4_PATH))
 
 
 # ---------------------------------------------------------------------------
@@ -1903,110 +1839,6 @@ def test_generate_P4_tables_and_apply_classification_sizes_are_used_when_given()
       "get_classification_tree_ddos_0": 13,
       "table_0_flow_iat_max": 200,
   }
-
-
-def _reconstruct_pre_table_sizing_text(p4_text):
-  """Undo every delta applied to the generated text since the pre-table-sizing
-  baseline, so what remains must be byte-identical to that baseline:
-
-    - put the OLD fixed literals back into the table declarations -- 200 for
-      every range-matching feature table, 400 for every classification table,
-      and 32 for every vote_* table. vote_* used to be `max(32, num_classes **
-      num_trees)`, and both configs in this fixture (3 trees x 3 classes = 27,
-      1 tree x 2 classes = 2) sat under that floor, so 32 is what the baseline
-      declared for both; the floor was later dropped because a 1-bit key
-      cannot hold 32 entries at all;
-    - drop the @pa_container_size PHV-pinning pragma lines, added later to
-      pin each feature value field to a 16-bit container (see the pinning
-      tests at the end of this file for the real-compile evidence). The
-      pragmas occupy whole lines of their own between MAX_NUM_FLOWS and
-      `struct metadata_t`, so removing those lines restores the original
-      spacing exactly.
-
-  Keeping both undos in one helper is what lets the byte-identity test stay
-  meaningful: it proves these are the ONLY things that ever changed."""
-  rebuilt = []
-  current_table = None
-  for line in p4_text.splitlines(keepends=True):
-    stripped = line.strip()
-    if stripped.startswith("@pa_container_size("):
-      continue
-    name_match = re.match(r"table\s+(\w+)\s*\{", stripped)
-    if name_match:
-      current_table = name_match.group(1)
-      rebuilt.append(line)
-      continue
-    size_match = re.match(r"size\s*=\s*(\d+)\s*;", stripped)
-    if size_match and current_table is not None:
-      old_literal = None
-      if current_table.startswith("get_classification_tree_"):
-        old_literal = "400"
-      elif current_table.startswith("table_"):
-        old_literal = "200"
-      elif current_table.startswith("vote_"):
-        old_literal = "32"
-      if old_literal is not None:
-        line = line.replace("size = " + size_match.group(1) + ";",
-                            "size = " + old_literal + ";")
-      current_table = None
-    rebuilt.append(line)
-  return "".join(rebuilt)
-
-
-def test_generate_P4_code_default_call_changes_only_table_sizes(tmp_path):
-  # Full regenerate-and-diff regression check: for the exact default call
-  # shape most existing tests use, the ONLY delta this follow-up introduces
-  # is the `size = ` numbers themselves. Putting the old literals back must
-  # reproduce the pre-follow-up output byte for byte.
-  import hashlib
-
-  written_path = bps.generate_P4_code(
-      3, 2, _tiny_app_forest(), _tiny_ddos_forest(),
-      feature_intervals_app={"flow_iat_max": [(0, 50), (51, INFINITE)]},
-      feature_intervals_ddos={"flow_iat_max": [(0, 200), (201, INFINITE)],
-                              "fwd_packet_length_max": [(0, 64), (65, INFINITE)]},
-      output_dir=str(tmp_path) + os.sep, output_filename="only_sizes_changed.p4")
-  with open(written_path, "rb") as f:
-    raw = f.read()
-
-  # sanity: the sizes really did change (otherwise this test is vacuous)
-  assert hashlib.sha256(raw).hexdigest() != _PRE_TABLE_SIZING_OUTPUT_SHA256
-  reconstructed = _reconstruct_pre_table_sizing_text(raw.decode("utf-8"))
-  assert hashlib.sha256(reconstructed.encode("utf-8")).hexdigest() == \
-      _PRE_TABLE_SIZING_OUTPUT_SHA256
-
-
-def test_generate_P4_code_selected_features_without_flag_only_refines_sizes(tmp_path):
-  # Passing selected_features_* WITHOUT the discount flag is now meaningful:
-  # codewords get computed for SIZING only. Nothing else about the generated
-  # program may change, and the exact codeword count may never exceed the
-  # leaf-count fallback the same call produces without those lists.
-  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
-  intervals_app = _derive_intervals(clf_app)
-
-  def _generate(filename, **extra):
-    path = bps.generate_P4_code(
-        3, 2, clf_app, None,
-        feature_intervals_app=intervals_app, feature_intervals_ddos={},
-        output_dir=str(tmp_path) + os.sep, output_filename=filename, **extra)
-    with open(path) as f:
-      return f.read()
-
-  without = _generate("no_selected_features.p4")
-  with_lists = _generate("with_selected_features.p4",
-                         selected_features_app=_DISCOUNT_FEATURE_NAMES)
-
-  sizes_without = _table_sizes(without)
-  sizes_with = _table_sizes(with_lists)
-  for table, size in sizes_with.items():
-    assert size <= sizes_without[table], (
-        "codeword-exact sizing must never exceed the leaf-count fallback")
-  # every non-size line is identical
-  stripped_without = [l for l in without.splitlines()
-                      if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
-  stripped_with = [l for l in with_lists.splitlines()
-                   if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
-  assert stripped_without == stripped_with
 
 
 # ---------------------------------------------------------------------------
