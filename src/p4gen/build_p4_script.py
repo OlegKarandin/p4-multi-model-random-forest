@@ -1,7 +1,9 @@
 import os
 import math
 import re
+import numpy as np
 from sklearn.tree import export_text
+from sklearn.tree import _tree as _sklearn_tree
 import csv
 import json
 from collections import Counter
@@ -42,6 +44,7 @@ PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
 
 
 _IDENT_RE = re.compile(r'[^0-9a-z]+')
+_TREE_LEAF = _sklearn_tree.TREE_LEAF
 
 
 def normalise_feature_name(name):
@@ -95,17 +98,29 @@ def dt_thresholds_float_to_int(clf):
 
 
 def get_tree_textual_representation(clf, feature_names, verbose=False):
+  """Renders each estimator's tree as export_text's indented text.
+
+  No production code parses this any more (Task 15 replaced that with
+  get_nodes(), which reads estimator.tree_'s C-level arrays directly and so
+  cannot hit export_text's own truncation default -- see the comment below).
+  Kept only because tests/test_tree_parsing.py's characterisation suite
+  still renders this text and parses it with _get_nodes_from_text() to prove
+  the two extraction methods agree, and as the reference implementation that
+  proof is checked against."""
   tree_textual_representation = {}
 
   for idx,tree in enumerate(clf.estimators_):
     # max_depth MUST be passed explicitly: sklearn's export_text defaults to
     # max_depth=10 and renders anything deeper as
     # "|--- truncated branch of depth N" lines. Those lines contain neither
-    # "class" nor "<=", so get_nodes() below drops them silently -- no error,
-    # just a structurally wrong tree. Measured: a real depth-12 tree with 350
-    # leaves parsed as 168, and on a depth-14 tree 2516 of 4000 probe inputs
-    # then matched no table entry at all. Sizing to the tree's own depth is
-    # exact and cannot be "not quite big enough" for some future deeper model.
+    # "class" nor "<=", so _get_nodes_from_text() below drops them silently --
+    # no error, just a structurally wrong tree. Measured: a real depth-12
+    # tree with 350 leaves parsed as 168, and on a depth-14 tree 2516 of 4000
+    # probe inputs then matched no table entry at all. Sizing to the tree's
+    # own depth is exact and cannot be "not quite big enough" for some future
+    # deeper model. (get_nodes() -- the production path since Task 15 --
+    # reads tree_ arrays directly and is immune to this class of bug
+    # entirely: there is no rendered text to under-size.)
     tree_textual_representation[idx] = export_text(
         tree, feature_names=feature_names, max_depth=max(1, tree.get_depth()))
 
@@ -117,8 +132,75 @@ def get_tree_textual_representation(clf, feature_names, verbose=False):
   return tree_textual_representation
 
 
-def get_nodes(tree_text):
-  '''
+def _parents_and_depths(t):
+  """One forward pass over a fitted tree_'s children_left/children_right
+  arrays, returning (parent, depth) lists indexed by node id: parent[i] is
+  i's parent node id (-1 for the root), depth[i] is i's depth (0 for the
+  root).
+
+  A single forward pass (no queue/stack) suffices because sklearn always
+  assigns a node's id before either of its children's -- true of both the
+  depth-first and best-first tree builders, since a node must exist to be
+  split, and splitting is what creates its children -- so by the time index
+  i is reached as a CHILD reference from some earlier node j < i, node j's
+  own parent[j]/depth[j] have already been written."""
+  parent = [-1] * t.node_count
+  depth = [0] * t.node_count
+  for i in range(t.node_count):
+    left = t.children_left[i]
+    right = t.children_right[i]
+    if left != _TREE_LEAF:
+      parent[left] = i
+      depth[left] = depth[i] + 1
+    if right != _TREE_LEAF:
+      parent[right] = i
+      depth[right] = depth[i] + 1
+  return parent, depth
+
+
+def get_nodes(estimator, feature_names):
+  """Node dict for one fitted decision tree, read straight off sklearn's
+  tree_ arrays. Thresholds are floored to int here -- the single rounding
+  rule for this quantity (dt_thresholds_float_to_int floors before
+  training-time export, extract_feature_intervals rounds; they agreed only
+  by ordering).
+
+  Replaces the export_text round-trip (_get_nodes_from_text, below) as of
+  Task 15: that function rendered the tree to indented text and re-parsed
+  it, which cost a max_depth truncation hazard (see
+  get_tree_textual_representation's comment), a rounding-order bug, an
+  O(n^2) rescan per node to find its right child, a state-machine parser,
+  and dependence on export_text's exact "class: <value>" line format.
+  Reading estimator.tree_ directly has none of those: every node's parent,
+  depth, and both children fall straight out of the C-level arrays sklearn
+  already built while fitting."""
+  t = estimator.tree_
+  parent, depth = _parents_and_depths(t)
+  nodes = {}
+  for i in range(t.node_count):
+    leaf = t.children_left[i] == _TREE_LEAF
+    node = {"node": i, "depth": depth[i], "is_leaf": leaf, "father_node": parent[i]}
+    if leaf:
+      node["class"] = int(np.argmax(t.value[i]))
+      node["action_name"] = "classify_flow"
+    else:
+      node["feature"] = normalise_feature_name(feature_names[t.feature[i]])
+      node["action_name"] = "classify_" + node["feature"]
+      node["threshold"] = int(math.floor(t.threshold[i]))
+      node["left_child"] = int(t.children_left[i])
+      node["right_child"] = int(t.children_right[i])
+    nodes[i] = node
+  return nodes
+
+
+def _get_nodes_from_text(tree_text):
+  '''Superseded by get_nodes() (Task 15) as the production node-extraction
+  path -- kept only as the reference implementation that
+  tests/test_tree_parsing.py's characterisation suite checks get_nodes()
+  against (both are exercised on real fitted forests and their node dicts
+  compared, reconciling two deliberate shape differences: "class" as a
+  string here vs. an int index there, and node-id assignment order).
+
    Inputs: Tree textual representation generated with export_text(tree_classifier, feature_names)
    Outputs: Dictionary containing the information of the different tree nodes (leaf or internal)
    '''
@@ -295,7 +377,7 @@ def get_feature_intervals(model, selected_features):
 
   tree_nodes = {}
   for tree in trees:
-    tree_nodes[tree] = get_nodes(trees[tree])
+    tree_nodes[tree] = _get_nodes_from_text(trees[tree])
 
   feature_thresholds = get_feature_thresholds(tree_nodes)
   feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
@@ -326,12 +408,12 @@ def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
 
   tree_nodes = {}
   for tree_a in trees_a:
-    tree_nodes[tree_a] = get_nodes(trees_a[tree_a])
+    tree_nodes[tree_a] = _get_nodes_from_text(trees_a[tree_a])
 
   offset = len(tree_nodes)
 
   for tree_b in trees_b:
-    tree_nodes[tree_b + offset] = get_nodes(trees_b[tree_b])
+    tree_nodes[tree_b + offset] = _get_nodes_from_text(trees_b[tree_b])
 
   feature_thresholds = get_feature_thresholds(tree_nodes)
   feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
@@ -1488,7 +1570,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   if clf_app is not None:
     if selected_features_app is not None:
       trees_app = get_tree_textual_representation(clf_app, selected_features_app)
-      tree_nodes_app = {tree: get_nodes(trees_app[tree]) for tree in trees_app}
+      tree_nodes_app = {tree: _get_nodes_from_text(trees_app[tree]) for tree in trees_app}
       paths_app = get_root_to_leaf_paths(tree_nodes_app)
       codewords.update(generate_codewords(paths_app, feature_intervals_app))
     elif use_default_action_discount:
@@ -1499,7 +1581,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   if clf_ddos is not None:
     if selected_features_ddos is not None:
       trees_ddos = get_tree_textual_representation(clf_ddos, selected_features_ddos)
-      tree_nodes_ddos = {tree: get_nodes(trees_ddos[tree]) for tree in trees_ddos}
+      tree_nodes_ddos = {tree: _get_nodes_from_text(trees_ddos[tree]) for tree in trees_ddos}
       paths_ddos = get_root_to_leaf_paths(tree_nodes_ddos)
       codewords_ddos_0indexed = generate_codewords(paths_ddos, feature_intervals_ddos)
       codewords.update({tree_id + num_trees_app: tree_codewords

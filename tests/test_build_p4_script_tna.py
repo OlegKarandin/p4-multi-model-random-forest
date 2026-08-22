@@ -1168,7 +1168,7 @@ def _derive_intervals(clf):
   tree_nodes -> thresholds -> intervals path feature_selection and
   evaluation both use."""
   trees = bps.get_tree_textual_representation(clf, _DISCOUNT_FEATURE_NAMES)
-  tree_nodes = {tree: bps.get_nodes(trees[tree]) for tree in trees}
+  tree_nodes = {tree: bps._get_nodes_from_text(trees[tree]) for tree in trees}
   return bps.get_feature_intervals_from_thresholds(bps.get_feature_thresholds(tree_nodes))
 
 
@@ -1501,7 +1501,7 @@ def _codewords_of(clf, intervals):
   """That model's per-tree {codeword: class} dicts (0-indexed tree ids), via
   the exact path generate_P4_code recomputes them with."""
   trees = bps.get_tree_textual_representation(clf, _DISCOUNT_FEATURE_NAMES)
-  tree_nodes = {tree: bps.get_nodes(trees[tree]) for tree in trees}
+  tree_nodes = {tree: bps._get_nodes_from_text(trees[tree]) for tree in trees}
   return bps.generate_codewords(bps.get_root_to_leaf_paths(tree_nodes), intervals)
 
 

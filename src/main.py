@@ -8,11 +8,11 @@ from src.p4gen.build_p4_script import (
     generate_P4_code,
     generate_codewords,
     get_joint_feature_intervals,
-    get_nodes,
     get_root_to_leaf_paths,
     get_table_entries,
     get_tree_textual_representation,
 )
+from src.p4gen.build_p4_script import _get_nodes_from_text
 from src.training.feature_selection import compare_feature_selection_approaches_parallel
 from src.training.config import TrainConfig
 
@@ -161,12 +161,12 @@ def implement_tree_models_in_P4(clf_app, clf_ddos, selected_features,
     tree_nodes = {}
 
     for tree_app in trees_app:
-        tree_nodes[tree_app] = get_nodes(trees_app[tree_app])
+        tree_nodes[tree_app] = _get_nodes_from_text(trees_app[tree_app])
 
     offset = len(tree_nodes)
 
     for tree_ddos in trees_ddos:
-        tree_nodes[tree_ddos + offset] = get_nodes(trees_ddos[tree_ddos])
+        tree_nodes[tree_ddos + offset] = _get_nodes_from_text(trees_ddos[tree_ddos])
 
     # tree_nodes/offset above are still needed below (get_root_to_leaf_paths,
     # get_table_entries); get_joint_feature_intervals recomputes its own
