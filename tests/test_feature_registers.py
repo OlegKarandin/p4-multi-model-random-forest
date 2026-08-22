@@ -628,6 +628,8 @@ def test_shared_dependency_does_not_trip_touch_guard_even_with_many_sharers():
 
 
 def test_unsupported_gated_by_raises():
+  # "bwd" is now a supported gate class (Task 6) -- use a value that is
+  # still genuinely unsupported to keep exercising this guard.
   synthetic_catalog = {
       "synthetic_feature": {
           "registers": [{
@@ -636,13 +638,75 @@ def test_unsupported_gated_by_raises():
               "width": 16,
               "body": "running_max_iat",
           }],
-          "gated_by": "bwd",
+          "gated_by": "sideways",
       },
   }
   feature_intervals = {"Synthetic_Feature": None}
 
   with pytest.raises(RuntimeError):
     generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
+
+
+def test_bwd_gated_feature_wrapped_in_meta_fwd_equals_0_block():
+  synthetic_catalog = {
+      "synthetic_bwd_feature": {
+          "registers": [{
+              "name": "synthetic_bwd_reg",
+              "role": "value",
+              "width": 16,
+              "body": "running_max_iat",
+          }],
+          "gated_by": "bwd",
+      },
+  }
+  feature_intervals = {"Synthetic_Bwd_Feature": None}
+
+  _, _, apply_code, _ = generate_P4_registers_and_apply(
+      feature_intervals, catalog=synthetic_catalog)
+
+  assert "if (meta.fwd == 0) {" in apply_code
+  assert "synthetic_bwd_reg_action.execute(meta.flow_hash)" in apply_code
+  # The execute call site must be textually inside the fwd==0 block, not
+  # emitted unconditionally.
+  gate_index = apply_code.index("if (meta.fwd == 0) {")
+  execute_index = apply_code.index("synthetic_bwd_reg_action.execute(meta.flow_hash)")
+  assert execute_index > gate_index
+
+
+def test_register_shared_across_gate_classes_raises():
+  # A register first .execute()'d inside one gated block (or ungated) and
+  # then reused by a feature in a DIFFERENT gate class would read a
+  # value that only some packets ever set -- garbage for the rest. This
+  # must be a real error, not silently-wrong P4.
+  shared_register = {
+      "name": "shared_cross_gate_reg",
+      "role": "value",
+      "width": 16,
+      "body": "running_max_iat",
+  }
+  synthetic_catalog = {
+      "ungated_feature": {
+          "registers": [shared_register],
+          "gated_by": None,
+      },
+      "fwd_feature": {
+          "registers": [shared_register],
+          "gated_by": "fwd",
+      },
+  }
+  feature_intervals = {"Ungated_Feature": None, "Fwd_Feature": None}
+
+  with pytest.raises(ValueError, match="shared_cross_gate_reg"):
+    generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
+
+
+def test_real_catalog_has_no_cross_gate_register_sharing():
+  # Ground truth: resolving every feature in the real catalog together
+  # must NOT trip the cross-gate hazard guard above.
+  feature_intervals = {name: None for name in FEATURE_REGISTER_CATALOG}
+
+  # Should not raise.
+  generate_P4_registers_and_apply(feature_intervals)
 
 
 def test_generate_P4_registers_raises_when_flow_iat_mean_selected_without_flow_iat_max():

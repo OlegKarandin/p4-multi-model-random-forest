@@ -1878,10 +1878,10 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   for feature in matched_features:
     entry = catalog[feature]
     gated_by = entry.get("gated_by")
-    if gated_by not in (None, "fwd"):
+    if gated_by not in (None, "fwd", "bwd"):
       raise RuntimeError(
           "Feature '{feature}' has unsupported gated_by={gated_by!r}; "
-          "only None and 'fwd' are implemented.".format(feature=feature, gated_by=gated_by)
+          "only None, 'fwd', and 'bwd' are implemented.".format(feature=feature, gated_by=gated_by)
       )
 
     regs = []
@@ -1891,6 +1891,30 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       if reg["body"] == "iat_delta":
         needs_timestamp = True
     feature_registers[feature] = regs
+
+  # ---- Cross-gate register-sharing hazard guard ----
+  #
+  # _execute_lines() (below) is called three times -- ungated, then
+  # fwd-gated, then bwd-gated -- sharing one `already_executed_registers`
+  # set, so whichever call reaches a register name FIRST is the one that
+  # actually emits its .execute() call site; every later call for that same
+  # name is a no-op that assumes the value was already produced. If a
+  # register were first executed inside a gated block (say, only for
+  # meta.fwd == 1 packets) and then reused by a feature in a DIFFERENT gate
+  # class (say, an ungated feature, or a meta.fwd == 0 feature), packets
+  # that skip the first block would read a garbage/unset register value.
+  # Catch that at generation time instead of emitting silently-wrong P4.
+  gate_of_register = {}
+  for feature in matched_features:
+    gate = catalog[feature].get("gated_by")
+    for reg in catalog[feature]["registers"]:
+      previous = gate_of_register.setdefault(reg["name"], gate)
+      if previous != gate:
+        raise ValueError(
+            "register {!r} is shared by features in different gate classes "
+            "({!r} and {!r}); it would be .execute()d inside one gated block and "
+            "read as garbage from the other. Promote it to an ungated register "
+            "or give each gate class its own.".format(reg["name"], previous, gate))
 
   # ---- Touch-count guard (checked before emitting anything) ----
 
@@ -2003,6 +2027,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
 
   ungated_features = [f for f in matched_features if catalog[f].get("gated_by") is None]
   fwd_gated_features = [f for f in matched_features if catalog[f].get("gated_by") == "fwd"]
+  bwd_gated_features = [f for f in matched_features if catalog[f].get("gated_by") == "bwd"]
 
   apply_lines += _execute_lines(ungated_features, "\t\t\t")
 
@@ -2010,6 +2035,12 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     apply_lines.append("")
     apply_lines.append("\t\t\tif (meta.fwd == 1) {")
     apply_lines += _execute_lines(fwd_gated_features, "\t\t\t\t")
+    apply_lines.append("\t\t\t}")
+
+  if bwd_gated_features:
+    apply_lines.append("")
+    apply_lines.append("\t\t\tif (meta.fwd == 0) {")
+    apply_lines += _execute_lines(bwd_gated_features, "\t\t\t\t")
     apply_lines.append("\t\t\t}")
 
   apply_code = "\n".join(apply_lines) + "\n"

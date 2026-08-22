@@ -699,6 +699,25 @@ def test_feature_readiness_level_counts_hash_gating_and_chain_depth():
     assert ev.feature_readiness_level("fwd_iat_max") == 4
 
 
+def test_feature_readiness_level_bwd_gated_costs_same_as_fwd_gated():
+    # A bwd-gated feature waits on the same meta.fwd signal as a fwd-gated
+    # one (flow_orientation_action resolves it unconditionally either way),
+    # so it must cost the same +1 gate stage.
+    synthetic_catalog = {
+        "bwd_synthetic_feature": {
+            "registers": [{
+                "name": "bwd_synthetic_reg",
+                "role": "value",
+                "width": 16,
+                "body": "running_max_iat",
+            }],
+            "gated_by": "bwd",
+        },
+    }
+    # ungated hash + 1 gate + 1-deep chain: 1 + 1 + 1
+    assert ev.feature_readiness_level("bwd_synthetic_feature", catalog=synthetic_catalog) == 3
+
+
 def test_feature_readiness_level_unknown_feature_is_ready_after_the_hash():
     # A feature with no catalog entry gets no registers emitted at all, so
     # nothing gates its table beyond the flow hash itself.

@@ -302,8 +302,9 @@ def feature_readiness_level(feature_name, catalog=None):
   its range-matching table -- can possibly be placed.
 
     level = FLOW_HASH_LEVEL
-          + 1 if the feature is fwd-gated (flow_orientation_action has to
-            resolve meta.fwd before the gated block can run)
+          + 1 if the feature is fwd- or bwd-gated (flow_orientation_action has
+            to resolve meta.fwd before the gated block can run, regardless of
+            which direction the gate checks)
           + one per RegisterAction in the feature's chain
 
   Each chain entry is a genuinely sequential stage: a "dependency" register
@@ -325,7 +326,7 @@ def feature_readiness_level(feature_name, catalog=None):
   if entry is None:
     return FLOW_HASH_LEVEL
 
-  gate_cost = 1 if entry.get("gated_by") == "fwd" else 0
+  gate_cost = 1 if entry.get("gated_by") in ("fwd", "bwd") else 0
   return FLOW_HASH_LEVEL + gate_cost + len(entry["registers"])
 
 
