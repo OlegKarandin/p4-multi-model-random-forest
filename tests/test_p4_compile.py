@@ -17,7 +17,47 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.p4gen import build_p4_script as bps
 from src.p4gen import p4_compile as pc
+from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
+
+
+# main.py:308-314's live 18-feature pool, verbatim -- the exact spelling
+# dataset.py/main.py select, dot-separated. Shared by the fast catalog-drift
+# test and the slow real-compile acceptance test below.
+LIVE_POOL_FEATURE_NAMES = [
+    'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
+    'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
+    'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
+    'Fwd.IAT.Mean', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
+    'Bwd.IAT.Mean', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
+    'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
+
+
+def _forest_over(names, labels, seed):
+    # Mirrors tests/test_build_p4_script_tna.py's helper of the same name --
+    # duplicated here rather than imported since tests/ has no __init__.py
+    # and no cross-test-file import convention exists in this repo yet.
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+    rnd = np.random.RandomState(seed)
+    X = rnd.randint(0, 65535, size=(40, len(names)))
+    y = np.array([labels[i % len(labels)] for i in range(40)])
+    X[:, 0] += np.array([16000 * (labels.index(v) + 1) for v in y])
+    return bps.dt_thresholds_float_to_int(
+        RandomForestClassifier(n_estimators=2, max_depth=3, random_state=seed).fit(X, y))
+
+
+def test_all_live_pool_features_have_catalog_entries():
+    """Fast, no toolchain needed -- runs in CI on every commit. Every
+    normalised name in main.py's 18-feature pool (main.py:308-314) must be a
+    key of FEATURE_REGISTER_CATALOG. This is what stops the catalog silently
+    falling behind main.py again; the slow real-compile test below is the
+    belt to this test's suspenders.
+    """
+    missing = [name for name in LIVE_POOL_FEATURE_NAMES
+               if bps.normalise_feature_name(name) not in FEATURE_REGISTER_CATALOG]
+    assert missing == []
 
 
 def _write_fixture_logs(tmp_path, table_summary_text, mau_resources_text, table_placement_text):
@@ -405,6 +445,30 @@ def test_compile_p4_against_real_toolchain(tmp_path):
     result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
     assert result.errors == 0
     assert result.stages is not None
+
+
+@pytest.mark.slow
+def test_full_eighteen_feature_pool_compiles(tmp_path):
+    """Every feature in main.py's pool must have a catalog entry that produces a
+    program the real compiler accepts. This is the test Phase 2 exists to pass."""
+    live_names = [  # main.py:307-313, verbatim
+        'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
+        'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
+        'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
+        'Fwd.IAT.Mean', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
+        'Bwd.IAT.Mean', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
+        'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
+    clf_app = _forest_over(live_names, [0, 1, 2], seed=0)      # Task 4's helper
+    clf_ddos = _forest_over(live_names, [-1, 1], seed=1)
+    feature_intervals = bps.get_joint_feature_intervals(
+        clf_app, live_names, clf_ddos, live_names)
+    written = bps.generate_P4_code(
+        3, 2, clf_app, clf_ddos,
+        feature_intervals_app=feature_intervals, feature_intervals_ddos=feature_intervals,
+        output_dir=str(tmp_path) + os.sep, output_filename='pool18.p4',
+        selected_features_app=live_names, selected_features_ddos=live_names)
+    result = pc.compile_p4(written, str(tmp_path / "logs"))
+    assert result.errors == 0, result
 
 
 # ---------------------------------------------------------------------------
