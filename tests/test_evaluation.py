@@ -161,6 +161,36 @@ def test_ternary_matching_resource_usage_exposes_per_tree_table_specs():
     assert blocks == sum(spec[0] for spec in specs)
 
 
+def test_stage_shards_rejects_a_key_wider_than_one_stage_crossbar():
+    # F3: splitting a table's ROWS across stages is real; splitting its KEY
+    # is not -- a stage's crossbar cannot deliver more than
+    # TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes, and the compiler rejects
+    # such a table outright rather than spreading it over stages.
+    with pytest.raises(ev.CrossbarKeyTooWide) as excinfo:
+        ev._stage_shards(1, 100)
+    assert excinfo.value.args[1] == 100
+
+
+def test_crossbar_stages_needed_propagates_key_too_wide():
+    # The packer must not silently price an impossible table as 2 stages --
+    # it has to propagate the same raise _stage_shards produces.
+    with pytest.raises(ev.CrossbarKeyTooWide) as excinfo:
+        ev.crossbar_stages_needed([(1, 100)])
+    assert excinfo.value.args[1] == 100
+
+
+def test_ternary_matching_resource_usage_rejects_many_narrow_features():
+    # Reachable shape: the crossbar allocates PER FIELD, so 100 features x 2
+    # codeword bits each = 100 crossbar bytes, well under the separate
+    # MAX_CODEWORD_LENGTH (512-bit) guard (this codeword is only 200 bits) --
+    # so the codeword-length guard alone would not have caught this table.
+    feature_intervals = {"F{}".format(i): [(0, 0), (0, 0), (0, 0)]
+                          for i in range(100)}  # 3 intervals -> 2 bits each
+    codewords = {0: {"0" * 200: 0}}
+    with pytest.raises(ev.CrossbarKeyTooWide):
+        ev.ternary_matching_resource_usage(codewords, feature_intervals)
+
+
 def test_crossbar_stages_needed_flat_table_cap_at_16_bit():
     # RM-5/RM-6: 8 independent 16-bit tables (2 bytes each, 1 block each --
     # factor = ceil((16+4)/44) = 1) fit in 1 stage; a 9th forces a 2nd
@@ -224,10 +254,16 @@ def test_crossbar_stages_needed_output_respects_all_three_limits():
     # The property that actually matters: whatever the sort order, every
     # emitted stage is a physically legal stage, so the count is an upper
     # bound on the optimum (never an under-count).
+    #
+    # Byte width is capped at TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE (Task 10,
+    # F3): a table whose key is wider than one stage's crossbar budget is not
+    # a splittable-across-stages shape at all -- crossbar_stages_needed now
+    # raises CrossbarKeyTooWide for it instead of pricing a design the
+    # compiler would reject outright, so this generator must not produce one.
     import random
     rnd = random.Random(1234)
     for _ in range(200):
-        specs = [(rnd.randint(1, 30), rnd.randint(1, 70))
+        specs = [(rnd.randint(1, 30), rnd.randint(1, bps.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE))
                  for _ in range(rnd.randint(1, 20))]
         stages = ev.crossbar_stages_needed(specs)
         # A valid packing can never use fewer stages than either

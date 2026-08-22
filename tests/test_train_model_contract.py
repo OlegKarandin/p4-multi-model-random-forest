@@ -177,8 +177,49 @@ def test_every_feasible_trial_records_the_attrs_the_selection_rule_reads(monkeyp
     assert feasible, 'the tiny problem should admit at least one feasible trial'
     for trial in feasible:
         for attr in ('acc_app', 'acc_ddos', 'blocks', 'stages',
-                     'codeword_violation', 'blocks_violation'):
+                     'codeword_violation', 'blocks_violation', 'crossbar_violation'):
             assert attr in trial.user_attrs, (trial.number, attr)
+
+
+def test_crossbar_key_too_wide_records_crossbar_violation_not_codeword(monkeypatch):
+    """Task 10 (F3): a table whose key exceeds the stage crossbar is a
+    distinct failure from a too-long codeword -- computing
+    `e.args[1] - MAX_CODEWORD_LENGTH` on it would be a nonsense violation
+    number. The objective must instead record `crossbar_violation`, leave
+    the other two violation attrs at 0.0, and return the infeasible triple
+    rather than crash the search."""
+    import optuna
+    import src.training.train_model as tm
+    from src.training.errors import NoFeasibleSolution
+
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        captured['study'] = study
+        return study
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    reported_width = 100
+    monkeypatch.setattr(
+        tm, 'multi_model_memory_evaluation',
+        lambda *a, **k: (_ for _ in ()).throw(
+            tm.CrossbarKeyTooWide('table key too wide', reported_width)))
+
+    with pytest.raises(NoFeasibleSolution):
+        _call(cfg=TrainConfig(n_trials=5, min_feasible_before_stop=2, lookback=2))
+
+    trials = captured['study'].trials
+    assert trials, 'the search should have run at least one trial'
+    for trial in trials:
+        assert trial.user_attrs['crossbar_violation'] == (
+            reported_width - tm.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+        assert trial.user_attrs['codeword_violation'] == 0.0
+        assert trial.user_attrs['blocks_violation'] == 0.0
+        assert trial.values == [-1.0, -1.0, float('inf')]
 
 
 def test_the_winner_is_refit_deterministically_not_cached(monkeypatch):

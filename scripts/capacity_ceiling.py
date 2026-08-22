@@ -58,13 +58,19 @@ worst-case-corner reading would impose a stricter requirement than this project
 has ever applied to itself.
 
 Codeword length above the limit. `multi_model_memory_evaluation` raises
-`RuntimeError("Codewords are too long", codeword_length)` rather than returning
-when the limit is exceeded (evaluation.py:176), so over-512 cells would be lost
--- and a table containing only feasible cells cannot locate a ceiling. The
-length is therefore derived directly from the feature intervals (it is
-`sum(len(intervals) - 1)` over features, exactly what `generate_codewords`
-emits per leaf) so that it exists for every cell, and is cross-checked against
-`e.args[1]` on every cell that raises.
+`CodewordTooLong("Codewords are too long", codeword_length)` rather than
+returning when the limit is exceeded (evaluation.py:176), so over-512 cells
+would be lost -- and a table containing only feasible cells cannot locate a
+ceiling. The length is therefore derived directly from the feature intervals
+(it is `sum(len(intervals) - 1)` over features, exactly what
+`generate_codewords` emits per leaf) so that it exists for every cell, and is
+cross-checked against `e.args[1]` on every cell that raises. Separately (F3),
+a table whose match key is wider than the per-stage crossbar's byte budget
+raises `CrossbarKeyTooWide` instead -- that is not a codeword-length problem
+at all (many narrow features can trip it well under the codeword limit), so
+`measure` treats it the same as an over-limit cell (an uncompilable design,
+recorded as (None, None)) without attempting the codeword-length
+cross-check.
 
 Adoption rule (Rulings P4-1 and P4-3). Among cells whose JOINT-encoding
 codeword length stays within the limit on all 3 splits at the deciding corner,
@@ -109,7 +115,8 @@ from sklearn.ensemble import RandomForestClassifier
 from src.p4gen.build_p4_script import (
     INFINITE, MAX_CODEWORD_LENGTH, dt_thresholds_float_to_int,
     get_feature_intervals, get_joint_feature_intervals)
-from src.p4gen.evaluation import multi_model_memory_evaluation
+from src.p4gen.evaluation import (
+    CodewordTooLong, CrossbarKeyTooWide, multi_model_memory_evaluation)
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.training.splits import make_task_splits
 
@@ -175,12 +182,18 @@ def codeword_length_of(feature_intervals):
 
 def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
     """(stages, blocks) for one encoding, or (None, None) when the codeword
-    limit makes the pair uncompilable. Returns Nones rather than propagating,
-    so an infeasible cell still contributes its codeword length to the table."""
+    limit -- or, separately (F3), the per-stage crossbar byte-width limit --
+    makes the pair uncompilable. Returns Nones rather than propagating, so an
+    infeasible cell still contributes its codeword length to the table."""
     try:
         return multi_model_memory_evaluation(
             clf_app, clf_ddos, feature_names, feature_names, encoding)
-    except RuntimeError as e:
+    except CrossbarKeyTooWide:
+        # Not a codeword-length problem -- many narrow features can trip this
+        # well under codeword_length's limit -- so there is nothing to
+        # cross-check codeword_length against here.
+        return None, None
+    except CodewordTooLong as e:
         reported = e.args[1]
         if encoding == 'joint' and reported != codeword_length:
             raise AssertionError(

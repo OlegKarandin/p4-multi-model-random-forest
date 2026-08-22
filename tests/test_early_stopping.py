@@ -18,6 +18,7 @@ def _converged_objective(trial):
     trial.suggest_int('x', 0, 100)
     trial.set_user_attr('codeword_violation', 0.0)
     trial.set_user_attr('blocks_violation', 0.0)
+    trial.set_user_attr('crossbar_violation', 0.0)
     return 0.9, 10.0
 
 
@@ -42,6 +43,7 @@ def test_stopper_keeps_searching_while_the_front_still_moves():
         trial.suggest_int('x', 0, 100)
         trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 0.0)
+        trial.set_user_attr('crossbar_violation', 0.0)
         return 0.5 + trial.number * 1e-4, 100.0 - trial.number
 
     study.optimize(objective, n_trials=40, callbacks=[stopper])
@@ -60,6 +62,7 @@ def test_infeasible_trials_never_satisfy_the_feasible_minimum():
         trial.suggest_int('x', 0, 100)
         trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 5.0)
+        trial.set_user_attr('crossbar_violation', 0.0)
         return -1.0, 1e9
 
     study.optimize(objective, n_trials=20, callbacks=[stopper])
@@ -77,5 +80,5 @@ def test_a_trial_missing_its_violation_attrs_reads_as_infeasible():
         values=[0.9, 10.0]))
     trial = study.trials[0]
 
-    assert early_stopping.constraint_values(trial) == [float('inf'), float('inf')]
+    assert early_stopping.constraint_values(trial) == [float('inf')] * 3
     assert early_stopping.is_feasible(trial) is False

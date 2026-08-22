@@ -19,7 +19,16 @@ import optuna
 
 # The objective records violation MAGNITUDES rather than booleans so Optuna's
 # constrained TPE sampler can order infeasible trials by how badly they miss.
-_VIOLATION_ATTRS = ('codeword_violation', 'blocks_violation')
+#
+# crossbar_violation (Task 10, F3): a table whose key exceeds the per-stage
+# crossbar's byte budget is a third, distinct failure from a too-long
+# codeword or an over-block-budget model. Without it here, a trial that hit
+# CrossbarKeyTooWide -- which sets codeword_violation and blocks_violation to
+# 0.0 precisely because it isn't either of those -- would read as feasible
+# (both tracked magnitudes <= 0) despite never having set acc_app/acc_ddos/
+# blocks/stages, crashing trial_selection.select_best_trial with a KeyError
+# instead of correctly excluding the trial.
+_VIOLATION_ATTRS = ('codeword_violation', 'blocks_violation', 'crossbar_violation')
 
 
 def constraint_values(trial):

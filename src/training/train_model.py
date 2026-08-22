@@ -26,8 +26,11 @@ from sklearn.metrics import accuracy_score
 
 import numpy as np
 
-from src.p4gen.build_p4_script import dt_thresholds_float_to_int, MAX_CODEWORD_LENGTH
-from src.p4gen.evaluation import multi_model_memory_evaluation
+from src.p4gen.build_p4_script import (
+    dt_thresholds_float_to_int, MAX_CODEWORD_LENGTH,
+    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+from src.p4gen.evaluation import (
+    CodewordTooLong, CrossbarKeyTooWide, multi_model_memory_evaluation)
 from src.p4gen.switch_semantics import switch_predict
 from src.training.threshold_alignment import align_rf_thresholds
 from src.training import early_stopping
@@ -200,14 +203,22 @@ def train_multi_RF_Optuna_multi_constrained(
         try:
             stages, blocks = multi_model_memory_evaluation(
                 model_A, model_B, features_A, features_B, encoding)
-        except RuntimeError as e:
+        except CodewordTooLong as e:
             trial.set_user_attr('codeword_violation', e.args[1] - MAX_CODEWORD_LENGTH)
+            trial.set_user_attr('blocks_violation', 0.0)
+            trial.set_user_attr('crossbar_violation', 0.0)
+            return -1.0, -1.0, float('inf')
+        except CrossbarKeyTooWide as e:
+            trial.set_user_attr('crossbar_violation',
+                                e.args[1] - TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+            trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             return -1.0, -1.0, float('inf')
 
         if blocks > max_blocks:
             trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', blocks - max_blocks)
+            trial.set_user_attr('crossbar_violation', 0.0)
             return -1.0, -1.0, float('inf')
 
         # (c) Only FEASIBLE trials pay for scoring. At tight max_blocks most of
@@ -231,6 +242,7 @@ def train_multi_RF_Optuna_multi_constrained(
         trial.set_user_attr('stages', int(stages))
         trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 0.0)
+        trial.set_user_attr('crossbar_violation', 0.0)
 
         # Blocks stays a third OBJECTIVE rather than a pure constraint because
         # plots use REALIZED blocks as an axis: without minimize-blocks pressure
@@ -261,8 +273,9 @@ def train_multi_RF_Optuna_multi_constrained(
         except Exception:
             pass  # Ignore if enqueue fails (e.g. bounds changed between k)
 
-    # catch=() deliberately: the ONLY expected RuntimeError is the codeword
-    # violation, and the objective already handles that itself. The previous
+    # catch=() deliberately: the ONLY expected RuntimeErrors are the codeword
+    # (CodewordTooLong) and crossbar-width (CrossbarKeyTooWide) violations,
+    # and the objective already handles both itself. The previous
     # catch=(RuntimeError,) also swallowed align_rf_thresholds' own
     # AlignmentInvariantError (raised as a bare RuntimeError("Smth is
     # very-very wrong") before it was given its own type), hiding corrupted

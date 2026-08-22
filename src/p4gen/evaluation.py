@@ -18,6 +18,17 @@ from src.p4gen.build_p4_script import (
 )
 from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 
+
+class CodewordTooLong(RuntimeError):
+  """Codeword exceeds MAX_CODEWORD_LENGTH. args = (message, codeword_length)."""
+
+
+class CrossbarKeyTooWide(RuntimeError):
+  """One table's match key exceeds the per-stage ternary crossbar byte budget;
+  the compiler rejects such a table outright rather than splitting it.
+  args = (message, byte_width)."""
+
+
 def accuracy_metrics(y_true, y_pred, task):
 
     if task == 'app':
@@ -188,9 +199,21 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   codeword_length = len(next(iter(codewords[0].items()))[0])
 
   if codeword_length > MAX_CODEWORD_LENGTH:
-    raise RuntimeError("Codewords are too long", codeword_length)
+    raise CodewordTooLong("Codewords are too long", codeword_length)
 
   table_bytes = ternary_table_key_bytes(feature_intervals)
+
+  if table_bytes > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
+    # Checked here, where the key width is already known, rather than deep
+    # inside crossbar_stages_needed/_stage_shards: a trial should be rejected
+    # with a clear reason at the point that has the clearest context, not
+    # crash mid-estimate several calls later. _stage_shards keeps its own
+    # copy of this check too (defense in depth for any other caller that
+    # reaches it directly).
+    raise CrossbarKeyTooWide(
+        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
+        "compiler rejects this table rather than splitting it across stages"
+        % (table_bytes, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), table_bytes)
 
   factor = math.ceil((codeword_length + 4) / TCAM_BLOCK_KEY_LENGTH)
   for tree in codewords:
@@ -342,20 +365,22 @@ def _stage_shards(block_count, byte_width):
   minimum number of per-stage shards, so the packer never reports a stage
   count below what the table alone already forces.
 
-  A table needing more than TCAM_BLOCKS_PER_STAGE blocks must spread those
-  blocks over several stages; a table whose key is wider than the whole
-  per-stage crossbar budget cannot be fed to one stage at all. In both
-  cases the table occupies >= ceil(limit-excess) stages, and every stage it
-  occupies still has to receive its key bytes -- so each shard carries the
-  full width (capped at the per-stage budget) rather than a fraction of
-  it."""
-  shards_by_blocks = math.ceil(block_count / TCAM_BLOCKS_PER_STAGE) if block_count > 0 else 1
-  shards_by_bytes = math.ceil(byte_width / TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE) if byte_width > 0 else 1
-  n_shards = max(1, shards_by_blocks, shards_by_bytes)
-
-  shard_blocks = math.ceil(block_count / n_shards)
-  shard_bytes = min(byte_width, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
-  return [(shard_blocks, shard_bytes)] * n_shards
+  Splitting a table's ROWS across stages is real: a table needing more than
+  TCAM_BLOCKS_PER_STAGE blocks genuinely spreads those blocks over several
+  stages, each shard still carrying the table's full key width. Splitting a
+  table's KEY across stages is not real: a key is one indivisible match, TCAM
+  compares a whole row in one clock, and a stage's crossbar physically cannot
+  deliver more than TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes -- a table
+  whose key exceeds that budget is rejected by the compiler outright, not
+  spread across stages. Raise rather than silently pricing that impossible
+  design as `ceil(byte_width / budget)` stages."""
+  if byte_width > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
+    raise CrossbarKeyTooWide(
+        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
+        "compiler rejects this table rather than splitting it across stages"
+        % (byte_width, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), byte_width)
+  n = max(1, math.ceil(block_count / TCAM_BLOCKS_PER_STAGE)) if block_count > 0 else 1
+  return [(math.ceil(block_count / n), byte_width)] * n
 
 
 def crossbar_stages_needed(table_specs, readiness_levels=None):
