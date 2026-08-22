@@ -1647,6 +1647,31 @@ _REGISTER_ACTION_BODIES = {
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
+  # Task 7: running minimum. A register that initialises to 0 (the
+  # _register_declaration default) is stuck at 0 forever once folded through
+  # min() -- min(0, anything) == 0 -- so these two body kinds are paired with
+  # _REGISTER_INITIAL_VALUES entries below that start the backing register at
+  # INFINITE (65535) instead, via TNA's Register<T,I> two-argument
+  # constructor. Design (a) from task-7-brief.md, validated by compiling
+  # p4/tofino_spike/tna_m3_min_registers_spike.p4 with the real p4c
+  # (0 errors) -- design (b) (a first-packet `value == 0` branch) was not
+  # needed. Bodies transcribed verbatim from that compile.
+  "running_min_iat": (
+      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
+      "\t\t\tif (meta.current_iat < value) {{\n"
+      "\t\t\t\tvalue = meta.current_iat;\n"
+      "\t\t\t}}\n"
+      "\t\t\trv = value;\n"
+      "\t\t}}\n"
+  ),
+  "running_min_packet_length": (
+      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
+      "\t\t\tif (hdr.ipv4.total_len < value) {{\n"
+      "\t\t\t\tvalue = hdr.ipv4.total_len;\n"
+      "\t\t\t}}\n"
+      "\t\t\trv = value;\n"
+      "\t\t}}\n"
+  ),
 }
 
 # Register-action body kinds that require an extra hardware-primitive
@@ -1657,9 +1682,23 @@ _EXTRA_ACTION_DECLARATIONS = {
     "mathunit_ewma": "\tMathUnit<bit<{width}>>(MathOp_t.MUL, 1, 2) {name}_halve_unit;\n",
 }
 
+# Body kinds whose backing register must NOT start at 0. A running minimum
+# folded into a zero-initialised register stays 0 forever (min(0, x) == 0),
+# so these start at INFINITE (65535 -- the same sentinel
+# get_feature_intervals_from_thresholds uses) via _register_declaration's
+# optional initial_value, using TNA's Register<T,I> two-argument constructor.
+_REGISTER_INITIAL_VALUES = {
+    "running_min_iat": INFINITE,
+    "running_min_packet_length": INFINITE,
+}
 
-def _register_declaration(name, width):
-  return "\tRegister<bit<{width}>, bit<32>>(MAX_NUM_FLOWS) {name}_reg;\n".format(width=width, name=name)
+
+def _register_declaration(name, width, initial_value=None):
+  if initial_value is None:
+    return "\tRegister<bit<{width}>, bit<32>>(MAX_NUM_FLOWS) {name}_reg;\n".format(
+        width=width, name=name)
+  return "\tRegister<bit<{width}>, bit<32>>(MAX_NUM_FLOWS, {init}) {name}_reg;\n".format(
+      width=width, name=name, init=initial_value)
 
 
 def _register_action_declaration(name, width, body_kind):
@@ -1935,7 +1974,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       "\tRegister<bit<32>, bit<32>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;\n"
   )
   for name in register_order:
-    registers_code += _register_declaration(name, register_info[name]["width"])
+    initial_value = _REGISTER_INITIAL_VALUES.get(register_info[name]["body"])
+    registers_code += _register_declaration(name, register_info[name]["width"], initial_value=initial_value)
 
   # ---- /* REGISTER_ACTIONS */ ----
 
