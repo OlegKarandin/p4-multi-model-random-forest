@@ -13,6 +13,7 @@ Uses small synthetic feature_intervals/codewords/model stand-ins throughout
 -- no real trained model or compiled P4 is needed (that's Task B3's job).
 """
 
+import csv
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import pytest
 from src.p4gen import build_p4_script as bps
 from src.p4gen import switch_semantics
 from src.p4gen.build_p4_script import (
+    feature_intervals_to_csv,
     generate_P4_actions,
     generate_P4_tables_and_apply,
     generate_P4_code,
@@ -67,6 +69,51 @@ def test_thermometer_code_four_intervals():
   assert thermometer_code(n_intervals, 1) == "011"  # 2nd from lowest
   assert thermometer_code(n_intervals, 2) == "001"  # 2nd from highest
   assert thermometer_code(n_intervals, 3) == "000"  # highest
+
+
+def test_feature_intervals_to_csv_uses_thermometer_code_correctly(tmp_path):
+  """Integration test: verify feature_intervals_to_csv's refactored thermometer_code
+  call site produces correct CSV output. Tests the actual refactoring at the call site,
+  not just the helper function in isolation."""
+  # Three-interval feature (highest to lowest when reversed):
+  # (21, INFINITE), (11, 20), (0, 10)
+  # Expected codes (for indices 0,1,2 counting from lowest):
+  # lowest (0, 10): thermometer_code(3, 0) = "11"
+  # middle (11, 20): thermometer_code(3, 1) = "01"
+  # highest (21, INFINITE): thermometer_code(3, 2) = "00"
+  feature_intervals = {
+      "test_feature": [(0, 10), (11, 20), (21, INFINITE)]
+  }
+
+  feature_intervals_to_csv(
+      feature_intervals,
+      path_to_output=str(tmp_path) + os.sep,
+      output_filename="test_thermometer.csv"
+  )
+
+  # Read and verify the CSV
+  csv_path = tmp_path / "test_thermometer.csv"
+  with open(csv_path, 'r') as f:
+    reader = csv.reader(f, delimiter=";")
+    rows = list(reader)
+
+  # Row 0: feature name
+  assert rows[0][0] == "test_feature"
+
+  # Rows 1-3: intervals in reversed order (highest to lowest)
+  # Each row has: [interval_tuple, bit0, bit1]
+  # Extract the codes from each data row and verify against thermometer_code
+  data_rows = [rows[1], rows[2], rows[3]]  # Skip feature name and empty separator
+
+  for reversed_idx, row in enumerate(data_rows):
+    # Convert reversed_idx to canonical index counting from lowest
+    canonical_idx = len(feature_intervals["test_feature"]) - 1 - reversed_idx
+    expected_code = thermometer_code(3, canonical_idx)
+    actual_code = row[1] + row[2]  # Concatenate the two bit columns
+    assert actual_code == expected_code, (
+        f"Interval {reversed_idx} (canonical {canonical_idx}): "
+        f"expected {expected_code}, got {actual_code}"
+    )
 
 
 class _StubTree:
