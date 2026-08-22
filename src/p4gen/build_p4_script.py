@@ -1327,7 +1327,18 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   underlying RAW feature-value register/computation always stays shared,
   since a raw counter value is model-independent regardless of who
   discretizes it (see _resolve_disjoint_feature_plan's own docstring for
-  the full design)."""
+  the full design).
+
+  Also raises ValueError (F2) when any DISTINCT raw feature name across
+  BOTH feature_intervals_app and feature_intervals_ddos has no
+  FEATURE_REGISTER_CATALOG entry -- checked right after this function calls
+  generate_P4_registers_and_apply (see that call site's own inline comment
+  for the full rationale). Without this, such a feature would still get a
+  declared, PHV-pinned, range-table-keyed `<feature>_val` metadata field
+  further down in this function, just never written by anything -- reading
+  0 for every packet, forever, silently. The message names every missing
+  feature (by the caller-supplied spelling) and points at
+  FEATURE_REGISTER_CATALOG (src/p4gen/feature_registers.py) as the fix."""
 
   if config is not None:
     match_type = config.match_type
@@ -1416,7 +1427,27 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   # WRITTEN, silently reading 0 for every packet forever. Fail loudly at
   # generation time instead of letting that ship as a silent
   # misclassification.
-  missing = sorted(set(raw_feature_intervals) - resolved)
+  #
+  # Case-insensitive comparison, deliberately: `resolved` (returned by
+  # generate_P4_registers_and_apply, above) holds catalog-matched names in
+  # LOWERCASE (it builds `matched_features` via `name.lower()` before
+  # checking catalog membership -- see that function's docstring), while
+  # `raw_feature_intervals`'s keys preserve whatever case the caller
+  # actually supplied. Every real production caller's names are already
+  # canonical (lowercase, underscore-joined) by the time they reach here,
+  # via get_nodes()'s normalise_feature_name() (Task 4) -- so this rarely
+  # matters in practice -- but comparing raw (mixed-case-tolerant) against
+  # resolved (always-lowercase) with a bare set difference would falsely
+  # flag a feature that actually DID resolve, just spelled with different
+  # case, as "missing" and raise a false-positive ValueError for it.
+  # Lowercasing raw_feature_intervals' keys here too keeps this comparison
+  # exact regardless of that upstream-normalisation invariant, while still
+  # reporting each missing feature by its ORIGINAL (caller-supplied)
+  # spelling in the error message below.
+  missing = sorted(
+      raw_name for raw_name in raw_feature_intervals
+      if raw_name.lower() not in resolved
+  )
   if missing:
     raise ValueError(
         "no register catalog entry for {} -- the generated program would declare "

@@ -505,6 +505,31 @@ def test_unknown_feature_mixed_with_known_raises():
     )
 
 
+def test_generate_P4_code_does_not_false_positive_raise_on_mixed_case_known_feature():
+  # Regression guard for a latent case-sensitivity gap in the F2 raise
+  # (build_p4_script.py, the `missing = ...` line right after
+  # generate_P4_registers_and_apply's call in generate_P4_code):
+  # `resolved` (that function's 4th return value) holds catalog-matched
+  # names in LOWERCASE -- it builds `matched_features` via `name.lower()`
+  # before checking catalog membership -- while `raw_feature_intervals`'s
+  # keys preserve whatever case the caller supplied. A bare
+  # `set(raw_feature_intervals) - resolved` would therefore treat a
+  # mixed-case spelling of a feature that resolves JUST FINE
+  # case-insensitively (e.g. "Flow_Iat_Max") as "missing" and raise a
+  # false-positive ValueError for it. Every real production caller's
+  # names are already canonical by the time they reach generate_P4_code
+  # (get_nodes()'s normalise_feature_name(), Task 4) -- but this test
+  # proves the guarantee holds at generate_P4_code's own layer too,
+  # rather than leaving it silently assumed from an upstream invariant
+  # this function doesn't itself enforce.
+  bps.generate_P4_code(
+      num_class_app=0, num_class_ddos=0,
+      clf_app=None, clf_ddos=None,
+      feature_intervals_app={"Flow_Iat_Max": [(0, 100), (101, 500), (501, 9999)]},
+      feature_intervals_ddos={},
+  )  # must not raise
+
+
 def test_case_insensitive_feature_lookup(m1_generated):
   # M1_FEATURE_INTERVALS is already canonical (lowercase, underscore-joined
   # -- what get_nodes()/get_feature_intervals() actually produce). This

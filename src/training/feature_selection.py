@@ -70,10 +70,18 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
                                   model_app, model_ddos, feature_names_app, feature_names_ddos, encoding,
                                   config: Optional[p4_gen_config.P4GenConfig] = None):
     """Kicks off (non-blocking) real-compiler validation for one iteration's
-    trained model(s). Returns None (never a handle) when validate_on_hardware
-    is False, preserving today's zero-cost behavior exactly. Otherwise
-    returns the raw Future from `compile_p4_async`, exposing
-    `.result(timeout=...)`.
+    trained model(s). Returns one of three shapes:
+      - None, when validate_on_hardware is False, preserving today's
+        zero-cost behavior exactly.
+      - the raw Future from `compile_p4_async`, exposing
+        `.result(timeout=...)`, on the normal path.
+      - the 2-tuple `('unavailable', reason)` when `generate_P4_code` raised
+        ValueError because some selected feature has no
+        FEATURE_REGISTER_CATALOG entry (F2) -- caught here so one
+        uncatalogued feature degrades hardware validation for this
+        iteration instead of aborting the whole elimination split; `reason`
+        is that ValueError's message, str()'d. See `_join_pending_compile`
+        for how each of these three shapes is consumed.
 
     Task 3: `generate_P4_code` now represents genuine disjoint encoding
     (two independently-derived, possibly differently-discretized
@@ -146,6 +154,15 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     return compile_p4_async(written_path, log_dir)
 
 
+def _is_unavailable(handle):
+    """True when `handle` is the F2 degrade-path marker `('unavailable',
+    reason)` `_kickoff_hardware_validation` returns in place of a real
+    `compile_p4_async` Future -- shared by `_join_pending_compile` and
+    `_run_elimination`'s per-split count so the marker shape is checked in
+    exactly one place."""
+    return isinstance(handle, tuple) and handle[0] == 'unavailable'
+
+
 def _join_pending_compile(handle, row):
     """Blocks on one pending hardware-validation compile handle and writes its
     numbers into `row`. Shared splice used by both `_advance_pending_compile`
@@ -163,7 +180,7 @@ def _join_pending_compile(handle, row):
     human-readable string) is written into `compile_errors` directly, rather
     than the real compiler's int error count.
     """
-    if isinstance(handle, tuple) and handle[0] == 'unavailable':
+    if _is_unavailable(handle):
         reason = handle[1]
         row['stages_real'] = None
         row['tcam_real'] = None
@@ -181,9 +198,15 @@ def _advance_pending_compile(current_row, pending_previous, pending_next):
     background -- attaching its numbers directly to the row it belongs to.
 
     `pending_previous` and `pending_next` are each either None or a
-    `(handle, row_dict)` pair: the handle is the raw Future returned by
-    `_kickoff_hardware_validation`, and `row_dict` is the specific results
-    row that Future's numbers must land on. Writing into `row_dict` by
+    `(handle, row_dict)` pair: `handle` is whatever
+    `_kickoff_hardware_validation` returned for that iteration -- normally
+    the raw Future from `compile_p4_async`, but the 2-tuple
+    `('unavailable', reason)` when that call caught a ValueError instead
+    (F2: some selected feature has no register catalog entry) -- and
+    `row_dict` is the specific results row `handle`'s numbers (or, in the
+    'unavailable' case, `reason`) must land on; see `_join_pending_compile`,
+    which this function delegates the actual joining to and which
+    recognizes both shapes. Writing into `row_dict` by
     reference -- rather than indexing `results` by position (`results[-2]`)
     -- means this no longer depends on exactly one row having been appended
     per call. A feasible iteration's infeasible-k row(s) can be interleaved
@@ -447,7 +470,7 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
         pending_next = _kickoff_hardware_validation(
             validate_on_hardware, hardware_output_dir, split_idx, method, k,
             model_app, model_ddos, names_app, names_ddos, encoding, config=config)
-        if isinstance(pending_next, tuple) and pending_next[0] == 'unavailable':
+        if _is_unavailable(pending_next):
             n_unavailable += 1
         if pending_next is not None:
             pending_next = (pending_next, rows[-1])
