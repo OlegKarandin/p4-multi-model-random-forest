@@ -8,13 +8,14 @@ from src.p4gen.build_p4_script import (
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
+    feature_intervals_from_nodes,
     generate_codewords,
     get_feature_intervals,
-    get_joint_feature_intervals,
-    get_nodes,
     get_root_to_leaf_paths,
+    merge_tree_nodes,
     most_common_class_and_dropped_codewords,
     normalise_feature_name,
+    tree_nodes_for,
 )
 from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 from p4.range_expansion import range_entry_count
@@ -485,14 +486,8 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
   ternary_matching_resource_usage (which has implemented the Planter-style
   discount since Task 7 but was never reachable from this estimator). False
   -- the default -- reproduces every pre-existing caller's numbers exactly."""
-  tree_nodes = {i: get_nodes(est, selected_features)
-                for i, est in enumerate(clf.estimators_)}
-
-  # get_feature_intervals recomputes trees/tree_nodes internally, but
-  # that's the canonical single-model interval-derivation chain -- see
-  # build_p4_script.py -- so the two derivations are behaviourally
-  # identical.
-  feature_intervals = get_feature_intervals(clf, selected_features)
+  tree_nodes = tree_nodes_for(clf, selected_features)
+  feature_intervals = feature_intervals_from_nodes(tree_nodes)
   range_entries, range_blocks, range_table_specs = range_matching_resource_usage(feature_intervals)
 
   paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
@@ -540,21 +535,11 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
   exactly."""
 
   if encoding == 'joint':
-    tree_nodes = {i: get_nodes(est, selected_features_app)
-                  for i, est in enumerate(clf_app.estimators_)}
+    tree_nodes = merge_tree_nodes(
+        tree_nodes_for(clf_app, selected_features_app),
+        tree_nodes_for(clf_ddos, selected_features_ddos))
 
-    offset = len(tree_nodes)
-
-    tree_nodes.update({i + offset: get_nodes(est, selected_features_ddos)
-                        for i, est in enumerate(clf_ddos.estimators_)})
-
-    # tree_nodes above is still needed for get_root_to_leaf_paths below;
-    # get_joint_feature_intervals recomputes its own copy internally, but
-    # that's the canonical offset-merge interval-derivation chain -- see
-    # build_p4_script.py -- so the two derivations are behaviourally
-    # identical.
-    feature_intervals = get_joint_feature_intervals(
-        clf_app, selected_features_app, clf_ddos, selected_features_ddos)
+    feature_intervals = feature_intervals_from_nodes(tree_nodes)
     range_entries, range_blocks, range_table_specs = range_matching_resource_usage(feature_intervals)
 
     paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)

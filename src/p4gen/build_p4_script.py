@@ -201,6 +201,23 @@ def get_nodes(estimator, feature_names):
   return nodes
 
 
+def tree_nodes_for(model, feature_names):
+  """{tree_index: node_dict} for every estimator in a fitted forest."""
+  return {i: get_nodes(est, feature_names) for i, est in enumerate(model.estimators_)}
+
+
+def merge_tree_nodes(*node_dicts):
+  """Merge per-model tree_nodes, shifting each later model's tree indices past
+  the previous ones so ids cannot collide. This offset trick was written out
+  longhand in four places."""
+  merged = {}
+  for node_dict in node_dicts:
+    offset = len(merged)
+    for index, nodes in node_dict.items():
+      merged[index + offset] = nodes
+  return merged
+
+
 def get_feature_thresholds(tree_nodes):
   '''
    Inputs: Dictionary containing the features of all nodes in the Random Forest
@@ -262,6 +279,10 @@ def get_feature_intervals_from_thresholds(feature_thresholds):
   return feature_intervals
 
 
+def feature_intervals_from_nodes(tree_nodes):
+  return get_feature_intervals_from_thresholds(get_feature_thresholds(tree_nodes))
+
+
 def _reject_colliding_feature_names(selected_features):
   canonical = {}
   # Dedupe exact-string repeats first: the same raw name appearing twice
@@ -280,14 +301,8 @@ def _reject_colliding_feature_names(selected_features):
 
 def get_feature_intervals(model, selected_features):
   _reject_colliding_feature_names(selected_features)
-
-  tree_nodes = {i: get_nodes(est, selected_features)
-                for i, est in enumerate(model.estimators_)}
-
-  feature_thresholds = get_feature_thresholds(tree_nodes)
-  feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
-
-  return feature_intervals
+  tree_nodes = tree_nodes_for(model, selected_features)
+  return feature_intervals_from_nodes(tree_nodes)
 
 
 def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
@@ -309,18 +324,10 @@ def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
   # deduped rather than flagged -- only a genuine spelling mismatch raises.
   _reject_colliding_feature_names(list(features_a) + list(features_b))
 
-  tree_nodes = {i: get_nodes(est, features_a)
-                for i, est in enumerate(model_a.estimators_)}
+  tree_nodes = merge_tree_nodes(tree_nodes_for(model_a, features_a),
+                                 tree_nodes_for(model_b, features_b))
 
-  offset = len(tree_nodes)
-
-  tree_nodes.update({i + offset: get_nodes(est, features_b)
-                      for i, est in enumerate(model_b.estimators_)})
-
-  feature_thresholds = get_feature_thresholds(tree_nodes)
-  feature_intervals = get_feature_intervals_from_thresholds(feature_thresholds)
-
-  return feature_intervals
+  return feature_intervals_from_nodes(tree_nodes)
 
 
 def feature_intervals_to_csv(feature_intervals, path_to_output=INTERMEDIATE, output_filename = "feature_intervals.csv"):
@@ -1471,8 +1478,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   codewords = {}
   if clf_app is not None:
     if selected_features_app is not None:
-      tree_nodes_app = {i: get_nodes(est, selected_features_app)
-                        for i, est in enumerate(clf_app.estimators_)}
+      tree_nodes_app = tree_nodes_for(clf_app, selected_features_app)
       paths_app = get_root_to_leaf_paths(tree_nodes_app)
       codewords.update(generate_codewords(paths_app, feature_intervals_app))
     elif use_default_action_discount:
@@ -1482,8 +1488,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
           "without the exact ordered training-feature-name list")
   if clf_ddos is not None:
     if selected_features_ddos is not None:
-      tree_nodes_ddos = {i: get_nodes(est, selected_features_ddos)
-                         for i, est in enumerate(clf_ddos.estimators_)}
+      tree_nodes_ddos = tree_nodes_for(clf_ddos, selected_features_ddos)
       paths_ddos = get_root_to_leaf_paths(tree_nodes_ddos)
       codewords_ddos_0indexed = generate_codewords(paths_ddos, feature_intervals_ddos)
       codewords.update({tree_id + num_trees_app: tree_codewords
