@@ -1427,7 +1427,18 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
     if raw_feature_name not in raw_feature_intervals:
       raw_feature_intervals[raw_feature_name] = intervals
-      value_field = raw_feature_name+"_val"
+      # normalise_feature_name here, NOT raw_feature_name verbatim: every
+      # READER of this field lowercases it first -- _execute_lines' target
+      # (below, via matched_features' name.lower()) and the range table's
+      # <KEYS> substitution (generate_P4_tables_and_apply, raw_name.lower())
+      # both do. A mixed-case-but-catalogued raw name (e.g. "Flow_IAT_Max",
+      # not dotted, so it clears the F2 "no catalog entry" check below,
+      # which is deliberately case-insensitive) used to declare
+      # `bit<16> Flow_IAT_Max_val;` here while every reader referenced
+      # `flow_iat_max_val` -- an undefined identifier in the generated P4,
+      # with no Python-side raise (final-review finding #2). Normalising
+      # here makes the declaration match every reader.
+      value_field = normalise_feature_name(raw_feature_name)+"_val"
       metadata_code += "\tbit<16> "+value_field+";\n"
       phv_pragmas += '@pa_container_size("ingress", "ig_md.'+value_field+'", 16)\n'
 

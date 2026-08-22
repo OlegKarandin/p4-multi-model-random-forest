@@ -1198,6 +1198,47 @@ def test_generate_P4_code_writes_to_injectable_path(tmp_path):
   assert not os.path.exists(bps.OUTPUT_PATH + "custom_name.p4")
 
 
+def test_generate_P4_code_mixed_case_catalogued_feature_stays_case_consistent(tmp_path):
+  # Final-review finding #2: "Flow_IAT_Max" is not dotted, so it clears the
+  # F2 "no catalog entry" check (deliberately case-insensitive, see Task 5's
+  # fix round) -- it resolves against the catalog's "flow_iat_max" entry
+  # fine. But the metadata declaration and @pa_container_size pragma used to
+  # build value_field from the RAW (case-preserved) feature name, while
+  # every READER of that field -- _execute_lines' assignment target and the
+  # range table's <KEYS> substitution -- lowercases it first. That produced
+  # a declaration like `bit<16> Flow_IAT_Max_val;` alongside a reference
+  # like `meta.flow_iat_max_val`: an undefined identifier in the generated
+  # P4, with no Python-side exception. Assert every occurrence of this
+  # field's name in the generated text -- declaration, pragma, range-table
+  # key, and register-populating assignment -- uses the SAME (canonical,
+  # lowercase) spelling.
+  clf_ddos = _tiny_ddos_forest()
+  feature_intervals = {"Flow_IAT_Max": [(0, 100), (101, 65535)]}
+  out_dir = str(tmp_path) + os.sep
+  written_path = bps.generate_P4_code(
+      num_class_app=0, num_class_ddos=2, clf_app=None, clf_ddos=clf_ddos,
+      feature_intervals_app={}, feature_intervals_ddos=feature_intervals,
+      output_dir=out_dir, output_filename="mixed_case_feature.p4",
+  )
+  with open(written_path) as f:
+    text = f.read()
+
+  assert "bit<16> flow_iat_max_val;" in text
+  assert '@pa_container_size("ingress", "ig_md.flow_iat_max_val", 16)' in text
+  assert "meta.flow_iat_max_val: range;" in text
+  assert "meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);" in text
+
+  # No case variant of the raw field name may appear anywhere else --
+  # every occurrence of "<...>flow_iat_max_val" (case-insensitively) must be
+  # spelled identically.
+  import re
+  occurrences = re.findall(r"[A-Za-z_]*flow_iat_max_val\b", text, flags=re.IGNORECASE)
+  assert occurrences, "expected the field to appear in the generated text"
+  assert set(occurrences) == {"flow_iat_max_val"}, (
+      "case-inconsistent occurrences of the flow_iat_max_val field: {}".format(
+          sorted(set(occurrences))))
+
+
 # ---------------------------------------------------------------------------
 # Task 8: Planter RF_EB-style exact-match code/decision tables
 # ---------------------------------------------------------------------------
