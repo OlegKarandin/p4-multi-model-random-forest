@@ -1841,6 +1841,38 @@ def test_generate_P4_tables_and_apply_classification_sizes_are_used_when_given()
   }
 
 
+def test_generate_P4_code_selected_features_without_flag_changes_only_sizes(tmp_path):
+  # Passing selected_features_app WITHOUT the discount flag recomputes
+  # codewords for SIZING only. The numeric half of that invariant (the
+  # codeword-exact size is a real number, never exceeding the leaf-count
+  # fallback) is covered above by
+  # test_generate_P4_code_classification_size_is_real_codeword_count and
+  # test_generate_P4_code_classification_size_falls_back_to_leaf_count. This
+  # test protects the OTHER half: nothing but the `size = N;` literals may
+  # differ between the two calls -- selected_features_app must never change
+  # any other line of the generated program.
+  clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
+  intervals_app = _derive_intervals(clf_app)
+
+  def _generate(filename, **extra):
+    path = bps.generate_P4_code(
+        3, 2, clf_app, None,
+        feature_intervals_app=intervals_app, feature_intervals_ddos={},
+        output_dir=str(tmp_path) + os.sep, output_filename=filename, **extra)
+    with open(path) as f:
+      return f.read()
+
+  without = _generate("no_selected_features.p4")
+  with_lists = _generate("with_selected_features.p4",
+                         selected_features_app=_DISCOUNT_FEATURE_NAMES)
+
+  stripped_without = [l for l in without.splitlines()
+                      if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
+  stripped_with = [l for l in with_lists.splitlines()
+                   if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
+  assert stripped_without == stripped_with
+
+
 # ---------------------------------------------------------------------------
 # PHV container pinning for range-matched feature value fields.
 #
