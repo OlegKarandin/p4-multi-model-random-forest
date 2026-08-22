@@ -1610,10 +1610,6 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
 # Milestone 1's flow- and IAT-tracking design.
 # ---------------------------------------------------------------------------
 
-# Tofino stateful-ALU limit: the number of distinct RegisterAction
-# `.execute()` call sites that may touch a single register per packet.
-MAX_REGISTER_TOUCHES = 4
-
 # Symbolic RegisterAction body kinds -> exact atomic read-modify-write P4
 # body, transcribed verbatim from the compiled spike
 # (p4/tofino_spike/tna_m1_flows_iat_spike.p4). Do not reword/"clean up"
@@ -1786,7 +1782,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       `flow_forward_srcaddr_reg` register used for flow-direction
       bookkeeping (see below) -- both always emitted, unconditionally,
       whenever the resolved feature set is non-empty; neither is
-      catalog-driven or routed through the touch-count guard.
+      catalog-driven or routed through the register_order/_note_touch dedup
+      machinery.
     - register_actions_code: the plain calc_flow_hash action (and
       calc_timestamp, only emitted when an included register actually needs
       meta.now_pseudo_us), plus one `RegisterAction<...> <name>_action =
@@ -1849,23 +1846,25 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       physical register touch meant to fire (at most) once per packet --
       touching it twice for the same packet would be both semantically
       wrong (the second call would observe the state the first call just
-      wrote) and would incorrectly inflate the touch-count guard below if
-      it were derived from call-site counts. The touch-count guard itself
-      (`register_touch_count`, checked further below, in `_note_touch`) IS
-      aligned with this same deduplicated model: a register's counted
-      touches equal its real `.execute()` call-site count, not one
-      increment per referencing feature. `flow_forward_srcaddr_reg` (the
-      fixed flow-direction bookkeeping register, always exactly 1 real
-      touch per packet via `flow_orientation_action`) is NOT routed through
-      this catalog-driven touch-count machinery at all -- like
-      `flow_hash_calc`, it is a fixed, always-emitted register outside
-      `register_order`/`_note_touch`'s bookkeeping, not a candidate for the
-      guard below. Every catalog-driven register IS counted once, the
-      first time any feature references it, regardless of how many further
-      features also list it as a dependency -- e.g. flow_last_arrival_time
-      reports exactly 1 touch for M2's feature set (flow_iat_max +
-      flow_iat_mean sharing it), matching the single real `.execute()` call
-      site _execute_lines actually emits for it.
+      wrote) and physically redundant. `_note_touch`'s first-seen check
+      (below) and `_execute_lines`' `already_executed_registers` set
+      (further below) both implement this same first-seen-wins model, so
+      the register declarations, RegisterAction blocks, and `.execute()`
+      call sites always agree on exactly which registers exist and how
+      many touches each one gets. `flow_forward_srcaddr_reg` (the fixed
+      flow-direction bookkeeping register, always exactly 1 real touch per
+      packet via `flow_orientation_action`) is NOT routed through this
+      catalog-driven dedup machinery at all -- like `flow_hash_calc`, it is
+      a fixed, always-emitted register outside `register_order`/
+      `_note_touch`'s bookkeeping entirely. Every catalog-driven register
+      IS recorded once, the first time any feature references it,
+      regardless of how many further features also list it as a
+      dependency -- e.g. flow_last_arrival_time reports exactly 1 real
+      touch for M2's feature set (flow_iat_max + flow_iat_mean sharing
+      it), matching the single real `.execute()` call site _execute_lines
+      actually emits for it. The cross-gate register-sharing hazard guard
+      (below) is what actually protects this property across gate classes
+      -- see its comment for what it catches and why.
     - resolved: the `set` of INPUT feature names (i.e. keys of the
       `feature_intervals` argument, not catalog keys) this call emitted
       registers for -- exactly `matched_features` above, converted to a
@@ -1877,16 +1876,22 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       to decide whether that's acceptable.
 
   Raises RuntimeError, at generation time (not left to fail later at `p4c`
-  invocation), if resolving `catalog` against `feature_intervals` would
-  require more than MAX_REGISTER_TOUCHES distinct, real (deduplicated)
-  RegisterAction `.execute()` call sites against any single register --
-  i.e. the same count described above, not a raw per-feature-reference
-  tally. Under the current catalog, every resolved register gets exactly
-  one such call site (see _note_touch below), so this guard is presently
-  dormant -- it cannot actually fire against any real catalog configuration
-  today -- but it is retained as a general safety net for any future
-  register (catalog-driven or hardcoded) that might legitimately need more
-  than one touch.
+  invocation), for a catalog entry with an unsupported `gated_by` value
+  (only None, "fwd", and "bwd" are implemented). Raises ValueError if a
+  register name is shared by features in different gate classes -- e.g.
+  one feature's entry lists it ungated and another's lists it "fwd" --
+  which would make it get `.execute()`d inside one gated block and read as
+  garbage from the other; see the cross-gate register-sharing hazard guard
+  below for the full explanation. (An earlier design also capped the
+  number of real, deduplicated `.execute()` call sites a single register
+  could accumulate, on the theory a register might someday need more than
+  one touch per packet; that never happened under any catalog this project
+  ever shipped -- re-verified against Phase 2's full 18-feature catalog,
+  where every register, including the shared `flow_last_arrival_time`/
+  `fwd_last_arrival_time`/`bwd_last_arrival_time` dependency registers,
+  still resolves to exactly one real touch -- so the cap and its guard were
+  deleted; the cross-gate check above is what actually protects registers
+  from being touched in a way that produces wrong per-packet values.)
   """
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
@@ -1916,35 +1921,21 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   if not matched_features:
     return "", "", "", set()
 
-  # ---- Resolve the deduplicated, ordered register set + touch counts ----
+  # ---- Resolve the deduplicated, ordered register set ----
 
-  register_order = []        # ordered list of register names (first-seen)
-  register_info = {}         # name -> {"width":, "body":}
-  register_touch_count = {}  # name -> number of .execute() call sites
+  register_order = []  # ordered list of register names (first-seen)
+  register_info = {}   # name -> {"width":, "body":}
 
-  def _note_touch(name, width=None, body=None, count=1):
-    # A register's touch count must reflect its REAL, deduplicated
-    # .execute() call-site count -- exactly what _execute_lines (below)
-    # actually emits, not one increment per (feature, register-list-entry)
-    # pair. `register_info` already tracks "have we seen this register
-    # name before" for register_order/declarations; reuse that same
-    # first-seen signal here: the first time a register name is noted, it
-    # gets its real touch count (`count`); every later call for an
+  def _note_touch(name, width=None, body=None):
+    # Plain first-seen recorder: the first time a register name is noted,
+    # it is added to register_order/register_info; every later call for an
     # already-seen name (e.g. a second feature that also lists the same
-    # dependency register) adds nothing, because _execute_lines will reuse
-    # that first call's already-produced value rather than emitting another
-    # .execute() line for it. Every current call site below passes the
-    # default count=1 -- the old hardcoded `flows` register's count=2 call
-    # site was removed along with that register -- so register_touch_count
-    # is currently always exactly 1 per register and the guard just below
-    # can't fire under any real catalog configuration today. The `count`
-    # parameter and the guard are kept anyway as a general mechanism: a
-    # future catalog entry, or a future fixed/hardcoded register, could
-    # still legitimately need more than 1 real touch.
+    # dependency register) is a no-op, because _execute_lines (below) will
+    # reuse that first call's already-produced value rather than emitting
+    # another .execute() line for it.
     if name not in register_info:
       register_order.append(name)
       register_info[name] = {"width": width, "body": body}
-      register_touch_count[name] = register_touch_count.get(name, 0) + count
 
   feature_registers = {}  # feature -> ordered list of its catalog register dicts
   needs_timestamp = False
@@ -1978,6 +1969,14 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # class (say, an ungated feature, or a meta.fwd == 0 feature), packets
   # that skip the first block would read a garbage/unset register value.
   # Catch that at generation time instead of emitting silently-wrong P4.
+  # This is the guard that actually protects register-sharing correctness
+  # here -- an earlier "touch-count" guard (deleted; see git history) tried
+  # to bound how many real .execute() call sites a single register could
+  # accumulate, but every catalog this project has ever shipped, including
+  # Phase 2's full 18-feature catalog, resolves every register to exactly
+  # one real touch (the dedup above already guarantees that), so that older
+  # guard could never fire and added nothing this check doesn't already
+  # cover.
   gate_of_register = {}
   for feature in matched_features:
     gate = catalog[feature].get("gated_by")
@@ -1989,16 +1988,6 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
             "({!r} and {!r}); it would be .execute()d inside one gated block and "
             "read as garbage from the other. Promote it to an ungated register "
             "or give each gate class its own.".format(reg["name"], previous, gate))
-
-  # ---- Touch-count guard (checked before emitting anything) ----
-
-  for name, count in register_touch_count.items():
-    if count > MAX_REGISTER_TOUCHES:
-      raise RuntimeError(
-          "Register '{name}' would require {count} RegisterAction .execute() "
-          "call sites, exceeding the {limit}-touch Tofino stateful-ALU limit "
-          "per register.".format(name=name, count=count, limit=MAX_REGISTER_TOUCHES)
-      )
 
   # ---- /* REGISTERS */ ----
 
