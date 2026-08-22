@@ -26,57 +26,11 @@ What was confirmed directly in the real driver source:
 import json
 import keyword
 
+from range_expansion import range_entry_count
+
 PROGRAM_NAME = "p4_code_RF_models"  # must match the program name used to launch bf_switchd -p <PROGRAM_NAME>
 CONTROL_BLOCK = "SwitchIngress"     # matches this project's real control block name (resources/p4_template.p4)
 ENTRIES_FILE_PATH = "p4/table_entries.json"
-
-
-def _range_entry_count(lo, hi, nibble_widths=(4, 4, 4, 4)):
-    # Duplicated from src/p4gen/evaluation.py:range_entry_count rather than imported: this
-    # script runs inside bfshell's embedded Python, which does not have this project's normal
-    # dependency stack (sklearn etc., pulled in transitively by evaluation.py's own imports).
-    # Exact port of expand_range() (bf-drivers/src/pipe_mgr/pipe_mgr_entry_format.c) -- computes
-    # the real number of physical TCAM rows a range key [lo, hi] needs once installed.
-    n = len(nibble_widths)
-    start_vals, end_vals = [], []
-    shift = 0
-    for w in nibble_widths:
-        start_vals.append(1 << shift)
-        end_vals.append((1 << (w + shift)) - 1)
-        shift += w
-
-    if hi < lo:
-        raise ValueError("hi < lo")
-
-    range_start, end, count = lo, hi, 0
-    while True:
-        if range_start == 0:
-            start_nibble = n - 1
-        else:
-            zeroes = (range_start & -range_start).bit_length() - 1
-            cum, start_nibble = 0, n - 1
-            for j in range(n):
-                cum += nibble_widths[j]
-                if cum > zeroes:
-                    start_nibble = j
-                    break
-
-        range_end = None
-        for i in range(start_nibble + 1, 0, -1):
-            candidate = range_start | end_vals[i - 1]
-            while (candidate >= range_start and candidate > end and
-                   candidate >= start_vals[i - 1]):
-                candidate -= start_vals[i - 1]
-            if candidate >= range_start and candidate <= end:
-                range_end = candidate
-                break
-
-        count += 1
-        range_start = range_end + 1
-        if range_end >= end:
-            break
-
-    return count
 
 
 def _row_cost(entry):
@@ -86,7 +40,7 @@ def _row_cost(entry):
     # within each range table's own entries.
     for spec in entry.get("key_fields", {}).values():
         if "start" in spec:
-            return _range_entry_count(int(spec["start"]), int(spec["end"]))
+            return range_entry_count(int(spec["start"]), int(spec["end"]))
     return 0
 
 
