@@ -54,13 +54,19 @@ FEATURE_REGISTER_CATALOG maps a lowercase feature name to:
         },
         ...
     ],
-    "gated_by": None | "fwd",
+    "gated_by": None | "fwd" | "bwd",
         # None: this feature's registers are touched unconditionally
         #   (whole-flow feature).
         # "fwd": this feature's registers are only touched when
-        #   meta.fwd == 1 (forward-direction-only feature). "bwd" gating
-        #   is intentionally not modeled yet -- out of scope until a
-        #   milestone that actually needs it validates the design.
+        #   meta.fwd == 1 (forward-direction-only feature).
+        # "bwd": this feature's registers are only touched when
+        #   meta.fwd == 0 (backward-direction-only feature). Support for
+        #   this gate class was added in Task 6 (see
+        #   generate_P4_registers_and_apply in build_p4_script.py) and
+        #   validated by compiling p4/tofino_spike/tna_m3_bwd_gate_spike.p4
+        #   (0 errors). No bwd_* entries are populated in this catalog yet
+        #   -- that is Task 9's job -- but the generator and this schema
+        #   both support them now.
 }
 
 A feature's "registers" list is ordered: a "dependency" register (if any)
@@ -78,10 +84,13 @@ p4/tofino_spike/tna_m1_flows_iat_spike.p4. Milestone 2 adds one more
 validated feature, flow_iat_mean (the App task's mean/EWMA feature),
 traced against and validated by compiling
 p4/tofino_spike/tna_m2_mean_spike.p4 -- see that entry's own comment below
-for the dependency-sharing design. Do not add entries
-for features not yet validated by a real p4c compile (bwd_*, other
-candidates) -- resolving those is explicitly deferred to whichever later
-milestone needs them, not guessed up front.
+for the dependency-sharing design. Do not add entries for features not yet
+validated by a real p4c compile -- resolving those is explicitly deferred
+to whichever later milestone needs them, not guessed up front. This
+includes bwd_* features specifically: the generator and this catalog's
+schema support "gated_by": "bwd" as of Task 6 (validated by compiling
+p4/tofino_spike/tna_m3_bwd_gate_spike.p4), but no bwd_* entries are
+populated here yet -- that is Task 9's job.
 
 Note: the `flows` bookkeeping register (fwd/bwd/new-flow tracking) is NOT
 a catalog entry. It is a fixed, generator-level requirement whenever the

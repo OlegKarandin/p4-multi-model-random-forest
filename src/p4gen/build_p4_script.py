@@ -1753,7 +1753,9 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       flow_orientation_action touch, then each *distinct register name*'s
       `.execute()` call -- gated
       inside `if (meta.fwd == 1) { ... }` for features whose catalog entry
-      says `"gated_by": "fwd"` -- and assignment of each "value" register's
+      says `"gated_by": "fwd"`, or inside a sibling `if (meta.fwd == 0) { ... }`
+      block for features whose catalog entry says `"gated_by": "bwd"` -- and
+      assignment of each "value" register's
       result into `meta.<feature_lower>_val` (e.g. `meta.flow_iat_max_val`,
       matching the spike's `metadata_t` field naming; a "dependency"
       register's result is not itself a feature value, so it is assigned
@@ -2000,8 +2002,9 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   ]
 
   # Registers already given an .execute() call site somewhere in the apply
-  # block, tracked across BOTH the ungated and fwd-gated _execute_lines()
-  # calls below (a single shared set, not one per call) -- this is the
+  # block, tracked across ALL THREE of the ungated, fwd-gated, and
+  # bwd-gated _execute_lines() calls below (a single shared set, not one
+  # per call) -- this is the
   # shared-dependency dedup fix: a register (e.g. flow_last_arrival_time)
   # referenced by more than one selected feature's catalog entry (e.g. both
   # flow_iat_max and flow_iat_mean) must still be .execute()'d exactly once
