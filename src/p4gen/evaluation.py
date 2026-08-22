@@ -49,6 +49,12 @@ class StagePlan:
 
 
 def accuracy_metrics(y_true, y_pred, task):
+    """Return (accuracy, weighted_f1) for a given task.
+
+    Label sets are duplicated from `src.training.incremental_metrics.TASK_LABELS` to avoid
+    a p4gen→training dependency; equivalence is pinned by `test_the_incremental_metrics_equal_the_from_scratch_oracle_after_every_step`
+    and `test_both_label_spaces_work` in `tests/test_incremental_metrics.py`.
+    """
 
     if task == 'app':
         lab = [0, 1, 2]
