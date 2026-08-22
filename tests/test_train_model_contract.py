@@ -33,14 +33,15 @@ def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300):
         max_blocks, encoding, cfg)
 
 
-def test_the_contract_returns_a_frozen_train_result_with_all_fourteen_fields():
+def test_the_contract_returns_a_frozen_train_result_with_all_fifteen_fields():
     out = _call()
 
     assert isinstance(out, TrainResult)
-    assert len(dataclasses.fields(out)) == 14
+    assert len(dataclasses.fields(out)) == 15
     assert hasattr(out.model_A, 'predict') and hasattr(out.model_B, 'predict')
     assert isinstance(out.stages, (int, np.integer))
     assert isinstance(out.blocks, (int, np.integer))
+    assert isinstance(out.stage_depth, (int, np.integer))
     assert 0.0 <= out.acc_sel_A <= 1.0
     assert 0.0 <= out.acc_sel_B <= 1.0
     assert isinstance(out.best_params, dict)
@@ -61,7 +62,7 @@ def test_blocks_le_max_blocks_holds_for_the_RETURNED_models():
     for max_blocks in (40, 60, 90):
         out = _call(max_blocks=max_blocks)
 
-        _, remeasured = multi_model_memory_evaluation(
+        _, remeasured, _ = multi_model_memory_evaluation(
             out.model_A, out.model_B, FEATURE_NAMES, FEATURE_NAMES, 'disjoint')
 
         assert remeasured == out.blocks, max_blocks
@@ -177,7 +178,8 @@ def test_every_feasible_trial_records_the_attrs_the_selection_rule_reads(monkeyp
     assert feasible, 'the tiny problem should admit at least one feasible trial'
     for trial in feasible:
         for attr in ('acc_app', 'acc_ddos', 'blocks', 'stages',
-                     'codeword_violation', 'blocks_violation', 'crossbar_violation'):
+                     'codeword_violation', 'blocks_violation', 'crossbar_violation',
+                     'stages_violation'):
             assert attr in trial.user_attrs, (trial.number, attr)
 
 
@@ -219,7 +221,53 @@ def test_crossbar_key_too_wide_records_crossbar_violation_not_codeword(monkeypat
             reported_width - tm.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
         assert trial.user_attrs['codeword_violation'] == 0.0
         assert trial.user_attrs['blocks_violation'] == 0.0
+        assert trial.user_attrs['stages_violation'] == 0.0
         assert trial.values == [-1.0, -1.0, float('inf')]
+
+
+def test_stage_depth_over_the_tofino_ceiling_records_stages_violation_not_the_others(monkeypatch):
+    """F5: a trial whose predicted pipeline depth exceeds the hard 12-stage
+    Tofino-1 ceiling (TOFINO_PIPELINE_STAGES) must be rejected the same way
+    the codeword/blocks/crossbar constraints are -- infeasible triple
+    returned, only `stages_violation` carrying a nonzero magnitude -- even
+    though this trial is well within every OTHER constraint (small blocks,
+    short codeword, narrow crossbar keys)."""
+    import optuna
+    import src.training.train_model as tm
+
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        captured['study'] = study
+        return study
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    over_ceiling_depth = tm.TOFINO_PIPELINE_STAGES + 3
+    monkeypatch.setattr(
+        tm, 'multi_model_memory_evaluation',
+        lambda *a, **k: (1, 1, over_ceiling_depth))
+
+    # Every trial is over-ceiling, so nothing is feasible -- same shape as
+    # test_crossbar_key_too_wide_records_crossbar_violation_not_codeword.
+    with pytest.raises(NoFeasibleSolution):
+        _call(cfg=TrainConfig(n_trials=5, min_feasible_before_stop=2, lookback=2))
+
+    trials = captured['study'].trials
+    assert trials, 'the search should have run at least one trial'
+    for trial in trials:
+        assert trial.user_attrs['stages_violation'] == (
+            over_ceiling_depth - tm.TOFINO_PIPELINE_STAGES)
+        assert trial.user_attrs['codeword_violation'] == 0.0
+        assert trial.user_attrs['blocks_violation'] == 0.0
+        assert trial.user_attrs['crossbar_violation'] == 0.0
+        assert trial.values == [-1.0, -1.0, float('inf')]
+
+    from src.training import early_stopping
+    assert not any(early_stopping.is_feasible(t) for t in trials)
 
 
 def test_the_winner_is_refit_deterministically_not_cached(monkeypatch):

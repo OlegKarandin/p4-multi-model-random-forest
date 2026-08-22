@@ -28,7 +28,16 @@ import optuna
 # (both tracked magnitudes <= 0) despite never having set acc_app/acc_ddos/
 # blocks/stages, crashing trial_selection.select_best_trial with a KeyError
 # instead of correctly excluding the trial.
-_VIOLATION_ATTRS = ('codeword_violation', 'blocks_violation', 'crossbar_violation')
+#
+# stages_violation (Task 13, F5): the hard 12-stage Tofino-1 pipeline-depth
+# ceiling is a fourth, distinct failure -- a trial can be within both the
+# codeword and block budgets and still predict a pipeline deeper than
+# TOFINO_PIPELINE_STAGES. Without it here, such a trial would read as
+# feasible despite objective() having returned the infeasible triple
+# (-1.0, -1.0, inf) for it, letting trial_selection.select_best_trial pick a
+# trial whose acc_app/acc_ddos are the -1.0 sentinel rather than a real score.
+_VIOLATION_ATTRS = ('codeword_violation', 'blocks_violation', 'crossbar_violation',
+                    'stages_violation')
 
 
 def constraint_values(trial):

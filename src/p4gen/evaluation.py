@@ -19,6 +19,8 @@ from src.p4gen.build_p4_script import (
 )
 from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 
+TOFINO_PIPELINE_STAGES = 12   # Ref 5; hard, per Ref 7's tofino2h failure
+
 
 class CodewordTooLong(RuntimeError):
   """Codeword exceeds MAX_CODEWORD_LENGTH. args = (message, codeword_length)."""
@@ -552,7 +554,33 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
 
 def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                                   use_default_action_discount=False):
-  """use_default_action_discount: opt-in, threaded down to
+  """Returns (stages, blocks, stage_depth) -- three related but DISTINCT
+  quantities (F6), only the first two of which this function is the source
+  of truth for:
+
+    stages      : OCCUPIED match-table stage count -- how many distinct
+                  stage indices actually hold a table from either pool
+                  (range_plan.occupied + ternary_plan.occupied). M2 example: 3.
+                  This is what gets written to the campaign CSV's `stages`
+                  column and plotted -- it is NOT a pipeline-depth quantity
+                  and must never be compared against TOFINO_PIPELINE_STAGES.
+    stage_depth : pipeline DEPTH, max(occupied stage index) + 1 -- the
+                  quantity a hard stage ceiling actually reads (F5). Read
+                  from ternary_plan.depth (the classification pool is placed
+                  LAST, after the range pool, so its depth is the overall
+                  pipeline depth), defensively widened to
+                  max(range_plan.depth, ternary_plan.depth) so an
+                  (unrealistic) model with no ternary tables at all still
+                  reports a sane depth. M2 example: 6.
+    (a third quantity, `stages_real` -- the REAL compiler's whole-program
+    stage count including parsing/bookkeeping overhead this function does
+    not model at all -- is NOT returned here; see p4_compile.parse_compile_logs,
+    which stores it. M2 example: 9. `stages` and `stages_real` sit side by
+    side in the same campaign dataframe row and are NOT the same quantity --
+    plotting them together as if they were reads as the model being "67%
+    wrong" when they are not even measuring the same thing.)
+
+  use_default_action_discount: opt-in, threaded down to
   ternary_matching_resource_usage under BOTH encodings -- directly for
   'joint' (which does its own ternary accounting on the merged tree set),
   and via both nested single_model_memory_evaluation calls for 'disjoint'.
@@ -659,4 +687,14 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
       "occupancies is only meaningful while they are disjoint".format(
           sorted(range_plan.indices & ternary_plan.indices)))
 
-  return range_plan.occupied + ternary_plan.occupied, range_blocks + ternary_blocks
+  # F5/F6: stage_depth is ternary_plan.depth -- the classification pool is
+  # placed LAST (it starts at ternary_level, which is itself derived from
+  # range_plan.depth), so its depth is the overall pipeline depth. Verified
+  # against the M2 fixture: ternary_plan.indices == {5} there, so depth == 6,
+  # exactly the brief's own worked example. max() with range_plan.depth is a
+  # defensive widening for the degenerate case of zero ternary tables (where
+  # crossbar_stages_needed's dependency-aware branch would otherwise report
+  # depth 0), not something the real M2-shaped models ever hit.
+  stage_depth = max(range_plan.depth, ternary_plan.depth)
+
+  return range_plan.occupied + ternary_plan.occupied, range_blocks + ternary_blocks, stage_depth

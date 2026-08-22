@@ -116,7 +116,8 @@ from src.p4gen.build_p4_script import (
     INFINITE, MAX_CODEWORD_LENGTH, dt_thresholds_float_to_int,
     get_feature_intervals, get_joint_feature_intervals)
 from src.p4gen.evaluation import (
-    CodewordTooLong, CrossbarKeyTooWide, multi_model_memory_evaluation)
+    CodewordTooLong, CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
+    multi_model_memory_evaluation)
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.training.splits import make_task_splits
 
@@ -181,10 +182,26 @@ def codeword_length_of(feature_intervals):
 
 
 def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
-    """(stages, blocks) for one encoding, or (None, None) when the codeword
-    limit -- or, separately (F3), the per-stage crossbar byte-width limit --
-    makes the pair uncompilable. Returns Nones rather than propagating, so an
-    infeasible cell still contributes its codeword length to the table."""
+    """(stages, blocks, stage_depth) for one encoding, or (None, None, None)
+    when the codeword limit -- or, separately (F3), the per-stage crossbar
+    byte-width limit -- makes the pair uncompilable. Returns Nones rather
+    than propagating, so an infeasible cell still contributes its codeword
+    length to the table.
+
+    stage_depth is `multi_model_memory_evaluation`'s StagePlan.depth
+    (F5/F6) -- the pipeline-DEPTH quantity a hard TOFINO_PIPELINE_STAGES
+    ceiling reads, NOT the same quantity as `stages` (occupied match-table
+    stage count) -- see that function's docstring for the full
+    three-quantity disambiguation (the third quantity, the real compiler's
+    whole-program `stages_real`, is not measured by this script at all).
+    NECESSARY BUT NOT SUFFICIENT: a cell whose stage_depth exceeds
+    TOFINO_PIPELINE_STAGES is a definite reject on real hardware; staying
+    within it is not a guarantee the real compile fits, since this model
+    does not account for the real compiler's parsing/bookkeeping overhead
+    (measured on M2: this model predicts depth 6 where the real compiler
+    needs 9 stages). This function does not itself discard over-ceiling
+    cells (unlike the codeword/crossbar limits above) -- stage_depth is
+    simply recorded on every cell so the grid can be read for it directly."""
     try:
         return multi_model_memory_evaluation(
             clf_app, clf_ddos, feature_names, feature_names, encoding)
@@ -192,7 +209,7 @@ def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
         # Not a codeword-length problem -- many narrow features can trip this
         # well under codeword_length's limit -- so there is nothing to
         # cross-check codeword_length against here.
-        return None, None
+        return None, None, None
     except CodewordTooLong as e:
         reported = e.args[1]
         if encoding == 'joint' and reported != codeword_length:
@@ -206,7 +223,7 @@ def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
             raise AssertionError(
                 'disjoint codeword length {} is below the evaluator\'s {}'
                 .format(codeword_length, reported))
-        return None, None
+        return None, None, None
 
 
 def fit(X, y, n_estimators, max_depth, corner):
@@ -252,9 +269,9 @@ def collect():
                     # compilable iff the LONGER of the two fits.
                     disjoint_len = max(app_len, ddos_len)
 
-                    joint_stages, joint_blocks = measure(
+                    joint_stages, joint_blocks, joint_stage_depth = measure(
                         clf_app, clf_ddos, names, 'joint', joint_len)
-                    disjoint_stages, disjoint_blocks = measure(
+                    disjoint_stages, disjoint_blocks, disjoint_stage_depth = measure(
                         clf_app, clf_ddos, names, 'disjoint', disjoint_len)
 
                     rows.append({
@@ -270,31 +287,45 @@ def collect():
                         'joint_within_limit': joint_len <= MAX_CODEWORD_LENGTH,
                         'joint_stages': joint_stages,
                         'joint_blocks': joint_blocks,
+                        # F5/F6: pipeline DEPTH (StagePlan.depth), not the
+                        # occupied-stage COUNT above -- see measure()'s
+                        # docstring. Recorded, not enforced, here: this
+                        # script measures a grid, it does not reject cells
+                        # (compare TOFINO_PIPELINE_STAGES against this
+                        # column yourself when reading the CSV).
+                        'joint_stage_depth': joint_stage_depth,
                         'disjoint_codeword_length_app': app_len,
                         'disjoint_codeword_length_ddos': ddos_len,
                         'disjoint_codeword_length': disjoint_len,
                         'disjoint_within_limit': disjoint_len <= MAX_CODEWORD_LENGTH,
                         'disjoint_stages': disjoint_stages,
                         'disjoint_blocks': disjoint_blocks,
+                        'disjoint_stage_depth': disjoint_stage_depth,
                         'seconds': time.perf_counter() - start,
                     })
 
-                    print('  t={:<3} d={:<3} {:<11} joint cw={:<5}{} blocks={:<6} | '
-                          'disjoint cw={:<5}{} blocks={:<6} | {:.1f}s'.format(
+                    print('  t={:<3} d={:<3} {:<11} joint cw={:<5}{} blocks={:<6} depth={:<4}{} | '
+                          'disjoint cw={:<5}{} blocks={:<6} depth={:<4}{} | {:.1f}s'.format(
                               n_trees, max_depth, corner.name, joint_len,
                               '!' if joint_len > MAX_CODEWORD_LENGTH else ' ',
                               '-' if joint_blocks is None else joint_blocks,
+                              '-' if joint_stage_depth is None else joint_stage_depth,
+                              '!' if joint_stage_depth is not None
+                              and joint_stage_depth > TOFINO_PIPELINE_STAGES else ' ',
                               disjoint_len,
                               '!' if disjoint_len > MAX_CODEWORD_LENGTH else ' ',
                               '-' if disjoint_blocks is None else disjoint_blocks,
+                              '-' if disjoint_stage_depth is None else disjoint_stage_depth,
+                              '!' if disjoint_stage_depth is not None
+                              and disjoint_stage_depth > TOFINO_PIPELINE_STAGES else ' ',
                               rows[-1]['seconds']))
 
     frame = pd.DataFrame(rows)
     # None marks "no block/stage count exists because the codeword is too
     # long". Plain object columns would render those counts as 2.0 in the CSV;
     # the nullable integer dtype keeps them integers and leaves the cell empty.
-    for column in ('joint_stages', 'joint_blocks',
-                   'disjoint_stages', 'disjoint_blocks'):
+    for column in ('joint_stages', 'joint_blocks', 'joint_stage_depth',
+                   'disjoint_stages', 'disjoint_blocks', 'disjoint_stage_depth'):
         frame[column] = frame[column].astype('Int64')
     return frame
 

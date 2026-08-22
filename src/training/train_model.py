@@ -30,7 +30,8 @@ from src.p4gen.build_p4_script import (
     dt_thresholds_float_to_int, MAX_CODEWORD_LENGTH,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
 from src.p4gen.evaluation import (
-    CodewordTooLong, CrossbarKeyTooWide, multi_model_memory_evaluation)
+    CodewordTooLong, CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
+    multi_model_memory_evaluation)
 from src.p4gen.switch_semantics import switch_predict
 from src.training.threshold_alignment import align_rf_thresholds
 from src.training import early_stopping
@@ -78,6 +79,12 @@ class TrainResult:
     model_A, model_B, stages, blocks, acc_sel_A, acc_sel_B, best_params are
     the original seven. The rest:
 
+    stage_depth : StagePlan.depth (F5/F6) -- the pipeline-DEPTH quantity the
+        hard TOFINO_PIPELINE_STAGES ceiling is compared against, from the
+        refit's own 3-tuple `multi_model_memory_evaluation` call. NOT the
+        same quantity as `stages` (occupied match-table stage COUNT) --
+        see evaluation.multi_model_memory_evaluation's docstring for the
+        full three-quantity disambiguation.
     rel_shortfall : the winning trial's balance shortfall from
         trial_selection.select_best_trial (spec B.3) -- how far the
         worse-served task fell below its own achievable best.
@@ -104,6 +111,7 @@ class TrainResult:
     model_B: Any
     stages: int
     blocks: int
+    stage_depth: int
     acc_sel_A: float
     acc_sel_B: float
     best_params: dict
@@ -201,24 +209,48 @@ def train_multi_RF_Optuna_multi_constrained(
 
         # (b) Constraint, on the shipped artifact -- exact, no proxy.
         try:
-            stages, blocks = multi_model_memory_evaluation(
+            stages, blocks, stage_depth = multi_model_memory_evaluation(
                 model_A, model_B, features_A, features_B, encoding)
         except CodewordTooLong as e:
             trial.set_user_attr('codeword_violation', e.args[1] - MAX_CODEWORD_LENGTH)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('crossbar_violation', 0.0)
+            trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
         except CrossbarKeyTooWide as e:
             trial.set_user_attr('crossbar_violation',
                                 e.args[1] - TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
             trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
+            trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
 
         if blocks > max_blocks:
             trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', blocks - max_blocks)
             trial.set_user_attr('crossbar_violation', 0.0)
+            trial.set_user_attr('stages_violation', 0.0)
+            return -1.0, -1.0, float('inf')
+
+        # F5: hard 12-ingress-stage Tofino-1 pipeline ceiling
+        # (TOFINO_PIPELINE_STAGES), compared against stage_depth -- NOT
+        # `stages` (see evaluation.multi_model_memory_evaluation's docstring
+        # for why those are different quantities).
+        #
+        # NECESSARY BUT NOT SUFFICIENT: stage_depth is this model's predicted
+        # pipeline depth from placed match tables alone (StagePlan.depth);
+        # the real compiler also spends stages on parsing/bookkeeping
+        # overhead this model does not capture -- measured on M2, this model
+        # predicts depth 6 where the real compiler needs 9 stages
+        # (`stages_real`, p4_compile.parse_compile_logs). A violation here is
+        # therefore a DEFINITE reject (the real pipeline can only need MORE
+        # stages than predicted, never fewer); passing this check is NOT a
+        # guarantee the real compile fits within TOFINO_PIPELINE_STAGES.
+        if stage_depth > TOFINO_PIPELINE_STAGES:
+            trial.set_user_attr('codeword_violation', 0.0)
+            trial.set_user_attr('blocks_violation', 0.0)
+            trial.set_user_attr('crossbar_violation', 0.0)
+            trial.set_user_attr('stages_violation', stage_depth - TOFINO_PIPELINE_STAGES)
             return -1.0, -1.0, float('inf')
 
         # (c) Only FEASIBLE trials pay for scoring. At tight max_blocks most of
@@ -243,6 +275,7 @@ def train_multi_RF_Optuna_multi_constrained(
         trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 0.0)
         trial.set_user_attr('crossbar_violation', 0.0)
+        trial.set_user_attr('stages_violation', 0.0)
 
         # Blocks stays a third OBJECTIVE rather than a pure constraint because
         # plots use REALIZED blocks as an axis: without minimize-blocks pressure
@@ -313,7 +346,7 @@ def train_multi_RF_Optuna_multi_constrained(
     model_A, model_B = fit_pair(rf_params(best_trial.params, 'A'),
                                 rf_params(best_trial.params, 'B'),
                                 align_stats=align_stats)
-    stages, blocks = multi_model_memory_evaluation(
+    stages, blocks, stage_depth = multi_model_memory_evaluation(
         model_A, model_B, features_A, features_B, encoding)
 
     if blocks != best_trial.user_attrs['blocks'] or blocks > max_blocks:
@@ -322,11 +355,23 @@ def train_multi_RF_Optuna_multi_constrained(
             '(max {}) -- the pipeline is not deterministic'.format(
                 best_trial.number, blocks, best_trial.user_attrs['blocks'], max_blocks))
 
+    # F5: the winning trial already passed the stage_depth <= TOFINO_PIPELINE_STAGES
+    # ceiling check inside objective() (a violation there returns the
+    # infeasible triple, which trial_selection.select_best_trial never
+    # selects), so the refit -- deterministic given the same params -- must
+    # reproduce that too.
+    if stage_depth > TOFINO_PIPELINE_STAGES:
+        raise AssertionError(
+            'refit of trial {} gave stage_depth {} exceeding the {}-stage '
+            'ceiling -- the pipeline is not deterministic'.format(
+                best_trial.number, stage_depth, TOFINO_PIPELINE_STAGES))
+
     return TrainResult(
         model_A=model_A,
         model_B=model_B,
         stages=int(stages),
         blocks=int(blocks),
+        stage_depth=int(stage_depth),
         acc_sel_A=best_trial.user_attrs['acc_app'],
         acc_sel_B=best_trial.user_attrs['acc_ddos'],
         best_params=dict(best_trial.params),

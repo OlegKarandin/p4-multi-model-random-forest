@@ -65,7 +65,7 @@ def _stub_train_result(model_A, model_B, **overrides):
     "everything succeeded, nothing special" shape; **overrides substitutes
     just those."""
     fields = dict(
-        model_A=model_A, model_B=model_B, stages=1, blocks=1,
+        model_A=model_A, model_B=model_B, stages=1, blocks=1, stage_depth=1,
         acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
         rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
         align_attempted=None, align_accepted=None,

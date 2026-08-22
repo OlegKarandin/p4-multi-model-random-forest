@@ -57,7 +57,7 @@ def test_process_single_split_keeps_rows_completed_before_an_unhandled_raise(mon
         model_B = RandomForestClassifier(
             n_estimators=1, max_depth=2, random_state=0).fit(X_B, y_B)
         return TrainResult(
-            model_A=model_A, model_B=model_B, stages=1, blocks=1,
+            model_A=model_A, model_B=model_B, stages=1, blocks=1, stage_depth=1,
             acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
             rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
             align_attempted=None, align_accepted=None,

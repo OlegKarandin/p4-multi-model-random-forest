@@ -367,7 +367,7 @@ def test_multi_model_memory_evaluation_end_to_end_on_real_forests(encoding):
     clf_app = _tiny_forest([0, 1, 2], seed=0)
     clf_ddos = _tiny_forest([-1, 1], seed=7)
 
-    stages, blocks = ev.multi_model_memory_evaluation(
+    stages, blocks, stage_depth = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, features, features, encoding)
 
     assert isinstance(stages, int) and isinstance(blocks, int)
@@ -378,6 +378,12 @@ def test_multi_model_memory_evaluation_end_to_end_on_real_forests(encoding):
     # anywhere near a full 12-stage Tofino pipeline's worth of tables.
     assert stages <= 12
     assert blocks <= 24 * stages
+    # stage_depth (F5/F6) is a DIFFERENT quantity from stages -- pipeline
+    # depth, not occupied-stage count -- so it can exceed stages, but never
+    # be less than it (depth is at least the count of occupied indices).
+    assert isinstance(stage_depth, int)
+    assert stage_depth >= stages
+    assert stage_depth <= 12
 
 
 def test_multi_model_memory_evaluation_raises_on_unknown_encoding():
@@ -579,8 +585,8 @@ def test_exact_match_resource_usage_sums_across_multiple_trees():
 _PRE_TASK_SINGLE_APP = (13, 4, 11, 2, 9)          # range_entries, range_blocks, ternary_entries, ternary_blocks, codeword_length
 _PRE_TASK_SINGLE_APP_RANGE_SPECS = [(1, 2)] * 4
 _PRE_TASK_SINGLE_APP_TERNARY_SPECS = [(1, 4), (1, 4)]
-_PRE_TASK_MULTI_JOINT = (2, 8)                     # stages, blocks
-_PRE_TASK_MULTI_DISJOINT = (2, 11)
+_PRE_TASK_MULTI_JOINT = (2, 8, 3)                  # stages, blocks, stage_depth
+_PRE_TASK_MULTI_DISJOINT = (2, 11, 3)
 
 
 def test_single_model_memory_evaluation_default_is_unchanged_by_discount_wiring():
@@ -626,8 +632,8 @@ def test_multi_model_memory_evaluation_default_is_unchanged_by_discount_wiring()
 
 @pytest.mark.parametrize("encoding", ["joint", "disjoint"])
 def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encoding):
-    # multi_model_memory_evaluation returns only (stages, blocks) -- the
-    # discounted ENTRY count it feeds into the block formula is never
+    # multi_model_memory_evaluation returns (stages, blocks, stage_depth) --
+    # the discounted ENTRY count it feeds into the block formula is never
     # returned, and with these tiny forests every tree still fits in one
     # 207-entry TCAM block either way, so the discount would be invisible at
     # the real per-block capacity. Shrinking that one hardware constant for
@@ -645,9 +651,9 @@ def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encod
     clf_app = _tiny_forest([0, 1, 2], seed=0)
     clf_ddos = _tiny_forest([-1, 1], seed=7)
 
-    _, blocks_off = ev.multi_model_memory_evaluation(
+    _, blocks_off, _ = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, features, features, encoding)
-    _, blocks_on = ev.multi_model_memory_evaluation(
+    _, blocks_on, _ = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, features, features, encoding,
         use_default_action_discount=True)
 
@@ -935,10 +941,13 @@ def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
     _, _, range_specs = ev.range_matching_resource_usage(intervals)
     assert ev.crossbar_stages_needed(range_specs).occupied == 1
 
-    stages, blocks = ev.multi_model_memory_evaluation(
+    stages, blocks, stage_depth = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, "joint")
 
     assert stages == 3
+    # This IS the M2 fixture the brief's own worked example cites: depth 6,
+    # where the real compiler needs 9 (stages_real, not measured here).
+    assert stage_depth == 6
 
 
 def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth():
@@ -947,7 +956,8 @@ def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth
     clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
     clf_ddos = _forest_using_all_four_catalog_features([-1, 1], seed=7)
 
-    stages, _ = ev.multi_model_memory_evaluation(
+    stages, _, stage_depth = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, ["g0", "g1", "g2", "g3"], ["g0", "g1", "g2", "g3"], "joint")
 
     assert stages == 2
+    assert stage_depth == 3
