@@ -1647,6 +1647,23 @@ _REGISTER_ACTION_BODIES = {
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
+  # Task 8: the packet-length equivalent of mathunit_ewma, for the three
+  # packet-length-mean features (fwd_packet_length_mean,
+  # bwd_packet_length_mean, packet_length_mean). Folds hdr.ipv4.total_len
+  # (a header field, not meta.current_iat) into the same MathUnit<>-based
+  # alpha=0.5 EWMA. A separate body kind rather than parameterising
+  # mathunit_ewma's operand, per task-8-brief.md: _REGISTER_ACTION_BODIES is
+  # a table of compiler-validated literals, one entry per validated program
+  # text. Transcribed verbatim from the compile of
+  # p4/tofino_spike/tna_m3_packet_length_mean_spike.p4 (0 errors) -- the cast
+  # `(bit<{width}>)hdr.ipv4.total_len` compiled as-is, no metadata
+  # intermediary needed.
+  "mathunit_ewma_packet_length": (
+      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
+      "\t\t\tvalue = {name}_halve_unit.execute(value + (bit<{width}>)hdr.ipv4.total_len);\n"
+      "\t\t\trv = value;\n"
+      "\t\t}}\n"
+  ),
   # Task 7: running minimum. A register that initialises to 0 (the
   # _register_declaration default) is stuck at 0 forever once folded through
   # min() -- min(0, anything) == 0 -- so these two body kinds are paired with
@@ -1680,6 +1697,7 @@ _REGISTER_ACTION_BODIES = {
 # spirit to _REGISTER_ACTION_BODIES above.
 _EXTRA_ACTION_DECLARATIONS = {
     "mathunit_ewma": "\tMathUnit<bit<{width}>>(MathOp_t.MUL, 1, 2) {name}_halve_unit;\n",
+    "mathunit_ewma_packet_length": "\tMathUnit<bit<{width}>>(MathOp_t.MUL, 1, 2) {name}_halve_unit;\n",
 }
 
 # Body kinds whose backing register must NOT start at 0. A running minimum
@@ -1765,7 +1783,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       meta.now_pseudo_us), plus one `RegisterAction<...> <name>_action =
       {...};` block per resolved register, using the exact bodies from
       _REGISTER_ACTION_BODIES. Body kinds listed in
-      _EXTRA_ACTION_DECLARATIONS (currently only "mathunit_ewma") get one
+      _EXTRA_ACTION_DECLARATIONS (currently "mathunit_ewma" and
+      "mathunit_ewma_packet_length") get one
       extra hardware-primitive declaration line (e.g.
       `MathUnit<bit<W>>(MathOp_t.MUL, 1, 2) <name>_halve_unit;`) emitted
       immediately before that register's RegisterAction block. Flow
