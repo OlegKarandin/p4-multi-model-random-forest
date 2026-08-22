@@ -102,6 +102,21 @@ load_campaign returns:
     acc_app, f1_app, acc_ddos, f1_ddos   float64
     acc_sel_app, acc_sel_ddos            float64
     stages, blocks                       float64
+    stage_depth   float64, NaN on any file written before this column
+                  existed (real on-disk `results/rf_t11_d14_M25_*.csv` files
+                  predate it) -- the loader adds it as all-NaN when a loaded
+                  file's header omits it outright, the same "tolerate a
+                  missing column" contract `stages_real` already has, except
+                  `stages_real` is present in every real file's header with
+                  '' values, while `stage_depth` may be missing the header
+                  ENTIRELY. `stages`, `stage_depth` and `stages_real` are
+                  THREE DIFFERENT quantities that must never be compared or
+                  plotted as if they were the same thing:
+                    stages      : occupied match-table stage COUNT (model).
+                    stage_depth : pipeline DEPTH, what the hard 12-stage
+                                  Tofino-1 ceiling reads (model, F5/F6).
+                    stages_real : the real compiler's whole-program stage
+                                  count, below.
 
 Feasibility
     infeasible     str   always '' after load_campaign's filter. Kept
@@ -116,7 +131,12 @@ distinguishable:
     align_attempted, align_accepted                             float64
     intervals_before, intervals_after                           float64
     stages_real, tcam_real   float64, NaN when hardware validation was not
-                              run for this row (the campaign's default).
+                              run for this row (the campaign's default). The
+                              REAL compiler's whole-program stage count
+                              (registers/orientation/vote overhead included)
+                              -- NOT the same quantity as `stages` or
+                              `stage_depth` above; see the module docstring's
+                              Outcome metrics section.
 
 Other
     features_app, features_ddos   str   ';'-joined feature names.
@@ -159,7 +179,7 @@ _INTEGER_KEY_COLUMNS = ['M', 'n_trees', 'max_depth', 'split', 'k']
 # precisely because it must never be compared as a plain numeric column.
 _FLOAT_COLUMNS = [
     'acc_app', 'f1_app', 'acc_ddos', 'f1_ddos', 'acc_sel_app', 'acc_sel_ddos',
-    'stages', 'blocks',
+    'stages', 'blocks', 'stage_depth',
     'rel_shortfall', 'n_trials_run', 'n_feasible',
     'align_attempted', 'align_accepted', 'intervals_before', 'intervals_after',
     'stages_real', 'tcam_real',
@@ -313,6 +333,16 @@ def load_campaign(results_dir='results'):
     for col in _FLOAT_COLUMNS:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
+        else:
+            # A column absent from EVERY loaded file's header entirely --
+            # not merely '' on some rows -- e.g. `stage_depth` (F5/F6) on any
+            # file written before this column existed, including every real
+            # on-disk results/rf_t11_d14_M25_*.csv today. `col in df.columns`
+            # above only catches per-VALUE absence ('' -> NaN via coerce);
+            # this branch is what makes per-COLUMN absence degrade the same
+            # way, to an all-NaN float64 column, rather than the column
+            # missing from the returned frame altogether.
+            df[col] = float('nan')
 
     # Trap 2: delta_align is a string column; never compare it numerically
     # as loaded. Parse into a nullable-by-NaN float plus an explicit is_inf

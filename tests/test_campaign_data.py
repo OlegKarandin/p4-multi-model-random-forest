@@ -17,7 +17,10 @@ a casual test.
 No real campaign CSV exists yet (the pilot cell hasn't run) -- every test here
 builds a synthetic frame with a known answer and writes it to `tmp_path`.
 """
+import glob
 import json
+import os
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -116,6 +119,60 @@ def test_load_campaign_returns_numeric_dtype_for_acc_app_not_object_strings(tmp_
     assert pd.api.types.is_float_dtype(df['acc_app'])
     assert pd.api.types.is_float_dtype(df['acc_ddos'])
     assert pd.api.types.is_float_dtype(df['blocks'])
+
+
+# ---------------------------------------------------------------------------
+# F5/F6: `stage_depth` is a column added AFTER every real campaign CSV on
+# disk was written, so the loader must tolerate its header being absent
+# entirely (not merely '' on some rows, which is `stages_real`'s situation).
+# ---------------------------------------------------------------------------
+
+def test_load_campaign_gives_nan_stage_depth_when_the_column_is_absent_from_every_file(tmp_path):
+    """_feasible_row/_infeasible_row above predate `stage_depth` too (by
+    construction -- neither builder sets it), so a file built from them has
+    no `stage_depth` header at all, exactly like a real pre-Task-13 CSV."""
+    rows = [_feasible_row(k=17), _infeasible_row(k=1)]
+    _write_arm_file(tmp_path, 11, 14, 25, 'joint-d005', rows)
+
+    df = load_campaign(results_dir=str(tmp_path / 'results'))
+
+    assert 'stage_depth' in df.columns
+    assert pd.api.types.is_float_dtype(df['stage_depth'])
+    assert df['stage_depth'].isna().all()
+
+
+def test_load_campaign_parses_a_real_on_disk_csv_missing_the_stage_depth_column(tmp_path):
+    """The real campaign result files under results/rf_t11_d14_M25_*.csv
+    predate `stage_depth` (F5/F6) -- their header has no such column at all.
+    load_campaign must still load them without raising, with `stage_depth`
+    present and NaN throughout, not silently missing from the frame."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    real_files = sorted(glob.glob(
+        os.path.join(repo_root, 'results', 'rf_t11_d14_M25_*.csv')))
+    assert real_files, 'expected at least one real rf_t11_d14_M25_*.csv on disk'
+    for path in real_files:
+        with open(path, encoding='utf-8') as f:
+            header = f.readline()
+        assert 'stage_depth' not in header, (
+            '{} already has a stage_depth column -- this test no longer '
+            'exercises the column-absent path it is meant to prove'.format(path))
+
+    out_dir = tmp_path / 'results'
+    out_dir.mkdir()
+    for path in real_files:
+        shutil.copy(path, out_dir / os.path.basename(path))
+
+    df = load_campaign(results_dir=str(out_dir))
+
+    assert len(df) > 0
+    assert 'stage_depth' in df.columns
+    assert pd.api.types.is_float_dtype(df['stage_depth'])
+    assert df['stage_depth'].isna().all()
+    # The pre-existing stages/blocks columns must still parse as real numbers
+    # -- proof this is additive, not a regression on the columns that were
+    # already there.
+    assert not df['stages'].isna().all()
+    assert not df['blocks'].isna().all()
 
 
 # ---------------------------------------------------------------------------

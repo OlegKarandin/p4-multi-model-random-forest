@@ -34,6 +34,17 @@ from typing import Optional, Tuple
 class CompileResult:
     errors: Optional[int] = None
     warnings: Optional[int] = None
+    # The REAL Tofino compiler's whole-program stage count (parsed from
+    # table_summary.log's "Number of stages in table allocation"), including
+    # parsing/bookkeeping overhead (registers/orientation/vote) that this
+    # project's own StagePlan-based estimator does not model. Stored as
+    # campaign CSVs' `stages_real` column (feature_selection._join_pending_compile)
+    # -- a DIFFERENT quantity from the model's own `stages` (occupied
+    # match-table stage count) and `stage_depth` (pipeline depth, what the
+    # 12-stage TOFINO_PIPELINE_STAGES ceiling reads); see
+    # evaluation.multi_model_memory_evaluation's docstring for the full
+    # three-quantity disambiguation. M2 example: this field is 9, where the
+    # model predicts stage_depth 6.
     stages: Optional[int] = None
     tables: Optional[int] = None
     gateway: Optional[int] = None
@@ -63,6 +74,17 @@ def parse_compile_logs(log_dir: str) -> CompileResult:
     can distinguish "no resources used" from "compile failed before
     resource allocation ran" (e.g. a compile that errored out won't have a
     table_summary.log at all).
+
+    The returned `.stages` is the REAL Tofino compiler's whole-program stage
+    count (F6's third "stages" quantity, stored downstream as the campaign
+    CSV's `stages_real` column) -- it includes parsing/bookkeeping overhead
+    this project's own StagePlan-based estimator does not model, so it is
+    NOT comparable to that estimator's `stages` (occupied match-table stage
+    count) or `stage_depth` (pipeline depth, what the hard 12-stage
+    TOFINO_PIPELINE_STAGES ceiling reads) -- see
+    evaluation.multi_model_memory_evaluation's docstring for the full
+    disambiguation. M2 example: this returns 9 where the estimator predicts
+    stage_depth 6.
     """
     result = CompileResult()
     logs_path = os.path.join(log_dir, "pipe", "logs")

@@ -269,12 +269,12 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
                        infeasible_reason=None,
                        acc_app=None, f1_app=None, acc_ddos=None, f1_ddos=None,
                        acc_sel_app=None, acc_sel_ddos=None,
-                       stages=None, blocks=None,
+                       stages=None, blocks=None, stage_depth=None,
                        best_params=None, rel_shortfall=None,
                        n_trials_run=None, n_feasible=None,
                        align_attempted=None, align_accepted=None,
                        intervals_before=None, intervals_after=None):
-    """Builds one elimination-loop result row (23 keys). Shared by both the
+    """Builds one elimination-loop result row (24 keys). Shared by both the
     infeasible branch (`NoFeasibleSolution`) and the feasible branch of
     `_run_elimination`'s loop, which used to write this dict as two
     hand-duplicated literals that had drifted to use different "not
@@ -283,13 +283,19 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
     so any new column belongs in exactly ONE place: this signature and the
     dict below.
 
-    The 23 keys split into three groups:
+    The 24 keys split into three groups:
     - `arm`/`method`/`split`/`k`/`features_app`/`features_ddos`: always
       present with a real value, never a sentinel.
-    - 8 metrics (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `acc_sel_app`,
-      `acc_sel_ddos`, `stages`, `blocks`): default None, which stays literal
-      None when not overridden -- the infeasible branch's contract (a
-      completed test asserts `row['acc_app'] is None`, not `== ''`).
+    - 9 metrics (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `acc_sel_app`,
+      `acc_sel_ddos`, `stages`, `blocks`, `stage_depth`): default None, which
+      stays literal None when not overridden -- the infeasible branch's
+      contract (a completed test asserts `row['acc_app'] is None`, not
+      `== ''`). `stages` is the occupied match-table stage COUNT;
+      `stage_depth` is the pipeline DEPTH the 12-stage ceiling reads
+      (StagePlan.depth, F5/F6) -- a different quantity, not to be confused
+      with each other or with `stages_real` below (see
+      evaluation.multi_model_memory_evaluation's docstring for the full
+      three-quantity disambiguation).
     - 9 "'' means not computed" fields (`infeasible`, `best_params`,
       `rel_shortfall`, `n_trials_run`, `n_feasible`, `align_attempted`,
       `align_accepted`, `intervals_before`, `intervals_after`): each passed
@@ -311,7 +317,7 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
         'acc_app': acc_app, 'f1_app': f1_app,
         'acc_ddos': acc_ddos, 'f1_ddos': f1_ddos,
         'acc_sel_app': acc_sel_app, 'acc_sel_ddos': acc_sel_ddos,
-        'stages': stages, 'blocks': blocks,
+        'stages': stages, 'blocks': blocks, 'stage_depth': stage_depth,
         'infeasible': _empty_if_none(infeasible_reason),
         'features_app': ';'.join(names_app), 'features_ddos': ';'.join(names_ddos),
         'best_params': _empty_if_none(best_params),
@@ -432,7 +438,8 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             continue
 
         model_app, model_ddos = train_result.model_A, train_result.model_B
-        stages, blocks = train_result.stages, train_result.blocks
+        stages, blocks, stage_depth = (
+            train_result.stages, train_result.blocks, train_result.stage_depth)
         acc_sel_app, acc_sel_ddos = train_result.acc_sel_A, train_result.acc_sel_B
         best_params = train_result.best_params
 
@@ -456,7 +463,7 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             acc_app=acc_app, f1_app=f1_app,
             acc_ddos=acc_ddos, f1_ddos=f1_ddos,
             acc_sel_app=acc_sel_app, acc_sel_ddos=acc_sel_ddos,
-            stages=stages, blocks=blocks,
+            stages=stages, blocks=blocks, stage_depth=stage_depth,
             best_params=json.dumps(best_params),
             rel_shortfall=train_result.rel_shortfall,
             n_trials_run=train_result.n_trials_run,

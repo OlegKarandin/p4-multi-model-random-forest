@@ -351,6 +351,13 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                       marker=marker, color=colour, linewidth=1.6,
                       markersize=5, label=arm, gid='front:{}'.format(arm))
 
+        # 'stages' here is the MODEL's occupied match-table stage count
+        # (campaign_data._FLOAT_COLUMNS) -- not `stage_depth` (pipeline
+        # depth, what the 12-stage ceiling reads) and not `stages_real` (the
+        # real compiler's whole-program count). Never plot/compare 'stages'
+        # against 'stages_real' as if they measured the same thing -- see
+        # evaluation.multi_model_memory_evaluation's docstring for the full
+        # three-quantity disambiguation.
         carried = [column for column in
                    ('arm_slug', 'M', 'split', 'k', 'blocks', 'stages',
                     'acc_app', 'acc_ddos')
