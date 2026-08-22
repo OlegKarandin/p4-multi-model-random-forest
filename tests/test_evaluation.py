@@ -655,47 +655,67 @@ def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encod
 
 
 # ---------------------------------------------------------------------------
-# Range-table key-WIDTH term.
+# Range-table key WIDTH: nibble geometry and the 19-bit SDE ceiling.
 #
-# A physical TCAM block is 512 rows x TCAM_BLOCK_KEY_LENGTH (44) key bits --
-# BOTH dimensions cost blocks. ternary_matching_resource_usage has always
-# charged the width factor (ceil((codeword+4)/44)); the range path charged
-# only the depth term (ceil(rows/512)), so a range key wider than 40 bits
-# silently under-counted. Measured against the real Tofino compiler
-# (reviews/p4_tofino_reference.md Sec 4.2): a 16-bit range key pinned to a
-# 16-bit PHV container costs "1 in 1 (44)" -- exactly one word per entry --
-# which is what ceil((16+4)/44) == 1 predicts.
+# Unlike ternary_matching_resource_usage's ceil((codeword+4)/44) width term
+# (words-per-entry genuinely grows with ternary key width), a range key's
+# words-per-entry is fixed by PHV container width, which generate_P4_code
+# pins to 16 bits via @pa_container_size -- so range_matching_resource_usage
+# no longer charges any width-based block inflation. What DOES vary with
+# key_bit_width is (a) the nibble geometry range_entry_count() decomposes
+# against, and (b) the crossbar byte width reported per table. Above
+# MAX_RANGE_KEY_BITS (19) the real SDE refuses to compile the table at all
+# (Sec 4.2), so nibble_widths_for() raises instead of pricing it.
 # ---------------------------------------------------------------------------
 
 
-def test_range_matching_resource_usage_charges_a_key_width_term():
-    # One aligned power-of-2 interval = exactly 1 physical row, so any block
-    # count above 1 can only come from the key-width term.
-    feature_intervals = {"F": [(0, 255)]}
+def test_nibble_widths_for_16_bits_is_four_nibbles():
+    assert ev.nibble_widths_for(16) == (4, 4, 4, 4)
 
-    _, blocks_16, _ = ev.range_matching_resource_usage(feature_intervals, key_bit_width=16)
-    _, blocks_64, _ = ev.range_matching_resource_usage(feature_intervals, key_bit_width=64)
 
-    assert blocks_16 == 1                      # ceil((16+4)/44) == 1
-    assert blocks_64 == 2                      # ceil((64+4)/44) == 2
+def test_nibble_widths_for_12_bits_is_three_nibbles():
+    assert ev.nibble_widths_for(12) == (4, 4, 4)
+
+
+def test_nibble_widths_for_18_bits_has_a_two_bit_remainder_nibble():
+    assert ev.nibble_widths_for(18) == (4, 4, 4, 4, 2)
+
+
+def test_nibble_widths_for_rejects_widths_above_the_sde_ceiling():
+    with pytest.raises(ValueError):
+        ev.nibble_widths_for(20)
+
+
+def test_range_matching_resource_usage_rejects_a_key_wider_than_the_ceiling():
+    # This is the worked example that motivated the fix: before threading
+    # key_bit_width into the nibble geometry, this call silently returned
+    # (2, 1, [(1, 4)]) -- rows priced as if the key were 16-bit, even though
+    # a 32-bit range key does not compile on real hardware. It must now
+    # raise instead of returning a bogus price.
+    feature_intervals = {"f": [(0, 100000), (100001, 200000)]}
+    with pytest.raises(ValueError):
+        ev.range_matching_resource_usage(feature_intervals, key_bit_width=32)
 
 
 def test_range_table_specs_report_the_real_key_byte_width():
-    # The crossbar byte cost per table must follow the declared key width too
-    # -- crossbar_stages_needed budgets 64 key bytes per stage.
+    # The crossbar byte cost per table must follow the declared key width,
+    # even though (post-fix) the block count no longer inflates with it --
+    # blocks are decided by the actual row count, not a width fudge.
     feature_intervals = {"F": [(0, 255)]}
 
-    _, _, specs_16 = ev.range_matching_resource_usage(feature_intervals, key_bit_width=16)
-    _, _, specs_64 = ev.range_matching_resource_usage(feature_intervals, key_bit_width=64)
+    _, blocks_8, specs_8 = ev.range_matching_resource_usage(feature_intervals, key_bit_width=8)
+    _, blocks_16, specs_16 = ev.range_matching_resource_usage(feature_intervals, key_bit_width=16)
 
+    assert blocks_8 == 1
+    assert blocks_16 == 1
+    assert specs_8 == [(1, 1)]                 # 1 block, 1 crossbar byte
     assert specs_16 == [(1, 2)]                # 1 block, 2 crossbar bytes
-    assert specs_64 == [(2, 8)]                # 2 blocks, 8 crossbar bytes
 
 
 def test_range_matching_resource_usage_default_width_is_the_project_16_bit():
     # Regression guard: the project's decided feature precision is 16-bit
-    # (reviews/p4_tofino_reference.md Sec 5), whose width factor is 1, so
-    # adding the term must not change any existing caller's numbers.
+    # (reviews/p4_tofino_reference.md Sec 5), so leaving key_bit_width
+    # unspecified must not change any existing caller's numbers.
     feature_intervals = {"F": [(0, 255)], "G": [(10, 300)]}
 
     assert (ev.range_matching_resource_usage(feature_intervals) ==

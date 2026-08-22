@@ -105,6 +105,23 @@ FEATURE_VALUE_BIT_WIDTH = 16
 RANGE_TABLE_KEY_BYTES = math.ceil(FEATURE_VALUE_BIT_WIDTH / 8)
 
 
+MAX_RANGE_KEY_BITS = 19   # Ref 4.2: a 20-bit range key does not compile at all
+
+
+def nibble_widths_for(bits):
+  """Nibble geometry expand_range() walks for a key of `bits` bits.
+
+  Above MAX_RANGE_KEY_BITS the SDE refuses the table outright, so this raises
+  rather than returning a geometry -- the case the old width_factor was
+  insuring against does not need pricing, it needs rejecting."""
+  if bits > MAX_RANGE_KEY_BITS:
+    raise ValueError(
+        "range key of %d bits does not compile (SDE ceiling is %d bits)"
+        % (bits, MAX_RANGE_KEY_BITS))
+  full, rem = divmod(bits, 4)
+  return tuple([4] * full + ([rem] if rem else []))
+
+
 def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE_BIT_WIDTH):
   """Returns (range_entries, range_blocks, range_table_specs).
 
@@ -115,36 +132,35 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   range_blocks is still returned for the blocks half of the cost model.
 
   A physical TCAM block is TERNARY_MATCHING_ENTRIES_PER_BLOCK rows x
-  TCAM_BLOCK_KEY_LENGTH key bits, so BOTH dimensions cost blocks. The depth
-  term is ceil(total_rows / 512); the width term is the same
-  ceil((key_bits + 4) / 44) that ternary_matching_resource_usage charges
-  (the +4 is the flat per-row overhead of Sec 4.1, confirmed directly in a
-  real compile's mau.characterize.log, which reports a 64-bit ternary key as
-  occupying 68 bits and a 16-bit range key as occupying 20).
+  TCAM_BLOCK_KEY_LENGTH key bits. For RANGE keys, unlike TERNARY keys (where
+  ceil((bits + 4) / 44) genuinely applies), words-per-entry is not a function
+  of key width at all -- it is decided by PHV container width, and
+  generate_P4_code already pins every feature value field to a 16-bit
+  container via an @pa_container_size pragma (build_p4_script.py). So this
+  function's depth-only formula (ceil(total_rows / 512)) is correct BECAUSE
+  of that pragma, not by coincidence: with the container width fixed at 16
+  bits, one row always costs exactly one TCAM word, regardless of
+  key_bit_width. Keys wider than MAX_RANGE_KEY_BITS never reach this
+  computation -- nibble_widths_for() raises first, since the SDE would
+  refuse such a table outright and pricing it is meaningless.
 
-  At this project's decided 16-bit feature precision the width factor is 1,
-  so this term changes no current number -- it exists so a wider feature
-  value can never silently under-count, which the depth-only formula did.
-
-  IMPORTANT (measured, reviews/p4_tofino_reference.md Sec 4.2): the width
-  factor is only correct when the key field is pinned to a PHV container of
-  the same width. A bit<16> range key that the compiler parks in a 32-bit W
-  container really costs TWO TCAM words per entry ("1 in 2 (88)"), not one.
-  generate_P4_code therefore emits an @pa_container_size pragma per feature
-  value field; without those pragmas this function under-counts by up to a
-  factor of 2 per table."""
+  IMPORTANT (measured, reviews/p4_tofino_reference.md Sec 4.2): this
+  correctness depends on the @pa_container_size pragma. A bit<16> range key
+  that the compiler parks in a 32-bit W container really costs TWO TCAM
+  words per entry ("1 in 2 (88)"), not one; without those pragmas this
+  function would under-count by up to a factor of 2 per table."""
   range_entries, range_blocks = 0, 0
   range_table_specs = []
 
-  width_factor = math.ceil((key_bit_width + 4) / TCAM_BLOCK_KEY_LENGTH)
   key_bytes = math.ceil(key_bit_width / 8)
+  nibble_widths = nibble_widths_for(key_bit_width)
 
   for feature in feature_intervals:
     total_rows = 0
     for lo, hi in feature_intervals[feature]:
-      total_rows += range_entry_count(lo, hi)
+      total_rows += range_entry_count(lo, hi, nibble_widths)
 
-    feature_blocks = math.ceil(total_rows / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * width_factor
+    feature_blocks = math.ceil(total_rows / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
 
     range_entries += len(feature_intervals[feature])
     range_blocks += feature_blocks
