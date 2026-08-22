@@ -749,21 +749,28 @@ def test_feature_readiness_level_resolves_dotted_dataset_names():
 
 
 def test_feature_readiness_level_unknown_dotted_feature_still_falls_back():
-    """Most of the 18 selected features genuinely have no catalog entry, so
-    the fallback must survive normalisation rather than become a KeyError."""
-    assert ev.feature_readiness_level("Bwd.Packet.Length.Min") == ev.FLOW_HASH_LEVEL
-    assert ev.feature_readiness_level("Packet.Length.Mean") == ev.FLOW_HASH_LEVEL
+    """Task 9 grew FEATURE_REGISTER_CATALOG to cover all 18 of main.py's
+    selected features (previously only 4 had entries, and these two dotted
+    names fell back to FLOW_HASH_LEVEL). Both now resolve to a real,
+    normalisation-surviving catalog entry instead of a KeyError or a
+    fallback -- bwd_packet_length_min is bwd-gated with one value register
+    (no dependency register: packet-length bodies read hdr.ipv4.total_len
+    directly), and packet_length_mean is ungated with one value register."""
+    assert ev.feature_readiness_level("Bwd.Packet.Length.Min") == ev.FLOW_HASH_LEVEL + 1 + 1
+    assert ev.feature_readiness_level("Packet.Length.Mean") == ev.FLOW_HASH_LEVEL + 0 + 1
 
 
 def test_readiness_levels_for_real_dataset_feature_names():
     """readiness_levels_for is positionally aligned with feature_intervals, so
-    the levels must follow the dict's key order exactly."""
+    the levels must follow the dict's key order exactly. Bwd.IAT.Min now has
+    a real catalog entry too (Task 9): bwd-gated (+1) with a dependency
+    register (bwd_last_arrival_time) plus its own value register (+2)."""
     feature_intervals = {
         "Fwd.IAT.Max": [(0, 10), (11, 65535)],
         "Flow.IAT.Max": [(0, 20), (21, 65535)],
         "Bwd.IAT.Min": [(0, 30), (31, 65535)],
     }
-    assert ev.readiness_levels_for(feature_intervals) == [4, 3, 1]
+    assert ev.readiness_levels_for(feature_intervals) == [4, 3, 4]
 
 
 def test_crossbar_stages_needed_separates_tables_by_readiness_level():

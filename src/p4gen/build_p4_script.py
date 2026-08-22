@@ -1889,15 +1889,20 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # Preserves feature_intervals' iteration order.
   matched_features = [f for f in (name.lower() for name in feature_intervals.keys()) if f in catalog]
 
-  # Guard: flow_iat_mean shares flow_last_arrival_time dependency with
-  # flow_iat_max. If selected without flow_iat_max, the shared dependency
-  # register would never be executed and meta.current_iat would hold garbage.
-  if "flow_iat_mean" in matched_features and "flow_iat_max" not in matched_features:
-    raise ValueError(
-        "flow_iat_mean requires flow_iat_max to also be selected (shared "
-        "flow_last_arrival_time dependency register) -- see "
-        "reviews/t11_tofino_port_and_env.md H.6"
-    )
+  # NOTE: there used to be a guard here raising ValueError if "flow_iat_mean"
+  # was selected without "flow_iat_max", on the theory that flow_iat_mean's
+  # shared "flow_last_arrival_time" dependency register would otherwise never
+  # be .execute()d. That was never true of this generator: each catalog
+  # entry (flow_iat_mean's included) lists its OWN dependency register in its
+  # own "registers" list, so resolving flow_iat_mean alone still emits
+  # flow_last_arrival_time_action.execute(meta.flow_hash) before
+  # meta.flow_iat_mean_val = ... -- see _execute_lines below, which walks
+  # feature_registers[feature] (the feature's own registers list) regardless
+  # of which other features are selected. The guard was deleted (Task 9) once
+  # this was proven by
+  # test_resolving_flow_iat_mean_alone_auto_executes_its_dependency in
+  # tests/test_feature_registers.py; see that test for the exact ordering
+  # assertion.
 
   if not matched_features:
     return "", "", "", set()

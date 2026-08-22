@@ -172,16 +172,35 @@ def m2_mean_plus_fwd_generated():
 # FEATURE_REGISTER_CATALOG shape
 # ---------------------------------------------------------------------------
 
-def test_catalog_has_exactly_the_four_m1_m2_features():
-  # NOTE: this test's assertion is intentionally updated by Task M2-B1 (was
-  # "test_catalog_has_exactly_the_three_m1_features", asserting only M1's 3
-  # keys) -- adding the "flow_iat_mean" catalog entry is this task's own
-  # required deliverable, so the catalog's key set necessarily grows by one.
-  # This is the one pre-existing test whose assertion must change; every
-  # other M1 test/behavior is unaffected (see task report for details).
+def test_catalog_has_exactly_the_eighteen_pool_features():
+  # NOTE: this test's assertion has been updated twice now -- Task M2-B1 grew
+  # it from 3 to 4 keys (adding flow_iat_mean), and Task 9 grows it from 4 to
+  # all 18 keys of main.py's feature pool (main.py:308-314), its own required
+  # deliverable. This is the one pre-existing test whose assertion changes
+  # each time the catalog's scope grows; every other M1/M2 test/behavior is
+  # unaffected.
   assert set(FEATURE_REGISTER_CATALOG.keys()) == {
-      "flow_iat_max", "fwd_iat_max", "fwd_packet_length_max", "flow_iat_mean",
+      "flow_iat_max", "flow_iat_mean", "flow_iat_min",
+      "fwd_iat_max", "fwd_iat_mean", "fwd_iat_min",
+      "bwd_iat_max", "bwd_iat_mean", "bwd_iat_min",
+      "fwd_packet_length_max", "fwd_packet_length_min", "fwd_packet_length_mean",
+      "bwd_packet_length_max", "bwd_packet_length_min", "bwd_packet_length_mean",
+      "min_packet_length", "max_packet_length", "packet_length_mean",
   }
+
+
+def test_every_catalog_entry_orders_dependency_registers_before_value_registers():
+  # The primary risk Task 9 called out for its 14 new entries: _execute_lines
+  # (build_p4_script.py) emits each feature's "registers" list IN ORDER, so a
+  # "value" register that consumes meta.current_iat must be listed AFTER the
+  # "dependency" register that produces it, never before.
+  for feature, entry in FEATURE_REGISTER_CATALOG.items():
+    roles = [reg["role"] for reg in entry["registers"]]
+    dependency_positions = [i for i, role in enumerate(roles) if role == "dependency"]
+    value_positions = [i for i, role in enumerate(roles) if role == "value"]
+    if dependency_positions and value_positions:
+      assert max(dependency_positions) < min(value_positions), (
+          feature, entry["registers"])
 
 
 def test_flow_iat_max_catalog_entry():
@@ -709,12 +728,23 @@ def test_real_catalog_has_no_cross_gate_register_sharing():
   generate_P4_registers_and_apply(feature_intervals)
 
 
-def test_generate_P4_registers_raises_when_flow_iat_mean_selected_without_flow_iat_max():
-  """flow_iat_mean shares flow_last_arrival_time dependency with flow_iat_max.
-
-  If flow_iat_mean is selected without flow_iat_max, the shared dependency
-  register would never be executed and meta.current_iat would contain garbage.
-  This guard raises ValueError to prevent that scenario.
+def test_resolving_flow_iat_mean_alone_auto_executes_its_dependency():
+  """Proves it is safe that Task 9 deleted the old
+  "flow_iat_mean requires flow_iat_max" guard: flow_iat_mean's own catalog
+  entry lists "flow_last_arrival_time" as its OWN dependency register (see
+  FEATURE_REGISTER_CATALOG["flow_iat_mean"]), so resolving flow_iat_mean by
+  itself -- with no flow_iat_max in the selected set at all -- still emits
+  the dependency's .execute() call site, and BEFORE the value assignment
+  that consumes its output. No external guard is needed: the auto-execution
+  falls out of _execute_lines walking each feature's own "registers" list.
   """
-  with pytest.raises(ValueError, match="flow_iat_max"):
-    generate_P4_registers_and_apply({"flow_iat_mean": None})
+  _, _, apply_code, resolved = generate_P4_registers_and_apply({"flow_iat_mean": None})
+
+  assert resolved == {"flow_iat_mean"}
+  assert "flow_iat_max" not in apply_code
+
+  dependency_line = "flow_last_arrival_time_action.execute(meta.flow_hash)"
+  value_line = "meta.flow_iat_mean_val ="
+  dependency_index = apply_code.index(dependency_line)
+  value_index = apply_code.index(value_line)
+  assert dependency_index < value_index, apply_code
