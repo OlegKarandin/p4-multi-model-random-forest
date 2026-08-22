@@ -139,6 +139,26 @@ def parse_table_entry_count(log_dir: str, table_name: str) -> Optional[int]:
     failed before resource allocation) and when table_name is never found in
     it -- these are distinct signals from "found with 0 rows", which a real
     range-match table with at least one entry should never actually hit.
+
+    Deliberately caller-less right now, and that is itself a signal rather
+    than a defect: this is the instrument for the still-OPEN control-plane
+    validation of evaluation.range_entry_count. A const-entries P4 probe
+    (writing a standalone program with `const entries` and reading this
+    function's compile-time resources.json) measures the WRONG thing -- the
+    compiler can constant-fold a compile-time-known range down to a trivial
+    encoding (tried 2026-08-02/03: predicted 6 rows, compiler allocated 1),
+    which has nothing to do with what happens when a real threshold value is
+    installed at runtime. This project's actual production tables
+    (resources/table.p4) declare only `size = <SIZE>` and are populated via
+    runtime control-plane insertion (the `bf_rt` API), not `const entries` --
+    so the only valid way to exercise this function for that validation is a
+    live `tofino_model` + `bf_switchd` + `bfshell` run that inserts real
+    values and leaves behind the resources.json this function reads. That run
+    has not happened yet; when it does, its 4 existing unit tests (fixture-
+    based, exercising the parsing logic against synthetic resources.json
+    files) are what make the eventual real measurement trustworthy, since
+    they already pin down this function's parsing behavior independent of
+    whatever real log a live run produces.
     """
     logs_path = os.path.join(log_dir, "pipe", "logs")
     if not os.path.isdir(logs_path):

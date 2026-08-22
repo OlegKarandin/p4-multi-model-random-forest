@@ -228,63 +228,31 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
 
 
 def exact_match_resource_usage(codewords, feature_intervals):
-  """Planter RF_EB-style accounting: code/decision tables move from ternary
-  TCAM to exact-match SRAM (overlap.md's code-verified match-type table).
-  Exact match cannot express the wildcarded ('*') bits a leaf's tree path
-  never tests, so each wildcarded bit must be enumerated into concrete
-  entries -- this is a real entry-count multiplier, not hidden here.
-  Charges SRAM, not TCAM -- a distinct, far larger resource (overlap.md:
-  ~6.2MB TCAM vs ~120MB SRAM on Tofino 1), so this is a separate accounting,
-  reported alongside ternary_matching_resource_usage rather than replacing
-  it.
+  """Planter RF_EB-style exact-match/SRAM entry-count accounting for the
+  match_type='exact' code/decision tables (build_p4_script.generate_codewords).
+  Exact match cannot express a leaf's wildcarded ('*') codeword bits, so each
+  wildcarded per-feature segment must be enumerated into concrete entries: a
+  segment where the feature is untested on the leaf's path is a thermometer/
+  unary code with exactly len(feature_intervals[feature]) reachable values
+  (not 2**width independent bit combinations), while a segment where the
+  feature IS on the path keeps a safe 2**(wildcards-in-segment) over-
+  approximation.
 
-  Final-review fix: a flat `2 ** codeword.count('*')` over-counts. Per
-  build_p4_script.generate_codewords (build_p4_script.py:338-411), each
-  feature gets its own fixed-width codeword segment (width =
-  len(feature_intervals[feature]) - 1), and that segment is a THERMOMETER/
-  UNARY code: valid segments are always of the shape 0^j 1^(width-j) for
-  some j (see generate_codewords's `code[idx] = '1'`/`'0'` assignment
-  logic) -- there are exactly `len(feature_intervals[feature])` reachable
-  values for that segment (one per position of the 0/1 boundary, j = 0..
-  width), NOT 2**width independent bit combinations. When a leaf's tree
-  path never tests a feature at all (`feature not in features_involved`),
-  generate_codewords fills that feature's *entire* segment with '*'
-  characters -- so treating every '*' in that segment as an independent
-  binary choice (2**width) overcounts whenever width > 1 (a feature with
-  more than 2 intervals): the correct multiplier for a fully-wildcarded
-  segment is `len(feature_intervals[feature])`, which only coincides with
-  2**width in the degenerate width == 1 case (2 intervals).
+  Deliberately caller-less: there is no production caller and none is
+  planned. Per reviews/todo.md:343-349 (2026-08-03), building a working
+  entry-generator for match_type='exact' was deferred, not pursued further
+  -- at this project's real feature scale the entry count this function
+  computes comes out to ~1.3x10**34, which no real switch's SRAM could hold.
+  The multiplier this function reports IS the finding: the analytical
+  accounting stays as documented output even though a generator for the
+  approach it accounts for does not exist and is not being built.
 
-  This function now walks each codeword in per-feature segments (mirroring
-  generate_codewords's own concatenation order: feature_intervals.keys()
-  iteration order, each segment consuming `len(feature_intervals[feature])
-  - 1` characters) and, for each segment that is ALL wildcards, multiplies
-  the leaf's entry-expansion factor by `len(feature_intervals[feature])`
-  instead of `2 ** width`. A segment that is NOT all wildcards (the
-  feature IS on the leaf's path, so generate_codewords started it as all
-  '*' and then narrowed some positions to '0'/'1') may still contain
-  leftover '*' characters in a shape whose exact reachable-value count
-  isn't a simple closed form here; for that narrower sub-case this keeps
-  `2 ** (wildcards within that one segment)` as a documented, safe
-  (never-underestimating) approximation.
-
-  Returns (sram_entries, sram_blocks). sram_blocks is deliberately None:
-  the SRAM per-block *entry capacity* for a plain exact-match key table is
-  not yet an established constant in this project. Direct investigation
-  this session (~/open-p4studio/pkgsrc/p4-compilers/p4c/backends/tofino/
-  bf-p4c/mau/memories.h:54, Memories::SRAM_DEPTH = 1024) confirms the same
-  1024-entries-per-SRAM base resource_estimate.cpp uses for attached
-  tables (counters/registers/action-data, resource_estimate.cpp:863,1323,
-  1558: `entries_per_sram = 1024 * per_word`) also holds for match-key
-  tables specifically (asm_output.cpp:2379: `tbl_entries = rams *
-  table_format.match_groups.size() * 1024`) -- but unlike TCAM's per-block
-  formula, `match_groups.size()` (how many independent match entries pack
-  into one 1024-row SRAM) is not a closed-form function of key width alone:
-  it comes out of table_format.cpp's LayoutOption/"ways" search (packing
-  entries against RAM row width, overhead/version bits, and hash-way
-  constraints jointly), not a documented formula. That search is out of
-  scope for this task's time-box; SRAM block-count conversion is left as a
-  flagged follow-up rather than an invented per_word/width assumption."""
+  Returns (sram_entries, sram_blocks). sram_blocks is None by design: the
+  per-block SRAM entry capacity for a plain exact-match key table is not a
+  documented closed-form constant in this project -- it depends on the
+  compiler's LayoutOption/"ways" search (packing entries against RAM row
+  width, overhead/version bits, and hash-way constraints jointly), which is
+  out of scope while the entry-generator itself remains deferred."""
   sram_entries = 0
   for tree in codewords:
     for codeword in codewords[tree]:

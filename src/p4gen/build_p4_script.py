@@ -1067,6 +1067,15 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   # Task 19: both are already-loaded strings (_TABLE_TEMPLATE /
   # _TABLE_CLASSIFICATION_EXACT_TEMPLATE, read once at import) -- no file I/O
   # happens here anymore.
+  #
+  # match_type='exact' selects _TABLE_CLASSIFICATION_EXACT_TEMPLATE below, but
+  # that path is DEFERRED, not abandoned: it does not yet produce a loadable
+  # program, since callers still have to enumerate wildcarded codewords into
+  # concrete exact-match entries themselves, and at this project's real
+  # feature scale that comes out to ~1.3x10**34 entries -- physically
+  # impossible for real SRAM. See reviews/todo.md:343-349 (2026-08-03) and
+  # .superpowers/plans/2026-08-03-p4-generator-fixes-and-config.md Task 2 (on
+  # hold pending that decision).
   classification_table_template = (
       _TABLE_TEMPLATE if match_type == 'ternary'
       else _TABLE_CLASSIFICATION_EXACT_TEMPLATE

@@ -15,6 +15,14 @@ class P4GenConfig:
     validate_on_hardware: bool = False
     hardware_output_dir: Optional[str] = None
     use_default_action_discount: bool = False
+    # match_type='exact' (Planter RF_EB-style exact-match/SRAM code/decision
+    # tables) is DEFERRED, not abandoned: it does not yet produce a loadable
+    # program, because enumerating this project's real feature intervals into
+    # concrete exact-match entries comes out to ~1.3x10**34 entries -- no real
+    # switch's SRAM could hold that. See reviews/todo.md:343-349 (2026-08-03
+    # decision to defer) and .superpowers/plans/2026-08-03-p4-generator-fixes-
+    # and-config.md Task 2 (guarded Cartesian-product enumeration, recorded
+    # there as on hold pending this decision).
     match_type: str = 'ternary'
 
     def __post_init__(self):
