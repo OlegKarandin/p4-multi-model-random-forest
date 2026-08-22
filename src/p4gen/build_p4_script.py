@@ -959,8 +959,9 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
                                   match_type='ternary',
                                   feature_names_app=None, feature_names_ddos=None,
                                   raw_feature_names=None,
-                                  feature_table_sizes=None,
-                                  classification_table_sizes=None,
+                                  *,
+                                  feature_table_sizes,
+                                  classification_table_sizes,
                                   config: "p4_gen_config.P4GenConfig" = None):
   """
   config: Task 4 -- additive convenience. When given, `config.match_type`
@@ -1042,13 +1043,12 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   every pre-Task-3 caller's behavior (which never had this distinction)
   byte-for-byte.
 
-  feature_table_sizes / classification_table_sizes: follow-up to the
-  2026-08-03 plan -- real, per-table `size = ` values, replacing the
-  SIZE_FEATURE_TABLE=200 / SIZE_CLASSIFICATION_TABLE=400 literals below,
-  which were fixed numbers disconnected from how many entries each table can
-  actually receive (so no P4-generation-time entry-count optimization --
-  generate_P4_code's use_default_action_discount, in particular -- could ever
-  show up as reduced compiled TCAM/SRAM reservation).
+  feature_table_sizes / classification_table_sizes: real, per-table `size = `
+  values -- required (keyword-only, no default). A fixed literal size,
+  disconnected from how many entries each table can actually receive, is not
+  free on real hardware (reviews/p4_tofino_reference.md Sec 4.4), so every
+  caller must supply the real per-table counts; a caller that omits either
+  gets a TypeError at the call instead of a silently oversized table.
 
   feature_table_sizes maps RESOLVED feature name -> entry count (one entry
   per interval; see get_table_entries' range-entry section).
@@ -1056,22 +1056,10 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   way generate_P4_code's / get_table_entries' `codewords` dict is:
   0..num_trees_app-1 for the app trees,
   num_trees_app..num_trees_app+num_trees_ddos-1 for the ddos trees.
-
-  Both are optional and both fall back per-key to the old literal, so any
-  direct caller that doesn't pass them gets byte-identical output --
-  generate_P4_code (which can always derive real counts) is the caller that
-  actually supplies them.
   """
 
   if config is not None:
     match_type = config.match_type
-
-  # Legacy fallbacks only: used per table whenever the caller supplied no real
-  # entry count for it (see feature_table_sizes / classification_table_sizes).
-  SIZE_FEATURE_TABLE = 200
-  SIZE_CLASSIFICATION_TABLE = 400
-  feature_table_sizes = feature_table_sizes or {}
-  classification_table_sizes = classification_table_sizes or {}
 
   if match_type not in ('ternary', 'exact'):
     raise ValueError("match_type must be 'ternary' or 'exact', got {!r}".format(match_type))
@@ -1124,7 +1112,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
         table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_"+task+"_"+str(i))
         table_template = table_template.replace("<KEYS>", classification_keys_by_task[task])
         table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_"+task+"_"+str(i)+";")
-        size = classification_table_sizes.get(tree_id_offset_by_task[task] + i, SIZE_CLASSIFICATION_TABLE)
+        size = classification_table_sizes[tree_id_offset_by_task[task] + i]
         table_template = table_template.replace("<SIZE>", str(size))
         table_templates += table_template
         apply_templates_tmp += "\t\t\tget_classification_tree_"+task+"_"+str(i)+".apply();\n"
@@ -1149,7 +1137,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
     table_template = table_template.replace(
         "<KEYS>", "            meta."+raw_name.replace(" ","_").lower()+"_val: range;")
     table_template = table_template.replace("<ACTIONS>", str("set_code_"+feature)+";")
-    size = feature_table_sizes.get(feature, SIZE_FEATURE_TABLE)
+    size = feature_table_sizes[feature]
     # table.p4 (the range path's now-retired template file) had 3 trailing
     # spaces on its closing "}" line that table_classification.p4 (now
     # _TABLE_TEMPLATE, shared by both paths) does not -- see the
@@ -1385,7 +1373,6 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
     if n_trees > 0:
       for i in range(n_trees):
         metadata_code += "\tbit<"+str(bits)+"> class_tree_"+task+"_"+str(i)+";\n"
-        metadata_code += "\tbit<1> class_tree_"+task+"_"+str(i)+"_is_set;\n"
       # generate_voting_code (below) writes to meta.classification_<task>; the
       # TNA template no longer declares this field itself (it doesn't know
       # bit_per_classes_<task> ahead of time), so it must be declared here.

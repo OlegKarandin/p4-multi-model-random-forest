@@ -191,6 +191,17 @@ FEATURE_INTERVALS_2F = {
 }
 
 
+def _uniform_sizes(feature_names, num_trees_app, num_trees_ddos, size=1):
+  """feature_table_sizes / classification_table_sizes pair for direct
+  generate_P4_tables_and_apply callers that don't care about the actual size
+  value -- every declared table (one per feature, one per tree id 0..
+  num_trees_app+num_trees_ddos-1) gets `size`."""
+  return (
+      {feature: size for feature in feature_names},
+      {tree_id: size for tree_id in range(num_trees_app + num_trees_ddos)},
+  )
+
+
 def test_generate_P4_actions_zero_app_trees_does_not_raise_and_omits_app_action():
   # num_trees_app == 0 used to raise ValueError (math domain error) from
   # math.log2(0). Confirm it no longer raises and emits no app action text.
@@ -800,9 +811,11 @@ def test_generate_P4_tables_and_apply_does_not_reopen_table_templates(monkeypatc
     raise AssertionError("generate_P4_tables_and_apply must not open() any file")
   monkeypatch.setattr("builtins.open", _boom)
 
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 1, 1)
   table_templates, _ = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=1,
       match_type='ternary',
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
   assert "meta.flow_iat_max_val: range;" in table_templates
   assert "meta.code_flow_iat_max : ternary;" in table_templates
@@ -810,13 +823,16 @@ def test_generate_P4_tables_and_apply_does_not_reopen_table_templates(monkeypatc
   table_templates_exact, _ = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=1,
       match_type='exact',
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
   assert "meta.code_flow_iat_max : exact;" in table_templates_exact
 
 
 def test_generate_P4_tables_and_apply_classification_table_uses_multikey_template():
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 0, 1)
   table_templates, apply_templates = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=0, num_trees_ddos=1,
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
 
   assert "get_classification_tree_ddos_0" in table_templates
@@ -829,8 +845,10 @@ def test_generate_P4_tables_and_apply_classification_table_uses_multikey_templat
 
 
 def test_generate_P4_tables_and_apply_feature_tables_key_on_val_suffix():
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 0, 0)
   table_templates, apply_templates = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=0, num_trees_ddos=0,
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
 
   assert "meta.flow_iat_max_val: range;" in table_templates
@@ -841,8 +859,10 @@ def test_generate_P4_tables_and_apply_feature_tables_key_on_val_suffix():
 
 
 def test_generate_P4_tables_and_apply_zero_app_trees_produces_no_app_classification_table():
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 0, 1)
   table_templates, apply_templates = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=0, num_trees_ddos=1,
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
   assert "get_classification_tree_app" not in table_templates
   assert "classify_flow_codeword_app" not in table_templates
@@ -850,8 +870,10 @@ def test_generate_P4_tables_and_apply_zero_app_trees_produces_no_app_classificat
 
 
 def test_generate_P4_tables_and_apply_zero_ddos_trees_produces_no_ddos_classification_table():
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 1, 0)
   table_templates, apply_templates = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=0,
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
   assert "get_classification_tree_ddos" not in table_templates
   assert "classify_flow_codeword_ddos" not in table_templates
@@ -862,8 +884,10 @@ def test_generate_P4_tables_and_apply_each_tree_table_references_its_own_action(
   # Task M2-B2: each per-tree table's <ACTIONS> substitution must reference
   # THAT tree's dedicated action, not one shared action name copy-pasted
   # into every table.
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 3, 2)
   table_templates, apply_templates = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=3, num_trees_ddos=2,
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
 
   for i in range(3):
@@ -890,8 +914,10 @@ def test_generate_P4_tables_and_apply_never_declares_a_default_action():
   # compile-time-constant default action; its real default class is installed
   # by the control plane at deploy time, which is what get_table_entries'
   # is_default_action records + p4/deploy_table_entries.py now do here.
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 2, 1)
   table_templates, _ = generate_P4_tables_and_apply(
-      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=2, num_trees_ddos=1)
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=2, num_trees_ddos=1,
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes)
   assert "default_action" not in table_templates
   # The marker line itself is gone from both classification templates, so it
   # can never leak into generated P4 as a literal string either.
@@ -901,9 +927,11 @@ def test_generate_P4_tables_and_apply_never_declares_a_default_action():
 def test_generate_P4_tables_and_apply_exact_match_tables_declare_no_default_action_either():
   # The same removal must hold for resources/table_classification_exact.p4,
   # the other classification template.
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 1, 1)
   table_templates, _ = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=1,
-      match_type='exact')
+      match_type='exact',
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes)
   assert "default_action" not in table_templates
   assert "<DEFAULT_ACTION>" not in table_templates
 
@@ -913,12 +941,17 @@ def test_generate_P4_tables_and_apply_rejects_removed_discount_parameters():
   # GONE from this function's signature, not merely ignored -- a caller still
   # passing either must fail loudly rather than silently getting a table with
   # no default action when it believed it asked for one.
+  feature_sizes, class_sizes = _uniform_sizes(["flow_iat_max"], 1, 0)
   with pytest.raises(TypeError):
     generate_P4_tables_and_apply(
-        ["flow_iat_max"], 1, 0, codewords={0: {"101*": 0}})
+        ["flow_iat_max"], 1, 0,
+        feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
+        codewords={0: {"101*": 0}})
   with pytest.raises(TypeError):
     generate_P4_tables_and_apply(
-        ["flow_iat_max"], 1, 0, use_default_action_discount=True)
+        ["flow_iat_max"], 1, 0,
+        feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
+        use_default_action_discount=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1206,17 +1239,21 @@ def test_generate_P4_code_default_path_unchanged():
 # feature tables, only code/decision tables move to exact).
 
 def test_generate_P4_tables_and_apply_default_match_type_is_ternary():
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 0, 1)
   table_templates, _ = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=0, num_trees_ddos=1,
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
   assert "meta.code_flow_iat_max : ternary;" in table_templates
   assert ": exact;" not in table_templates
 
 
 def test_generate_P4_tables_and_apply_match_type_exact_uses_exact_keys():
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 0, 1)
   table_templates, _ = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=0, num_trees_ddos=1,
       match_type='exact',
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
   assert "meta.code_flow_iat_max : exact;" in table_templates
   assert "meta.code_fwd_packet_length_max : exact;" in table_templates
@@ -1227,19 +1264,23 @@ def test_generate_P4_tables_and_apply_match_type_exact_uses_exact_keys():
 def test_generate_P4_tables_and_apply_match_type_exact_leaves_feature_tables_range():
   # Feature-range tables are unaffected by match_type either way -- only
   # the classification tables' key kind changes.
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 0, 0)
   table_templates, _ = generate_P4_tables_and_apply(
       list(FEATURE_INTERVALS_2F.keys()), num_trees_app=0, num_trees_ddos=0,
       match_type='exact',
+      feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
   )
   assert "meta.flow_iat_max_val: range;" in table_templates
   assert "meta.fwd_packet_length_max_val: range;" in table_templates
 
 
 def test_generate_P4_tables_and_apply_invalid_match_type_raises():
+  feature_sizes, class_sizes = _uniform_sizes(FEATURE_INTERVALS_2F.keys(), 0, 1)
   with pytest.raises(ValueError):
     generate_P4_tables_and_apply(
         list(FEATURE_INTERVALS_2F.keys()), num_trees_app=0, num_trees_ddos=1,
         match_type='bogus',
+        feature_table_sizes=feature_sizes, classification_table_sizes=class_sizes,
     )
 
 
@@ -1599,8 +1640,12 @@ def test_generate_P4_code_discount_composes_with_disjoint_namespacing(tmp_path):
 # flips the winner on every tied key tuple -- (1,0), (2,0), (2,1) -- from
 # {1, 2, 2} to {0, 0, 1}. Confirmed by direct diff against the previous
 # baseline that this tie-break flip is the ONLY delta.
+# Re-recorded a FIFTH time by dropping the dead `bit<1> class_tree_<task>_
+# <i>_is_set;` metadata fields (D7): nothing ever wrote or read them.
+# Confirmed by direct diff against the previous baseline that removing
+# those lines is the ONLY delta.
 _DEFAULT_CALL_OUTPUT_SHA256 = (
-    "53eb7a1ef1b615d8bfca0f0be15bbd9947a8a83177d0000f3803e45568b98a31")
+    "020ec3a0ca64803f60ea87e1c93156bdecc58df5004a3732ef823092d453dc6e")
 
 # The sha256 the same call produced BEFORE the table-sizing follow-up (when
 # every feature table declared `size = 200;` and every classification table
@@ -1610,8 +1655,12 @@ _DEFAULT_CALL_OUTPUT_SHA256 = (
 # _DEFAULT_CALL_OUTPUT_SHA256 above: this baseline is also downstream of
 # generate_voting_code's tie-break, so it must reflect vote_winner's
 # smallest-class-index rule instead of the old statistics.mode() rule.
+# Re-recorded again by D7 for the same reason as _DEFAULT_CALL_OUTPUT_SHA256
+# above: this baseline is also downstream of the dead `_is_set` metadata
+# fields' removal, since _reconstruct_pre_table_sizing_text only undoes the
+# table-sizing and PHV-pinning deltas, not this one.
 _PRE_TABLE_SIZING_OUTPUT_SHA256 = (
-    "0a4b684a5cf55e82630e9dae83b512c67df691f825a46503c139c7c815a134b8")
+    "9f2a675eb2ccb528561d107305e486fb98e10f23f9f41fe758a0af7689549efd")
 
 
 def _sha256_of_default_generate_P4_code_call(tmp_path, filename, **extra):
@@ -1707,17 +1756,10 @@ def test_generate_P4_code_feature_table_sizes_are_per_feature(tmp_path):
   assert sorted(by_feature.values()) == [2, 5]
 
 
-def test_generate_P4_tables_and_apply_without_feature_table_sizes_keeps_literal():
-  # Regression guard for DIRECT callers that never pass the new optional
-  # dict: their output must stay byte-identical, i.e. still `size = 200;`.
-  table_templates, _ = generate_P4_tables_and_apply(
-      ["flow_iat_max"], 0, 1)
-  assert _table_sizes(table_templates)["table_0_flow_iat_max"] == 200
-
-
 def test_generate_P4_tables_and_apply_feature_table_sizes_are_used_when_given():
   table_templates, _ = generate_P4_tables_and_apply(
-      ["flow_iat_max"], 0, 1, feature_table_sizes={"flow_iat_max": 7})
+      ["flow_iat_max"], 0, 1, feature_table_sizes={"flow_iat_max": 7},
+      classification_table_sizes={0: 400})
   assert _table_sizes(table_templates)["table_0_flow_iat_max"] == 7
 
 
@@ -1848,21 +1890,10 @@ def test_generate_P4_code_classification_size_ddos_uses_offset_tree_ids(tmp_path
     assert sizes["get_classification_tree_app_" + str(i)] == len(codewords_app[i])
 
 
-def test_generate_P4_tables_and_apply_without_classification_sizes_keeps_literal():
-  # The other half of the direct-caller regression guard: no new dicts
-  # passed -> both old literals, exactly as before this follow-up.
-  table_templates, _ = generate_P4_tables_and_apply(
-      ["flow_iat_max"], 1, 1)
-  assert _table_sizes(table_templates) == {
-      "get_classification_tree_app_0": 400,
-      "get_classification_tree_ddos_0": 400,
-      "table_0_flow_iat_max": 200,
-  }
-
-
 def test_generate_P4_tables_and_apply_classification_sizes_are_used_when_given():
   table_templates, _ = generate_P4_tables_and_apply(
       ["flow_iat_max"], 2, 1,
+      feature_table_sizes={"flow_iat_max": 200},
       classification_table_sizes={0: 11, 1: 12, 2: 13})
   # tree_id 2 is the DDoS tree: keyed at num_trees_app + i, the same
   # convention codewords.get(...) already uses.
