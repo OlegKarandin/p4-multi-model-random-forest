@@ -299,15 +299,32 @@ def test_generate_P4_actions_num_trees_app_1_now_named_with_tree_suffix():
   assert "bit<1> tree" not in action_templates
 
 
-def test_generate_P4_actions_missing_action_template_raises_oserror(monkeypatch):
-  # If resources/action.p4 is missing or unreadable, the error must propagate,
-  # not be silently caught. Monkeypatch to a nonexistent path and verify OSError.
-  monkeypatch.setattr(bps, "PATH_ACTION_TEMPLATE_P4", "/nonexistent/path/to/action.p4")
-  with pytest.raises(OSError):
-    generate_P4_actions(
-        FEATURE_INTERVALS_2F, num_trees_app=1, num_trees_ddos=0,
-        bit_per_classes_app=1, bit_per_classes_ddos=0,
-    )
+def test_generate_P4_actions_does_not_reopen_action_template(monkeypatch):
+  # Task 19: action.p4 is read once at import time (bps._ACTION_TEMPLATE),
+  # not per call/per feature -- generate_P4_actions must not touch the
+  # filesystem at all anymore (a missing/unreadable template now fails at
+  # import time instead, matching Task 2's F9 fix's intent one level
+  # earlier). Patch builtins.open to blow up if called and confirm the
+  # function still succeeds using the already-loaded template.
+  def _boom(*args, **kwargs):
+    raise AssertionError("generate_P4_actions must not open() any file")
+  monkeypatch.setattr("builtins.open", _boom)
+
+  action_templates = generate_P4_actions(
+      FEATURE_INTERVALS_2F, num_trees_app=1, num_trees_ddos=0,
+      bit_per_classes_app=1, bit_per_classes_ddos=0,
+  )
+  assert "action classify_flow_codeword_app_0(bit<1> class){" in action_templates
+
+
+def test_action_and_table_templates_are_loaded_once_at_import():
+  # Sanity check on the Task 19 hoist itself: every template constant is a
+  # non-empty string already sitting in memory (read once, at module
+  # import), not a path or a lazy callable.
+  for name in ("_ACTION_TEMPLATE", "_TABLE_TEMPLATE",
+               "_TABLE_CLASSIFICATION_EXACT_TEMPLATE"):
+    value = getattr(bps, name)
+    assert isinstance(value, str) and value, "{} must be a non-empty string".format(name)
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +743,32 @@ def test_range_table_key_field_name_matches_generated_p4_exactly(tmp_path):
 # ---------------------------------------------------------------------------
 # generate_P4_tables_and_apply
 # ---------------------------------------------------------------------------
+
+def test_generate_P4_tables_and_apply_does_not_reopen_table_templates(monkeypatch):
+  # Task 19: table.p4 / table_classification.p4 / table_classification_exact.p4
+  # are all read once at import time (bps._TABLE_TEMPLATE /
+  # bps._TABLE_CLASSIFICATION_EXACT_TEMPLATE), not once per tree and once per
+  # feature -- generate_P4_tables_and_apply must not touch the filesystem at
+  # all anymore, for either the range-table path or the classification-table
+  # path (ternary or exact). Patch builtins.open to blow up if called and
+  # confirm the function still succeeds using the already-loaded templates.
+  def _boom(*args, **kwargs):
+    raise AssertionError("generate_P4_tables_and_apply must not open() any file")
+  monkeypatch.setattr("builtins.open", _boom)
+
+  table_templates, _ = generate_P4_tables_and_apply(
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=1,
+      match_type='ternary',
+  )
+  assert "meta.flow_iat_max_val: range;" in table_templates
+  assert "meta.code_flow_iat_max : ternary;" in table_templates
+
+  table_templates_exact, _ = generate_P4_tables_and_apply(
+      list(FEATURE_INTERVALS_2F.keys()), num_trees_app=1, num_trees_ddos=1,
+      match_type='exact',
+  )
+  assert "meta.code_flow_iat_max : exact;" in table_templates_exact
+
 
 def test_generate_P4_tables_and_apply_classification_table_uses_multikey_template():
   table_templates, apply_templates = generate_P4_tables_and_apply(

@@ -1,6 +1,7 @@
 import os
 import math
 import re
+from pathlib import Path
 import numpy as np
 from sklearn.tree import export_text
 from sklearn.tree import _tree as _sklearn_tree
@@ -41,6 +42,38 @@ PATH_TABLE_CLASSIFICATION_TEMPLATE_P4 = PATH + 'table_classification.p4'
 # are meant to express.
 PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4 = PATH + 'table_classification_exact.p4'
 PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
+
+# Task 19 (R6): read every P4 table/action template exactly once, here, at
+# module import, instead of re-opening the same file once per tree and once
+# per feature inside generate_P4_tables_and_apply (and, before this task,
+# once per generate_P4_actions call for action.p4). A missing/unreadable
+# template now fails at import time rather than as a per-call surprise --
+# the intended behaviour, matching Task 2's F9 fix for the action template.
+#
+# table.p4 and table_classification.p4 (see the comment above
+# PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4) differ only in their <KEYS>
+# line: a single `meta.<FEATURE_NAME>: <MATCH_TYPE>;` line for the
+# range-matching feature tables vs one `meta.code_<feature> : <match_type>;`
+# line per classification key, already built in Python (see
+# _classification_keys) -- plus one purely cosmetic trailing-whitespace
+# difference on the final closing "}" line (table.p4 has 3 trailing spaces
+# there that table_classification.p4 does not; confirmed with a direct byte
+# diff of the two files during Task 19). generate_P4_tables_and_apply now
+# reads a SINGLE shared template, _TABLE_TEMPLATE (table_classification.p4's
+# content), for both the range-matching feature tables and the ternary
+# classification tables, building each one's own one-line/multi-line <KEYS>
+# text in Python; the range-table path additionally re-adds table.p4's 3
+# trailing spaces itself (see the comment at its call site) so its emitted
+# bytes stay byte-for-byte identical to every caller before this task.
+_TABLE_TEMPLATE = Path(PATH_TABLE_CLASSIFICATION_TEMPLATE_P4).read_text()
+_ACTION_TEMPLATE = Path(PATH_ACTION_TEMPLATE_P4).read_text()
+# table_classification_exact.p4 is byte-identical to table_classification.p4
+# (see the comment above PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4) --
+# still read from, and kept as, its own file/constant (not folded into
+# _TABLE_TEMPLATE) purely so match_type='exact' keeps an explicit template
+# file of its own to select and diverge from later, per the decision to
+# preserve resources/table_classification_exact.p4 as a file.
+_TABLE_CLASSIFICATION_EXACT_TEMPLATE = Path(PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4).read_text()
 
 
 _IDENT_RE = re.compile(r'[^0-9a-z]+')
@@ -912,11 +945,8 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
 
       action_templates += classification_action_template
 
-  with open(PATH_ACTION_TEMPLATE_P4, 'r') as action_template_file:
-    action_template_source = action_template_file.read()
-
   for feature in feature_names:
-    action_template = action_template_source
+    action_template = _ACTION_TEMPLATE
     action_template = action_template.replace("<ACTION_NAME>", "set_code_" + feature)
     action_template = action_template.replace("<ACTION_CODE_LENGTH>", str(codeword_bits_per_feature[feature]))
     action_template = action_template.replace("<FEATURE_NAME>", feature)
@@ -1046,9 +1076,12 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   if match_type not in ('ternary', 'exact'):
     raise ValueError("match_type must be 'ternary' or 'exact', got {!r}".format(match_type))
 
-  classification_table_template_path = (
-      PATH_TABLE_CLASSIFICATION_TEMPLATE_P4 if match_type == 'ternary'
-      else PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4
+  # Task 19: both are already-loaded strings (_TABLE_TEMPLATE /
+  # _TABLE_CLASSIFICATION_EXACT_TEMPLATE, read once at import) -- no file I/O
+  # happens here anymore.
+  classification_table_template = (
+      _TABLE_TEMPLATE if match_type == 'ternary'
+      else _TABLE_CLASSIFICATION_EXACT_TEMPLATE
   )
 
   table_templates = ""
@@ -1087,13 +1120,12 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   for task, n_trees in (("app", num_trees_app), ("ddos", num_trees_ddos)):
     if n_trees > 0:
       for i in range(n_trees):
-        with open(classification_table_template_path, 'r') as table_template_file:
-          table_template = table_template_file.read()
-          table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_"+task+"_"+str(i))
-          table_template = table_template.replace("<KEYS>", classification_keys_by_task[task])
-          table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_"+task+"_"+str(i)+";")
-          size = classification_table_sizes.get(tree_id_offset_by_task[task] + i, SIZE_CLASSIFICATION_TABLE)
-          table_template = table_template.replace("<SIZE>", str(size))
+        table_template = classification_table_template
+        table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_"+task+"_"+str(i))
+        table_template = table_template.replace("<KEYS>", classification_keys_by_task[task])
+        table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_"+task+"_"+str(i)+";")
+        size = classification_table_sizes.get(tree_id_offset_by_task[task] + i, SIZE_CLASSIFICATION_TABLE)
+        table_template = table_template.replace("<SIZE>", str(size))
         table_templates += table_template
         apply_templates_tmp += "\t\t\tget_classification_tree_"+task+"_"+str(i)+".apply();\n"
       if task == "app":
@@ -1107,16 +1139,28 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
     # itself (raw_feature_names omitted or missing this key), reproducing
     # every pre-Task-3 caller's behavior byte-for-byte.
     raw_name = raw_feature_names.get(feature, feature)
-    with open(PATH_TABLE_TEMPLATE_P4, 'r') as table_template_file:
-      table_template = table_template_file.read()
-      table_template = table_template.replace("<TABLE_NAME>","table_"+str(feature_idx)+"_"+feature)
-      table_template = table_template.replace("<FEATURE_NAME>", raw_name.replace(" ","_").lower()+"_val")
-      table_template = table_template.replace("<MATCH_TYPE>", "range")
-      table_template = table_template.replace("<ACTIONS>", str("set_code_"+feature)+";")
-      size = feature_table_sizes.get(feature, SIZE_FEATURE_TABLE)
-      table_template = table_template.replace("<SIZE>", str(size))
-      table_templates += table_template
-      apply_templates += "\t\t\ttable_"+str(feature_idx)+"_"+feature+".apply();\n"
+    # Task 19: the range path now shares _TABLE_TEMPLATE with the
+    # classification tables above, so it builds its own single-line <KEYS>
+    # text in Python -- exactly reproducing the old table.p4 template's
+    # fixed "meta.<FEATURE_NAME>: <MATCH_TYPE>;" line with <FEATURE_NAME> and
+    # <MATCH_TYPE> substituted the same way the pre-Task-19 code did.
+    table_template = _TABLE_TEMPLATE
+    table_template = table_template.replace("<TABLE_NAME>","table_"+str(feature_idx)+"_"+feature)
+    table_template = table_template.replace(
+        "<KEYS>", "            meta."+raw_name.replace(" ","_").lower()+"_val: range;")
+    table_template = table_template.replace("<ACTIONS>", str("set_code_"+feature)+";")
+    size = feature_table_sizes.get(feature, SIZE_FEATURE_TABLE)
+    # table.p4 (the range path's now-retired template file) had 3 trailing
+    # spaces on its closing "}" line that table_classification.p4 (now
+    # _TABLE_TEMPLATE, shared by both paths) does not -- see the
+    # _TABLE_TEMPLATE module comment. Restore them via this anchored replace
+    # (unique: <SIZE> appears exactly once) before substituting <SIZE>
+    # itself, so the range tables' emitted bytes are unchanged from every
+    # caller before this task.
+    table_template = table_template.replace("<SIZE>;\n    }", "<SIZE>;\n    }   ")
+    table_template = table_template.replace("<SIZE>", str(size))
+    table_templates += table_template
+    apply_templates += "\t\t\ttable_"+str(feature_idx)+"_"+feature+".apply();\n"
 
     feature_idx += 1
 
