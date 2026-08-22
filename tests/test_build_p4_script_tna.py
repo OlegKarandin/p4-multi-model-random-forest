@@ -30,11 +30,43 @@ from src.p4gen.build_p4_script import (
     get_table_entries,
     get_ternary_value_and_mask,
     most_common_class_and_dropped_codewords,
+    thermometer_code,
     OUTPUT_PATH,
 )
 
 
 INFINITE = bps.INFINITE
+
+
+# ---------------------------------------------------------------------------
+# Task 18: thermometer_code helper
+# ---------------------------------------------------------------------------
+
+def test_thermometer_code_three_intervals_matches_expected_output():
+  """Test thermometer_code against the expected output for a three-interval
+  feature (the standard case where code length = n_intervals - 1 = 2)."""
+  n_intervals = 3
+  # For n_intervals=3, the code width is 2 bits: "00", "01", "11"
+  # (counting from the LOWEST interval as interval_idx=0)
+  assert thermometer_code(n_intervals, 0) == "11"  # lowest interval
+  assert thermometer_code(n_intervals, 1) == "01"  # middle interval
+  assert thermometer_code(n_intervals, 2) == "00"  # highest interval
+
+
+def test_thermometer_code_two_intervals():
+  """Test thermometer_code for a two-interval feature (code width = 1 bit)."""
+  n_intervals = 2
+  assert thermometer_code(n_intervals, 0) == "1"  # lowest
+  assert thermometer_code(n_intervals, 1) == "0"  # highest
+
+
+def test_thermometer_code_four_intervals():
+  """Test thermometer_code for a four-interval feature (code width = 3 bits)."""
+  n_intervals = 4
+  assert thermometer_code(n_intervals, 0) == "111"  # lowest
+  assert thermometer_code(n_intervals, 1) == "011"  # 2nd from lowest
+  assert thermometer_code(n_intervals, 2) == "001"  # 2nd from highest
+  assert thermometer_code(n_intervals, 3) == "000"  # highest
 
 
 class _StubTree:

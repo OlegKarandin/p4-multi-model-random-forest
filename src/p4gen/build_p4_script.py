@@ -283,6 +283,13 @@ def feature_intervals_from_nodes(tree_nodes):
   return get_feature_intervals_from_thresholds(get_feature_thresholds(tree_nodes))
 
 
+def thermometer_code(n_intervals, interval_idx):
+  """Codeword segment for interval_idx, counting from the LOWEST interval:
+  '0' * idx + '1' * (n_intervals - 1 - idx). Matches the 0^j 1^(width-j) shape
+  exact_match_resource_usage documents."""
+  return '0' * interval_idx + '1' * (n_intervals - 1 - interval_idx)
+
+
 def _reject_colliding_feature_names(selected_features):
   canonical = {}
   # Dedupe exact-string repeats first: the same raw name appearing twice
@@ -338,15 +345,12 @@ def feature_intervals_to_csv(feature_intervals, path_to_output=INTERMEDIATE, out
     rows.append([feature_name])
 
     for idx,interval in enumerate(intervals[::-1]):
-      zeros = len(intervals)-1-idx
-      ones = len(intervals)-1-zeros
       row = []
       row.append(interval)
 
-      for i in range(zeros):
-        row.append('0')
-      for i in range(ones):
-        row.append('1')
+      code = thermometer_code(len(intervals), len(intervals) - 1 - idx)
+      for bit in code:
+        row.append(bit)
       rows.append(row)
 
     rows.append([])
@@ -697,13 +701,7 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
       table_entry["table_name"] = "table_"+str(feature_idx)+"_"+feature_name.lower()
       table_entry["action"] = "set_code_"+feature_name.lower()
 
-      zeros = len(intervals)-1-idx
-      ones = len(intervals)-1-zeros
-      code = []
-      for i in range(zeros):
-        code.append('0')
-      for i in range(ones):
-        code.append('1')
+      code = thermometer_code(len(intervals), len(intervals) - 1 - idx)
 
       minimum = str(interval[0])
       maximum = str(interval[1])
@@ -720,7 +718,7 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
       }
       # `code` is the literal parameter name of every set_code_* action
       # (resources/action.p4).
-      table_entry["action_params"] = {"code": str(int("".join(code),2))}
+      table_entry["action_params"] = {"code": str(int(code, 2))}
 
       table_entries.append(table_entry)
 
