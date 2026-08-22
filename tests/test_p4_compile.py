@@ -430,7 +430,7 @@ def test_compile_p4_against_real_toolchain(tmp_path):
     clf_ddos = bps.dt_thresholds_float_to_int(
         RandomForestClassifier(n_estimators=1, max_depth=2, random_state=0).fit(X, y_ddos))
 
-    feature_names = ["f0", "f1"]
+    feature_names = ["flow_iat_max", "fwd_iat_max"]
     trees_app = bps.get_tree_textual_representation(clf_app, feature_names)
     trees_ddos = bps.get_tree_textual_representation(clf_ddos, feature_names)
     tree_nodes = {i: bps.get_nodes(t) for i, t in trees_app.items()}
