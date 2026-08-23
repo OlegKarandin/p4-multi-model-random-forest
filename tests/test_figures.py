@@ -930,10 +930,17 @@ def test_deliverable_8_caption_states_the_pooled_entries_and_blocks_savings():
     assert '7.5%' in deliverable.caption
 
 
-def test_deliverable_8_marks_the_512_row_block_boundary():
+def test_deliverable_8_marks_the_real_block_boundary_constant():
+    """The block size quoted in the caption/markdown must be the ACTUAL
+    `TERNARY_MATCHING_ENTRIES_PER_BLOCK` (imported from build_p4_script,
+    not a hardcoded duplicate in figures.py) -- asserted against the real
+    constant, not the literal 512, so this test would catch drift if the
+    constant ever changed."""
+    from src.p4gen.build_p4_script import TERNARY_MATCHING_ENTRIES_PER_BLOCK
     df = _spread_campaign()
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
-    assert '512' in deliverable.caption or '512' in (deliverable.markdown_body or '')
+    marker = str(TERNARY_MATCHING_ENTRIES_PER_BLOCK)
+    assert marker in deliverable.caption or marker in (deliverable.markdown_body or '')
 
 
 def test_deliverable_8_facets_the_markdown_summary_by_odd_k_only():

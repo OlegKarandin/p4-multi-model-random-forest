@@ -1238,15 +1238,6 @@ def appendix_7_elimination_order(df, output_dir=DEFAULT_FIGURE_DIR):
 # Deliverable 8 -- entries vs blocks (T12, reviews/todo.md:487-499)
 # ---------------------------------------------------------------------------
 
-# The physical TCAM block boundary this deliverable exists to expose --
-# `src/p4gen/build_p4_script.py:21`'s TERNARY_MATCHING_ENTRIES_PER_BLOCK.
-# Not imported directly: build_p4_script pulls in sklearn at module level
-# (the same reason appendix_6 imports scripts.capacity_ceiling lazily
-# instead of at module scope), which this reporting module otherwise never
-# needs. The value is stable -- it is a Tofino hardware constant, not a
-# tunable -- so duplicating it as a literal here is safe.
-_TCAM_ROWS_PER_BLOCK = 512
-
 _ENTRIES_VS_BLOCKS_SUMMARY_COLUMNS = (
     'arm_slug', 'k', 'n_pairs', 'mean_d_range_entries',
     'mean_d_ternary_entries', 'mean_d_blocks', 'mean_entries_saving',
@@ -1270,7 +1261,8 @@ def entries_vs_blocks_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG,
     `(baseline - treatment) / baseline` on, respectively, the SUM of
     range_entries + ternary_entries (a smooth, continuous physical-row
     count) and on `blocks` (an integer count, quantized in steps of
-    `_TCAM_ROWS_PER_BLOCK` physical rows per block). `rounding_loss` is
+    `build_p4_script.TERNARY_MATCHING_ENTRIES_PER_BLOCK` physical rows per
+    block). `rounding_loss` is
     `entries_saving - blocks_saving`: positive means entries saved
     proportionally MORE than blocks did -- quantization ate part of the
     saving. A baseline of 0 in either denominator yields NaN, never a
@@ -1339,8 +1331,9 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     Pairs two saving ratios computed from the SAME cells: entries-saving (a
     smooth, continuous physical-row count) against blocks-saving (the same
     quantity after the campaign CSV's `blocks` column has already rounded it
-    up in steps of `_TCAM_ROWS_PER_BLOCK` rows per block). The gap between
-    them, `rounding_loss`, is descriptive only (D3) -- T12's question is
+    up in steps of `build_p4_script.TERNARY_MATCHING_ENTRIES_PER_BLOCK`
+    rows per block). The gap between them, `rounding_loss`, is descriptive
+    only (D3) -- T12's question is
     mechanistic ("where does the gap happen"), not "is there a gap", and
     entries and blocks are too collinear for a second significance test to
     spend Table 4's multiplicity budget on.
@@ -1356,6 +1349,16 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     in `.data` and still pooled into the caption's headline sentence, it
     simply gets no row in the printed summary.
     """
+    # Imported here, not at module scope: build_p4_script pulls in sklearn
+    # at import (`from sklearn.tree import export_text`), which this
+    # reporting module otherwise never needs -- the same reason
+    # appendix_6_capacity_ceiling (`:1090`, this file) imports
+    # scripts.capacity_ceiling lazily rather than at module scope. This is
+    # the single source of truth for the TCAM block boundary; no literal
+    # 512 is duplicated here.
+    from src.p4gen.build_p4_script import (
+        TERNARY_MATCHING_ENTRIES_PER_BLOCK as tcam_rows_per_block)
+
     long = entries_vs_blocks_frame(df, baseline=baseline)
 
     shown_k, dropped_k = _facet_k_values(
@@ -1411,7 +1414,7 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         'question, not a "does it differ" one, and entries and blocks are '
         'too collinear for a second test to add information Table 4\'s '
         'blocks test does not already carry.'.format(
-            baseline=baseline, block_size=_TCAM_ROWS_PER_BLOCK,
+            baseline=baseline, block_size=tcam_rows_per_block,
             entries_pct=overall_entries_saving,
             blocks_pct=overall_blocks_saving,
             gap_pct=overall_rounding_loss))
@@ -1426,7 +1429,7 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         'before summing, and the ternary side further multiplies each '
         'tree by a codeword-width factor -- so blocks can move for '
         'reasons entries alone does not capture, on top of the '
-        'block-size rounding itself.'.format(_TCAM_ROWS_PER_BLOCK),
+        'block-size rounding itself.'.format(tcam_rows_per_block),
         '',
         (_markdown_table(_project_columns(
             shown_summary, _ENTRIES_VS_BLOCKS_SUMMARY_COLUMNS))
