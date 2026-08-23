@@ -15,12 +15,20 @@ from src.p4gen import p4_gen_config
 from src.p4gen import switch_semantics
 
 INFINITE = (2**16)-1
-MAX_CODEWORD_LENGTH = 512
 TCAM_BLOCKS_PER_STAGE = 24
 TCAM_BLOCK_KEY_LENGTH = 44
 TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
 TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
+# MAX_CODEWORD_LENGTH is a CONSEQUENCE of TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE, not an
+# independent limit: a single-stage ternary table can occupy at most the 64-byte-per-stage
+# crossbar budget above, so a codeword wider than 64 bytes (512 bits) could never fit in one
+# stage's crossbar regardless of TCAM row/block capacity. That 64-byte figure is a measured
+# hardware constant -- validated by a sweep of key widths from 8 to 512 bits with two exact
+# saturations observed (including one table at exactly 64 bytes); see
+# reviews/p4_tofino_reference.md Sec 4.3. (No repo history was found recording an earlier,
+# independent provenance for the 512-bit figure beyond this derivation.)
+MAX_CODEWORD_LENGTH = TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE * 8
 MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
                       # p4/tofino_spike/tna_m1_flows_iat_spike.p4
 
