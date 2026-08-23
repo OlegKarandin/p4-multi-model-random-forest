@@ -189,6 +189,7 @@ temp/*.csv
 temp/validate/
 .claude/
 .superpowers/
+scratchpad/
 
 # Spike experiment scratch data
 p4/tofino_spike/t12_experiments/
