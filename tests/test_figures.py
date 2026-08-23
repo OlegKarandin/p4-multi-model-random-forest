@@ -292,15 +292,21 @@ def test_rendering_every_deliverable_leaves_global_rcparams_untouched(tmp_path):
 # Deliverable 1 -- per-task accuracy vs blocks, two panels, all arms overlaid
 # ---------------------------------------------------------------------------
 
-def test_deliverable_1_has_exactly_two_panels_one_per_task_and_names_both():
-    deliverable = figures.figure_1_accuracy_vs_blocks(
-        _spread_campaign(), output_dir=None)
+def test_deliverable_1_facets_rows_by_task_and_columns_by_odd_k():
+    """D7: facet at odd k only. `_spread_campaign()`'s default k values are
+    (3, 4, 5) -- k=4 is even and gets no column, k=3 and k=5 do -- so the
+    grid is 2 task rows x 2 k columns."""
+    df = _spread_campaign()
+    deliverable = figures.figure_1_accuracy_vs_blocks(df, output_dir=None)
     axes = deliverable.figure.axes
-    assert len(axes) == 2
+    assert len(axes) == 2 * 2
     labels = [ax.get_ylabel() for ax in axes]
     assert any('App' in label for label in labels)
     assert any('DDoS' in label for label in labels)
-    assert labels[0] != labels[1]
+    titles = [ax.get_title() for ax in axes]
+    assert any('k=3' in title for title in titles)
+    assert any('k=5' in title for title in titles)
+    assert not any('k=4' in title for title in titles)
 
 
 def test_deliverable_1_never_plots_the_average_of_the_two_task_accuracies():
@@ -318,22 +324,36 @@ def test_deliverable_1_overlays_every_arm_present_including_unknown_ones():
     df = pd.concat([df, df[df.arm_slug == 'joint-off'].assign(
         arm_slug='joint-experimental')], ignore_index=True)
     deliverable = figures.figure_1_accuracy_vs_blocks(df, output_dir=None)
+    # One front line per (task, odd-k) panel -- default k values (3, 4, 5)
+    # give 2 odd k columns, so 2 tasks x 2 k columns = 4 lines per arm.
+    n_odd_k = len({int(k) for k in df['k'].unique() if int(k) % 2 == 1})
+    expected = len(figures.TASKS) * n_odd_k
     for arm in ('independent', 'joint-off', 'joint-d005', 'joint-dinf',
                 'joint-experimental'):
-        assert len(_lines_by_gid(deliverable.figure, 'front:' + arm)) == 2
+        assert len(_lines_by_gid(deliverable.figure, 'front:' + arm)) == expected
 
 
 def test_deliverable_1_draws_the_3d_pareto_front_claims_computed_not_a_2d_one():
     """A point excellent on App and poor on DDoS belongs on the 3-D front
     and vanishes from a per-plane 2-D front; drawing the plane's own front
-    would hide exactly the trade the thesis is about."""
+    would hide exactly the trade the thesis is about. The front itself is
+    computed ONCE, pooling every k for the arm (unaffected by faceting);
+    each k column only shows that k's slice of the one pooled front, which
+    is what this test checks for k=3, the first (smallest odd) column."""
     df = _spread_campaign()
     arm = 'joint-d005'
-    expected = claims.pareto_projections(
+    k = 3
+    pooled = claims.pareto_projections(
         claims.pareto_front_3d(df[df.arm_slug == arm]))['acc_app_vs_blocks']
+    expected = pooled[pooled['k'] == k]
 
     deliverable = figures.figure_1_accuracy_vs_blocks(df, output_dir=None)
-    line = _lines_by_gid(deliverable.figure, 'front:' + arm)[0]
+    # Row 0 (App) x column 0 (k=3, the first odd value in sweep order) is
+    # `figure.axes[0]` in the row-major flattened axes list `subplots`
+    # produces.
+    app_k3_axis = deliverable.figure.axes[0]
+    line = [line for line in app_k3_axis.lines
+           if line.get_gid() == 'front:' + arm][0]
     assert np.allclose(np.sort(line.get_xdata()),
                        np.sort(expected['blocks'].to_numpy()))
     assert np.allclose(np.sort(line.get_ydata()),
@@ -388,6 +408,15 @@ def test_deliverable_1_writes_a_pdf_a_data_csv_and_a_caption(tmp_path):
     assert not any('avg' in column for column in written.columns)
 
 
+def test_the_renderer_says_which_k_values_it_computed_but_did_not_show(capsys):
+    """D7: a silently truncated facet reads as full coverage. Even-k rows
+    still enter every paired test and every pooled statistic -- they just
+    get no panel -- and the reader has to be told."""
+    figures.figure_1_accuracy_vs_blocks(_spread_campaign(k_values=(3, 4, 5)))
+    out = capsys.readouterr().out
+    assert 'k=4' in out and 'not shown' in out
+
+
 # ---------------------------------------------------------------------------
 # Deliverable 2 -- the delta frontier
 # ---------------------------------------------------------------------------
@@ -426,19 +455,24 @@ def test_deliverable_2_reports_relative_error_per_task_never_pooled():
     assert not _contains(values, (expected_app + expected_ddos) / 2.0)
 
 
-def test_deliverable_2_caption_discloses_that_each_point_pools_the_whole_grid():
-    """A point is an average over every M and every k inside a split, not one
-    operating point -- an examiner reading a block saving off this figure has
-    to know that before believing it applies at their budget."""
-    df = _constant_campaign(m_values=(25, 100), k_values=(4, 5))
-    caption = figures.figure_2_delta_frontier(df, output_dir=None).caption
+def test_deliverable_2_caption_discloses_that_each_point_pools_over_m_only():
+    """A point is an average over every M inside a split at a FIXED k, not
+    one operating point -- an examiner reading a block saving off this
+    figure has to know that before believing it applies at their budget.
+    k, unlike M, is no longer pooled away (D7): the caption must name the
+    individual k values shown as separate columns, not a collapsed range."""
+    df = _constant_campaign(m_values=(25, 100), k_values=(5, 7))
+    deliverable = figures.figure_2_delta_frontier(df, output_dir=None)
+    caption = deliverable.caption
     assert 'pools' in caption.lower()
     assert '25, 100' in caption
-    assert '4-5' in caption
-    # and the table really has collapsed M away, which is what the sentence
-    # is disclosing
-    assert 'M' not in figures.figure_2_delta_frontier(
-        df, output_dir=None).data.columns
+    assert '5, 7' in caption
+    assert '5-7' not in caption
+    # and the table really has collapsed M away but kept k as a real column,
+    # which is what the sentence is disclosing
+    assert 'M' not in deliverable.data.columns
+    assert 'k' in deliverable.data.columns
+    assert set(deliverable.data['k']) == {5, 7}
 
 
 def test_deliverable_2_pooling_sentence_reflects_the_joined_grid_not_the_raw_frame():
@@ -509,6 +543,15 @@ def test_deliverable_2_places_the_two_non_numeric_arms_without_inventing_a_delta
     assert 'inf' in ticks
     assert any('off' in tick for tick in ticks)
     assert set(deliverable.data['arm_slug']) == set(JOINT_ARM_SLUGS)
+
+
+def test_deliverable_2_facets_by_k_instead_of_averaging_it_away():
+    """The paper's conclusion is k-dependent -- joint dominates at k>=11,
+    parity at 5-9, independent wins at k<=5 (main.tex:591). Averaging over k
+    cannot reproduce the headline."""
+    table = figures.delta_frontier_table(_spread_campaign(k_values=(3, 5)))
+    assert 'k' in table.columns
+    assert set(table['k']) == {3, 5}
 
 
 # ---------------------------------------------------------------------------

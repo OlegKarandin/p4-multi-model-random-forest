@@ -229,6 +229,36 @@ def _make_figure(n_rows, n_columns):
                            _PANEL_HEIGHT * n_rows))
 
 
+def _facet_k_values(k_series, context):
+    """Which k values get their own panel column, and which are computed
+    but not shown (D7): facet at ODD k only -- 1, 3, 5, ..., 17 -- matching
+    the paper's presentation. Even-k rows are still computed and still feed
+    every pooled statistic and paired test; they simply get no column here,
+    and that omission is announced through `_log()` rather than left for
+    the reader to notice on their own.
+
+    Falls back to showing every k present when a frame is scoped entirely
+    to even k (e.g. a partial campaign): rendering zero columns would be a
+    worse failure than a figure that, on that one unusual input, shows an
+    even k after all. `k=None` in the returned `shown` list means "no k
+    column present at all -- do not filter by k".
+    """
+    values = (sorted({int(k) for k in k_series.dropna()})
+             if k_series is not None else [])
+    if not values:
+        return [None], []
+    shown = [k for k in values if k % 2 == 1]
+    dropped = [k for k in values if k % 2 == 0]
+    if not shown:
+        shown, dropped = dropped, []
+    if dropped:
+        _log('{}: {} computed but not shown (facet is odd k only, 1..17) '
+             '-- still pooled into every paired test and every pooled '
+             'statistic.'.format(
+                 context, ', '.join('k={}'.format(k) for k in dropped)))
+    return shown, dropped
+
+
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
@@ -311,26 +341,35 @@ def _write(deliverable, output_dir):
 
 def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                                 baseline=claims.INDEPENDENT_ARM_SLUG):
-    """Two panels -- App accuracy vs blocks, DDoS accuracy vs blocks -- with
-    every arm overlaid in both.
+    """A grid -- rows are the two tasks, columns are odd feature counts k
+    (D7: facet at k = 1, 3, 5, ..., 17) -- with every arm overlaid in every
+    panel.
 
-    Each arm contributes its own 3-D Pareto front, computed by
-    `claims.pareto_front_3d` on `(acc_app, acc_ddos, -blocks)` and shown
-    through `claims.pareto_projections`. The drawn line is a PROJECTION of
-    that 3-D front, not a front recomputed inside the plane: a point can
-    look dominated in one panel and still be non-dominated overall, and
-    dropping it would hide exactly the App-versus-DDoS trade the thesis is
-    about. Every cell is also scattered faintly behind the fronts, so the
-    front is visibly a subset of the data rather than the only data shown.
+    Each arm contributes its own 3-D Pareto front, computed ONCE by
+    `claims.pareto_front_3d` on `(acc_app, acc_ddos, -blocks)` pooling
+    EVERY M, split AND k for that arm, and shown through
+    `claims.pareto_projections`. The drawn line is a PROJECTION of that 3-D
+    front, not a front recomputed inside the plane: a point can look
+    dominated in one panel and still be non-dominated overall, and dropping
+    it would hide exactly the App-versus-DDoS trade the thesis is about.
+    Every cell is also scattered faintly behind the fronts, so the front is
+    visibly a subset of the data rather than the only data shown. Faceting
+    by k only slices WHICH points of that one pooled front and pooled cell
+    set land in which column -- it does not recompute the front per k, and
+    an even-k point still contributes to it even though it gets no column
+    of its own (`_facet_k_values` logs which k those were).
 
     There is no averaged accuracy anywhere in this figure, which is the
-    whole reason it has two panels.
+    whole reason it has one row per task rather than one panel overall.
     """
     arms = ordered_arms(df, baseline=baseline)
     styles = _arm_styles(arms)
 
-    figure = _make_figure(1, len(TASKS))
-    axes = figure.subplots(1, len(TASKS), squeeze=False)[0]
+    shown_k, _dropped_k = _facet_k_values(
+        df['k'] if 'k' in df.columns else None, 'figure 1')
+
+    figure = _make_figure(len(TASKS), len(shown_k))
+    axes = figure.subplots(len(TASKS), len(shown_k), squeeze=False)
 
     front_frames = []
     coverage = {}
@@ -348,14 +387,22 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         projections = claims.pareto_projections(front)
         colour, marker = styles[arm]
 
-        for axis, (_, accuracy_column, _, _, _) in zip(axes, TASKS):
+        for row_index, (_, accuracy_column, _, _, _) in enumerate(TASKS):
             plane = projections['{}_vs_blocks'.format(accuracy_column)]
-            axis.scatter(arm_rows['blocks'], arm_rows[accuracy_column],
-                         s=10, alpha=0.25, color=colour, linewidths=0,
-                         gid='cells:{}'.format(arm))
-            axis.plot(plane['blocks'], plane[accuracy_column],
-                      marker=marker, color=colour, linewidth=1.6,
-                      markersize=5, label=arm, gid='front:{}'.format(arm))
+            for col_index, k in enumerate(shown_k):
+                axis = axes[row_index][col_index]
+                if k is None:
+                    cell_rows, plane_k = arm_rows, plane
+                else:
+                    cell_rows = arm_rows[arm_rows['k'] == k]
+                    plane_k = (plane[plane['k'] == k]
+                              if 'k' in plane.columns else plane)
+                axis.scatter(cell_rows['blocks'], cell_rows[accuracy_column],
+                             s=10, alpha=0.25, color=colour, linewidths=0,
+                             gid='cells:{}'.format(arm))
+                axis.plot(plane_k['blocks'], plane_k[accuracy_column],
+                          marker=marker, color=colour, linewidth=1.6,
+                          markersize=5, label=arm, gid='front:{}'.format(arm))
 
         # 'stages' here is the MODEL's occupied match-table stage count
         # (campaign_data._FLOAT_COLUMNS) -- not `stage_depth` (pipeline
@@ -396,12 +443,15 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
             arm_frame['coverage_by_baseline'] = float('nan')
         front_frames.append(arm_frame)
 
-    for axis, (_, _, short_name, panel_title, _) in zip(axes, TASKS):
-        axis.set_xlabel('TCAM blocks')
-        axis.set_ylabel('{} accuracy'.format(short_name))
-        axis.set_title(panel_title)
-        axis.grid(True, alpha=0.3)
-    axes[0].legend(fontsize='small', title='arm')
+    for row_index, (_, _, short_name, panel_title, _) in enumerate(TASKS):
+        for col_index, k in enumerate(shown_k):
+            axis = axes[row_index][col_index]
+            axis.set_xlabel('TCAM blocks')
+            axis.set_ylabel('{} accuracy'.format(short_name))
+            axis.set_title(panel_title if k is None
+                           else '{} (k={})'.format(panel_title, k))
+            axis.grid(True, alpha=0.3)
+    axes[0][0].legend(fontsize='small', title='arm')
     figure.tight_layout()
 
     coverage_sentence = ''
@@ -425,23 +475,35 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                     .format(arm, of_baseline, baseline, by_baseline)
                     for arm, (of_baseline, by_baseline) in coverage.items())))
 
+    facet_sentence = ''
+    if _dropped_k:
+        facet_sentence = (
+            ' EVEN k IS STILL COMPUTED -- {} -- and is pooled into every '
+            'front, coverage ratio and paired statistic exactly like every '
+            'odd k below; it is simply not drawn as its own column (see '
+            'the run log for the full list of k omitted this way).'.format(
+                ', '.join('k={}'.format(k) for k in _dropped_k)))
+
     caption = (
-        'Per-task accuracy against TCAM blocks, one panel per task, with '
-        'every arm of the sweep overlaid. The two tasks are reported '
-        'separately and are never averaged: a single mean accuracy hides a '
-        'model that is excellent on one task and unusable on the other. '
-        'Faint points are all (M, split, k) cells; the joined markers are '
-        'each arm\'s Pareto front, computed in 3-D on '
-        '(acc_app, acc_ddos, -blocks) and PROJECTED into each panel -- a '
-        'projected point may look dominated within its panel while being '
-        'non-dominated overall, and removing it would hide the very trade '
-        'between the two tasks this figure exists to show. EACH FRONT POOLS '
-        'EVERY SPLIT AND EVERY BLOCK BUDGET M for that arm into one 3-D '
-        'Pareto computation, so a point from one split can dominate a point '
-        'from another and the front is not a front of anything replicated; '
-        'the coverage figure below is therefore over that pooled surface, '
-        'not a per-split comparison.{}'.format(
-            coverage_sentence))
+        'Per-task accuracy against TCAM blocks: rows are the two tasks, '
+        'never averaged, and columns are odd feature counts k (1, 3, 5, '
+        '..., 17), with every arm of the sweep overlaid in every panel. A '
+        'single mean accuracy hides a model that is excellent on one task '
+        'and unusable on the other, and pooling every k into one panel '
+        'hides how the trade-off moves as k grows.{} '
+        'Faint points in a panel are that panel\'s (M, split, k) cells; '
+        'the joined markers are the same k-slice of each arm\'s Pareto '
+        'front, computed ONCE in 3-D on (acc_app, acc_ddos, -blocks) over '
+        'EVERY M, split AND k for that arm and PROJECTED into each panel '
+        '-- a projected point may look dominated within its panel while '
+        'being non-dominated overall, and removing it would hide the very '
+        'trade between the two tasks this figure exists to show. EACH '
+        'FRONT POOLS EVERY SPLIT AND EVERY BLOCK BUDGET M for that arm '
+        'into one 3-D Pareto computation, so a point from one split can '
+        'dominate a point from another and the front is not a front of '
+        'anything replicated; the coverage figure below is therefore over '
+        'that pooled surface, not a per-split or per-k comparison.{}'.format(
+            facet_sentence, coverage_sentence))
 
     data = (pd.concat(front_frames, ignore_index=True)
             if front_frames else pd.DataFrame())
@@ -515,30 +577,35 @@ def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
 
 def delta_frontier_table(df, baseline=claims.INDEPENDENT_ARM_SLUG,
                          confidence=0.95, arms=None):
-    """Mean and confidence interval per arm for each of figure 2's three
-    quantities, aggregated over SPLITS.
+    """Mean and confidence interval per (arm, k) for each of figure 2's
+    three quantities, aggregated over SPLITS.
 
-    Each split is collapsed to its own mean difference first, so the
-    interval `claims.delta_frontier` then builds has exactly one
-    observation per split. Feeding it the raw cells instead would put many
-    correlated cells from one training split into the same interval and make
-    it too narrow -- which is why `delta_frontier` refuses that shape
-    outright unless the caller says it means it. The split-level convention
-    matches `claims.ablation_decomposition`.
+    Each (arm, k, split) is collapsed to its own mean difference first, so
+    the interval `claims.delta_frontier` then builds has exactly one
+    observation per split within each (arm, k) group. Feeding it the raw
+    cells instead would put many correlated cells from one training split
+    into the same interval and make it too narrow -- which is why
+    `delta_frontier` refuses that shape outright unless the caller says it
+    means it. k is kept as a real grouping column, not averaged away
+    alongside M: the paper's conclusion is k-dependent (joint dominates at
+    k>=11, parity at 5-9, independent wins at k<=5 -- main.tex:591), and a
+    single mean over k could not reproduce that headline. M IS still
+    averaged away here -- there is no per-M facet, only per-k -- matching
+    the split-level convention `claims.ablation_decomposition` uses.
     """
     long = paired_delta_frame(df, baseline=baseline, arms=arms)
     if len(long) == 0:
         return long
 
-    group_columns = ['arm_slug', 'split']
+    group_columns = ['arm_slug', 'k', 'split']
     split_means = long.groupby(group_columns, as_index=False)[
         list(FRONTIER_METRICS)].mean()
 
     split_means = claims.attach_delta_columns(split_means, long)
 
     return claims.delta_frontier(
-        split_means, metrics=FRONTIER_METRICS, group_columns=('arm_slug',),
-        confidence=confidence)
+        split_means, metrics=FRONTIER_METRICS,
+        group_columns=('arm_slug', 'k'), confidence=confidence)
 
 
 def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
@@ -547,12 +614,15 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
     """What the alignment tolerance buys: block saving and per-task relative
     error change against delta, mean +/- CI across splits.
 
-    Three panels, because the two tasks get one each and pooling them would
-    reintroduce the defect this rerun exists to fix. The x axis is
-    categorical in sweep order rather than numeric: `joint-off` (alignment
-    never ran) and `joint-dinf` (accept every move) are anchors, not
-    numbers, and placing them on a numeric axis would require inventing
-    coordinates for them.
+    A grid of panels: rows are the three reported quantities (the two
+    tasks' relative error change plus the block delta), because pooling the
+    two tasks would reintroduce the defect this rerun exists to fix, and
+    columns are odd feature counts k (D7), because the paper's conclusion
+    is k-dependent and a single k-pooled point cannot reproduce it. The x
+    axis within each panel is categorical in sweep order rather than
+    numeric: `joint-off` (alignment never ran) and `joint-dinf` (accept
+    every move) are anchors, not numbers, and placing them on a numeric
+    axis would require inventing coordinates for them.
     """
     table = delta_frontier_table(df, baseline=baseline, confidence=confidence)
     arms = [arm for arm in ordered_arms(df, include_baseline=False,
@@ -580,25 +650,36 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
         for arm in arms]
     x = [positions[arm] for arm in arms]
 
-    figure = _make_figure(1, len(FRONTIER_METRICS))
-    axes = figure.subplots(1, len(FRONTIER_METRICS), squeeze=False)[0]
+    shown_k, _dropped_k = _facet_k_values(
+        table['k'] if len(table) and 'k' in table.columns else None,
+        'figure 2')
 
-    for axis, metric in zip(axes, FRONTIER_METRICS):
-        rows = table[table['metric'] == metric] if len(table) else table
-        rows = rows.set_index('arm_slug').reindex(arms) if len(rows) else rows
-        if len(rows):
-            means = rows['mean'].to_numpy(dtype='float64')
-            lower = means - rows['ci_low'].to_numpy(dtype='float64')
-            upper = rows['ci_high'].to_numpy(dtype='float64') - means
-            axis.errorbar(x, means, yerr=np.vstack([lower, upper]),
-                          marker='o', capsize=4, linewidth=1.6,
-                          gid='frontier:{}'.format(metric))
-        axis.axhline(0.0, color='0.4', linewidth=1.0, linestyle=':')
-        axis.set_xticks(x)
-        axis.set_xticklabels(tick_labels)
-        axis.set_xlabel('alignment tolerance delta')
-        axis.set_ylabel(labels[metric])
-        axis.grid(True, alpha=0.3)
+    figure = _make_figure(len(FRONTIER_METRICS), len(shown_k))
+    axes = figure.subplots(len(FRONTIER_METRICS), len(shown_k), squeeze=False)
+
+    for row_index, metric in enumerate(FRONTIER_METRICS):
+        metric_rows = table[table['metric'] == metric] if len(table) else table
+        for col_index, k in enumerate(shown_k):
+            axis = axes[row_index][col_index]
+            rows = metric_rows
+            if k is not None and len(rows) and 'k' in rows.columns:
+                rows = rows[rows['k'] == k]
+            rows = rows.set_index('arm_slug').reindex(arms) if len(rows) else rows
+            if len(rows):
+                means = rows['mean'].to_numpy(dtype='float64')
+                lower = means - rows['ci_low'].to_numpy(dtype='float64')
+                upper = rows['ci_high'].to_numpy(dtype='float64') - means
+                axis.errorbar(x, means, yerr=np.vstack([lower, upper]),
+                              marker='o', capsize=4, linewidth=1.6,
+                              gid='frontier:{}'.format(metric))
+            axis.axhline(0.0, color='0.4', linewidth=1.0, linestyle=':')
+            axis.set_xticks(x)
+            axis.set_xticklabels(tick_labels)
+            axis.set_xlabel('alignment tolerance delta')
+            axis.set_ylabel(labels[metric])
+            if k is not None:
+                axis.set_title('k={}'.format(k))
+            axis.grid(True, alpha=0.3)
     figure.tight_layout()
 
     # Derived from the JOINED frame (`pair_arms`' inner join on
@@ -612,20 +693,22 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
     joined = paired_delta_frame(df, baseline=baseline)
     pooled_m = (sorted(joined['M'].unique().tolist())
                if len(joined) and 'M' in joined.columns else [])
-    pooled_k = (sorted(joined['k'].unique().tolist())
+    pooled_k = (sorted(int(value) for value in joined['k'].unique())
                if len(joined) and 'k' in joined.columns else [])
     pooling_sentence = (
-        'EACH POINT POOLS THE WHOLE GRID, not one operating point: cell '
-        'differences are paired on (M, split, k), averaged within each split '
-        'across every block budget M ({}) and every feature count k ({}), and '
-        'the interval is then taken across those per-split means. A block '
-        'change read off this figure is therefore an average over the budget '
-        'grid, and can hide a saving that is much larger at one budget than '
-        'another; Figure 1 shows the per-budget spread that this averages '
-        'over. '.format(
+        'EACH POINT POOLS ACROSS BLOCK BUDGETS, not one operating point: '
+        'cell differences are paired on (M, split, k), averaged within '
+        'each split across every block budget M ({}), and the interval is '
+        'then taken across those per-split means. A block change read off '
+        'this figure is therefore an average over the M budget grid at a '
+        'fixed k, and can hide a saving that is much larger at one budget '
+        'than another; Figure 1 shows the per-budget spread that this '
+        'averages over. FEATURE COUNT k IS NOT POOLED HERE -- each column '
+        'is one value of k ({}), shown separately, because the paper\'s '
+        'conclusion is k-dependent (main.tex:591) and a k-pooled mean '
+        'cannot reproduce it. '.format(
             ', '.join(str(value) for value in pooled_m) or 'none present',
-            '{}-{}'.format(min(pooled_k), max(pooled_k)) if pooled_k
-            else 'none present'))
+            ', '.join(str(value) for value in pooled_k) or 'none present'))
 
     caption = (
         'The alignment tolerance sweep: block change and per-task relative '
