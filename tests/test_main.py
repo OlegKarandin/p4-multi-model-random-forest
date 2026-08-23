@@ -105,7 +105,13 @@ def test_run_plot_mode_defaults_to_the_pre_registered_holm_family_size():
     expected_family_size to None, which lets Holm quietly correct over a
     smaller, weaker family on a partial campaign. main.py must wire the
     pre-registered 35-comparison family explicitly so a partial campaign
-    raises instead of silently weakening the correction."""
+    raises instead of silently weakening the correction.
+
+    Task 19 added a second, independent Holm family (D13's non-inferiority
+    tests) gated the same way -- expected_noninferiority_family_size must
+    default to claims.NONINFERIORITY_FAMILY_SIZE alongside
+    expected_family_size, not be silently dropped on the way to
+    figures.render_all."""
     from src.reporting import claims
     with patch("src.main.load_campaign", return_value="df"), \
          patch("src.main.figures.render_all") as mock_render:
@@ -113,14 +119,19 @@ def test_run_plot_mode_defaults_to_the_pre_registered_holm_family_size():
         m.run_plot_mode(output_dir="out")
     assert mock_render.call_args.kwargs['expected_family_size'] == \
         claims.PRE_REGISTERED_FAMILY_SIZE
+    assert mock_render.call_args.kwargs['expected_noninferiority_family_size'] == \
+        claims.NONINFERIORITY_FAMILY_SIZE
 
 
 def test_run_plot_mode_allow_partial_family_disables_the_family_size_check():
+    """--allow-partial-family must disable BOTH of deliverable 4's Holm
+    family gates, not just the superiority one (Task 19)."""
     with patch("src.main.load_campaign", return_value="df"), \
          patch("src.main.figures.render_all") as mock_render:
         mock_render.return_value = []
         m.run_plot_mode(output_dir="out", allow_partial_family=True)
     assert mock_render.call_args.kwargs['expected_family_size'] is None
+    assert mock_render.call_args.kwargs['expected_noninferiority_family_size'] is None
 
 
 def test_run_plot_mode_omits_the_capacity_ceiling_deliverable_when_its_csv_is_absent(tmp_path):

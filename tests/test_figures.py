@@ -839,6 +839,19 @@ def test_deliverable_4_passes_the_expected_family_size_through_to_claims(tmp_pat
             expected_family_size=claims.PRE_REGISTERED_FAMILY_SIZE)
 
 
+def test_deliverable_4_passes_the_expected_noninferiority_family_size_through_to_claims(tmp_path):
+    """Counterpart to the superiority-family test above, for Task 19's
+    second, independent Holm family. Proves `expected_noninferiority_family_size`
+    actually reaches `claims.noninferiority_tests` -- not silently dropped
+    somewhere in `table_4_paired_tests`' call chain -- by checking it raises
+    on a partial family, exactly as the superiority-family gate does."""
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:3])
+    with pytest.raises(ValueError):
+        figures.table_4_paired_tests(
+            df, output_dir=str(tmp_path),
+            expected_noninferiority_family_size=claims.NONINFERIORITY_FAMILY_SIZE)
+
+
 def test_deliverable_5_is_the_ablation_decomposition_claims_produced(tmp_path):
     df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS)
     expected = claims.ablation_decomposition(df)
