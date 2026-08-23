@@ -33,11 +33,11 @@ def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300):
         max_blocks, encoding, cfg)
 
 
-def test_the_contract_returns_a_frozen_train_result_with_all_fifteen_fields():
+def test_the_contract_returns_a_frozen_train_result_with_all_twenty_fields():
     out = _call()
 
     assert isinstance(out, TrainResult)
-    assert len(dataclasses.fields(out)) == 15
+    assert len(dataclasses.fields(out)) == 20
     assert hasattr(out.model_A, 'predict') and hasattr(out.model_B, 'predict')
     assert isinstance(out.stages, (int, np.integer))
     assert isinstance(out.blocks, (int, np.integer))

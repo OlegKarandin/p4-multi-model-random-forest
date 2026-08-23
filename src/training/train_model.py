@@ -101,6 +101,22 @@ class TrainResult:
         be indistinguishable from "alignment ran and accepted nothing", which
         is a real and different outcome. Task 8 writes '' into the CSV for
         the None case.
+    range_entries, ternary_entries : the same-named fields off the refit's
+        own `ResourceUsage` (evaluation.multi_model_memory_evaluation) --
+        physical TCAM row counts for the range-matching and ternary-matching
+        tables respectively. Distinct from `blocks` (the block count those
+        rows pack into) and from `stages`/`stage_depth` (pipeline stage
+        quantities, not row counts) -- see ResourceUsage's own docstring for
+        the full disambiguation.
+    register_depth, register_count, register_sram_bits : the same-named
+        fields off that same `ResourceUsage`, reporting the Tofino
+        `Register<>` state the design needs (Task 6, Spec 4.1/4.2/4.3).
+        register_depth is a STAGE count (readiness-level depth of the
+        register dependency chain) and must not be confused with
+        `stage_depth` above, which is the whole pipeline's depth including
+        the match tables that read those registers. See ResourceUsage's own
+        docstring for the capacity caveat: these report depth/count, not
+        whether the registers fit.
 
     Frozen so a ProcessPoolExecutor worker cannot mutate a result after it
     crosses the pickle boundary. Every field is plain data (numbers, a dict,
@@ -122,6 +138,11 @@ class TrainResult:
     align_accepted: Optional[int]
     intervals_before: Optional[int]
     intervals_after: Optional[int]
+    range_entries: int
+    ternary_entries: int
+    register_depth: int
+    register_count: int
+    register_sram_bits: int
 
 
 def train_multi_RF_Optuna_multi_constrained(
@@ -382,4 +403,9 @@ def train_multi_RF_Optuna_multi_constrained(
         align_accepted=align_stats.get('accepted'),
         intervals_before=align_stats.get('intervals_before'),
         intervals_after=align_stats.get('intervals_after'),
+        range_entries=int(usage.range_entries),
+        ternary_entries=int(usage.ternary_entries),
+        register_depth=int(usage.register_depth),
+        register_count=int(usage.register_count),
+        register_sram_bits=int(usage.register_sram_bits),
     )

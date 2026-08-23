@@ -61,7 +61,9 @@ def test_process_single_split_keeps_rows_completed_before_an_unhandled_raise(mon
             acc_sel_A=0.7, acc_sel_B=0.9, best_params={},
             rel_shortfall=0.0, n_trials_run=1, n_feasible=1,
             align_attempted=None, align_accepted=None,
-            intervals_before=None, intervals_after=None)
+            intervals_before=None, intervals_after=None,
+            range_entries=1, ternary_entries=1,
+            register_depth=1, register_count=1, register_sram_bits=1)
 
     monkeypatch.setattr(
         'src.training.train_model.train_multi_RF_Optuna_multi_constrained', trainer)
