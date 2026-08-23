@@ -49,6 +49,28 @@ class StagePlan:
     return self.occupied
 
 
+@dataclass(frozen=True)
+class ResourceUsage:
+  """multi_model_memory_evaluation's return (D1).
+
+  Replaces a 3-tuple rather than growing it to eight positional values, for
+  the same reason TrainResult replaced a 7-tuple: three of these fields are
+  same-typed ints naming DIFFERENT stage quantities, and positional access
+  is how they get confused. See this module's
+  multi_model_memory_evaluation docstring for the four-quantity
+  disambiguation.
+
+  No __int__ is provided. StagePlan has one as a transitional shim;
+  repeating it here would let a caller silently use the whole object where
+  a count is meant.
+  """
+  stages: int           # occupied match-table stage COUNT
+  blocks: int
+  stage_depth: int      # pipeline DEPTH (StagePlan.depth), what the 12-stage ceiling reads
+  range_entries: int
+  ternary_entries: int
+
+
 def accuracy_metrics(y_true, y_pred, task):
     """Return (accuracy, weighted_f1) for a given task.
 
@@ -488,7 +510,7 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
 
 def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                                   use_default_action_discount=False):
-  """Returns (stages, blocks, stage_depth) -- three related but DISTINCT
+  """Returns ResourceUsage(stages, blocks, stage_depth, range_entries, ternary_entries) -- three related but DISTINCT
   quantities (F6), only the first two of which this function is the source
   of truth for:
 
@@ -498,6 +520,7 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
                   This is what gets written to the campaign CSV's `stages`
                   column and plotted -- it is NOT a pipeline-depth quantity
                   and must never be compared against TOFINO_PIPELINE_STAGES.
+    blocks      : total blocks used by both range and ternary tables
     stage_depth : pipeline DEPTH, max(occupied stage index) + 1 -- the
                   quantity a hard stage ceiling actually reads (F5). Read
                   from ternary_plan.depth (the classification pool is placed
@@ -506,6 +529,8 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
                   max(range_plan.depth, ternary_plan.depth) so an
                   (unrealistic) model with no ternary tables at all still
                   reports a sane depth. M2 example: 6.
+    range_entries  : count of physical rows across all range tables
+    ternary_entries: count of ternary codewords across all classification trees
     (a third quantity, `stages_real` -- the REAL compiler's whole-program
     stage count including parsing/bookkeeping overhead this function does
     not model at all -- is NOT returned here; see p4_compile.parse_compile_logs,
@@ -625,4 +650,9 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
   # depth 0), not something the real M2-shaped models ever hit.
   stage_depth = max(range_plan.depth, ternary_plan.depth)
 
-  return range_plan.occupied + ternary_plan.occupied, range_blocks + ternary_blocks, stage_depth
+  return ResourceUsage(
+      stages=range_plan.occupied + ternary_plan.occupied,
+      blocks=range_blocks + ternary_blocks,
+      stage_depth=stage_depth,
+      range_entries=range_entries,
+      ternary_entries=ternary_entries)

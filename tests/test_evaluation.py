@@ -1,4 +1,5 @@
 import math
+import dataclasses
 
 from src.p4gen import evaluation as ev
 from src.p4gen import build_p4_script as bps
@@ -364,6 +365,25 @@ def test_multi_model_memory_evaluation_end_to_end_on_real_forests(encoding):
     assert isinstance(stage_depth, int)
     assert stage_depth >= stages
     assert stage_depth <= 12
+
+
+def test_multi_model_memory_evaluation_returns_a_frozen_resource_usage():
+  """D1: a 5-tuple of same-typed ints containing three confusable stage
+  quantities is the hazard F5/F6 documents. Every caller names its field."""
+  FEATURES_APP = ["f0", "f1", "f2", "f3"]
+  FEATURES_DDOS = ["f0", "f1", "f2", "f3"]
+  usage = ev.multi_model_memory_evaluation(
+      _tiny_forest([0, 1, 2], seed=0),
+      _tiny_forest([-1, 1], seed=7),
+      FEATURES_APP, FEATURES_DDOS, 'joint')
+  assert isinstance(usage, ev.ResourceUsage)
+  assert dataclasses.is_dataclass(usage)
+  with pytest.raises(dataclasses.FrozenInstanceError):
+    usage.blocks = 0
+  # Deliberately absent: unlike StagePlan, no __int__ shim, so a caller
+  # cannot silently use the whole object where a count is meant.
+  assert not hasattr(usage, '__int__') or type(usage).__int__ is object.__int__
+  assert usage.range_entries > 0 and usage.ternary_entries > 0
 
 
 def test_multi_model_memory_evaluation_raises_on_unknown_encoding():
