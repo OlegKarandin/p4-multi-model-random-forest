@@ -49,7 +49,11 @@ A box with an infeasible corner is established practice here, not a new risk.
 The bounds are per-axis and independent: at the old (7, 10) placeholders,
 `rf_params` suggested `n_estimators` from {1, 3, 5, 7} and `max_depth` from
 [2, 10] separately, so the joint corner (7 trees at depth 10) -- 1599 bits in
-the table below -- was suggestable but never selectable, and the campaign's
+the table below (this module docstring is static prose evaluated at import
+time, before `cells` exists; the number is a snapshot of that table's own
+large-tree row and is re-derived, not hardcoded, everywhere else this script
+prints it -- see `select()`'s `old_placeholder_cw`) -- was suggestable but
+never selectable, and the campaign's
 deployed models were combinations like (7, 4) or (3, 10). Nothing about those
 runs was invalid; what was missing is the measurement, since the bounds were
 placeholders carrying a comment saying P4 would derive them and no one had ever
@@ -521,6 +525,10 @@ def select(cells):
     tied = feasible[feasible.cardinality == best].sort_values('n_trees')
     chosen = tied.iloc[0]
     strict = at_corner(cells, LARGE_TREE, chosen.n_trees, chosen.max_depth).iloc[0]
+    # The old (7, 10) placeholders' large-tree corner, quoted below -- read
+    # from this measurement rather than hardcoded, so it stays correct if
+    # the grid or corner definitions ever change.
+    old_placeholder_cw = int(at_corner(cells, LARGE_TREE, 7, 10).iloc[0].joint_cw_max)
 
     deciding_leaf, deciding_split = corner_params(cells, DECIDING_CORNER)
     print('\n### Adopted values\n')
@@ -552,7 +560,7 @@ def select(cells):
           '(limit {}), {} joint blocks. The same cell measures {} bits at the '
           'large-tree corner, so part of the box is out of reach on codeword '
           'length. That is normal and was already true of the (7, 10) '
-          'placeholders, whose own corner measures 1599 bits: the bounds are '
+          'placeholders, whose own corner measures {} bits: the bounds are '
           'per-axis, so a joint corner can be suggestable without ever being '
           'selectable, and the objective scores such trials by violation '
           'magnitude rather than letting them stop the search.'.format(
@@ -561,7 +569,7 @@ def select(cells):
               int(chosen.cardinality), int(chosen.joint_cw_max),
               MAX_CODEWORD_LENGTH,
               '-' if pd.isna(chosen.joint_blocks_max) else int(chosen.joint_blocks_max),
-              int(strict.joint_cw_max)))
+              int(strict.joint_cw_max), old_placeholder_cw))
     print('\nRuling P4-4: at the adopted n_trees, the pruned-corner codeword '
           'and block counts can look nearly identical across the top of the '
           'max_depth grid (e.g. the per-cell table above), because under '
