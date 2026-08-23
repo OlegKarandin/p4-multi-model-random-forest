@@ -617,3 +617,20 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
         text = p4_file.read_text()
         assert "classify_flow_codeword_" in text
         assert "default_action" not in text
+
+
+def test_the_result_row_has_exactly_the_documented_key_set():
+    """Nothing enforced the docstring's key count before, so a typo'd new
+    column would have reached every campaign CSV silently."""
+    row = fs._build_result_row('joint', 'multi', 0, 5, [], [])
+    assert set(row) == set(fs._RESULT_ROW_KEYS)
+    assert len(row) == 29
+
+
+def test_the_new_derived_columns_default_to_literal_None_not_empty_string():
+    """They join the 9-metric group, whose contract the infeasible branch
+    depends on (test_run_elimination.py:187 asserts `is None`)."""
+    row = fs._build_result_row('joint', 'multi', 0, 5, [], [])
+    for column in ('range_entries', 'ternary_entries', 'register_depth',
+                   'register_count', 'register_sram_bits'):
+        assert row[column] is None

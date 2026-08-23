@@ -117,6 +117,16 @@ load_campaign returns:
                                   Tofino-1 ceiling reads (model, F5/F6).
                     stages_real : the real compiler's whole-program stage
                                   count, below.
+    range_entries, ternary_entries       float64, NaN on any file written
+                  before these columns existed (same missing-column
+                  tolerance as `stage_depth` above). The model-side entry
+                  counts off the refit's final ResourceUsage (see
+                  TrainResult's docstring, src/training/train_model.py).
+    register_depth, register_count, register_sram_bits   float64, same
+                  missing-column tolerance. `register_depth` is a STAGE
+                  count (register-side pipeline depth), NOT to be confused
+                  with `stage_depth` above, which is the match-table side's
+                  depth.
 
 Feasibility
     infeasible     str   always '' after load_campaign's filter. Kept
@@ -137,6 +147,12 @@ distinguishable:
                               -- NOT the same quantity as `stages` or
                               `stage_depth` above; see the module docstring's
                               Outcome metrics section.
+    sram_real, map_ram_real   float64, NaN under the same condition as
+                              `stages_real`/`tcam_real` above (hardware
+                              validation not run for this row) -- the real
+                              compiler's SRAM / map-RAM block usage,
+                              parsed from `p4_compile`'s result object
+                              alongside `stages_real`/`tcam_real`.
 
 Other
     features_app, features_ddos   str   ';'-joined feature names.
@@ -180,9 +196,11 @@ _INTEGER_KEY_COLUMNS = ['M', 'n_trees', 'max_depth', 'split', 'k']
 _FLOAT_COLUMNS = [
     'acc_app', 'f1_app', 'acc_ddos', 'f1_ddos', 'acc_sel_app', 'acc_sel_ddos',
     'stages', 'blocks', 'stage_depth',
+    'range_entries', 'ternary_entries', 'register_depth', 'register_count',
+    'register_sram_bits',
     'rel_shortfall', 'n_trials_run', 'n_feasible',
     'align_attempted', 'align_accepted', 'intervals_before', 'intervals_after',
-    'stages_real', 'tcam_real',
+    'stages_real', 'tcam_real', 'sram_real', 'map_ram_real',
     'delta_select', 'overlap_threshold',
 ]
 
