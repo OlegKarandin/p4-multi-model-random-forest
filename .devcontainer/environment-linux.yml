@@ -1,0 +1,44 @@
+# Linux (linux-64) conda-forge manifest for a GitHub Codespace / devcontainer.
+#
+# This replaces the repo-root `environment.yml`, which cannot be reused here: it is
+# Windows-pinned (`vc=14.40`, `vs2015_runtime`, `icc_rt`, MKL `py311h...` win builds),
+# names the env `PolimiP4Colab` while `pytest -q` for this project actually runs against
+# a differently-versioned `PolimiML` env, and it omits `matplotlib`, `optuna` and
+# `pytest` even though `src/` and `tests/` import all three.
+#
+# Versions below are pinned to what was directly measured (pip freeze / __version__) in
+# the `PolimiML` env that this branch's test suite passes under -- NOT the stale
+# `environment.yml` figures (e.g. that file says scikit-learn==1.5.1; the real,
+# test-passing version is 1.6.1).
+#
+# `scikit-learn`, `numpy` and `scipy` are pinned EXACTLY because a §8.3 platform-
+# determinism question (does the test/behavior count change on Linux vs. Windows) is
+# unanswerable unless the version triple is fixed to the one already measured.
+#
+# Do NOT add `scikit-learn-intelex` here. It is present in the current Windows dev
+# environment but is never activated by any code path the tests exercise: the only
+# `patch_sklearn()` call (src/training/train_model.py) is gated behind an opt-in
+# `THESIS_USE_SKLEARNEX=1` environment variable and wrapped in try/except ImportError,
+# and it is off by default precisely because oneDAL's RandomForestClassifier (a) fails
+# to round-trip trees through scikit-learn 1.6.1's Tree.__setstate__ ("node array from
+# the pickle has an incompatible dtype") and (b) keeps its own internal model
+# representation, so this project's in-place `tree_.threshold` mutations
+# (dt_thresholds_float_to_int, align_rf_thresholds) may silently fail to be observed.
+# Installing scikit-learn-intelex here would just leave the crash loaded and waiting
+# for a future `patch_sklearn()` call. If it is ever needed for opt-in benchmarking,
+# add it deliberately and re-verify both failure modes first.
+name: thesis-codespace
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy=1.26.4
+  - scipy=1.13.1
+  - scikit-learn=1.6.1
+  - pandas=2.2.2
+  - matplotlib=3.10.0
+  - optuna=4.4.0
+  - pytest=9.1.1
+  - joblib
+  - threadpoolctl
+  - pip
