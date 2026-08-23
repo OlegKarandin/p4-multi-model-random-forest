@@ -87,7 +87,7 @@ def joint_interval_count(intervals1, intervals2):
     REFINEMENT of both models' thresholds for that feature -- exactly what
     evaluation.py's multi_model_memory_evaluation builds (via
     get_feature_intervals_from_thresholds) from the pooled thresholds of the
-    merged tree set. For a feature only one model splits on, there is nothing
+    merged tree set, returning a ResourceUsage with that count. For a feature only one model splits on, there is nothing
     to pool, so its own interval count is added directly.
 
     This is NOT the union of the two models' interval TUPLES: pooling

@@ -81,8 +81,8 @@ class TrainResult:
 
     stage_depth : StagePlan.depth (F5/F6) -- the pipeline-DEPTH quantity the
         hard TOFINO_PIPELINE_STAGES ceiling is compared against, from the
-        refit's own 3-tuple `multi_model_memory_evaluation` call. NOT the
-        same quantity as `stages` (occupied match-table stage COUNT) --
+        refit's own `ResourceUsage` result from `multi_model_memory_evaluation`.
+        NOT the same quantity as `stages` (occupied match-table stage COUNT) --
         see evaluation.multi_model_memory_evaluation's docstring for the
         full three-quantity disambiguation.
     rel_shortfall : the winning trial's balance shortfall from

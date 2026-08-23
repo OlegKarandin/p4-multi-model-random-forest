@@ -356,8 +356,8 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         # depth, what the 12-stage ceiling reads) and not `stages_real` (the
         # real compiler's whole-program count). Never plot/compare 'stages'
         # against 'stages_real' as if they measured the same thing -- see
-        # evaluation.multi_model_memory_evaluation's docstring for the full
-        # three-quantity disambiguation.
+        # evaluation.multi_model_memory_evaluation's ResourceUsage docstring for the full
+        # three-quantity (stages, stage_depth, stages_real) disambiguation.
         carried = [column for column in
                    ('arm_slug', 'M', 'split', 'k', 'blocks', 'stages',
                     'acc_app', 'acc_ddos')

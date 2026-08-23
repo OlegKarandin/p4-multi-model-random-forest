@@ -42,8 +42,8 @@ class CompileResult:
     # -- a DIFFERENT quantity from the model's own `stages` (occupied
     # match-table stage count) and `stage_depth` (pipeline depth, what the
     # 12-stage TOFINO_PIPELINE_STAGES ceiling reads); see
-    # evaluation.multi_model_memory_evaluation's docstring for the full
-    # three-quantity disambiguation. M2 example: this field is 9, where the
+    # evaluation.multi_model_memory_evaluation's ResourceUsage docstring for the full
+    # three-quantity (stages, stage_depth, stages_real) disambiguation. M2 example: this field is 9, where the
     # model predicts stage_depth 6.
     stages: Optional[int] = None
     tables: Optional[int] = None
@@ -82,8 +82,8 @@ def parse_compile_logs(log_dir: str) -> CompileResult:
     NOT comparable to that estimator's `stages` (occupied match-table stage
     count) or `stage_depth` (pipeline depth, what the hard 12-stage
     TOFINO_PIPELINE_STAGES ceiling reads) -- see
-    evaluation.multi_model_memory_evaluation's docstring for the full
-    disambiguation. M2 example: this returns 9 where the estimator predicts
+    evaluation.multi_model_memory_evaluation's ResourceUsage docstring for the full
+    three-quantity (stages, stage_depth, stages_real) disambiguation. M2 example: this returns 9 where the estimator predicts
     stage_depth 6.
     """
     result = CompileResult()

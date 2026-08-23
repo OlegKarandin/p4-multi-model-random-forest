@@ -54,7 +54,7 @@ def _derive_feature_intervals(clf, feature_names):
 def _derive_joint_feature_intervals(model_app, model_ddos, feature_names_app, feature_names_ddos):
     """Derives ONE shared `feature_intervals` dict for both models, via
     `build_p4_script.get_joint_feature_intervals` -- the same offset trick
-    `evaluation.multi_model_memory_evaluation`'s 'joint' branch uses
+    that `evaluation.multi_model_memory_evaluation`'s 'joint' branch uses
     internally, merging both models' trees into one keyed structure before
     deriving intervals -- this is the analytical model the real compiled
     numbers are meant to validate against, so the real program must be built
@@ -295,8 +295,8 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
       `stage_depth` is the pipeline DEPTH the 12-stage ceiling reads
       (StagePlan.depth, F5/F6) -- a different quantity, not to be confused
       with each other or with `stages_real` below (see
-      evaluation.multi_model_memory_evaluation's docstring for the full
-      three-quantity disambiguation).
+      evaluation.multi_model_memory_evaluation's ResourceUsage docstring for the full
+      three-quantity (stages, stage_depth, stages_real) disambiguation).
     - 9 "'' means not computed" fields (`infeasible`, `best_params`,
       `rel_shortfall`, `n_trials_run`, `n_feasible`, `align_attempted`,
       `align_accepted`, `intervals_before`, `intervals_after`): each passed

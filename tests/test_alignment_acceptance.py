@@ -213,7 +213,7 @@ def test_joint_interval_count_matches_the_pooled_threshold_cost_model():
     """The stat and the real joint-encoding cost model
     (evaluation.py's multi_model_memory_evaluation, which pools both models'
     thresholds through get_feature_intervals_from_thresholds over the merged
-    tree set) must agree BY CONSTRUCTION: build the expected value completely
+    tree set and returns a ResourceUsage) must agree BY CONSTRUCTION: build the expected value completely
     independently -- read every (feature, threshold) split straight off both
     forests' raw trees, pool them, and run them through the exact function
     the cost model calls -- rather than trusting joint_interval_count's own

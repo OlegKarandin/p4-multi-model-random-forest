@@ -347,7 +347,7 @@ def get_feature_intervals(model, selected_features):
   instead of silently merging their intervals into one entry. Callers that
   derive tree_nodes/feature_intervals directly (bypassing this function)
   must run the same guard themselves -- see single_model_memory_evaluation
-  and multi_model_memory_evaluation's joint branch in evaluation.py."""
+  and multi_model_memory_evaluation's 'joint' branch (via ResourceUsage) in evaluation.py."""
   _reject_colliding_feature_names(selected_features)
   tree_nodes = tree_nodes_for(model, selected_features)
   return feature_intervals_from_nodes(tree_nodes)
@@ -359,8 +359,8 @@ def get_joint_feature_intervals(model_a, features_a, model_b, features_b):
   the same offset trick used to keep the two models' node IDs from
   colliding (model_b's tree indices are shifted by len(model_a's trees)
   before merging). This was previously reimplemented identically three
-  times (evaluation.multi_model_memory_evaluation's 'joint' branch,
-  feature_selection._derive_joint_feature_intervals, and
+  times (evaluation.multi_model_memory_evaluation's 'joint' branch (which now
+  returns a ResourceUsage), feature_selection._derive_joint_feature_intervals, and
   main.implement_tree_models_in_P4); this was the single canonical copy of
   that derivation until Task 16 re-inlined an equivalent tree_nodes_for(...)
   + merge_tree_nodes(...) + feature_intervals_from_nodes(...) sequence

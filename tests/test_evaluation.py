@@ -308,9 +308,10 @@ def _tiny_forest(labels, seed):
     # Deliberate exception to this file's "synthetic in-memory fixtures
     # only" convention: Finding 4 of the T12 final review noted that
     # nothing exercised single_model_memory_evaluation /
-    # multi_model_memory_evaluation, leaving their long tuple-unpacking
-    # lines (where a transposed variable is easy to miss) untested. Still
-    # no dataset file -- the arrays are hardcoded here.
+    # multi_model_memory_evaluation, leaving single_model_memory_evaluation's
+    # long tuple-unpacking lines (where a transposed variable is easy to miss)
+    # untested -- multi_model_memory_evaluation now returns a ResourceUsage
+    # object instead. Still no dataset file -- the arrays are hardcoded here.
     #
     # The golden tuples below (_PRE_TASK_SINGLE_APP etc.) were computed
     # against plain sklearn's tree-building. sklearnex.patch_sklearn() is a
@@ -681,14 +682,14 @@ def test_multi_model_memory_evaluation_default_is_unchanged_by_discount_wiring()
 def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encoding):
     # multi_model_memory_evaluation returns a ResourceUsage(stages, blocks,
     # stage_depth, range_entries, ternary_entries) -- the discounted ENTRY
-    # count it feeds into the block formula is never
-    # returned, and with these tiny forests every tree still fits in one
-    # 207-entry TCAM block either way, so the discount would be invisible at
-    # the real per-block capacity. Shrinking that one hardware constant for
-    # the duration of the test makes the entry reduction observable in the
-    # returned blocks, so this asserts on REAL returned numbers rather than
-    # on a spy. Both calls run under the same shrunken constant, so the
-    # difference is attributable to the discount alone.
+    # count it feeds into the block formula IS NOW returned in the ResourceUsage
+    # (range_entries and ternary_entries fields). With these tiny forests every
+    # tree still fits in one 512-entry TCAM block either way, so the discount
+    # would be invisible at the real per-block capacity. Shrinking that one
+    # hardware constant for the duration of the test makes the entry reduction
+    # observable in the returned blocks, so this asserts on REAL returned
+    # numbers rather than on a spy. Both calls run under the same shrunken
+    # constant, so the difference is attributable to the discount alone.
     #
     # The 'disjoint' case is the load-bearing one: its ternary accounting
     # happens entirely inside the two NESTED single_model_memory_evaluation

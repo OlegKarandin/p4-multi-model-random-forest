@@ -187,11 +187,11 @@ def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
     the pair uncompilable. Returns None rather than propagating, so an
     infeasible cell still contributes its codeword length to the table.
 
-    stage_depth is `multi_model_memory_evaluation`'s StagePlan.depth
-    (F5/F6) -- the pipeline-DEPTH quantity a hard TOFINO_PIPELINE_STAGES
+    stage_depth is from `multi_model_memory_evaluation`'s returned ResourceUsage.stage_depth,
+    which is StagePlan.depth (F5/F6) -- the pipeline-DEPTH quantity a hard TOFINO_PIPELINE_STAGES
     ceiling reads, NOT the same quantity as `stages` (occupied match-table
     stage count) -- see that function's docstring for the full
-    three-quantity disambiguation (the third quantity, the real compiler's
+    three-quantity (stages, stage_depth, stages_real) disambiguation (the third quantity, the real compiler's
     whole-program `stages_real`, is not measured by this script at all).
     NECESSARY BUT NOT SUFFICIENT: a cell whose stage_depth exceeds
     TOFINO_PIPELINE_STAGES is a definite reject on real hardware; staying
