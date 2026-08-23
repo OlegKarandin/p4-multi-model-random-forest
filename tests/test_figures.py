@@ -295,11 +295,13 @@ def test_rendering_every_deliverable_leaves_global_rcparams_untouched(tmp_path):
 def test_deliverable_1_facets_rows_by_task_and_columns_by_odd_k():
     """D7: facet at odd k only. `_spread_campaign()`'s default k values are
     (3, 4, 5) -- k=4 is even and gets no column, k=3 and k=5 do -- so the
-    grid is 2 task rows x 2 k columns."""
+    grid is (2 task rows + 1 trade-plane row) x 2 k columns (D8's trade
+    plane gets its own row below the two task rows, one panel per shown
+    k, rather than a fixed literal panel count)."""
     df = _spread_campaign()
     deliverable = figures.figure_1_accuracy_vs_blocks(df, output_dir=None)
     axes = deliverable.figure.axes
-    assert len(axes) == 2 * 2
+    assert len(axes) == (len(figures.TASKS) + 1) * 2
     labels = [ax.get_ylabel() for ax in axes]
     assert any('App' in label for label in labels)
     assert any('DDoS' in label for label in labels)
@@ -307,6 +309,16 @@ def test_deliverable_1_facets_rows_by_task_and_columns_by_odd_k():
     assert any('k=3' in title for title in titles)
     assert any('k=5' in title for title in titles)
     assert not any('k=4' in title for title in titles)
+
+
+def test_deliverable_1_has_a_trade_plane_panel_with_no_connecting_line():
+    """D8: the only panel that can show WHY a front point exists when that
+    point looks dominated in both memory panels. A line through this plane
+    would imply an ordering that does not exist."""
+    fig = figures.figure_1_accuracy_vs_blocks(_spread_campaign()).figure
+    titles = [t for t in _texts(fig)]
+    assert any('acc_ddos' in t and 'acc_app' in t for t in titles)
+    assert _lines_by_gid(fig, 'trade-line:') == []
 
 
 def test_deliverable_1_never_plots_the_average_of_the_two_task_accuracies():

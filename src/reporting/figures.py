@@ -6,7 +6,7 @@ supplies every statistic, and this module does one thing: render them.
 
 | # | artifact | answers |
 |---|---|---|
-| 1 | per-task accuracy vs blocks, two panels, all arms overlaid | the headline comparison, never averaged |
+| 1 | per-task accuracy vs blocks plus the acc_app-vs-acc_ddos trade plane (D8), all arms overlaid | the headline comparison, never averaged |
 | 2 | delta frontier: d blocks and d rel-error per task vs delta, mean +/- CI | what the tolerance buys |
 | 3 | substitution scatter with quadrants, one panel per arm | the reviewer's objection, answered directly |
 | 4 | paired per-task test table, Holm-corrected | significance |
@@ -85,6 +85,7 @@ import matplotlib
 # pyplot, so nothing here depends on which backend is active.
 matplotlib.use('Agg')
 
+from matplotlib.colors import Normalize  # noqa: E402
 from matplotlib.figure import Figure     # noqa: E402  (must follow use())
 import numpy as np                       # noqa: E402
 import pandas as pd                      # noqa: E402
@@ -336,31 +337,45 @@ def _write(deliverable, output_dir):
 
 
 # ---------------------------------------------------------------------------
-# Deliverable 1 -- per-task accuracy vs blocks, two panels, all arms overlaid
+# Deliverable 1 -- per-task accuracy vs blocks plus the trade plane (D8),
+# all arms overlaid
 # ---------------------------------------------------------------------------
 
 def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                                 baseline=claims.INDEPENDENT_ARM_SLUG):
-    """A grid -- rows are the two tasks, columns are odd feature counts k
-    (D7: facet at k = 1, 3, 5, ..., 17) -- with every arm overlaid in every
-    panel.
+    """A grid -- the top two rows are the two tasks, a third row is D8's
+    trade plane, and columns are odd feature counts k (D7: facet at
+    k = 1, 3, 5, ..., 17) -- with every arm overlaid in every panel. Row and
+    column counts are both derived (`len(TASKS) + 1` rows, `len(shown_k)`
+    columns), never a literal panel count.
 
     Each arm contributes its own 3-D Pareto front, computed ONCE by
     `claims.pareto_front_3d` on `(acc_app, acc_ddos, -blocks)` pooling
     EVERY M, split AND k for that arm, and shown through
-    `claims.pareto_projections`. The drawn line is a PROJECTION of that 3-D
-    front, not a front recomputed inside the plane: a point can look
-    dominated in one panel and still be non-dominated overall, and dropping
-    it would hide exactly the App-versus-DDoS trade the thesis is about.
-    Every cell is also scattered faintly behind the fronts, so the front is
-    visibly a subset of the data rather than the only data shown. Faceting
-    by k only slices WHICH points of that one pooled front and pooled cell
-    set land in which column -- it does not recompute the front per k, and
-    an even-k point still contributes to it even though it gets no column
-    of its own (`_facet_k_values` logs which k those were).
+    `claims.pareto_projections`. The drawn line in the top two rows is a
+    PROJECTION of that 3-D front, not a front recomputed inside the plane: a
+    point can look dominated in one panel and still be non-dominated
+    overall, and dropping it would hide exactly the App-versus-DDoS trade
+    the thesis is about. Every cell is also scattered faintly behind the
+    fronts, so the front is visibly a subset of the data rather than the
+    only data shown. Faceting by k only slices WHICH points of that one
+    pooled front and pooled cell set land in which column -- it does not
+    recompute the front per k, and an even-k point still contributes to it
+    even though it gets no column of its own (`_facet_k_values` logs which
+    k those were).
 
-    There is no averaged accuracy anywhere in this figure, which is the
-    whole reason it has one row per task rather than one panel overall.
+    The third row is the trade plane (acc_app vs acc_ddos) that the top two
+    rows cannot show directly: a point can look dominated in EVERY
+    accuracy-vs-blocks panel while still sitting on the pooled 3-D front,
+    because that front also weighs the OTHER task's accuracy. Colour there
+    is `blocks` (a continuous gradient, not per-arm identity -- this row's
+    whole point is the memory cost of a trade, not which arm made it), and
+    an open ring marks front membership instead of a connecting line: unlike
+    blocks on the x-axis above, acc_app and acc_ddos carry no ordering for a
+    line to imply.
+
+    There is no averaged accuracy anywhere in this figure, which is part of
+    why it has one row per task rather than one panel overall.
     """
     arms = ordered_arms(df, baseline=baseline)
     styles = _arm_styles(arms)
@@ -368,8 +383,22 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     shown_k, _dropped_k = _facet_k_values(
         df['k'] if 'k' in df.columns else None, 'figure 1')
 
-    figure = _make_figure(len(TASKS), len(shown_k))
-    axes = figure.subplots(len(TASKS), len(shown_k), squeeze=False)
+    # D8's trade plane: a THIRD row below the two task rows, same k columns
+    # as the rest of the grid -- never a fixed literal panel count. Colour
+    # there encodes `blocks` (a continuous cost gradient) rather than arm
+    # identity, so it needs its own colormap/normalisation, built once here
+    # over every block count in the frame so the gradient reads consistently
+    # across every arm and every k column.
+    trade_row = len(TASKS)
+    trade_cmap = matplotlib.colormaps['viridis']
+    if 'blocks' in df.columns and len(df):
+        trade_norm = Normalize(vmin=float(df['blocks'].min()),
+                               vmax=float(df['blocks'].max()))
+    else:
+        trade_norm = Normalize(vmin=0.0, vmax=1.0)
+
+    figure = _make_figure(len(TASKS) + 1, len(shown_k))
+    axes = figure.subplots(len(TASKS) + 1, len(shown_k), squeeze=False)
 
     front_frames = []
     coverage = {}
@@ -403,6 +432,36 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                 axis.plot(plane_k['blocks'], plane_k[accuracy_column],
                           marker=marker, color=colour, linewidth=1.6,
                           markersize=5, label=arm, gid='front:{}'.format(arm))
+
+        # D8's trade plane: acc_app vs acc_ddos, coloured by blocks rather
+        # than by arm (that's the whole point of this row -- the memory
+        # cost of a trade-off, not which arm made it), with front
+        # membership shown by marker style (open ring vs faint fill)
+        # instead of a connecting line -- unlike the two rows above, there
+        # is no natural ordering between acc_app and acc_ddos for a line to
+        # imply. `front` (this arm's pooled 3-D front, computed once above)
+        # decides ring membership per point via its preserved index; a
+        # front point can still look "dominated" in this plane's 2-D
+        # picture, which is exactly the case this panel exists to explain.
+        front_index = set(front.index)
+        for col_index, k in enumerate(shown_k):
+            axis = axes[trade_row][col_index]
+            cell_rows = arm_rows if k is None else arm_rows[arm_rows['k'] == k]
+            on_front = cell_rows.index.isin(front_index)
+            off_rows = cell_rows[~on_front]
+            on_rows = cell_rows[on_front]
+            if len(off_rows):
+                axis.scatter(off_rows['acc_app'], off_rows['acc_ddos'],
+                             c=off_rows['blocks'], cmap=trade_cmap,
+                             norm=trade_norm, s=16, alpha=0.35, marker='o',
+                             linewidths=0, gid='trade-cells:{}'.format(arm))
+            if len(on_rows):
+                ring_colours = trade_cmap(trade_norm(
+                    on_rows['blocks'].to_numpy()))
+                axis.scatter(on_rows['acc_app'], on_rows['acc_ddos'],
+                             facecolors='none', edgecolors=ring_colours,
+                             s=70, marker='o', linewidths=1.8,
+                             gid='trade-front:{}'.format(arm))
 
         # 'stages' here is the MODEL's occupied match-table stage count
         # (campaign_data._FLOAT_COLUMNS) -- not `stage_depth` (pipeline
@@ -452,6 +511,14 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                            else '{} (k={})'.format(panel_title, k))
             axis.grid(True, alpha=0.3)
     axes[0][0].legend(fontsize='small', title='arm')
+
+    for col_index, k in enumerate(shown_k):
+        axis = axes[trade_row][col_index]
+        axis.set_xlabel('App accuracy (acc_app)')
+        axis.set_ylabel('DDoS accuracy (acc_ddos)')
+        axis.set_title('Trade plane: acc_ddos vs acc_app' if k is None
+                       else 'Trade plane: acc_ddos vs acc_app (k={})'.format(k))
+        axis.grid(True, alpha=0.3)
     figure.tight_layout()
 
     coverage_sentence = ''
@@ -485,12 +552,12 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                 ', '.join('k={}'.format(k) for k in _dropped_k)))
 
     caption = (
-        'Per-task accuracy against TCAM blocks: rows are the two tasks, '
-        'never averaged, and columns are odd feature counts k (1, 3, 5, '
-        '..., 17), with every arm of the sweep overlaid in every panel. A '
-        'single mean accuracy hides a model that is excellent on one task '
-        'and unusable on the other, and pooling every k into one panel '
-        'hides how the trade-off moves as k grows.{} '
+        'Per-task accuracy against TCAM blocks: the top two rows are the '
+        'two tasks, never averaged, and columns are odd feature counts k '
+        '(1, 3, 5, ..., 17), with every arm of the sweep overlaid in every '
+        'panel. A single mean accuracy hides a model that is excellent on '
+        'one task and unusable on the other, and pooling every k into one '
+        'panel hides how the trade-off moves as k grows.{} '
         'Faint points in a panel are that panel\'s (M, split, k) cells; '
         'the joined markers are the same k-slice of each arm\'s Pareto '
         'front, computed ONCE in 3-D on (acc_app, acc_ddos, -blocks) over '
@@ -502,8 +569,16 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         'into one 3-D Pareto computation, so a point from one split can '
         'dominate a point from another and the front is not a front of '
         'anything replicated; the coverage figure below is therefore over '
-        'that pooled surface, not a per-split or per-k comparison.{}'.format(
-            facet_sentence, coverage_sentence))
+        'that pooled surface, not a per-split or per-k comparison.{} '
+        'The THIRD row is the trade plane itself, acc_app against acc_ddos, '
+        'one panel per shown k: colour is TCAM blocks (a continuous cost '
+        'gradient, not arm identity), and an open ring marks a point that '
+        'sits on that arm\'s pooled 3-D Pareto front -- the only place this '
+        'figure can show WHY a front point exists even when it looks '
+        'dominated in both accuracy-vs-blocks rows above. It carries no '
+        'connecting line: unlike blocks on the x-axis of the rows above, '
+        'acc_app and acc_ddos have no ordering between them for a line to '
+        'imply.'.format(facet_sentence, coverage_sentence))
 
     data = (pd.concat(front_frames, ignore_index=True)
             if front_frames else pd.DataFrame())
