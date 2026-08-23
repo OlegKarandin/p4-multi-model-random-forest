@@ -1,5 +1,6 @@
 import math
 import dataclasses
+import pathlib
 
 from src.p4gen import evaluation as ev
 from src.p4gen import build_p4_script as bps
@@ -1037,3 +1038,52 @@ def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth
 
     assert usage.stages == 2
     assert usage.stage_depth == 3
+
+
+# ---------------------------------------------------------------------------
+# register_depth / register_count / register_sram_bits (Task 6).
+# ---------------------------------------------------------------------------
+
+
+def _single_catalog_feature_forest(labels, seed):
+    """A one-column forest, so selecting that single column under its own
+    catalog feature name always yields a real (nonempty) feature_intervals
+    entry -- deliberately shallow, like _forest_using_all_four_catalog_features,
+    so only the register-dependency chain (not the range-table packing) is
+    under test here."""
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+
+    rnd = np.random.RandomState(seed)
+    X = rnd.randint(0, 60000, size=(400, 1))
+    y = np.array([labels[(a // 30000) % len(labels)] for (a,) in X])
+    clf = RandomForestClassifier(n_estimators=1, max_depth=4,
+                                 random_state=seed, bootstrap=False).fit(X, y)
+    return bps.dt_thresholds_float_to_int(clf)
+
+
+def _app_forest():
+    return _single_catalog_feature_forest([0, 1, 2], seed=11)
+
+
+def _ddos_forest():
+    return _single_catalog_feature_forest([-1, 1], seed=13)
+
+
+def test_register_depth_and_count_over_the_selected_features():
+    """Spec 4.1/4.2. Depth is max readiness level -- how many stages elapse
+    before ANY classification table can run. It is NOT a capacity guarantee:
+    whether the registers FIT in those stages has never been measured here."""
+    usage = ev.multi_model_memory_evaluation(
+        _app_forest(), _ddos_forest(), ['flow_iat_max'], ['fwd_iat_max'], 'disjoint')
+    assert usage.register_depth == 4          # fwd_iat_max: gated + 2 registers
+    assert usage.register_count == 4          # 2 chains x (dependency + value)
+    assert usage.register_sram_bits == 4 * 16 * bps.MAX_NUM_FLOWS
+
+
+def test_max_num_flows_matches_the_p4_template_it_claims_to_mirror():
+    """build_p4_script.MAX_NUM_FLOWS is never read as a Python value today --
+    it only appears as literal text inside emitted P4. register_sram_bits is
+    its first live use, so pin it against the authoritative source."""
+    template = pathlib.Path('resources/p4_template.p4').read_text()
+    assert 'const bit<32> MAX_NUM_FLOWS = {};'.format(bps.MAX_NUM_FLOWS) in template

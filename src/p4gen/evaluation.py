@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import sklearn.metrics as mt
 from src.p4gen.build_p4_script import (
     MAX_CODEWORD_LENGTH,
+    MAX_NUM_FLOWS,
     TCAM_BLOCK_KEY_LENGTH,
     TCAM_BLOCKS_PER_STAGE,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
@@ -18,7 +19,11 @@ from src.p4gen.build_p4_script import (
     normalise_feature_name,
     tree_nodes_for,
 )
-from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
+from src.p4gen.feature_registers import (
+    FEATURE_REGISTER_CATALOG,
+    register_names_for,
+    register_width_bits,
+)
 from p4.range_expansion import range_entry_count
 
 TOFINO_PIPELINE_STAGES = 12   # Ref 5; hard, per Ref 7's tofino2h failure
@@ -63,12 +68,68 @@ class ResourceUsage:
   No __int__ is provided. StagePlan has one as a transitional shim;
   repeating it here would let a caller silently use the whole object where
   a count is meant.
+
+  register_depth, register_count and register_sram_bits (Task 6, Spec
+  4.1/4.2/4.3) report the Tofino `Register<>` state this design needs, on
+  top of the match-table quantities above:
+
+    register_depth     : max readiness level (feature_readiness_level) over
+                          the selected feature(s) -- how many pipeline
+                          stages elapse before the LAST register in any
+                          feature's dependency chain has run, i.e. before
+                          ANY classification table is even allowed to read
+                          a value. Reuses whatever readiness-level list the
+                          stage-placement code already computed; no new
+                          traversal.
+    register_count      : count of distinct Register<> instances
+                          (register_names_for) the selected feature(s)
+                          resolve to, deduplicated by name -- shared
+                          dependency registers (e.g. flow_last_arrival_time,
+                          reused by flow_iat_max and flow_iat_mean) are
+                          counted once, matching
+                          generate_P4_registers_and_apply's own by-name
+                          dedup, and deduplicated ACROSS both models too:
+                          registers are a single physical resource shared
+                          by the whole generated program regardless of
+                          'joint' vs 'disjoint' ENCODING (that choice only
+                          affects codeword/interval sharing, never register
+                          generation -- see build_p4_script.py's
+                          raw_feature_intervals, keyed on the union of both
+                          models' raw feature names).
+    register_sram_bits  : sum(register_width_bits(name) for each of the
+                          register_count registers) * MAX_NUM_FLOWS -- the
+                          total per-flow SRAM the catalog's registers
+                          occupy (every register is a MAX_NUM_FLOWS-deep
+                          array, one slot per tracked flow).
+                          CATALOG-ONLY and a KNOWN UNDER-COUNT: the P4
+                          generator always emits one more register,
+                          flow_forward_srcaddr_reg (bit<32>,
+                          build_p4_script.py:2018), unconditionally and
+                          OUTSIDE FEATURE_REGISTER_CATALOG by design --
+                          "neither is catalog-driven or routed through the
+                          register_order/_note_touch dedup machinery"
+                          (generate_P4_registers_and_apply's own docstring,
+                          build_p4_script.py:1801-1808; feature_registers.py's
+                          module docstring notes the same fact for the
+                          "flows" bookkeeping register it wires) -- this
+                          field misses that register's
+                          32 * MAX_NUM_FLOWS bits every time.
+
+  CAVEAT (Spec 4.3, applies to all three fields above): this reports
+  register DEPTH and COUNT (how many stages, how many registers), NOT
+  register CAPACITY. Tofino has a limited number of stateful ALUs per
+  stage, and whether these registers actually FIT has never been measured
+  in this repo -- do not read register_depth/register_count/
+  register_sram_bits as a feasibility guarantee.
   """
   stages: int           # occupied match-table stage COUNT
   blocks: int
   stage_depth: int      # pipeline DEPTH (StagePlan.depth), what the 12-stage ceiling reads
   range_entries: int
   ternary_entries: int
+  register_depth: int   # max readiness level over the selected feature(s); see class docstring
+  register_count: int   # distinct Register<> instances, deduplicated by name across both models
+  register_sram_bits: int  # catalog-only per-flow SRAM bits; under-counts flow_forward_srcaddr_reg
 
 
 def accuracy_metrics(y_true, y_pred, task):
@@ -518,9 +579,12 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
 
 def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                                   use_default_action_discount=False):
-  """Returns ResourceUsage(stages, blocks, stage_depth, range_entries, ternary_entries) -- three related but DISTINCT
-  quantities (F6), only the first two of which this function is the source
-  of truth for:
+  """Returns ResourceUsage(stages, blocks, stage_depth, range_entries, ternary_entries,
+  register_depth, register_count, register_sram_bits) -- FOUR related but DISTINCT
+  stage-index quantities (F6, extended by Task 6) are in play below: this
+  function is the source of truth for THREE of them (stages, stage_depth,
+  register_depth) -- the fourth, stages_real, comes from the real compiler,
+  not from this function (see its own paragraph below):
 
     stages      : OCCUPIED match-table stage count -- how many distinct
                   stage indices actually hold a table from either pool
@@ -537,9 +601,19 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
                   max(range_plan.depth, ternary_plan.depth) so an
                   (unrealistic) model with no ternary tables at all still
                   reports a sane depth. M2 example: 6.
+    register_depth : max readiness level (feature_readiness_level) over the
+                  selected feature(s) -- how many stages elapse before the
+                  LAST register a classification table depends on has run.
+                  Related to stage_depth (both are stage-index quantities
+                  gated by the same register-dependency model) but NOT the
+                  same number: stage_depth also accounts for crossbar
+                  packing/spill of the match tables themselves, which
+                  register_depth does not. See ResourceUsage's own
+                  docstring for register_depth/register_count/
+                  register_sram_bits and their capacity caveat (Spec 4.3).
     range_entries  : count of physical rows across all range tables
     ternary_entries: count of ternary codewords across all classification trees
-    (a third quantity, `stages_real` -- the REAL compiler's whole-program
+    (a fifth quantity, `stages_real` -- the REAL compiler's whole-program
     stage count including parsing/bookkeeping overhead this function does
     not model at all -- is NOT returned here; see p4_compile.parse_compile_logs,
     which stores it. M2 example: 9. `stages` and `stages_real` sit side by
@@ -576,6 +650,7 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
         codewords, feature_intervals, use_default_action_discount=use_default_action_discount)
 
     range_levels = readiness_levels_for(feature_intervals)
+    register_names = register_names_for(feature_intervals)
 
   elif encoding == 'disjoint':
 
@@ -603,9 +678,22 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
 
     # Each model keeps its own intervals here, so levels must be derived per
     # model and concatenated in the SAME order the specs were.
+    feature_intervals_app = get_feature_intervals(clf_app, selected_features_app)
+    feature_intervals_ddos = get_feature_intervals(clf_ddos, selected_features_ddos)
     range_levels = (
-        readiness_levels_for(get_feature_intervals(clf_app, selected_features_app)) +
-        readiness_levels_for(get_feature_intervals(clf_ddos, selected_features_ddos)))
+        readiness_levels_for(feature_intervals_app) +
+        readiness_levels_for(feature_intervals_ddos))
+    # Registers, unlike range_levels, must be deduplicated ACROSS both
+    # models: they are a single physical Register<> array shared by the
+    # whole generated program regardless of 'joint' vs 'disjoint' ENCODING
+    # (that choice only affects codeword/interval sharing -- see
+    # build_p4_script.py's raw_feature_intervals, keyed on the union of
+    # both models' raw feature names). One register_names_for call over the
+    # combined feature names dedupes correctly; two separate calls
+    # concatenated would not (each call only dedupes within itself), and
+    # would double-count a register shared by both models.
+    register_names = register_names_for(
+        list(feature_intervals_app) + list(feature_intervals_ddos))
 
   else:
     raise ValueError(
@@ -658,9 +746,23 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
   # depth 0), not something the real M2-shaped models ever hit.
   stage_depth = max(range_plan.depth, ternary_plan.depth)
 
+  # register_depth reuses range_levels (already computed above on both
+  # branches, positionally aligned with feature_intervals) rather than
+  # re-traversing anything; register_count/register_sram_bits reuse
+  # register_names, likewise already computed above on both branches. See
+  # ResourceUsage's docstring for the Spec 4.3 capacity caveat these three
+  # fields carry.
+  register_depth = max(range_levels, default=0)
+  register_count = len(register_names)
+  register_sram_bits = sum(
+      register_width_bits(name) for name in register_names) * MAX_NUM_FLOWS
+
   return ResourceUsage(
       stages=range_plan.occupied + ternary_plan.occupied,
       blocks=range_blocks + ternary_blocks,
       stage_depth=stage_depth,
       range_entries=range_entries,
-      ternary_entries=ternary_entries)
+      ternary_entries=ternary_entries,
+      register_depth=register_depth,
+      register_count=register_count,
+      register_sram_bits=register_sram_bits)

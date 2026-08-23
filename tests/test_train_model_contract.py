@@ -253,7 +253,8 @@ def test_stage_depth_over_the_tofino_ceiling_records_stages_violation_not_the_ot
         tm, 'multi_model_memory_evaluation',
         lambda *a, **k: ev.ResourceUsage(
             stages=1, blocks=1, stage_depth=over_ceiling_depth,
-            range_entries=1, ternary_entries=1))
+            range_entries=1, ternary_entries=1,
+            register_depth=1, register_count=0, register_sram_bits=0))
 
     # Every trial is over-ceiling, so nothing is feasible -- same shape as
     # test_crossbar_key_too_wide_records_crossbar_violation_not_codeword.
