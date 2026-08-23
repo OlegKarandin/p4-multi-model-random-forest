@@ -1,0 +1,7 @@
+# Force LF line endings for shell scripts regardless of local autocrlf
+# settings. This repo is authored on Windows (core.autocrlf=true); without
+# this, a future edit could silently reintroduce CRLF into a script meant to
+# run inside a Linux devcontainer/Codespace, which breaks the shebang line
+# ("/usr/bin/env bash\r": No such file or directory) and any embedded \r in
+# heredocs/here-strings.
+*.sh text eol=lf

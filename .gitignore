@@ -167,6 +167,7 @@ pcap/
 *_p4rt.txt
 *.p4i
 *.json
+!.devcontainer/devcontainer.json
 p4/*.p4
 !p4/p4_code_RF_models_shared.p4
 p4/tofino_spike/tna_*.p4

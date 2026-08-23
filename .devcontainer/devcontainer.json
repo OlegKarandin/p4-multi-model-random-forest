@@ -1,0 +1,63 @@
+// GitHub Codespace devcontainer for rerunning the per-task-objective ML
+// campaign (spec docs/superpowers/specs/2026-08-23-entries-f1-and-campaign-
+// reporting-design.md §8, plan Tasks 26-29). Builds the conda env that
+// .devcontainer/environment-linux.yml defines (name: thesis-codespace, see
+// that file for the pinned package list and why it exists separately from
+// the Windows-pinned repo-root environment.yml). .devcontainer/postCreate.sh
+// creates/activates that env and fetches+verifies the two datasets from
+// Codespace secrets. .devcontainer/run_campaign.sh is the separate,
+// NOT-auto-invoked script that actually launches the several-hour compute
+// campaign under nohup (Tasks 28-29 are out of scope for automatic
+// execution -- they spend real money and need a human's explicit go-ahead).
+//
+// NOTE on idle timeout (spec D11 / task-27-brief Step 1: Codespaces maximum,
+// 240 minutes): there is NO devcontainer.json field for this. Confirmed
+// 2026-08-23 against the containers.dev json-reference (hostRequirements
+// covers cpus/memory/storage/gpu only) and GitHub's own "Setting your
+// timeout period for GitHub Codespaces" docs, which describe idle timeout
+// as a personal-settings / org-policy / `gh codespace create --idle-timeout`
+// value only -- never a per-repo dev container setting. postCreate.sh prints
+// a reminder at the end of setup; whoever creates the codespace for the
+// actual rerun (Task 28/29) must pass `--idle-timeout 240m` to
+// `gh codespace create`, or set a 240-minute default under their GitHub
+// Settings > Codespaces, themselves.
+{
+  "name": "thesis-campaign",
+  "image": "mcr.microsoft.com/devcontainers/miniconda:3",
+
+  // Gates which Codespace machine sizes are offered/selected. A 2-core
+  // machine would give feature_selection.py's
+  // `max_workers = min(n_splits, cpu_count - 1)` only 1 worker against the
+  // pilot's 11-split runs; 16 cores matches the plan's requirement.
+  "hostRequirements": {
+    "cpus": 16
+  },
+
+  // Prompts whoever creates the codespace to supply these if not already
+  // configured as an account/org/repo Codespace secret, without ever
+  // storing a value in this file (D11: a signed URL is a credential).
+  // postCreate.sh fails loudly -- non-zero exit, clear stderr message -- if
+  // either is unset when a (re-)download is actually needed.
+  "secrets": {
+    "THESIS_DATA_URL_APP": {
+      "description": "Signed OneDrive URL for resources/apps_flow_features.csv (120,758,907 bytes). Signed URLs expire -- rotate and re-set this secret if postCreate.sh reports a download or checksum failure."
+    },
+    "THESIS_DATA_URL_DDOS": {
+      "description": "Signed OneDrive URL for resources/Wednesday-workingHours.pcap_ISCX.csv (285,642,925 bytes). Signed URLs expire -- rotate and re-set this secret if postCreate.sh reports a download or checksum failure."
+    }
+  },
+
+  // Runs once per codespace (after the container exists and the user's
+  // secrets are available -- unlike onCreateCommand/updateContentCommand,
+  // which run during prebuilds where secrets are deliberately NOT injected).
+  // Invoked via `bash` explicitly rather than relying on the script's
+  // execute bit, since this repo is authored on Windows where git checkouts
+  // routinely drop the +x bit.
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  }
+}
