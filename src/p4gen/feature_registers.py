@@ -451,16 +451,10 @@ def register_names_for(features, catalog=None):
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
 
-  # If features is a dict-like object (e.g., FEATURE_REGISTER_CATALOG), use keys()
-  if hasattr(features, 'keys'):
-    feature_names = features.keys()
-  else:
-    feature_names = features
-
   register_order = []
   seen = set()
 
-  for feature_name in feature_names:
+  for feature_name in features:
     # Normalize the feature name to match catalog keys
     normalized_name = normalise_feature_name(feature_name)
     entry = catalog.get(normalized_name)

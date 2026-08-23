@@ -21,6 +21,7 @@ import pytest
 
 from src.p4gen import build_p4_script as bps
 from src.p4gen.build_p4_script import generate_P4_registers_and_apply
+from src.p4gen import feature_registers as fr
 from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 
 
@@ -705,8 +706,6 @@ def test_resolving_flow_iat_mean_alone_auto_executes_its_dependency():
 
 
 # Tests for register_names_for and register_width_bits (Task 5)
-import src.p4gen.feature_registers as fr
-
 
 def test_register_names_for_deduplicates_shared_dependency_registers():
   """flow_last_arrival_time serves flow_iat_max AND flow_iat_mean, so the
@@ -727,3 +726,37 @@ def test_the_whole_catalog_needs_twenty_one_distinct_registers():
   """Spec 4.2: at k=17 the true figure is 20, not the reviewer's 17.
   Over all 18 features it is 21 -- 18 value + 3 shared *_last_arrival_time."""
   assert len(fr.register_names_for(fr.FEATURE_REGISTER_CATALOG)) == 21
+
+
+def test_register_width_bits_happy_path():
+  """register_width_bits returns the correct width for a known register name."""
+  # flow_last_arrival_time is a known register with width 16
+  assert fr.register_width_bits("flow_last_arrival_time") == 16
+  # flow_iat_max is also a known register with width 16
+  assert fr.register_width_bits("flow_iat_max") == 16
+  # All registers in the catalog have width 16
+  assert fr.register_width_bits("fwd_packet_length_max") == 16
+
+
+def test_register_width_bits_miss_path():
+  """register_width_bits raises ValueError for an unknown register name."""
+  with pytest.raises(ValueError, match="Register 'totally_unknown_register' not found"):
+    fr.register_width_bits("totally_unknown_register")
+
+
+def test_register_names_for_catalog_miss_is_silently_skipped():
+  """When a feature name is not in the catalog after normalization,
+  register_names_for silently skips it (consistent with feature_readiness_level
+  precedent). This test ensures the skip behavior is preserved and any future
+  refactor cannot accidentally change it to a KeyError without notice."""
+  # Mix a known feature with a completely unknown feature
+  features = ["flow_iat_max", "totally_unknown_feature"]
+  result = fr.register_names_for(features)
+  # Should only contain registers for flow_iat_max, not raise or include the unknown
+  assert "flow_last_arrival_time" in result
+  assert "flow_iat_max" in result
+  assert len(result) == 2  # Only the two registers from flow_iat_max
+
+  # All-unknown case should return empty tuple
+  result_all_unknown = fr.register_names_for(["unknown_a", "unknown_b", "unknown_c"])
+  assert result_all_unknown == ()
