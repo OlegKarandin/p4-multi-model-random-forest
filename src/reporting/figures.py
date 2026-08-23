@@ -1419,9 +1419,14 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     body_lines = [
         'Block boundary: TERNARY_MATCHING_ENTRIES_PER_BLOCK = {0} physical '
         'TCAM rows per block (src/p4gen/build_p4_script.py:21) is the '
-        'rounding step separating entries-saving from blocks-saving below; '
-        'blocks = ceil(range_entries / {0}) + ceil(ternary_entries / '
-        '{0}).'.format(_TCAM_ROWS_PER_BLOCK),
+        'rounding unit behind blocks-saving below. blocks is NOT '
+        'ceil(sum(entries) / {0}): range_matching_resource_usage and '
+        'ternary_matching_resource_usage (src/p4gen/evaluation.py) round '
+        'up PER FEATURE (range) and PER TREE (ternary) independently '
+        'before summing, and the ternary side further multiplies each '
+        'tree by a codeword-width factor -- so blocks can move for '
+        'reasons entries alone does not capture, on top of the '
+        'block-size rounding itself.'.format(_TCAM_ROWS_PER_BLOCK),
         '',
         (_markdown_table(_project_columns(
             shown_summary, _ENTRIES_VS_BLOCKS_SUMMARY_COLUMNS))
