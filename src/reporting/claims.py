@@ -161,9 +161,25 @@ suite checks Holm against a hand-computed table always, and against
 `statsmodels.stats.multitest.multipletests` wherever statsmodels happens to
 be importable.
 
-`calculate_hypervolume_2d` (`analysis.py`) is deliberately NOT ported: its
-reference point is arbitrary, a 3-D version would need two more arbitrary
-coordinates, and `coverage_ratio_3d` answers the same question without one.
+**`hypervolume_2d` and the per-M reference point (D5, amended by A2).** An
+earlier note here said `calculate_hypervolume_2d` (`analysis.py`) was
+deliberately not ported, because its reference point -- the published fixed
+`(0.5, 100)` -- was arbitrary. A2 dissolves that objection instead of
+accepting it: `hypervolume_2d` takes a `reference` argument, and the caller
+passes `(0.5, M)` per M-value rather than a single constant. A fixed 100
+would silently discard most of the front once M sweeps up to this plan's
+150-block grid point; a per-M budget stays meaningful at every M. The
+deliberate cost is comparability -- this module's hypervolume numbers do
+NOT reproduce the published Fig. results_2a, which used the fixed (0.5,
+100) reference, and that divergence is reported, not hidden. Hypervolume
+is computed per task on `(acc_<task>, blocks)` pairs (`TASK_FRONT_OBJECTIVES`),
+never on the two tasks' accuracies averaged together -- that averaging
+(`extract_approach_data`'s `avg_accuracy = (acc_app + acc_ddos) / 2` in the
+deleted module) is exactly what this whole rerun exists to undo, since it
+hides the k-dependent, per-task finding behind a single blended number.
+Report hypervolume as gain relative to the independent arm, matching the
+paper's framing, even though the absolute values differ from what is
+published.
 """
 import numpy as np
 import pandas as pd
@@ -193,6 +209,20 @@ FRONT_OBJECTIVES = ('acc_app', 'acc_ddos', 'blocks')
 # True = larger is better. Blocks are a cost, so the front is computed on
 # (acc_app, acc_ddos, -blocks) as the spec states.
 FRONT_MAXIMIZE = (True, True, False)
+
+# Per-task 2-D objective pairs for `hypervolume_2d` (D5, amended by A2).
+# Deliberately SEPARATE from FRONT_OBJECTIVES, which stays 3-D (D4) -- this
+# is not a reuse or a mutation of it. Each task gets its own (accuracy,
+# blocks) pair rather than the deleted module's averaged accuracy, because
+# averaging the two tasks together is exactly what this rerun exists to undo.
+TASK_FRONT_OBJECTIVES = {
+    'app': ('acc_app', 'blocks'),
+    'ddos': ('acc_ddos', 'blocks'),
+}
+
+# True = larger is better, applied to each TASK_FRONT_OBJECTIVES pair:
+# maximize accuracy, minimize blocks.
+TASK_FRONT_MAXIMIZE = (True, False)
 
 DEFAULT_METRICS = ('acc_app', 'f1_app', 'acc_ddos', 'f1_ddos', 'blocks')
 
@@ -371,6 +401,67 @@ def coverage_ratio_3d(a, b, objectives=FRONT_OBJECTIVES, maximize=FRONT_MAXIMIZE
     else:
         covered = (a_points[:, None, :] >= b_points[None, :, :]).all(axis=2).any(axis=0)
     return float(covered.mean())
+
+
+def hypervolume_2d(front, reference):
+    """2-D hypervolume of `front` above `reference`, in the (accuracy,
+    blocks) plane -- accuracy maximised, blocks minimised (D5, amended by
+    A2).
+
+    `front` is a plain sequence of `(accuracy, blocks)` pairs -- this
+    function is data-source-agnostic; a caller extracts the pairs for one
+    task from a campaign frame before calling it. `reference` is
+    `(min_accuracy, max_blocks)`: the area credited is the region that
+    beats the reference on BOTH axes, i.e. `accuracy >= reference[0] and
+    blocks <= reference[1]`.
+
+    This recovers the shape of the deleted `analysis.calculate_hypervolume_2d`
+    but fixes three defects rather than reproducing them:
+
+    1. Boundary-inclusive, not strict. The deleted version filtered with
+       `acc > ref[0]` and `mem < ref[1]`, silently dropping any solution
+       landing exactly on the reference budget. A solution exactly on the
+       boundary is kept here; it simply contributes zero width (or zero
+       height) to the sum, which falls out of the arithmetic on its own
+       rather than needing a special case.
+    2. NaN, not 0, for an EMPTY front. Matches `coverage_ratio_3d`'s
+       convention for its empty-`b` case: 0 would read as "a real
+       measurement of zero gain", which is a different, false claim from "no
+       front was measured here" -- e.g. every cell at this (M, task)
+       infeasible. This is distinct from a NON-empty front where no point
+       reaches the reference: that IS a real, measurable 0 (no solution
+       beats the budget on both axes), exactly `coverage_ratio_3d`'s
+       "`a` dominates nothing" case, and is returned as `0.0`, not NaN.
+    3. No hardcoded reference. The deleted version defaulted to the fixed,
+       published `(0.5, 100)`. A2 requires a PER-M reference `(0.5, M)`
+       instead -- the caller passes it in; this function does not assume a
+       value.
+
+    Returns a float. `float('nan')` only when `front` itself is empty;
+    `0.0` (not NaN) when `front` has points but none reach the reference on
+    both axes.
+    """
+    if not front:
+        return float('nan')
+
+    ref_accuracy, ref_blocks = reference
+    valid = [(accuracy, blocks) for accuracy, blocks in front
+             if accuracy >= ref_accuracy and blocks <= ref_blocks]
+    if not valid:
+        return 0.0
+
+    # Sort by blocks ascending, then sweep from the most expensive (closest
+    # to the reference budget) down to the cheapest, accumulating the
+    # rectangle each point adds over the previous one's blocks level.
+    sorted_front = sorted(valid, key=lambda point: point[1])
+    hv = 0.0
+    prev_blocks = ref_blocks
+    for accuracy, blocks in reversed(sorted_front):
+        width = prev_blocks - blocks
+        height = accuracy - ref_accuracy
+        hv += width * height
+        prev_blocks = blocks
+    return hv
 
 
 # ---------------------------------------------------------------------------

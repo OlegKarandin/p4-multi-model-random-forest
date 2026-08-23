@@ -10,6 +10,8 @@ what `claims.py` consumes: `arm_slug` as the real per-arm identity,
 `(M, split, k)` as the pairing key, and numeric `acc_app` / `acc_ddos` /
 `blocks`.
 """
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -27,6 +29,7 @@ from src.reporting.claims import (
     default_contrast_family,
     delta_frontier,
     holm_bonferroni,
+    hypervolume_2d,
     noninferiority_tests,
     paired_tests,
     pareto_front_3d,
@@ -318,6 +321,45 @@ def test_coverage_ratio_3d_raises_rather_than_absorbing_a_nan_point():
 
     with pytest.raises(ValueError):
         coverage_ratio_3d(a, b)
+
+
+# ---------------------------------------------------------------------------
+# hypervolume_2d (D5 as amended by A2: per-M reference point)
+# ---------------------------------------------------------------------------
+
+def test_hypervolume_2d_is_the_area_above_the_per_M_reference_point():
+    """A2: reference point (0.5, M), not the published (0.5, 100). At M=150
+    a fixed 100 would silently discard most of the front. Consequence: the
+    paper's Fig. results_2a numbers are NOT reproducible by this code."""
+    front = [(0.9, 10.0), (0.8, 5.0)]
+    # (0.9-0.5)*(25-10) + (0.8-0.5)*(10-5) = 6.0 + 1.5
+    assert hypervolume_2d(front, reference=(0.5, 25)) == pytest.approx(7.5)
+
+
+def test_a_solution_exactly_on_the_reference_budget_is_kept():
+    """The ported function filtered with a strict `mem < ref`, silently
+    dropping every solution landing exactly on budget at M=100."""
+    assert hypervolume_2d([(0.9, 25.0)], reference=(0.5, 25)) == 0.0
+    assert hypervolume_2d([(0.9, 24.0)], reference=(0.5, 25)) > 0.0
+
+
+def test_an_empty_front_has_an_undefined_hypervolume_not_zero():
+    """coverage_ratio_3d's convention: NaN for undefined, not a number that
+    reads as a real measurement. The original returned integer 0."""
+    assert math.isnan(hypervolume_2d([], reference=(0.5, 25)))
+
+
+def test_a_non_empty_front_that_never_reaches_the_reference_is_a_real_zero_not_nan():
+    """Distinct from the empty-front case above. An empty `front` means no
+    data was measured at all (undefined -- NaN). A front with points, none
+    of which reach the reference budget, means the measurement WAS taken
+    and the answer is a genuine zero -- exactly `coverage_ratio_3d`'s
+    "`a` dominates nothing" case, which returns 0.0 rather than NaN even
+    though `a` contributed nothing."""
+    front = [(0.4, 10.0), (0.3, 30.0)]  # both below ref_accuracy=0.5
+    result = hypervolume_2d(front, reference=(0.5, 25))
+    assert result == 0.0
+    assert not math.isnan(result)
 
 
 # ---------------------------------------------------------------------------
