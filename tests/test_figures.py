@@ -848,3 +848,11 @@ def test_render_all_never_draws_the_average_of_the_two_task_accuracies(tmp_path)
         if deliverable.figure is None:
             continue
         assert not _contains(_drawn_values(deliverable.figure), BASE_ACC_MEAN)
+
+
+def test_the_log_helper_prints_to_stdout(capsys):
+    """The `_log()` helper wraps print so Task 16 has a single call site
+    to use for announcing dropped facets."""
+    figures._log('test message')
+    out = capsys.readouterr().out
+    assert 'test message' in out

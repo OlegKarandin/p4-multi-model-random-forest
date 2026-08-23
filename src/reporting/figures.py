@@ -144,6 +144,12 @@ class Deliverable:
     paths: Tuple[str, ...] = field(default=())
 
 
+def _log(message):
+    """Log a message to stdout. Used to announce which facets were computed
+    but not shown in the deliverable figures."""
+    print(message)
+
+
 # ---------------------------------------------------------------------------
 # Arms, labels and per-arm styling
 # ---------------------------------------------------------------------------
