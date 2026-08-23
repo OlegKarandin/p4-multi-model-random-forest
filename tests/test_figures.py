@@ -77,7 +77,12 @@ def _features_at(split, task, k):
 
 
 def _row(arm_slug='joint-d005', M=25, split=0, k=5,
-         acc_app=0.90, acc_ddos=0.50, blocks=40.0, stages=3.0):
+         acc_app=0.90, acc_ddos=0.50, blocks=40.0, stages=3.0,
+         f1_app=None, f1_ddos=None):
+    if f1_app is None:
+        f1_app = acc_app - 0.02
+    if f1_ddos is None:
+        f1_ddos = acc_ddos - 0.02
     delta_num, is_inf = _DELTA_BY_SLUG[arm_slug]
     return {
         'arm_slug': arm_slug,
@@ -85,6 +90,7 @@ def _row(arm_slug='joint-d005', M=25, split=0, k=5,
         'method': 'single' if arm_slug == INDEPENDENT_ARM_SLUG else 'multi',
         'M': M, 'split': split, 'k': k,
         'acc_app': acc_app, 'acc_ddos': acc_ddos,
+        'f1_app': f1_app, 'f1_ddos': f1_ddos,
         'blocks': blocks, 'stages': stages,
         'delta_align_num': delta_num, 'delta_align_is_inf': is_inf,
         'features_app': _features_at(split, 'app', k),
