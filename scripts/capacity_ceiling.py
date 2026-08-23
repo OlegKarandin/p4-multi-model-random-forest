@@ -284,7 +284,23 @@ def collect():
                         'split_idx': split_idx,
                         'split_seed': seed,
                         'joint_codeword_length': joint_len,
-                        'joint_within_limit': joint_len <= MAX_CODEWORD_LENGTH,
+                        # `measure` can return None for TWO independent
+                        # reasons: the codeword itself exceeds
+                        # MAX_CODEWORD_LENGTH, OR (F3) the per-stage crossbar
+                        # rejects the table on byte width (CrossbarKeyTooWide)
+                        # regardless of codeword length. within_limit has to
+                        # fold in `joint is not None` or a crossbar-rejected
+                        # cell with a short codeword would be reported
+                        # feasible with every downstream stat (stages/blocks/
+                        # stage_depth) blank -- this is what `feasible` in
+                        # `select()` is filtered on. Task 21: this was
+                        # measured against the real 294-row campaign
+                        # measurement and found LATENT, NOT LIVE -- 0 of 294
+                        # rows are codeword-feasible-but-crossbar-rejected, so
+                        # this fix changes no adopted value (the (11, 14)
+                        # decision already on record is unaffected).
+                        'joint_within_limit': joint_len <= MAX_CODEWORD_LENGTH
+                                              and joint is not None,
                         'joint_stages': joint.stages if joint else None,
                         'joint_blocks': joint.blocks if joint else None,
                         # F5/F6: pipeline DEPTH (StagePlan.depth), not the
@@ -297,7 +313,10 @@ def collect():
                         'disjoint_codeword_length_app': app_len,
                         'disjoint_codeword_length_ddos': ddos_len,
                         'disjoint_codeword_length': disjoint_len,
-                        'disjoint_within_limit': disjoint_len <= MAX_CODEWORD_LENGTH,
+                        # Same fold-in as joint_within_limit above, and the
+                        # same "latent, not live" measurement applies to it.
+                        'disjoint_within_limit': disjoint_len <= MAX_CODEWORD_LENGTH
+                                                 and disjoint is not None,
                         'disjoint_stages': disjoint.stages if disjoint else None,
                         'disjoint_blocks': disjoint.blocks if disjoint else None,
                         'disjoint_stage_depth': disjoint.stage_depth if disjoint else None,
