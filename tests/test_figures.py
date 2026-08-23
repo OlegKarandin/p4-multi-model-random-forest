@@ -363,6 +363,18 @@ def test_deliverable_1_caption_discloses_that_the_front_pools_splits_and_m():
     assert ('block budget' in caption or ' m ' in caption or 'm,' in caption)
 
 
+def test_deliverable_1_reports_coverage_in_both_directions():
+    """The paper commits in writing: 'C(A,B) != C(B,A), making it essential
+    to evaluate both directions' (main.tex:593). Reporting one is a
+    regression against a published methodological commitment."""
+    deliverable = figures.figure_1_accuracy_vs_blocks(_spread_campaign())
+    caption = deliverable.caption
+    assert 'covers' in caption and 'covered by' in caption
+    assert deliverable.data is not None
+    assert {'coverage_of_baseline', 'coverage_by_baseline'} <= set(
+        deliverable.data.columns)
+
+
 def test_deliverable_1_writes_a_pdf_a_data_csv_and_a_caption(tmp_path):
     deliverable = figures.figure_1_accuracy_vs_blocks(
         _spread_campaign(), output_dir=str(tmp_path))

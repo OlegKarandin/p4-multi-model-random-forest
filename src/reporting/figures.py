@@ -362,10 +362,33 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                    ('arm_slug', 'M', 'split', 'k', 'blocks', 'stages',
                     'acc_app', 'acc_ddos')
                    if column in front.columns]
-        front_frames.append(front.loc[:, carried])
+        arm_frame = front.loc[:, carried].copy()
 
+        # Zitzler's C metric is asymmetric: C(A, B) != C(B, A). Reporting
+        # only "how much of the baseline this arm covers" (as a previous
+        # refactor, P7d, left it) hides the other, equally load-bearing
+        # direction -- "how much of this arm the baseline covers" -- which
+        # is exactly the number that shows a joint arm's front is not
+        # merely competitive but strictly dominates the baseline's (see the
+        # caption below). Both are computed and both land in `.data`, not
+        # just the caption string, so a reader of the CSV alone still sees
+        # the asymmetry.
         if baseline_front is not None and arm != baseline:
-            coverage[arm] = claims.coverage_ratio_3d(front, baseline_front)
+            coverage_of_baseline = claims.coverage_ratio_3d(front, baseline_front)
+            coverage_by_baseline = claims.coverage_ratio_3d(baseline_front, front)
+            coverage[arm] = (coverage_of_baseline, coverage_by_baseline)
+            arm_frame['coverage_of_baseline'] = coverage_of_baseline
+            arm_frame['coverage_by_baseline'] = coverage_by_baseline
+        else:
+            # The baseline's own rows (and any arm when there is no
+            # baseline front to compare against): coverage of/by itself is
+            # not a meaningful quantity (`coverage_ratio_3d(A, A) == 0` by
+            # construction, which would misleadingly read as "the baseline
+            # covers none of itself"), so leave it undefined rather than
+            # print a number nobody should compare.
+            arm_frame['coverage_of_baseline'] = float('nan')
+            arm_frame['coverage_by_baseline'] = float('nan')
+        front_frames.append(arm_frame)
 
     for axis, (_, _, short_name, panel_title, _) in zip(axes, TASKS):
         axis.set_xlabel('TCAM blocks')
@@ -382,11 +405,19 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
             'coverage ratios are computed.'.format(baseline))
     elif coverage:
         coverage_sentence = (
-            ' Coverage ratio (Zitzler C, 3-D, strict) of the {} front by each '
-            'joint arm: {}.'.format(
+            ' Coverage ratio (Zitzler C, 3-D, strict) is asymmetric -- '
+            'C(A, B) != C(B, A) -- so both directions are reported for '
+            'each joint arm against the {} baseline: {}. A high forward '
+            'value paired with a near-zero reverse value (e.g. covers 83% '
+            'of the baseline while being covered by 0% of it) is a much '
+            'stronger claim than either number alone -- it means the arm\'s '
+            'front strictly dominates the baseline\'s, not merely that it '
+            'is competitive.'.format(
                 baseline,
-                ', '.join('{} {:.0%}'.format(arm, value)
-                          for arm, value in coverage.items())))
+                ', '.join(
+                    '{} covers {:.0%} of {} and is covered by {:.0%} of it'
+                    .format(arm, of_baseline, baseline, by_baseline)
+                    for arm, (of_baseline, by_baseline) in coverage.items())))
 
     caption = (
         'Per-task accuracy against TCAM blocks, one panel per task, with '
