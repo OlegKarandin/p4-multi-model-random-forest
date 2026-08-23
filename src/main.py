@@ -100,7 +100,7 @@ def parse_args(argv=None):
              "[25,40,50,60,75,90,100] when omitted, so a pilot run is a "
              "command-line flag rather than an edit to this file")
     parser.add_argument(
-        "--n-splits", dest="n_splits", type=int, default=None,
+        "--n-splits", dest="n_splits", type=_parse_n_splits, default=None,
         help="number of CV splits per (arm, M) cell in compute mode. "
              "Defaults to today's value (15) when omitted")
     parser.add_argument(
@@ -122,6 +122,15 @@ def _parse_M_grid(value):
     pilot cell as short as --M 25 while a partial sweep stays one greppable
     token."""
     return [int(v) for v in value.split(',')]
+
+
+def _parse_n_splits(value):
+    """--n-splits's argparse type: positive integer number of CV splits.
+    Rejects zero or negative values with an error message that names the flag."""
+    n = int(value)
+    if n <= 0:
+        raise argparse.ArgumentTypeError("--n-splits must be positive, got {!r}".format(value))
+    return n
 
 
 def implement_tree_models_in_P4(clf_app, clf_ddos, selected_features,

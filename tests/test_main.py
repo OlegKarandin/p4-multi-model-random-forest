@@ -468,6 +468,26 @@ def test_n_splits_flag_parses_as_an_int():
     assert m.parse_args(["--n-splits", "3"]).n_splits == 3
 
 
+def test_n_splits_flag_rejects_zero_with_error_mentioning_flag_name(capsys):
+    """--n-splits 0 must fail with an error message that names the flag,
+    not fail incidentally inside ProcessPoolExecutor with a cryptic message."""
+    import pytest
+    with pytest.raises(SystemExit):
+        m.parse_args(["--n-splits", "0"])
+    captured = capsys.readouterr()
+    assert 'n_splits' in captured.err or '--n-splits' in captured.err
+
+
+def test_n_splits_flag_rejects_negative_with_error_mentioning_flag_name(capsys):
+    """--n-splits with a negative value must fail with an error message that
+    names the flag, not fail incidentally inside ProcessPoolExecutor."""
+    import pytest
+    with pytest.raises(SystemExit):
+        m.parse_args(["--n-splits", "-1"])
+    captured = capsys.readouterr()
+    assert 'n_splits' in captured.err or '--n-splits' in captured.err
+
+
 def test_omitting_M_and_n_splits_reproduces_todays_grid_exactly():
     """The property that matters most: a campaign invocation with no --M or
     --n-splits must run the exact same grid it runs today. A test asserting
