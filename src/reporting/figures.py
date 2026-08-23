@@ -9,8 +9,8 @@ every statistic, and this module does one thing: render them.
 |---|---|---|
 | 1 | per-task accuracy vs blocks plus the acc_app-vs-acc_ddos trade plane (D8), all arms overlaid | the headline comparison, never averaged |
 | 2 | delta frontier: d blocks and d rel-error per task vs delta, mean +/- CI | what the tolerance buys |
-| 3 | substitution scatter with quadrants, one panel per arm | the reviewer's objection, answered directly |
-| 4 | paired per-task test table, Holm-corrected | significance |
+| 3 | substitution scatter with quadrants, accuracy and F1 rows per arm column | the reviewer's objection, answered directly |
+| 4 | paired per-task test table, Holm-corrected -- superiority AND non-inferiority families | significance |
 | 5 | ablation table: constraint cost vs alignment cost | where the savings come from |
 | 6 | appendix: capacity-ceiling rederivation (B.7) | replaces "chosen manually" |
 | 7 | appendix: elimination order per split | reproducibility |
@@ -75,7 +75,6 @@ to see in the figure, not to hide.
 """
 import contextlib
 import io
-import math
 import os
 from dataclasses import dataclass, field, replace
 from typing import Optional, Tuple
@@ -108,14 +107,27 @@ TASKS = (
     ('ddos', 'acc_ddos', 'DDoS', 'DDoS detection', 'features_ddos'),
 )
 
-# Figure 2's reported quantities: one relative-error change per task, plus
-# the block delta. Derived from TASKS rather than spelled out, so a third
-# task would gain a panel here too and the two lists cannot drift apart.
-# Deliberately one panel per task rather than one shared axis.
+# Figure 2's reported quantities: one accuracy relative-error change per
+# task, one F1 relative-error change per task, plus the block delta. Derived
+# from TASKS rather than spelled out, so a third task would gain a panel
+# here too and the lists cannot drift apart. Deliberately one panel per task
+# per metric rather than one shared axis.
+#
+# `TASKS` (the single place tasks are enumerated) has no F1 column field --
+# widening its 5-tuple shape would ripple into every site that unpacks it --
+# so the F1 column name is derived from each task's `key` by the same
+# string convention the campaign CSV already uses (`acc_<key>` / `f1_<key>`):
+# `F1_REL_ERROR_PREFIX + key` reads as `'f1_' + key`. This is a SEPARATE
+# edit from `claims.DEFAULT_METRICS` gaining F1 (Task 11): that constant
+# drives `claims.py`'s own statistics, while `FRONTIER_METRICS` drives only
+# this module's panel layout and is derived from `TASKS`, not from
+# `DEFAULT_METRICS`.
 REL_ERROR_PREFIX = 'rel_error_change_'
+F1_REL_ERROR_PREFIX = 'rel_error_change_f1_'
 BLOCKS_DELTA = 'd_blocks'
 REL_ERROR_METRICS = tuple(REL_ERROR_PREFIX + key for key, _, _, _, _ in TASKS)
-FRONTIER_METRICS = REL_ERROR_METRICS + (BLOCKS_DELTA,)
+F1_REL_ERROR_METRICS = tuple(F1_REL_ERROR_PREFIX + key for key, _, _, _, _ in TASKS)
+FRONTIER_METRICS = REL_ERROR_METRICS + F1_REL_ERROR_METRICS + (BLOCKS_DELTA,)
 
 # Per-panel size in inches. Multiplied by the panel counts a given frame
 # implies -- never a fixed canvas for a fixed grid.
@@ -217,14 +229,6 @@ def _arm_styles(arms):
     return {arm: (colormap(index % colormap.N),
                   _MARKERS[index % len(_MARKERS)])
             for index, arm in enumerate(arms)}
-
-
-def _panel_grid(n_panels):
-    """Rows and columns for `n_panels`, as square as possible. The old
-    module hardcoded 3x3 and silently mis-rendered any other count."""
-    columns = int(math.ceil(math.sqrt(n_panels)))
-    rows = int(math.ceil(n_panels / columns))
-    return rows, columns
 
 
 def _make_figure(n_rows, n_columns):
@@ -472,9 +476,14 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         # against 'stages_real' as if they measured the same thing -- see
         # evaluation.multi_model_memory_evaluation's ResourceUsage docstring for the full
         # three-quantity (stages, stage_depth, stages_real) disambiguation.
+        # F1 rides along in the CSV only (D4): it is a tested metric, not a
+        # Pareto axis, so it must reach `.data` without the front itself
+        # -- computed above on `claims.FRONT_OBJECTIVES`, still 3-D -- ever
+        # seeing it. Do not add an F1 panel to this figure; that would imply
+        # a front this code does not compute.
         carried = [column for column in
                    ('arm_slug', 'M', 'split', 'k', 'blocks', 'stages',
-                    'acc_app', 'acc_ddos')
+                    'acc_app', 'acc_ddos', 'f1_app', 'f1_ddos')
                    if column in front.columns]
         arm_frame = front.loc[:, carried].copy()
 
@@ -614,14 +623,18 @@ def _relative_error_change(baseline_accuracy, treatment_accuracy):
 
 def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
     """One row per (arm, M, split, k) cell paired against `baseline`, with
-    the block delta and the two per-task relative-error changes.
+    the block delta and the two per-task relative-error changes on BOTH
+    accuracy and F1.
 
     `d_blocks` comes from `claims.arm_deltas` -- the module that owns paired
     differences and the `(M, split, k)` join key -- and the relative-error
     columns are computed here from the same `pair_arms` join, because a
-    ratio is not a difference and `claims.py` does not compute it. The two
-    are merged back on the join key with `validate='one_to_one'`, so a
-    duplicated cell fails loudly instead of silently multiplying rows.
+    ratio is not a difference and `claims.py` does not compute it. The F1
+    column per task is named by string convention from the task's `key`
+    (`'f1_' + key`, matching the campaign CSV's `acc_<key>` / `f1_<key>`
+    naming), not a new `TASKS` field. The two are merged back on the join
+    key with `validate='one_to_one'`, so a duplicated cell fails loudly
+    instead of silently multiplying rows.
     """
     require_baseline(df, baseline, 'paired_delta_frame')
     if arms is None:
@@ -640,6 +653,10 @@ def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
             relative[REL_ERROR_PREFIX + key] = _relative_error_change(
                 paired['{}_baseline'.format(accuracy_column)],
                 paired['{}_treatment'.format(accuracy_column)])
+            f1_column = 'f1_' + key
+            relative[F1_REL_ERROR_PREFIX + key] = _relative_error_change(
+                paired['{}_baseline'.format(f1_column)],
+                paired['{}_treatment'.format(f1_column)])
         merged = deltas.merge(relative, on=['M', 'split', 'k'], how='inner',
                               validate='one_to_one')
         merged.insert(0, 'arm_slug', arm)
@@ -655,7 +672,8 @@ def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
 def delta_frontier_table(df, baseline=claims.INDEPENDENT_ARM_SLUG,
                          confidence=0.95, arms=None):
     """Mean and confidence interval per (arm, k) for each of figure 2's
-    three quantities, aggregated over SPLITS.
+    five quantities (`FRONTIER_METRICS`: accuracy and F1 relative-error
+    change per task, plus the block delta), aggregated over SPLITS.
 
     Each (arm, k, split) is collapsed to its own mean difference first, so
     the interval `claims.delta_frontier` then builds has exactly one
@@ -689,17 +707,22 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
                             baseline=claims.INDEPENDENT_ARM_SLUG,
                             confidence=0.95):
     """What the alignment tolerance buys: block saving and per-task relative
-    error change against delta, mean +/- CI across splits.
+    error change (on accuracy AND F1) against delta, mean +/- CI across
+    splits.
 
-    A grid of panels: rows are the three reported quantities (the two
-    tasks' relative error change plus the block delta), because pooling the
-    two tasks would reintroduce the defect this rerun exists to fix, and
-    columns are odd feature counts k (D7), because the paper's conclusion
-    is k-dependent and a single k-pooled point cannot reproduce it. The x
-    axis within each panel is categorical in sweep order rather than
-    numeric: `joint-off` (alignment never ran) and `joint-dinf` (accept
-    every move) are anchors, not numbers, and placing them on a numeric
-    axis would require inventing coordinates for them.
+    A grid of panels: rows are the five reported quantities (the two tasks'
+    accuracy relative-error change, the two tasks' F1 relative-error change,
+    plus the block delta -- `FRONTIER_METRICS`), because pooling the two
+    tasks would reintroduce the defect this rerun exists to fix, and columns
+    are odd feature counts k (D7), because the paper's conclusion is
+    k-dependent and a single k-pooled point cannot reproduce it. F1 is
+    reported here because it is a tested metric wherever accuracy is
+    (D2 admits F1 for exactly this reason -- a minority-class collapse is
+    what accuracy alone hides). The x axis within each panel is categorical
+    in sweep order rather than numeric: `joint-off` (alignment never ran)
+    and `joint-dinf` (accept every move) are anchors, not numbers, and
+    placing them on a numeric axis would require inventing coordinates for
+    them.
     """
     table = delta_frontier_table(df, baseline=baseline, confidence=confidence)
     arms = [arm for arm in ordered_arms(df, include_baseline=False,
@@ -709,6 +732,9 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
 
     labels = {REL_ERROR_PREFIX + key: '{}: rel. error change vs {}'.format(
         short_name, baseline) for key, _, short_name, _, _ in TASKS}
+    labels.update({
+        F1_REL_ERROR_PREFIX + key: '{}: F1 rel. error change vs {}'.format(
+            short_name, baseline) for key, _, short_name, _, _ in TASKS})
     labels[BLOCKS_DELTA] = 'TCAM blocks: change vs {}'.format(baseline)
 
     # One tick label per arm, built once from the parsed delta columns
@@ -789,12 +815,15 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
 
     caption = (
         'The alignment tolerance sweep: block change and per-task relative '
-        'error change against delta, each point a mean over splits with a '
-        '{:.0%} Student-t confidence interval, paired against the {} arm on '
-        '(M, split, k). {}The two tasks are shown on separate panels and are '
-        'never averaged; relative error ((e_delta - e_base) / e_base) is '
-        'reported because the tasks have very different error scales, so '
-        'equal accuracy losses are not equal degradations. The two anchors '
+        'error change, on BOTH accuracy and F1, against delta, each point a '
+        'mean over splits with a {:.0%} Student-t confidence interval, '
+        'paired against the {} arm on (M, split, k). {}The two tasks are '
+        'shown on separate panels for each metric and are never averaged; '
+        'relative error ((e_delta - e_base) / e_base) is reported because '
+        'the tasks have very different error scales, so equal accuracy (or '
+        'F1) losses are not equal degradations. F1 is shown alongside '
+        'accuracy because a minority-class collapse is exactly what '
+        'accuracy alone can hide. The two anchors '
         'carry no numeric delta and are labelled as themselves: "off" never '
         'ran alignment at all, and "inf" accepts every move. '
         'THE FEATURE SETS DIFFER ACROSS DELTA BY CONSTRUCTION -- alignment '
@@ -830,17 +859,33 @@ _QUADRANT_ANCHORS = {
 def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
                                   baseline=claims.INDEPENDENT_ARM_SLUG,
                                   alpha=0.05):
-    """One panel per joint arm: the paired per-task accuracy deltas against
-    each other, with the sign quadrants annotated.
+    """A grid -- the top row is accuracy, a second row is F1 (Task 19 Part
+    5), and columns are joint arms -- the paired per-task deltas against
+    each other, with the sign quadrants annotated on the accuracy row.
 
     This answers the reviewer's objection directly. Substitution -- one task
     paying for the other's gain -- is a NEGATIVE correlation between the two
     deltas, and the mass in the two off-diagonal quadrants is what it looks
-    like. Every number annotated comes from `claims.substitution_test_all_arms`:
-    the Pearson r, the partial r controlling for the block delta (two
-    accuracy deltas can correlate purely because both track how much TCAM
-    the cell was allowed), the Holm-corrected one-sided p across the seven
-    arms, and the quadrant fractions.
+    like. Every number annotated on the ACCURACY row comes from
+    `claims.substitution_test_all_arms`: the Pearson r, the partial r
+    controlling for the block delta (two accuracy deltas can correlate
+    purely because both track how much TCAM the cell was allowed), the
+    Holm-corrected one-sided p across the seven arms, and the quadrant
+    fractions.
+
+    The F1 row is DESCRIPTIVE ONLY -- the same question (does one task's
+    gain come at the other's expense?) is live for F1 too, since a
+    minority-class collapse is exactly what accuracy alone can hide (R3
+    §IV(d), the reason D2 admits F1 at all) -- but it adds nothing to either
+    Holm family: `claims.SUBSTITUTION_FAMILY_SIZE` stays 7 (the accuracy
+    test count), never 14, and there is no parallel
+    `claims.substitution_test_all_arms`-style correlation test run on F1.
+    The tested F1 comparisons live in deliverable 4
+    (`claims.paired_tests`' superiority family already includes `f1_app` /
+    `f1_ddos`); this row is a visual aid only, built from
+    `claims.arm_deltas(df, arm, baseline)` -- which already carries
+    `d_f1_app` / `d_f1_ddos` via `claims.DEFAULT_METRICS` -- with no new
+    statistic computed here.
 
     The test runs at every arm, not just the largest delta, so the claim
     defended is "no task sacrifices itself at any tolerance" rather than "at
@@ -850,16 +895,20 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
     table = claims.substitution_test_all_arms(df, baseline=baseline,
                                               alpha=alpha)
     arms = list(table['treatment']) if len(table) else []
-    rows, columns = _panel_grid(max(len(arms), 1))
+    accuracy_row, f1_row = 0, 1
+    n_columns = max(len(arms), 1)
 
-    figure = _make_figure(rows, columns)
-    axes = figure.subplots(rows, columns, squeeze=False).ravel()
-    for axis in axes[len(arms):]:
-        figure.delaxes(axis)
+    figure = _make_figure(2, n_columns)
+    axes = figure.subplots(2, n_columns, squeeze=False)
+    if not arms:
+        for axis in axes.ravel():
+            figure.delaxes(axis)
 
-    for axis, arm in zip(axes, arms):
+    for col_index, arm in enumerate(arms):
         record = table[table['treatment'] == arm].iloc[0]
         deltas = claims.arm_deltas(df, arm, baseline)
+
+        axis = axes[accuracy_row][col_index]
         axis.scatter(deltas['d_acc_app'], deltas['d_acc_ddos'],
                      s=14, alpha=0.55, linewidths=0,
                      gid='substitution:{}'.format(arm))
@@ -877,27 +926,45 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
         axis.set_xlabel('delta App accuracy')
         axis.set_ylabel('delta DDoS accuracy')
         axis.grid(True, alpha=0.3)
+
+        # F1 row: purely descriptive, same scatter shape, no test statistics
+        # (none are computed for F1 here -- see the docstring). Quadrant
+        # zero lines are kept for visual continuity with the row above.
+        f1_axis = axes[f1_row][col_index]
+        f1_axis.scatter(deltas['d_f1_app'], deltas['d_f1_ddos'],
+                        s=14, alpha=0.55, linewidths=0,
+                        gid='substitution-f1:{}'.format(arm))
+        f1_axis.axhline(0.0, color='0.3', linewidth=1.0)
+        f1_axis.axvline(0.0, color='0.3', linewidth=1.0)
+        f1_axis.set_title('{} (F1, descriptive)'.format(arm), fontsize='medium')
+        f1_axis.set_xlabel('delta App F1')
+        f1_axis.set_ylabel('delta DDoS F1')
+        f1_axis.grid(True, alpha=0.3)
     figure.tight_layout()
 
     detected = (list(table.loc[table['substitution_detected_holm'], 'treatment'])
                 if len(table) else [])
     caption = (
-        'Paired per-task accuracy deltas against the {} arm, one panel per '
-        'joint arm, with the sign quadrants and their fractions. '
-        'Substitution -- one task gaining at the other\'s expense -- is a '
-        'negative correlation, i.e. mass in the two off-diagonal quadrants '
-        '("App down / DDoS up" and "App up / DDoS down"); cells where either '
-        'task did not move at all are counted '
-        'separately and are in none of the four. Each panel reports the '
-        'Pearson r, the partial r controlling for the block delta (two '
-        'accuracy deltas can move together simply because both track the '
-        'cell\'s block budget), and the one-sided p for rho < 0 after '
-        'Holm-Bonferroni correction across the {} arms tested. Arms where '
+        'Paired per-task deltas against the {} arm, one column per joint '
+        'arm: the top row is accuracy, the second is F1. Substitution -- '
+        'one task gaining at the other\'s expense -- is a negative '
+        'correlation, i.e. mass in the two off-diagonal quadrants ("App '
+        'down / DDoS up" and "App up / DDoS down"); cells where either task '
+        'did not move at all are counted separately and are in none of the '
+        'four. The ACCURACY row reports the Pearson r, the partial r '
+        'controlling for the block delta (two accuracy deltas can move '
+        'together simply because both track the cell\'s block budget), the '
+        'one-sided p for rho < 0 after Holm-Bonferroni correction across '
+        'the {} arms tested, and the quadrant fractions. Arms where '
         'substitution is detected at alpha = {:g} after correction: {}. The '
         'test is run at every tolerance, so the claim is about the whole '
         'sweep and not one operating point. Cells within a split share a '
         'training split, so these p-values are anti-conservative relative to '
-        'the number of independent splits.'.format(
+        'the number of independent splits. The F1 row is DESCRIPTIVE ONLY -- '
+        'the same substitution question is live for F1 (a minority-class '
+        'collapse is exactly what accuracy alone can hide), but no '
+        'correlation test is run on it here and it adds nothing to either '
+        'Holm family; the tested F1 comparisons are in Table 4.'.format(
             baseline, len(arms), alpha,
             ', '.join(detected) if detected else 'none'))
 
@@ -912,22 +979,42 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
 # ---------------------------------------------------------------------------
 
 _PAIRED_TEST_MARKDOWN_COLUMNS = (
-    'unit', 'contrast', 'metric', 'alternative', 'n_pairs', 'n_splits',
-    'median_diff', 'mean_diff_split_level', 'ci_low', 'ci_high',
+    'family', 'unit', 'contrast', 'metric', 'alternative', 'n_pairs',
+    'n_splits', 'median_diff', 'mean_diff_split_level', 'ci_low', 'ci_high',
     'p_value', 'p_holm', 'significant_holm')
 
 
 def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
                          baseline=claims.INDEPENDENT_ARM_SLUG,
                          margin=0.0, alpha=0.05, units=('pair', 'split'),
-                         expected_family_size=None):
+                         expected_family_size=None,
+                         expected_noninferiority_family_size=None):
     """The pre-registered paired tests, Holm-corrected -- rendered, not
-    recomputed. Every number is `claims.paired_tests`'.
+    recomputed. Every number is `claims.paired_tests`' or
+    `claims.noninferiority_tests`'.
 
-    One row per (unit, contrast, metric), and `acc_app` and `acc_ddos` are
-    separate rows throughout: there is no pooled accuracy test, because a
-    pooled test is exactly what let a loss on one task hide behind a gain on
-    the other.
+    Two INDEPENDENT test families sit in this one table, discriminated by
+    the `family` column:
+
+    * `family='superiority'` -- `claims.paired_tests`' pre-registered
+      35-comparison family (`claims.PRE_REGISTERED_FAMILY_SIZE`): "no
+      detectable loss" (or non-inferiority within `margin` when `margin >
+      0`) on `acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, plus a two-sided
+      test on `blocks`, for each of the seven joint arms against `baseline`.
+    * `family='noninferiority'` -- `claims.noninferiority_tests`' D13 family
+      (`claims.NONINFERIORITY_FAMILY_SIZE` = 14): non-inferiority of each
+      joint arm to `baseline` on `acc_app`/`acc_ddos` ONLY, at a margin sized
+      per row as a FRACTION of that row's own baseline error (see that
+      function's docstring for why this cannot reuse `paired_tests(...,
+      margin=...)`). D13 requires this reported ALONGSIDE the superiority
+      family above, never in its place, so both land in this one table
+      rather than the non-inferiority family living only in a separate
+      artifact a reader could miss.
+
+    One row per (family, unit, contrast, metric), and `acc_app` and
+    `acc_ddos` are separate rows throughout: there is no pooled accuracy
+    test, because a pooled test is exactly what let a loss on one task hide
+    behind a gain on the other.
 
     Ruling P7-3: `unit='pair'` -- one difference per `(M, split, k)` cell --
     is the spec-mandated primary, but those cells are not independent (the
@@ -936,72 +1023,120 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
     the statistically clean check: valid under split-level replication, far
     less powerful. The ruling requires BOTH be visible wherever the primary
     appears, not the primary alone with the split-level number folded into a
-    confidence interval elsewhere. So this table stacks both: `units` is
-    called through `claims.paired_tests` once per unit, each with its own
-    independently Holm-corrected family (mixing the two units into one
-    Holm family would correct pair-level and split-level p-values against
-    each other, which is not what either correction means), and the results
-    are concatenated with the `unit` column identifying which is which.
+    confidence interval elsewhere. So this table stacks both, for EACH
+    family: `units` is called through `claims.paired_tests` and through
+    `claims.noninferiority_tests` once per unit, each call independently
+    Holm-corrected over its own family (mixing units, or mixing families,
+    into one Holm pass would correct p-values from different questions
+    against each other, which is not what either correction means), and the
+    results are concatenated with the `family` and `unit` columns
+    identifying which is which. `claims.noninferiority_tests` documents
+    that it returns "the same column set `paired_tests` emits" specifically
+    so this concatenation is a plain `pd.concat`, never a column remap.
 
-    `expected_family_size` is passed straight through to every unit's call
-    and defaults to None so a partial campaign (the pilot cell) still
-    produces a table. That is a real weakening -- Holm over 9 comparisons is
-    a laxer correction than Holm over the pre-registered 35 -- so the
-    rendered markdown always states how many comparisons were actually
-    corrected over and what the pre-registered family size is. Pass
-    `expected_family_size=claims.PRE_REGISTERED_FAMILY_SIZE` on the complete
-    campaign to turn a shrunken family into an error.
+    `expected_family_size` gates the superiority family and
+    `expected_noninferiority_family_size` gates the non-inferiority family;
+    both default to None so a partial campaign (the pilot cell) still
+    produces a table. That is a real weakening -- Holm over fewer
+    comparisons is a laxer correction than Holm over the pre-registered
+    size -- so the rendered markdown always states how many comparisons
+    were actually corrected over, for EACH family, and what the
+    pre-registered family sizes are. Pass
+    `expected_family_size=claims.PRE_REGISTERED_FAMILY_SIZE` and
+    `expected_noninferiority_family_size=claims.NONINFERIORITY_FAMILY_SIZE`
+    on the complete campaign to turn either shrunken family into an error.
     """
-    tables = [
+    superiority_tables = [
         claims.paired_tests(
             df, baseline=baseline, metrics=claims.DEFAULT_METRICS,
             margin=margin, alpha=alpha, unit=unit,
             expected_family_size=expected_family_size)
         for unit in units
     ]
-    table = pd.concat(tables, ignore_index=True)
+    noninferiority_tables = [
+        claims.noninferiority_tests(
+            df, baseline=baseline, alpha=alpha, unit=unit,
+            expected_family_size=expected_noninferiority_family_size)
+        for unit in units
+    ]
+    for one_table in superiority_tables:
+        one_table.insert(0, 'family', 'superiority')
+    for one_table in noninferiority_tables:
+        one_table.insert(0, 'family', 'noninferiority')
+    table = pd.concat(superiority_tables + noninferiority_tables,
+                      ignore_index=True)
 
-    # n_comparisons is the same family size for every unit (it counts
-    # contrasts x metrics, not pairs), so one note covers all of them.
-    n_comparisons = int(tables[0]['n_comparisons'].iloc[0]) if len(tables[0]) else 0
+    # n_comparisons is the same family size for every unit within a family
+    # (it counts contrasts x metrics, not pairs), so one note per family
+    # covers both units.
+    n_superiority = (int(superiority_tables[0]['n_comparisons'].iloc[0])
+                     if len(superiority_tables[0]) else 0)
+    n_noninferiority = (int(noninferiority_tables[0]['n_comparisons'].iloc[0])
+                        if len(noninferiority_tables[0]) else 0)
     family_note = (
-        '{} comparisons were Holm-corrected within EACH unit below (pair and '
-        'split are corrected independently of each other); the pre-registered '
-        'family is {} (7 joint arms x 5 tests). {}'.format(
-            n_comparisons, claims.PRE_REGISTERED_FAMILY_SIZE,
-            'The family is complete.'
-            if n_comparisons == claims.PRE_REGISTERED_FAMILY_SIZE else
-            'The family is INCOMPLETE, so this correction is weaker than the '
-            'pre-registered one and the adjusted p-values below are '
-            'correspondingly optimistic.'))
+        'TWO INDEPENDENTLY HOLM-CORRECTED FAMILIES are reported below, '
+        'discriminated by the `family` column, per D13: non-inferiority is '
+        'reported ALONGSIDE the superiority tests, never instead of them. '
+        '`superiority`: {} comparisons were Holm-corrected within EACH unit '
+        '(pair and split are corrected independently of each other); the '
+        'pre-registered family is {} (7 joint arms x 5 tests). {} '
+        '`noninferiority`: {} comparisons were Holm-corrected within EACH '
+        'unit; the pre-registered family is {} (7 joint arms x 2 accuracy '
+        'metrics -- F1 is not retested here, it stays in the superiority '
+        'family). {}'.format(
+            n_superiority, claims.PRE_REGISTERED_FAMILY_SIZE,
+            'The superiority family is complete.'
+            if n_superiority == claims.PRE_REGISTERED_FAMILY_SIZE else
+            'The superiority family is INCOMPLETE, so this correction is '
+            'weaker than the pre-registered one and its adjusted p-values '
+            'below are correspondingly optimistic.',
+            n_noninferiority, claims.NONINFERIORITY_FAMILY_SIZE,
+            'The non-inferiority family is complete.'
+            if n_noninferiority == claims.NONINFERIORITY_FAMILY_SIZE else
+            'The non-inferiority family is INCOMPLETE, so this correction '
+            'is weaker than the pre-registered one and its adjusted '
+            'p-values below are correspondingly optimistic.'))
 
     caption = (
-        'Paired Wilcoxon signed-rank tests, one per (unit, contrast, task) '
-        'and one per (unit, contrast) on blocks. Two units are reported for '
-        'every comparison, per Ruling P7-3: `pair` tests one difference per '
-        '(M, split, k) cell -- the spec-mandated primary, paired exactly as '
-        'spec C.3 requires -- but cells within a split share a training '
-        'split, so its p-values are anti-conservative relative to the '
-        'number of independent splits. `split` collapses each split to its '
-        'mean difference first -- the statistically clean check, far less '
-        'powerful, valid under split-level replication. Neither supersedes '
-        'the other; disagreement between them is itself the diagnostic. '
-        'Each unit is Holm-corrected independently over its own family, '
-        'never pooled with the other. The accuracy tests are one-sided with '
-        'alternative "greater" applied to {}, so a small p-value is the '
-        'positive finding: the joint arm shows no detectable loss. The '
-        'block test is two-sided, because alignment adds intervals before '
-        'it merges any and sharing can cost blocks as well as save them. '
+        'Paired Wilcoxon signed-rank tests, one per (family, unit, contrast, '
+        'task) and one per (family, unit, contrast) on blocks. Two '
+        'INDEPENDENT test families are stacked in this one table (the '
+        '`family` column): `superiority` is the pre-registered 35-comparison '
+        'family ("no detectable loss", or non-inferiority within `margin` '
+        'when `margin` > 0) and `noninferiority` is D13\'s 14-comparison '
+        'family testing non-inferiority of accuracy at a margin sized per '
+        'row as a fraction of that row\'s own baseline error -- reported '
+        'ALONGSIDE the superiority tests, never in their place. Within each '
+        'family, two units are reported for every comparison, per Ruling '
+        'P7-3: `pair` tests one difference per (M, split, k) cell -- the '
+        'spec-mandated primary, paired exactly as spec C.3 requires -- but '
+        'cells within a split share a training split, so its p-values are '
+        'anti-conservative relative to the number of independent splits. '
+        '`split` collapses each split to its mean difference first -- the '
+        'statistically clean check, far less powerful, valid under '
+        'split-level replication. Neither supersedes the other; '
+        'disagreement between them is itself the diagnostic. Each '
+        '(family, unit) combination is Holm-corrected independently over '
+        'its own family, never pooled with any other. The superiority '
+        'accuracy/F1 tests are one-sided with alternative "greater" applied '
+        'to {}, so a small p-value is the positive finding: the joint arm '
+        'shows no detectable loss. The block test is two-sided, because '
+        'alignment adds intervals before it merges any and sharing can cost '
+        'blocks as well as save them. The non-inferiority tests are '
+        'one-sided in the same direction, against a per-row margin rather '
+        'than a flat one. '
         '{}'.format(
             'd + {:g}'.format(margin) if margin > 0 else 'd', family_note))
 
     markdown = _markdown_table(
         _project_columns(table, _PAIRED_TEST_MARKDOWN_COLUMNS))
     body = '\n'.join([markdown, '', family_note, '',
-                      'Hypotheses, verbatim from `claims.paired_tests`:', ''] +
-                     ['* `{}` / `{}` / `{}`: {}'.format(
-                         row['unit'], row['contrast'], row['metric'],
-                         row['hypothesis'])
+                      'Hypotheses, verbatim from `claims.paired_tests` '
+                      '(family=superiority) and `claims.noninferiority_tests` '
+                      '(family=noninferiority):', ''] +
+                     ['* `{}` / `{}` / `{}` / `{}`: {}'.format(
+                         row['family'], row['unit'], row['contrast'],
+                         row['metric'], row['hypothesis'])
                       for _, row in table.iterrows()])
 
     return _write(Deliverable(
@@ -1456,13 +1591,18 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
 def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
                ceiling_csv=DEFAULT_CEILING_CSV,
                baseline=claims.INDEPENDENT_ARM_SLUG,
-               expected_family_size=None):
+               expected_family_size=None,
+               expected_noninferiority_family_size=None):
     """Render every §C.5 deliverable and return them in order.
 
     `ceiling_csv=None` omits deliverable 6 -- the capacity-ceiling appendix
     replays a measurement that either exists on disk or does not, and a
     campaign frame contains nothing from which it could be reconstructed.
     Every other deliverable comes from `df` alone.
+
+    `expected_family_size` and `expected_noninferiority_family_size` gate
+    deliverable 4's two independent Holm families (superiority and
+    non-inferiority respectively) -- see `table_4_paired_tests`.
     """
     deliverables = [
         figure_1_accuracy_vs_blocks(df, output_dir=output_dir,
@@ -1470,8 +1610,10 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
         figure_2_delta_frontier(df, output_dir=output_dir, baseline=baseline),
         figure_3_substitution_scatter(df, output_dir=output_dir,
                                       baseline=baseline),
-        table_4_paired_tests(df, output_dir=output_dir, baseline=baseline,
-                             expected_family_size=expected_family_size),
+        table_4_paired_tests(
+            df, output_dir=output_dir, baseline=baseline,
+            expected_family_size=expected_family_size,
+            expected_noninferiority_family_size=expected_noninferiority_family_size),
         table_5_ablation(df, output_dir=output_dir),
     ]
     if ceiling_csv is not None:

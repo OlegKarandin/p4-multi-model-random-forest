@@ -427,6 +427,15 @@ def test_deliverable_1_reports_coverage_in_both_directions():
         deliverable.data.columns)
 
 
+def test_deliverable_1_carries_f1_in_the_data_without_changing_the_front():
+    """D4: F1 is a tested metric, not a Pareto axis. A 5-D front would
+    change what 'non-dominated' means. Step 5's verbatim test from the
+    Task 19 brief."""
+    deliverable = figures.figure_1_accuracy_vs_blocks(_spread_campaign())
+    assert {'f1_app', 'f1_ddos'} <= set(deliverable.data.columns)
+    assert claims.FRONT_OBJECTIVES == ('acc_app', 'acc_ddos', 'blocks')
+
+
 def test_deliverable_1_writes_a_pdf_a_data_csv_and_a_caption(tmp_path):
     deliverable = figures.figure_1_accuracy_vs_blocks(
         _spread_campaign(), output_dir=str(tmp_path))
@@ -487,6 +496,36 @@ def test_deliverable_2_reports_relative_error_per_task_never_pooled():
     assert not _contains(values, (expected_app + expected_ddos) / 2.0)
 
 
+def test_deliverable_2_reports_f1_relative_error_per_task_separately_from_accuracy():
+    """Part 1 of Task 19: F1 rel-error is a SEPARATE quantity from accuracy
+    rel-error, not derived from `claims.DEFAULT_METRICS` (that is Task 11's
+    edit) but from `TASKS` via the `'f1_' + key` column-name convention.
+    Same injected accuracy-scale delta on both metrics, but `_row`'s default
+    `f1 = acc - 0.02` gives F1 a different baseline error, so the two
+    relative-error changes must come out numerically different."""
+    delta_app, delta_ddos = -0.10, -0.10
+    deliverable = figures.figure_2_delta_frontier(
+        _constant_campaign(joint_d_app=delta_app, joint_d_ddos=delta_ddos),
+        output_dir=None)
+
+    base_f1_app = BASE_ACC_APP - 0.02
+    base_f1_ddos = BASE_ACC_DDOS - 0.02
+    expected_f1_app = -delta_app / (1.0 - base_f1_app)
+    expected_f1_ddos = -delta_ddos / (1.0 - base_f1_ddos)
+    expected_acc_app = -delta_app / (1.0 - BASE_ACC_APP)
+    assert not np.isclose(expected_f1_app, expected_acc_app)
+
+    table = deliverable.data
+    f1_app_means = table[table.metric == 'rel_error_change_f1_app']['mean']
+    f1_ddos_means = table[table.metric == 'rel_error_change_f1_ddos']['mean']
+    assert np.allclose(f1_app_means, expected_f1_app)
+    assert np.allclose(f1_ddos_means, expected_f1_ddos)
+
+    values = _drawn_values(deliverable.figure)
+    assert _contains(values, expected_f1_app)
+    assert _contains(values, expected_f1_ddos)
+
+
 def test_deliverable_2_caption_discloses_that_each_point_pools_over_m_only():
     """A point is an average over every M inside a split at a FIXED k, not
     one operating point -- an examiner reading a block saving off this
@@ -537,13 +576,18 @@ def test_deliverable_2_pooling_sentence_reflects_the_joined_grid_not_the_raw_fra
 
 
 def test_deliverable_2_has_one_panel_per_reported_quantity_two_of_them_per_task():
+    """F1 rel-error joins accuracy rel-error as a separate row per task, so
+    the five reported quantities (`figures.FRONTIER_METRICS`) are: App
+    accuracy, DDoS accuracy, App F1, DDoS F1, and the block delta."""
     deliverable = figures.figure_2_delta_frontier(
         _constant_campaign(), output_dir=None)
     labels = [ax.get_ylabel() for ax in deliverable.figure.axes]
-    assert len(deliverable.figure.axes) == 3
-    assert len({label for label in labels}) == 3
-    assert sum('App' in label for label in labels) == 1
-    assert sum('DDoS' in label for label in labels) == 1
+    assert len(figures.FRONTIER_METRICS) == 5
+    assert len(deliverable.figure.axes) == 5
+    assert len({label for label in labels}) == 5
+    assert sum('App' in label for label in labels) == 2
+    assert sum('DDoS' in label for label in labels) == 2
+    assert sum('F1' in label for label in labels) == 2
     assert sum('block' in label.lower() for label in labels) == 1
 
 
@@ -587,16 +631,19 @@ def test_deliverable_2_facets_by_k_instead_of_averaging_it_away():
 
 
 # ---------------------------------------------------------------------------
-# Deliverable 3 -- substitution scatter with quadrants, one panel per arm
+# Deliverable 3 -- substitution scatter with quadrants, two rows (accuracy,
+# F1) per arm column
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize('n_arms', [2, 5, 7])
-def test_deliverable_3_draws_one_panel_per_arm_whatever_the_arm_count(n_arms):
-    """The old module hardcoded a 3x3 grid for exactly nine k values."""
+def test_deliverable_3_draws_two_panels_per_arm_whatever_the_arm_count(n_arms):
+    """The old module hardcoded a 3x3 grid for exactly nine k values. Task
+    19 Part 5 adds an F1 row alongside the existing accuracy row, so the
+    panel count is 2 x n_arms, not n_arms."""
     arms = (INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:n_arms]
     deliverable = figures.figure_3_substitution_scatter(
         _spread_campaign(arms=arms), output_dir=None)
-    assert len(deliverable.figure.axes) == n_arms
+    assert len(deliverable.figure.axes) == 2 * n_arms
 
 
 def test_deliverable_3_scatters_the_per_task_deltas_claims_paired():
@@ -621,6 +668,39 @@ def test_deliverable_3_annotates_the_correlation_and_quadrants_claims_computed()
         assert '{:.3f}'.format(row['pearson_r']) in texts
         assert '{:.2f}'.format(row['quadrant_app_up_ddos_down']) in texts
     assert set(deliverable.data['treatment']) == set(expected['treatment'])
+
+
+def test_deliverable_3_f1_row_scatters_the_per_task_f1_deltas():
+    """Part 5 of Task 19: the F1 row is descriptive only, built from
+    `claims.arm_deltas` (which already carries `d_f1_app`/`d_f1_ddos` via
+    `claims.DEFAULT_METRICS`) -- no new statistic is computed for it."""
+    df = _spread_campaign()
+    arm = 'joint-d005'
+    expected = claims.arm_deltas(df, arm, INDEPENDENT_ARM_SLUG)
+    deliverable = figures.figure_3_substitution_scatter(df, output_dir=None)
+    f1_panel = [ax for ax in deliverable.figure.axes
+               if any(c.get_gid() == 'substitution-f1:{}'.format(arm)
+                     for c in ax.collections)][0]
+    offsets = np.asarray(f1_panel.collections[0].get_offsets(), dtype='float64')
+    assert np.allclose(np.sort(offsets[:, 0]),
+                       np.sort(expected['d_f1_app'].to_numpy()))
+    assert np.allclose(np.sort(offsets[:, 1]),
+                       np.sort(expected['d_f1_ddos'].to_numpy()))
+
+
+def test_deliverable_3_f1_row_adds_nothing_to_either_holm_family():
+    """The natural mistake here is to let the doubled panel count leak into
+    a family-size expectation. `claims.SUBSTITUTION_FAMILY_SIZE` (the
+    accuracy substitution test count) must stay 7, and the F1 row must not
+    introduce its own correlation-test table."""
+    assert claims.SUBSTITUTION_FAMILY_SIZE == 7
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS)
+    deliverable = figures.figure_3_substitution_scatter(df, output_dir=None)
+    # `.data` is still exactly claims.substitution_test_all_arms' table --
+    # accuracy only, one row per arm, no parallel F1 columns/rows added.
+    assert len(deliverable.data) == len(JOINT_ARM_SLUGS)
+    assert not any('f1' in str(column).lower()
+                  for column in deliverable.data.columns)
 
 
 def test_deliverable_3_marks_the_two_substitution_quadrants_with_both_axes():
@@ -653,15 +733,22 @@ def test_a_paired_figure_refuses_to_render_blank_when_the_baseline_is_absent():
 
 def test_deliverable_4_is_exactly_the_holm_corrected_table_claims_produced(tmp_path):
     """Ruling P7-3: the table carries BOTH units, each independently
-    Holm-corrected against `claims.paired_tests`' own per-unit output."""
+    Holm-corrected against `claims.paired_tests`' own per-unit output.
+    The superiority family (`family == 'superiority'`) is isolated by that
+    column before comparing, since Part 2 of Task 19 now also stacks
+    `claims.noninferiority_tests`' rows into the same table (unit is 'pair'
+    or 'split' in BOTH families, so filtering by unit alone is no longer
+    enough to recover `claims.paired_tests`' own output)."""
     df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS)
     expected_pair = claims.paired_tests(df, unit='pair')
     expected_split = claims.paired_tests(df, unit='split')
     deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
 
     assert set(deliverable.data['unit']) == {'pair', 'split'}
-    got_pair = deliverable.data[deliverable.data['unit'] == 'pair'].reset_index(drop=True)
-    got_split = deliverable.data[deliverable.data['unit'] == 'split'].reset_index(drop=True)
+    assert set(deliverable.data['family']) == {'superiority', 'noninferiority'}
+    superiority = deliverable.data[deliverable.data['family'] == 'superiority']
+    got_pair = superiority[superiority['unit'] == 'pair'].reset_index(drop=True)
+    got_split = superiority[superiority['unit'] == 'split'].reset_index(drop=True)
 
     assert list(got_pair['contrast']) == list(expected_pair['contrast'])
     assert np.allclose(got_pair['p_holm'], expected_pair['p_holm'])
@@ -670,6 +757,56 @@ def test_deliverable_4_is_exactly_the_holm_corrected_table_claims_produced(tmp_p
     assert list(got_split['contrast']) == list(expected_split['contrast'])
     assert np.allclose(got_split['p_holm'], expected_split['p_holm'])
     assert np.allclose(got_split['p_value'], expected_split['p_value'])
+
+
+def test_deliverable_4_stacks_the_noninferiority_family_alongside_superiority(tmp_path):
+    """D13: non-inferiority is reported ALONGSIDE, never instead of, the
+    superiority tests -- both belong in deliverable 4 (Part 2 of Task 19).
+    The non-inferiority rows must match `claims.noninferiority_tests`'
+    own per-unit output exactly, and the two families must be independently
+    Holm-corrected (mixing them would correct a 35-comparison p-value
+    against a 14-comparison one, which is not what either correction
+    means)."""
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS)
+    expected_pair = claims.noninferiority_tests(df, unit='pair')
+    expected_split = claims.noninferiority_tests(df, unit='split')
+    deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
+
+    noninferiority = deliverable.data[
+        deliverable.data['family'] == 'noninferiority']
+    got_pair = noninferiority[noninferiority['unit'] == 'pair'].reset_index(drop=True)
+    got_split = noninferiority[noninferiority['unit'] == 'split'].reset_index(drop=True)
+
+    assert list(got_pair['contrast']) == list(expected_pair['contrast'])
+    assert np.allclose(got_pair['p_holm'], expected_pair['p_holm'])
+    assert np.allclose(got_pair['p_value'], expected_pair['p_value'])
+    assert set(got_pair['metric']) == {'acc_app', 'acc_ddos'}
+
+    assert list(got_split['contrast']) == list(expected_split['contrast'])
+    assert np.allclose(got_split['p_holm'], expected_split['p_holm'])
+    assert np.allclose(got_split['p_value'], expected_split['p_value'])
+
+    # The two families' Holm corrections are independent: the
+    # noninferiority p_holm values must match claims.noninferiority_tests'
+    # own 14-comparison correction, NOT some correction pooled with the
+    # 35-comparison superiority family.
+    assert set(deliverable.data.loc[
+        deliverable.data['family'] == 'noninferiority', 'n_comparisons']) == \
+        {claims.NONINFERIORITY_FAMILY_SIZE}
+    assert set(deliverable.data.loc[
+        deliverable.data['family'] == 'superiority', 'n_comparisons']) == \
+        {claims.PRE_REGISTERED_FAMILY_SIZE}
+
+
+def test_deliverable_4_markdown_names_both_family_sizes(tmp_path):
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS)
+    deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
+    markdown = open([p for p in deliverable.paths if p.endswith('.md')][0],
+                    encoding='utf-8').read()
+    assert str(claims.PRE_REGISTERED_FAMILY_SIZE) in markdown
+    assert str(claims.NONINFERIORITY_FAMILY_SIZE) in markdown
+    assert 'superiority' in markdown
+    assert 'noninferiority' in markdown
 
 
 def test_deliverable_4_keeps_the_two_tasks_on_separate_rows(tmp_path):
@@ -723,6 +860,23 @@ def test_deliverable_5_markdown_renders_a_row_for_every_contrast(tmp_path):
     assert len(body) == len(deliverable.data) + 1    # + the header row
     for contrast in deliverable.data['contrast'].unique():
         assert contrast in markdown
+
+
+def test_deliverable_5_carries_f1_for_free_via_default_metrics(tmp_path):
+    """Part 3 of Task 19: `table_5_ablation` calls
+    `claims.ablation_decomposition(df, metrics=claims.DEFAULT_METRICS, ...)`
+    and Task 11 already widened `DEFAULT_METRICS` to
+    ('acc_app', 'f1_app', 'acc_ddos', 'f1_ddos', 'blocks'), so F1 should
+    reach this deliverable with NO code change here. Confirmed, not assumed:
+    this test would fail if that generic pickup ever broke."""
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS)
+    assert {'f1_app', 'f1_ddos'} <= set(claims.DEFAULT_METRICS)
+    deliverable = figures.table_5_ablation(df, output_dir=str(tmp_path))
+    assert {'f1_app', 'f1_ddos'} <= set(deliverable.data['metric'])
+
+    markdown = open([p for p in deliverable.paths if p.endswith('.md')][0],
+                    encoding='utf-8').read()
+    assert 'f1_app' in markdown and 'f1_ddos' in markdown
 
 
 # ---------------------------------------------------------------------------
