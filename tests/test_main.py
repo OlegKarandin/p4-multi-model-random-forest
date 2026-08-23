@@ -111,7 +111,9 @@ def test_run_plot_mode_defaults_to_the_pre_registered_holm_family_size():
     tests) gated the same way -- expected_noninferiority_family_size must
     default to claims.NONINFERIORITY_FAMILY_SIZE alongside
     expected_family_size, not be silently dropped on the way to
-    figures.render_all."""
+    figures.render_all. Task 23 added a third, the substitution family --
+    expected_substitution_family_size must default to
+    claims.SUBSTITUTION_FAMILY_SIZE the same way."""
     from src.reporting import claims
     with patch("src.main.load_campaign", return_value="df"), \
          patch("src.main.figures.render_all") as mock_render:
@@ -121,17 +123,21 @@ def test_run_plot_mode_defaults_to_the_pre_registered_holm_family_size():
         claims.PRE_REGISTERED_FAMILY_SIZE
     assert mock_render.call_args.kwargs['expected_noninferiority_family_size'] == \
         claims.NONINFERIORITY_FAMILY_SIZE
+    assert mock_render.call_args.kwargs['expected_substitution_family_size'] == \
+        claims.SUBSTITUTION_FAMILY_SIZE
 
 
 def test_run_plot_mode_allow_partial_family_disables_the_family_size_check():
-    """--allow-partial-family must disable BOTH of deliverable 4's Holm
-    family gates, not just the superiority one (Task 19)."""
+    """--allow-partial-family must disable ALL THREE of the Holm family
+    gates (deliverable 4's two plus deliverable 3's substitution family,
+    Task 23), not just the superiority one (Task 19)."""
     with patch("src.main.load_campaign", return_value="df"), \
          patch("src.main.figures.render_all") as mock_render:
         mock_render.return_value = []
         m.run_plot_mode(output_dir="out", allow_partial_family=True)
     assert mock_render.call_args.kwargs['expected_family_size'] is None
     assert mock_render.call_args.kwargs['expected_noninferiority_family_size'] is None
+    assert mock_render.call_args.kwargs['expected_substitution_family_size'] is None
 
 
 def test_run_plot_mode_omits_the_capacity_ceiling_deliverable_when_its_csv_is_absent(tmp_path):

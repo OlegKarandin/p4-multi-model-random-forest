@@ -1006,6 +1006,18 @@ def test_substitution_sweep_excludes_an_undefined_arm_from_its_correction_family
     assert bool(flat_row['substitution_detected_holm']) is False
 
 
+def test_substitution_test_refuses_a_family_shrunk_by_a_MISSING_arm():
+    """paired_tests already closed this for its own family. It goes live
+    precisely because the campaign runs in chunks, where a missing arm is
+    the normal intermediate state -- and a smaller family is a WEAKER Holm
+    correction applied silently."""
+    frame = _substitution_sweep_frame(seed=3, correlated_arm='joint-d005', rho=-0.8)
+    frame = frame[frame['arm_slug'] != 'joint-d020']
+    with pytest.raises(ValueError, match='family'):
+        substitution_test_all_arms(
+            frame, expected_family_size=SUBSTITUTION_FAMILY_SIZE)
+
+
 def test_substitution_test_reports_the_split_count_next_to_the_pair_count():
     """The cell-dependence caveat is only checkable if both numbers are
     there."""

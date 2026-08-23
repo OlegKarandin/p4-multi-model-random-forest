@@ -714,6 +714,18 @@ def test_deliverable_3_marks_the_two_substitution_quadrants_with_both_axes():
         assert y_zeros and x_zeros
 
 
+def test_deliverable_3_passes_the_expected_family_size_through_to_claims(tmp_path):
+    """Task 23: `expected_family_size` must actually reach
+    `claims.substitution_test_all_arms` -- not be silently dropped inside
+    `figure_3_substitution_scatter` -- by checking it raises on a family
+    shrunk by a missing arm, exactly as deliverable 4's two gates do."""
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:3])
+    with pytest.raises(ValueError):
+        figures.figure_3_substitution_scatter(
+            df, output_dir=None,
+            expected_family_size=claims.SUBSTITUTION_FAMILY_SIZE)
+
+
 def test_a_paired_figure_refuses_to_render_blank_when_the_baseline_is_absent():
     """With no baseline rows every (M, split, k) join is empty, so the figure
     would render complete but with nothing plotted -- the plausible-looking

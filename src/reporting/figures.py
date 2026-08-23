@@ -858,7 +858,7 @@ _QUADRANT_ANCHORS = {
 
 def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
                                   baseline=claims.INDEPENDENT_ARM_SLUG,
-                                  alpha=0.05):
+                                  alpha=0.05, expected_family_size=None):
     """A grid -- the top row is accuracy, a second row is F1 (Task 19 Part
     5), and columns are joint arms -- the paired per-task deltas against
     each other, with the sign quadrants annotated on the accuracy row.
@@ -890,10 +890,16 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
     The test runs at every arm, not just the largest delta, so the claim
     defended is "no task sacrifices itself at any tolerance" rather than "at
     one operating point".
+
+    `expected_family_size` defaults to None so a partial campaign (the pilot
+    cell) still renders; pass `claims.SUBSTITUTION_FAMILY_SIZE` to turn a
+    family shrunk by a missing arm into an error, mirroring deliverable 4's
+    two Holm-family gates -- see `claims.substitution_test_all_arms`.
     """
     require_baseline(df, baseline, 'figure_3_substitution_scatter')
-    table = claims.substitution_test_all_arms(df, baseline=baseline,
-                                              alpha=alpha)
+    table = claims.substitution_test_all_arms(
+        df, baseline=baseline, alpha=alpha,
+        expected_family_size=expected_family_size)
     arms = list(table['treatment']) if len(table) else []
     accuracy_row, f1_row = 0, 1
     n_columns = max(len(arms), 1)
@@ -1592,7 +1598,8 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
                ceiling_csv=DEFAULT_CEILING_CSV,
                baseline=claims.INDEPENDENT_ARM_SLUG,
                expected_family_size=None,
-               expected_noninferiority_family_size=None):
+               expected_noninferiority_family_size=None,
+               expected_substitution_family_size=None):
     """Render every §C.5 deliverable and return them in order.
 
     `ceiling_csv=None` omits deliverable 6 -- the capacity-ceiling appendix
@@ -1603,13 +1610,17 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
     `expected_family_size` and `expected_noninferiority_family_size` gate
     deliverable 4's two independent Holm families (superiority and
     non-inferiority respectively) -- see `table_4_paired_tests`.
+    `expected_substitution_family_size` gates deliverable 3's separate
+    substitution family -- see `figure_3_substitution_scatter` and
+    `claims.substitution_test_all_arms`.
     """
     deliverables = [
         figure_1_accuracy_vs_blocks(df, output_dir=output_dir,
                                     baseline=baseline),
         figure_2_delta_frontier(df, output_dir=output_dir, baseline=baseline),
-        figure_3_substitution_scatter(df, output_dir=output_dir,
-                                      baseline=baseline),
+        figure_3_substitution_scatter(
+            df, output_dir=output_dir, baseline=baseline,
+            expected_family_size=expected_substitution_family_size),
         table_4_paired_tests(
             df, output_dir=output_dir, baseline=baseline,
             expected_family_size=expected_family_size,

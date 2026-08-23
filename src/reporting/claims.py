@@ -116,6 +116,14 @@ kept out is not the same as unreported, so:
   uncorrected flag errs towards over-reporting substitution rather than
   towards hiding it. That is a reason to read the flags carefully, not a
   reason to skip the correction.
+* `substitution_test_all_arms` takes the same `expected_family_size` guard
+  as `paired_tests` (Task 23): pass `expected_family_size=
+  SUBSTITUTION_FAMILY_SIZE` to turn a family shrunk by an arm MISSING from
+  the frame into an error, rather than a silently weaker Holm correction.
+  This is checked against how many arms were actually run, which is a
+  different count from `n_substitution_comparisons` (arms that yielded a
+  DEFINED test) -- a missing arm and a constant-delta arm's undefined test
+  are different conditions, and the guard fires only on the former.
 * The same `(M, split, k)` dependence caveat that applies to
   `paired_tests` applies here: the correlations are computed over cells
   that share a training split within a split, so their p-values are
@@ -662,14 +670,23 @@ def substitution_test(df, treatment, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05):
 
 
 def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
-                               alpha=0.05):
+                               alpha=0.05, expected_family_size=None):
     """`substitution_test` at EVERY joint arm, one row per arm.
 
     Run at every arm rather than only at the largest delta because the claim
     being defended is "no task sacrifices itself for the other at ANY
     tolerance"; testing only the extreme would leave the interesting middle
     of the sweep unexamined. Arms absent from `df` are skipped, so a partial
-    campaign still produces a table.
+    campaign still produces a table -- unless `expected_family_size` is
+    given, mirroring `paired_tests`: passing
+    `expected_family_size=SUBSTITUTION_FAMILY_SIZE` turns a family shrunk by
+    a MISSING arm (fewer rows in `df` than the pre-registered seven) into an
+    error rather than a quietly weaker Holm correction. This is checked
+    against how many arms were actually run (`len(arms)`), not against
+    `n_substitution_comparisons`: an arm that ran but produced no DEFINED
+    test (a constant-delta arm) is a different condition from an arm that
+    never appeared in the frame at all, and only the latter is what this
+    guard exists to catch.
 
     THIS IS A SEPARATE FAMILY FROM THE PRE-REGISTERED 35. Running one
     one-sided test per arm means seven decision flags, and at alpha = 0.05
@@ -698,6 +715,14 @@ def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
     number of independent splits.
     """
     arms = _arms_present(df, arms)
+    if expected_family_size is not None and len(arms) != expected_family_size:
+        raise ValueError(
+            'substitution_test_all_arms: found {} arm(s) but the expected '
+            'correction family size is {}. Running a subset of the '
+            'pre-registered family weakens the Holm correction for every '
+            'comparison in it, so this is refused rather than silently '
+            'accepted. Arms found: {}.'
+            .format(len(arms), expected_family_size, list(arms)))
     rows = []
     for arm in arms:
         result = substitution_test(df, arm, baseline, alpha=alpha)

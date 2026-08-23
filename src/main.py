@@ -433,21 +433,23 @@ def run_plot_mode(results_dir='results', output_dir=None,
     fail outright.
 
     `allow_partial_family` controls the thing carried forward from Task 13,
-    now gating BOTH of deliverable 4's independent Holm families:
-    `claims.paired_tests` (the 35-comparison superiority family) and
+    now gating deliverable 4's two independent Holm families PLUS
+    deliverable 3's separate substitution family:
+    `claims.paired_tests` (the 35-comparison superiority family),
     `claims.noninferiority_tests` (D13's 14-comparison non-inferiority
-    family, Task 19) both default their `expected_family_size` to None,
-    which lets Holm-Bonferroni quietly correct over however many contrasts
-    happen to be present -- a weaker correction than the pre-registered size
-    on any campaign that has not yet run all seven joint arms, silent apart
-    from a line in the rendered markdown. The default here (False) instead
-    passes `claims.PRE_REGISTERED_FAMILY_SIZE` and
-    `claims.NONINFERIORITY_FAMILY_SIZE` explicitly, so a partial campaign
-    RAISES rather than silently weakening either correction. Pass
+    family, Task 19), and `claims.substitution_test_all_arms` (the
+    7-comparison substitution family, Task 23) all default their
+    `expected_family_size` to None, which lets Holm-Bonferroni quietly
+    correct over however many contrasts happen to be present -- a weaker
+    correction than the pre-registered size on any campaign that has not
+    yet run all seven joint arms, silent apart from a line in the rendered
+    markdown. The default here (False) instead passes
+    `claims.PRE_REGISTERED_FAMILY_SIZE`, `claims.NONINFERIORITY_FAMILY_SIZE`
+    and `claims.SUBSTITUTION_FAMILY_SIZE` explicitly, so a partial campaign
+    RAISES rather than silently weakening any of the three corrections. Pass
     `--allow-partial-family` (allow_partial_family=True) to render anyway --
     e.g. a single-M pilot, which by construction can never assemble the
-    full 7-arm family and is not trying to support either corrected claim
-    yet.
+    full 7-arm family and is not trying to support any corrected claim yet.
     """
     if output_dir is None:
         output_dir = figures.DEFAULT_FIGURE_DIR
@@ -465,11 +467,14 @@ def run_plot_mode(results_dir='results', output_dir=None,
         None if allow_partial_family else claims.PRE_REGISTERED_FAMILY_SIZE)
     expected_noninferiority_family_size = (
         None if allow_partial_family else claims.NONINFERIORITY_FAMILY_SIZE)
+    expected_substitution_family_size = (
+        None if allow_partial_family else claims.SUBSTITUTION_FAMILY_SIZE)
 
     deliverables = figures.render_all(
         df, output_dir=output_dir, ceiling_csv=ceiling_csv,
         expected_family_size=expected_family_size,
-        expected_noninferiority_family_size=expected_noninferiority_family_size)
+        expected_noninferiority_family_size=expected_noninferiority_family_size,
+        expected_substitution_family_size=expected_substitution_family_size)
 
     for deliverable in deliverables:
         print(f"\n=== {deliverable.number}. {deliverable.title} ===")
