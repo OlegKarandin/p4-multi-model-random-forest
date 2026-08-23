@@ -17,7 +17,6 @@ a casual test.
 No real campaign CSV exists yet (the pilot cell hasn't run) -- every test here
 builds a synthetic frame with a known answer and writes it to `tmp_path`.
 """
-import glob
 import json
 import os
 import shutil
@@ -148,32 +147,49 @@ def test_load_campaign_gives_nan_stage_depth_when_the_column_is_absent_from_ever
 
 
 def test_load_campaign_parses_a_real_on_disk_csv_missing_the_stage_depth_column(tmp_path):
-    """The real campaign result files under results/rf_t11_d14_M25_*.csv
-    predate `stage_depth` (F5/F6) -- their header has no such column at all.
-    load_campaign must still load them without raising, with `stage_depth`
-    present and NaN throughout, not silently missing from the frame."""
+    """`tests/fixtures/rf_t11_d14_M25_historical.csv` is a frozen copy of one
+    of the pilot campaign's real result files, taken before `stage_depth`
+    (F5/F6) or the seven Task-8 columns existed -- its header has none of
+    them. Unlike the files under results/, which Phase 7 will eventually
+    overwrite with a rerun that DOES carry these columns, this fixture is
+    checked in and never regenerated, so the column-absent path it exercises
+    stays provable forever. load_campaign must still load it without
+    raising, with every one of these columns present and NaN throughout, not
+    silently missing from the frame."""
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    real_files = sorted(glob.glob(
-        os.path.join(repo_root, 'results', 'rf_t11_d14_M25_*.csv')))
-    assert real_files, 'expected at least one real rf_t11_d14_M25_*.csv on disk'
-    for path in real_files:
-        with open(path, encoding='utf-8') as f:
-            header = f.readline()
-        assert 'stage_depth' not in header, (
-            '{} already has a stage_depth column -- this test no longer '
-            'exercises the column-absent path it is meant to prove'.format(path))
+    fixture_path = os.path.join(
+        repo_root, 'tests', 'fixtures', 'rf_t11_d14_M25_historical.csv')
+    assert os.path.exists(fixture_path), (
+        'expected the frozen fixture {} to exist'.format(fixture_path))
 
+    new_columns = [
+        'stage_depth', 'range_entries', 'ternary_entries', 'register_depth',
+        'register_count', 'register_sram_bits', 'sram_real', 'map_ram_real',
+    ]
+    with open(fixture_path, encoding='utf-8') as f:
+        header = f.readline()
+    for col in new_columns:
+        assert col not in header, (
+            '{} already has a {!r} column -- this test no longer exercises '
+            'the column-absent path it is meant to prove'.format(
+                fixture_path, col))
+
+    # Copy under the identity-matching basename (the fixture's own arm data
+    # says 'independent'): load_campaign cross-checks the filename-encoded
+    # identity against the in-file columns and raises MislabelledArtifactError
+    # on a mismatch, so the file on disk must be named to match its content,
+    # not the fixture's own storage name.
     out_dir = tmp_path / 'results'
     out_dir.mkdir()
-    for path in real_files:
-        shutil.copy(path, out_dir / os.path.basename(path))
+    shutil.copy(fixture_path, out_dir / 'rf_t11_d14_M25_independent.csv')
 
     df = load_campaign(results_dir=str(out_dir))
 
     assert len(df) > 0
-    assert 'stage_depth' in df.columns
-    assert pd.api.types.is_float_dtype(df['stage_depth'])
-    assert df['stage_depth'].isna().all()
+    for col in new_columns:
+        assert col in df.columns
+        assert pd.api.types.is_float_dtype(df[col])
+        assert df[col].isna().all()
     # The pre-existing stages/blocks columns must still parse as real numbers
     # -- proof this is additive, not a regression on the columns that were
     # already there.
