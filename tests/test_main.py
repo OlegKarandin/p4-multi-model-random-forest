@@ -104,7 +104,7 @@ def test_run_plot_mode_defaults_to_the_pre_registered_holm_family_size():
     """Carried forward from Task 13: the figures path itself defaults
     expected_family_size to None, which lets Holm quietly correct over a
     smaller, weaker family on a partial campaign. main.py must wire the
-    pre-registered 21-comparison family explicitly so a partial campaign
+    pre-registered 35-comparison family explicitly so a partial campaign
     raises instead of silently weakening the correction."""
     from src.reporting import claims
     with patch("src.main.load_campaign", return_value="df"), \

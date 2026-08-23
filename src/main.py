@@ -109,7 +109,7 @@ def parse_args(argv=None):
         help="in plot mode, render even when the campaign under results/ "
              "does not yet cover the full 7-arm sweep (e.g. a single-M "
              "pilot). The default requires the complete pre-registered "
-             "21-comparison Holm family (7 joint arms x 3 tests) and raises "
+             "35-comparison Holm family (7 joint arms x 5 tests) and raises "
              "otherwise, so a partial campaign never silently applies a "
              "weaker multiplicity correction than the one pre-registered "
              "in spec C.3")
@@ -435,7 +435,7 @@ def run_plot_mode(results_dir='results', output_dir=None,
     `allow_partial_family` controls the ONE thing carried forward from Task
     13: `claims.paired_tests` defaults `expected_family_size` to None, which
     lets Holm-Bonferroni quietly correct over however many contrasts happen
-    to be present -- a weaker correction than the pre-registered 21 on any
+    to be present -- a weaker correction than the pre-registered 35 on any
     campaign that has not yet run all seven joint arms, silent apart from a
     line in the rendered markdown. The default here (False) instead passes
     `claims.PRE_REGISTERED_FAMILY_SIZE` explicitly, so a partial campaign

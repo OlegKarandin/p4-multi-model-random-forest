@@ -79,24 +79,28 @@ plus seven joint arms. The pre-registered family is therefore
     7 contrasts   joint-off, joint-d000, joint-d002, joint-d005,
                   joint-d010, joint-d020, joint-dinf -- each against
                   `independent`
-  x 3 tests       acc_app (one-sided), acc_ddos (one-sided),
+  x 5 tests       acc_app (one-sided), f1_app (one-sided),
+                  acc_ddos (one-sided), f1_ddos (one-sided),
                   blocks (two-sided)
-  = 21 comparisons
+  = 35 comparisons
 
-`PRE_REGISTERED_FAMILY_SIZE` is that 21, `default_contrast_family` builds
+`PRE_REGISTERED_FAMILY_SIZE` is that 35, `default_contrast_family` builds
 those seven contrasts, and `paired_tests` reports `n_comparisons` on every
 row so a reader can check the correction covered what was actually run.
 Pass `expected_family_size=PRE_REGISTERED_FAMILY_SIZE` to make a shrunken
 family (an arm missing from the frame) an error rather than a quietly weaker
-correction. Holm-Bonferroni is applied across all 21 at once -- not per task,
-not per arm.
+correction. Holm-Bonferroni is applied across all 35 at once -- not per task,
+not per arm. `f1_app`/`f1_ddos` read the same one-sided direction as their
+accuracy counterparts -- "small p is the positive finding" -- because a
+per-class F1 collapse that raw accuracy hides (spec R3 section IV(d)) is
+exactly the failure mode this family exists to catch.
 
 **The substitution tests are a SECOND, SEPARATE family, and they are not
-part of the 21.** `substitution_test` returns six p-value fields, and
+part of the 35.** `substitution_test` returns six p-value fields, and
 `substitution_test_all_arms` runs it at all seven joint arms; taken raw that
 is 42 uncorrected p-values and seven uncorrected decision flags, and under
 the null at least one of seven flags at alpha = 0.05 fires roughly 30% of
-the time. They are kept out of the pre-registered 21 deliberately -- folding
+the time. They are kept out of the pre-registered 35 deliberately -- folding
 them in would dilute the Holm correction protecting the primary accuracy
 claims with tests that answer a different question -- but
 kept out is not the same as unreported, so:
@@ -173,22 +177,24 @@ FRONT_OBJECTIVES = ('acc_app', 'acc_ddos', 'blocks')
 # (acc_app, acc_ddos, -blocks) as the spec states.
 FRONT_MAXIMIZE = (True, True, False)
 
-DEFAULT_METRICS = ('acc_app', 'acc_ddos', 'blocks')
+DEFAULT_METRICS = ('acc_app', 'f1_app', 'acc_ddos', 'f1_ddos', 'blocks')
 
 # Which alternative each metric's paired test encodes. See the module
 # docstring -- getting this table backwards is the expensive mistake.
 METRIC_ALTERNATIVE = {
     'acc_app': 'greater',
+    'f1_app': 'greater',
     'acc_ddos': 'greater',
+    'f1_ddos': 'greater',
     'blocks': 'two-sided',
 }
 
-# 7 joint arms x 3 tests. Stated as a literal so a reader can check it
+# 7 joint arms x 5 tests. Stated as a literal so a reader can check it
 # against the arm grid, and asserted against the derived family below.
-PRE_REGISTERED_FAMILY_SIZE = 21
+PRE_REGISTERED_FAMILY_SIZE = 35
 
 # The SEPARATE substitution family: one one-sided correlation test per joint
-# arm. Explicitly not folded into the 21 -- see the module docstring -- but
+# arm. Explicitly not folded into the 35 -- see the module docstring -- but
 # Holm-corrected across its own seven so the seven decision flags are not
 # read raw.
 SUBSTITUTION_FAMILY_SIZE = 7
@@ -484,7 +490,7 @@ def substitution_test(df, treatment, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05):
     1. They are UNCORRECTED. This function returns six p-value fields, and
        `substitution_test_all_arms` runs it at seven arms; none of those 42
        values, and not `substitution_detected` either, belong to the
-       pre-registered 21-comparison family that `paired_tests` corrects (see
+       pre-registered 35-comparison family that `paired_tests` corrects (see
        the module docstring for why they are kept separate). Under the null,
        at least one of seven raw flags fires roughly 30% of the time. Prefer
        `substitution_test_all_arms`, which adds a Holm-corrected flag across
@@ -542,7 +548,7 @@ def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
     of the sweep unexamined. Arms absent from `df` are skipped, so a partial
     campaign still produces a table.
 
-    THIS IS A SEPARATE FAMILY FROM THE PRE-REGISTERED 21. Running one
+    THIS IS A SEPARATE FAMILY FROM THE PRE-REGISTERED 35. Running one
     one-sided test per arm means seven decision flags, and at alpha = 0.05
     at least one fires under the null roughly 30% of the time, so the raw
     `substitution_detected` must not be read across the sweep as if it were
@@ -550,7 +556,7 @@ def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
 
     * `pearson_p_negative_one_sided_holm` -- the flag-driving p-value,
       Holm-corrected across the arms in THIS table only. It is deliberately
-      not pooled with `paired_tests`' 21: folding a different question into
+      not pooled with `paired_tests`' 35: folding a different question into
       that family would dilute the correction protecting the primary
       accuracy claims.
     * `substitution_detected_holm` -- the corrected decision. Report this
@@ -814,10 +820,10 @@ def default_contrast_family(df=None, arms=None, baseline=INDEPENDENT_ARM_SLUG):
     """The pre-registered contrast family: each of the seven joint arms
     against `independent`.
 
-    Seven contrasts x three tests (`acc_app`, `acc_ddos`, `blocks`) is the
-    21-comparison family `PRE_REGISTERED_FAMILY_SIZE` names. When `df` is
-    given, only arms actually present in it are returned, so a partial
-    campaign yields a smaller -- and explicitly smaller -- family.
+    Seven contrasts x five tests (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`,
+    `blocks`) is the 35-comparison family `PRE_REGISTERED_FAMILY_SIZE` names.
+    When `df` is given, only arms actually present in it are returned, so a
+    partial campaign yields a smaller -- and explicitly smaller -- family.
     """
     if arms is not None:
         selected = tuple(arms)
@@ -849,17 +855,18 @@ def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
 
     The family, stated so it can be checked (see the module docstring): the
     seven joint arms of spec A.2's grid, each against `independent`, times
-    three tests -- `acc_app`, `acc_ddos`, `blocks` -- for 21 comparisons.
-    Holm-Bonferroni is applied across ALL of them at once; `n_comparisons` on
-    every row records how many were actually corrected over, and
-    `expected_family_size=PRE_REGISTERED_FAMILY_SIZE` turns a shrunken family
-    (an arm missing from `df`) into an error rather than a quietly weaker
-    correction.
+    five tests -- `acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `blocks` -- for
+    35 comparisons. Holm-Bonferroni is applied across ALL of them at once;
+    `n_comparisons` on every row records how many were actually corrected
+    over, and `expected_family_size=PRE_REGISTERED_FAMILY_SIZE` turns a
+    shrunken family (an arm missing from `df`) into an error rather than a
+    quietly weaker correction.
 
     Which alternative each test encodes -- the expensive thing to get wrong:
 
-    * `acc_app`, `acc_ddos`: ONE-SIDED, `alternative='greater'` applied to
-      `d + margin` where `d = joint - independent`. The null is
+    * `acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`: ONE-SIDED,
+      `alternative='greater'` applied to `d + margin` where
+      `d = joint - independent`. The null is
       `median(d) <= -margin` and the alternative is `median(d) > -margin`, so
       a SMALL p-value is the positive finding: the joint arm is not worse by
       more than `margin`. With the default `margin = 0` this is

@@ -749,7 +749,7 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
     `expected_family_size` is passed straight through to every unit's call
     and defaults to None so a partial campaign (the pilot cell) still
     produces a table. That is a real weakening -- Holm over 9 comparisons is
-    a laxer correction than Holm over the pre-registered 21 -- so the
+    a laxer correction than Holm over the pre-registered 35 -- so the
     rendered markdown always states how many comparisons were actually
     corrected over and what the pre-registered family size is. Pass
     `expected_family_size=claims.PRE_REGISTERED_FAMILY_SIZE` on the complete
@@ -770,7 +770,7 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
     family_note = (
         '{} comparisons were Holm-corrected within EACH unit below (pair and '
         'split are corrected independently of each other); the pre-registered '
-        'family is {} (7 joint arms x 3 tests). {}'.format(
+        'family is {} (7 joint arms x 5 tests). {}'.format(
             n_comparisons, claims.PRE_REGISTERED_FAMILY_SIZE,
             'The family is complete.'
             if n_comparisons == claims.PRE_REGISTERED_FAMILY_SIZE else

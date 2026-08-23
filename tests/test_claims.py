@@ -17,6 +17,7 @@ import pytest
 from src.reporting.claims import (
     INDEPENDENT_ARM_SLUG,
     JOINT_ARM_SLUGS,
+    METRIC_ALTERNATIVE,
     PRE_REGISTERED_FAMILY_SIZE,
     SUBSTITUTION_FAMILY_SIZE,
     ablation_decomposition,
@@ -624,14 +625,23 @@ def test_default_contrast_family_is_the_seven_joint_arms_against_independent():
     assert family == tuple((slug, INDEPENDENT_ARM_SLUG) for slug in JOINT_ARM_SLUGS)
 
 
-def test_paired_tests_runs_exactly_the_pre_registered_twenty_one_comparisons():
+def test_paired_tests_runs_exactly_the_pre_registered_thirty_five_comparisons():
+    """D2: F1 joins the tested family (7 arms x 5 metrics), answering R3
+    section IV(d) -- accuracy hides minority classes. Decided PRE-campaign;
+    the cost is a stricter Holm bar, 0.05/35 = 0.0014 rather than 0.0024."""
     table = paired_tests(_full_campaign_frame(),
                          expected_family_size=PRE_REGISTERED_FAMILY_SIZE)
 
-    assert len(table) == 21
-    assert PRE_REGISTERED_FAMILY_SIZE == 21
+    assert PRE_REGISTERED_FAMILY_SIZE == 35
+    assert len(table) == 35
     assert table['treatment'].nunique() == 7
-    assert set(table['metric']) == {'acc_app', 'acc_ddos', 'blocks'}
+    assert set(table['metric']) == {'acc_app', 'f1_app', 'acc_ddos', 'f1_ddos', 'blocks'}
+
+
+def test_f1_is_one_sided_greater_like_accuracy():
+    """Same direction and same 'small p is the positive finding' reading."""
+    assert METRIC_ALTERNATIVE['f1_app'] == 'greater'
+    assert METRIC_ALTERNATIVE['f1_ddos'] == 'greater'
 
 
 def test_paired_tests_raises_when_the_family_is_not_the_size_the_caller_expected():
@@ -726,19 +736,19 @@ def test_paired_tests_holm_column_corrects_over_the_whole_family_it_ran():
     table = paired_tests(_full_campaign_frame())
 
     assert (table['p_holm'] >= table['p_value'] - 1e-12).all()
-    assert table['n_comparisons'].eq(21).all()
+    assert table['n_comparisons'].eq(PRE_REGISTERED_FAMILY_SIZE).all()
     assert holm_bonferroni(table['p_value'].to_numpy()) == \
         pytest.approx(table['p_holm'].to_numpy())
 
 
 def test_paired_tests_holm_makes_a_marginal_result_non_significant():
-    """A p just under 0.05 in a family of 21 must not survive the correction;
+    """A p just under 0.05 in a family of 35 must not survive the correction;
     this is the whole reason the correction exists."""
     table = paired_tests(_full_campaign_frame())
     marginal = 0.04
 
-    assert holm_bonferroni([marginal] + [0.9] * 20)[0] > 0.05
-    assert len(table) == 21
+    assert holm_bonferroni([marginal] + [0.9] * 34)[0] > 0.05
+    assert len(table) == PRE_REGISTERED_FAMILY_SIZE
 
 
 def test_paired_tests_reports_the_pair_count_and_the_split_count_per_contrast():
@@ -846,7 +856,7 @@ def test_zero_difference_counts_are_reported_before_and_after_the_margin_shift()
 
 
 # ---------------------------------------------------------------------------
-# Review fix 2: the substitution family is separate from the 21, and
+# Review fix 2: the substitution family is separate from the 35, and
 # corrected within itself.
 # ---------------------------------------------------------------------------
 
