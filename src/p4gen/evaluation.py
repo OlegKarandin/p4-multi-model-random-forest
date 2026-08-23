@@ -613,7 +613,7 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
                   register_sram_bits and their capacity caveat (Spec 4.3).
     range_entries  : count of physical rows across all range tables
     ternary_entries: count of ternary codewords across all classification trees
-    (a fifth quantity, `stages_real` -- the REAL compiler's whole-program
+    (a fourth quantity, `stages_real` -- the REAL compiler's whole-program
     stage count including parsing/bookkeeping overhead this function does
     not model at all -- is NOT returned here; see p4_compile.parse_compile_logs,
     which stores it. M2 example: 9. `stages` and `stages_real` sit side by
