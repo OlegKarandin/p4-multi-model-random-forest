@@ -3,6 +3,7 @@ import dataclasses
 
 from src.p4gen import evaluation as ev
 from src.p4gen import build_p4_script as bps
+from p4.range_expansion import range_entry_count
 import pytest
 
 
@@ -34,9 +35,10 @@ def test_range_matching_resource_usage_uses_exact_real_interval_costs():
     # range_entry_count), not "1 entry per interval" -- confirms
     # range_matching_resource_usage sums the REAL per-interval cost, not
     # just a count of intervals (the old code's bug, in a different form).
+    # A1 (Task 4): entries is the expanded row count, so it's 4 here, not 1.
     feature_intervals = {"F": [(10, 300)]}
     entries, blocks, specs = ev.range_matching_resource_usage(feature_intervals)
-    assert entries == 1   # one interval
+    assert entries == 4   # 4 physical rows, not 1 interval
     assert blocks == 1    # 4 rows fits comfortably in one 512-row block
     # one independent range table for the feature, keyed on its 16-bit value
     assert specs == [(1, 2)]
@@ -52,7 +54,7 @@ def test_range_matching_resource_usage_crosses_block_boundary():
     intervals = [(300 * i + 10, 300 * i + 300) for i in range(129)]
     feature_intervals = {"F": intervals}
     entries, blocks, specs = ev.range_matching_resource_usage(feature_intervals)
-    assert entries == 129
+    assert entries == 518  # A1 (Task 4): expanded rows, not 129 intervals
     assert blocks == 2
     assert specs == [(2, 2)]
 
@@ -63,10 +65,27 @@ def test_range_matching_resource_usage_sums_across_features():
         "F2": [(0, 255), (5, 5)],
     }
     entries, blocks, specs = ev.range_matching_resource_usage(feature_intervals)
-    assert entries == 3  # 1 interval in F1, 2 in F2
+    # A1 (Task 4): expanded rows, not intervals -- F1's (10,300) costs 4
+    # rows, F2's (0,255) and (5,5) each cost 1 row apiece: 4 + 1 + 1 = 6.
+    assert entries == 6
     assert blocks == 2   # each feature's rows fit in its own 1 block
     # one independent table per feature, NOT one merged table
     assert specs == [(1, 2), (1, 2)]
+
+
+def test_range_entries_counts_expanded_tcam_rows_not_intervals():
+    """A1: deliverable 8 compares entries against blocks, and blocks are
+    ceil(rows/512). Counting intervals would compare two unrelated
+    quantities. A single [1, 20] interval crosses a 4-bit nibble boundary
+    (task brief's own [1, 14] example turns out to be degenerate: it fits
+    entirely inside one nibble and expands to exactly 1 row, the same as
+    the interval count, so it can't distinguish the two definitions --
+    [1, 20] genuinely expands to 2 physical TCAM rows)."""
+    intervals = {'f': [(1, 20)]}
+    entries, blocks, specs = ev.range_matching_resource_usage(intervals)
+    assert entries == sum(range_entry_count(lo, hi, ev.nibble_widths_for(16))
+                          for lo, hi in intervals['f'])
+    assert entries > len(intervals['f'])
 
 
 def _codewords_of_length(width, n_entries=1):
@@ -627,7 +646,15 @@ def test_exact_match_resource_usage_sums_across_multiple_trees():
 # fixtures BEFORE this task's edits. Hardcoded on purpose: comparing the new
 # default path against a derived expression would only prove self-consistency,
 # not that nothing moved.
-_PRE_TASK_SINGLE_APP = (13, 4, 11, 2, 9)          # range_entries, range_blocks, ternary_entries, ternary_blocks, codeword_length
+# range_entries' leading value changed from 13 to 52 under Task 4 (A1):
+# range_matching_resource_usage's range_entries now counts EXPANDED TCAM
+# rows (what range_blocks quantizes), not raw interval counts. This
+# fixture's 4 features (f0..f3) have 3, 3, 3, 4 intervals respectively
+# (13 total, the old value); their expanded row costs are 12, 12, 12, 16
+# (52 total, hand-verified via range_entry_count against feature_intervals
+# printed from this exact fixture). Only this first value moved -- nothing
+# else in this tuple depends on range_entries.
+_PRE_TASK_SINGLE_APP = (52, 4, 11, 2, 9)          # range_entries, range_blocks, ternary_entries, ternary_blocks, codeword_length
 _PRE_TASK_SINGLE_APP_RANGE_SPECS = [(1, 2)] * 4
 _PRE_TASK_SINGLE_APP_TERNARY_SPECS = [(1, 4), (1, 4)]
 _PRE_TASK_MULTI_JOINT = (2, 8, 3)                  # stages, blocks, stage_depth

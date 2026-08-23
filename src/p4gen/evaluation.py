@@ -128,6 +128,14 @@ def nibble_widths_for(bits):
 def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE_BIT_WIDTH):
   """Returns (range_entries, range_blocks, range_table_specs).
 
+  range_entries is the EXPANDED PHYSICAL TCAM ROW COUNT (the same quantity
+  range_blocks quantizes via ceil(total_rows / TERNARY_MATCHING_ENTRIES_PER_BLOCK)),
+  NOT a count of distinct [lo, hi] intervals -- one range interval typically
+  expands to several physical rows (see range_entry_count / expand_range()),
+  so range_entries >= the interval count, often strictly greater. (A1: prior
+  to this fix, range_entries counted intervals, an unrelated quantity that
+  could not be meaningfully compared against range_blocks.)
+
   Every selected feature gets its OWN independent range-matching P4 table
   (build_p4_script.py:663-674, keyed on "meta.<feature>_val : range"), so
   range_table_specs is one (block_count, byte_width) pair per feature --
@@ -165,7 +173,7 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
 
     feature_blocks = math.ceil(total_rows / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
 
-    range_entries += len(feature_intervals[feature])
+    range_entries += total_rows
     range_blocks += feature_blocks
     range_table_specs.append((feature_blocks, key_bytes))
 
