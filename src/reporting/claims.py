@@ -121,6 +121,23 @@ kept out is not the same as unreported, so:
   that share a training split within a split, so their p-values are
   anti-conservative relative to the number of independent splits.
 
+**`noninferiority_tests` is a THIRD, SEPARATE family (D13), and it is not
+part of the 35 either.** It answers a different question from
+`paired_tests`' default `margin=0`: not "is there no detectable loss" but
+"is any loss small enough to call the two arms equivalent". Equivalence
+needs a margin, and D13 sizes it as **5% of each row's OWN baseline
+error**, per `(M, split, k)` cell -- not the flat accuracy-point constant
+`paired_tests`' `margin` parameter adds, which would test App (around 0.70
+accuracy, about 30% error) and DDoS (around 0.97, about 3% error) at
+wildly different strictness. The family is the seven joint arms x
+`acc_app`/`acc_ddos` only (`f1_app`/`f1_ddos` stay in the 35; they are not
+retested here) = 14 comparisons (`NONINFERIORITY_FAMILY_SIZE`),
+Holm-corrected on its own -- never mixed with the 35's p-values, because
+the two families answer different questions (superiority vs equivalence)
+and pooling their corrections would weaken both. See
+`noninferiority_tests` for the exact H0/H1 and the pre-registration
+constraint on the margin itself.
+
 `ablation_decomposition` deliberately reports NO p-values. Its two contrasts
 (`joint-off - independent` and `joint-delta - joint-off`) are a descriptive
 decomposition of where the effect comes from; adding tests there would
@@ -198,6 +215,21 @@ PRE_REGISTERED_FAMILY_SIZE = 35
 # Holm-corrected across its own seven so the seven decision flags are not
 # read raw.
 SUBSTITUTION_FAMILY_SIZE = 7
+
+# D13's non-inferiority family: acc_app and acc_ddos only. F1 stays in the
+# 35-comparison superiority family -- it is not retested here.
+NONINFERIORITY_METRICS = ('acc_app', 'acc_ddos')
+
+# D13's pre-registered margin: 5% of EACH ROW's OWN baseline error, not an
+# absolute accuracy-point constant. See `noninferiority_tests`'s docstring
+# for why `paired_tests`' `margin` parameter cannot be reused for this.
+NONINFERIORITY_MARGIN = 0.05
+
+# 7 joint arms x 2 accuracy metrics (NONINFERIORITY_METRICS). A THIRD family,
+# separate from PRE_REGISTERED_FAMILY_SIZE's 35 and from
+# SUBSTITUTION_FAMILY_SIZE's 7 -- see the module docstring and
+# `noninferiority_tests`.
+NONINFERIORITY_FAMILY_SIZE = 14
 
 # Wilcoxon zero handling. The default 'wilcox' DISCARDS tied pairs, which
 # throws away the observations that most directly support a no-detectable-loss
@@ -985,6 +1017,182 @@ def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
             'family size is {}. Running a subset of the pre-registered family '
             'weakens the Holm correction for every comparison in it, so this '
             'is refused rather than silently accepted. Arms found: {}.'
+            .format(n_comparisons, expected_family_size,
+                    [treatment for treatment, _ in family]))
+
+    table['n_comparisons'] = n_comparisons
+    table['p_holm'] = holm_bonferroni(table['p_value'].to_numpy())
+    table['alpha'] = alpha
+    table['significant_holm'] = table['p_holm'] < alpha
+    return table
+
+
+# ---------------------------------------------------------------------------
+# Non-inferiority at a per-row relative-error margin (D13)
+# ---------------------------------------------------------------------------
+
+def noninferiority_tests(df, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05,
+                         unit='pair', expected_family_size=None):
+    """D13: is each joint arm non-inferior to `independent` on accuracy at a
+    margin of 5% of EACH ROW's OWN baseline error?
+
+    Why this cannot reuse `paired_tests(..., margin=...)`. That machinery
+    (`tested = values + margin`) adds a single CONSTANT to every row's
+    accuracy-point delta. App sits near 0.70 accuracy (about 30% error) and
+    DDoS near 0.97 (about 3% error), so one flat absolute margin would test
+    the two tasks at wildly different strictness -- generous for App,
+    punishing for DDoS. D13 instead sizes the margin PER ROW, as
+    `NONINFERIORITY_MARGIN * (1 - baseline_accuracy)` -- the same FRACTION
+    of each row's own error -- computed from `campaign_data.pair_arms`
+    directly rather than `arm_deltas`: `arm_deltas` only returns the delta
+    `d_<metric>` and drops the raw baseline value this margin needs.
+
+    H0 / H1, stated so the sign is checkable against the code below:
+
+        d = joint_accuracy - independent_accuracy          (per row)
+        margin_row = NONINFERIORITY_MARGIN * (1 - independent_accuracy)
+
+        H0: median(d) <= -margin_row   (joint increases this row's relative
+                                         error by MORE than the margin)
+        H1: median(d) >  -margin_row   (it does not)
+
+    REJECTING H0 -- a small p-value -- is the POSITIVE finding: it is what
+    licenses the word "equivalent" in the results chapter. This mirrors the
+    statistical SHAPE of `paired_tests`' `margin > 0` branch exactly --
+    Wilcoxon one-sided (`alternative='greater'`) on `d + margin` via
+    `_wilcoxon` -- only the margin's construction differs, from a constant
+    to a per-row fraction of baseline error.
+
+    Scope is deliberately just `NONINFERIORITY_METRICS` (`acc_app`,
+    `acc_ddos`). F1 is NOT tested here -- it stays in `paired_tests`' 35-
+    comparison superiority family, which answers a different question.
+
+    The family is the seven joint arms x these two metrics = 14
+    (`NONINFERIORITY_FAMILY_SIZE`), Holm-corrected on its OWN: this
+    function's p-values are never mixed into `paired_tests`' 35 -- see the
+    module docstring for why pooling the two would weaken both. Pass
+    `expected_family_size=NONINFERIORITY_FAMILY_SIZE` to turn a shrunken
+    family (an arm missing from `df`) into an error rather than a quietly
+    weaker correction, exactly as `paired_tests` does.
+
+    The emitted `margin` column reports the MEAN of the per-row margins
+    over the cells that fed the test (a summary figure only -- the test
+    itself uses the full per-row margin, not this mean). In this project's
+    synthetic tests the baseline accuracy is constant across rows within a
+    contrast, so the mean equals the single value it is averaging.
+
+    `unit='pair'` (default) tests one row per `(M, split, k)` cell, as spec
+    C.3 pairs; `unit='split'` collapses to one mean per split first, as the
+    lower-power robustness check `paired_tests` also offers. Both `n_pairs`
+    and `n_splits` are always reported. The returned frame carries the same
+    column set as `paired_tests` so downstream table/deliverable code can
+    concatenate the two families and treat their rows uniformly.
+
+    PRE-REGISTRATION NOTICE. `NONINFERIORITY_MARGIN = 0.05` is a
+    pre-registration decision, written down here BEFORE the first real
+    campaign cell has been run. It is legitimate only because of that
+    ordering: choosing, widening, or narrowing a non-inferiority margin
+    AFTER seeing results turns the test into a foregone conclusion,
+    defeating the entire point of pre-registering it. Once real campaign
+    data exists, this margin must NOT be revisited to make a result come
+    out either way.
+
+    Raises ValueError if any contrast has no paired cells at all: a
+    contrast contributing nothing would shrink the family without the
+    reader noticing.
+    """
+    if unit not in ('pair', 'split'):
+        raise ValueError(
+            "noninferiority_tests: unit must be 'pair' or 'split', got {!r}"
+            .format(unit))
+
+    family = default_contrast_family(df, baseline=baseline)
+    if not family:
+        raise ValueError(
+            'noninferiority_tests: no treatment arms found in the frame '
+            '(expected some of {}), so there is no family to correct over.'
+            .format(list(JOINT_ARM_SLUGS)))
+
+    rows = []
+    for treatment, contrast_baseline in family:
+        for metric in NONINFERIORITY_METRICS:
+            treatment_col = '{}_treatment'.format(metric)
+            baseline_col = '{}_baseline'.format(metric)
+            paired = pair_arms(df, treatment, contrast_baseline)
+            if len(paired) == 0:
+                raise ValueError(
+                    'noninferiority_tests: contrast {!r} - {!r} has no '
+                    'paired (M, split, k) cells, which would silently '
+                    'shrink the correction family. Check that both arms '
+                    'were run over the same grid.'
+                    .format(treatment, contrast_baseline))
+
+            baseline_values = paired[baseline_col].astype('float64').to_numpy()
+            treatment_values = paired[treatment_col].astype('float64').to_numpy()
+            d = treatment_values - baseline_values
+            row_margin = NONINFERIORITY_MARGIN * (1.0 - baseline_values)
+            tested_full = d + row_margin
+
+            n_pairs = int(len(paired))
+            n_splits = int(paired['split'].nunique())
+            split_ids = paired['split'].to_numpy()
+
+            if unit == 'split':
+                grouped = pd.DataFrame({
+                    'split': split_ids, 'd': d, 'tested': tested_full,
+                }).groupby('split').mean()
+                values = grouped['d'].to_numpy(dtype='float64')
+                tested = grouped['tested'].to_numpy(dtype='float64')
+            else:
+                values = d
+                tested = tested_full
+
+            statistic, p_value = _wilcoxon(tested, 'greater')
+            split_means = (
+                pd.DataFrame({'split': split_ids, 'd': d})
+                .groupby('split')['d'].mean().to_numpy(dtype='float64'))
+            mean, sd, sem, low, high = _t_interval(split_means, 0.95)
+
+            mean_margin = float(np.mean(row_margin))
+            hypothesis = (
+                'H0: median(d_{0}) <= -{1:g} * (1 - baseline_{0})  vs  '
+                'H1: median(d_{0}) > -{1:g} * (1 - baseline_{0})  '
+                '(non-inferiority of {2} to {3} within a margin of {1:g} '
+                "of {3}'s own baseline error, computed per (M, split, k) "
+                'row; rejecting H0 licenses "equivalent")'
+            ).format(metric, NONINFERIORITY_MARGIN, treatment, contrast_baseline)
+
+            rows.append({
+                'contrast': '{} - {}'.format(treatment, contrast_baseline),
+                'treatment': treatment,
+                'baseline': contrast_baseline,
+                'metric': metric,
+                'alternative': 'greater',
+                'hypothesis': hypothesis,
+                'margin': mean_margin,
+                'unit': unit,
+                'n_pairs': n_pairs,
+                'n_splits': n_splits,
+                'n_tested': int(len(values)),
+                'n_zero_differences': int(np.sum(values == 0)),
+                'n_zero_in_test': int(np.sum(tested == 0)),
+                'median_diff': float(np.median(values)) if len(values) else float('nan'),
+                'mean_diff_split_level': mean,
+                'ci_low': low,
+                'ci_high': high,
+                'statistic': statistic,
+                'p_value': p_value,
+            })
+
+    table = pd.DataFrame(rows)
+    n_comparisons = len(table)
+    if expected_family_size is not None and n_comparisons != expected_family_size:
+        raise ValueError(
+            'noninferiority_tests: ran {} comparisons but the expected '
+            'correction family size is {}. Running a subset of the '
+            'pre-registered family weakens the Holm correction for every '
+            'comparison in it, so this is refused rather than silently '
+            'accepted. Arms found: {}.'
             .format(n_comparisons, expected_family_size,
                     [treatment for treatment, _ in family]))
 

@@ -18,6 +18,7 @@ from src.reporting.claims import (
     INDEPENDENT_ARM_SLUG,
     JOINT_ARM_SLUGS,
     METRIC_ALTERNATIVE,
+    NONINFERIORITY_FAMILY_SIZE,
     PRE_REGISTERED_FAMILY_SIZE,
     SUBSTITUTION_FAMILY_SIZE,
     ablation_decomposition,
@@ -26,6 +27,7 @@ from src.reporting.claims import (
     default_contrast_family,
     delta_frontier,
     holm_bonferroni,
+    noninferiority_tests,
     paired_tests,
     pareto_front_3d,
     pareto_projections,
@@ -98,6 +100,28 @@ def _paired_frame(d_app, d_ddos, d_blocks, treatment='joint-d005',
         rows.append(_row(arm_slug=treatment, M=M, split=i, k=k,
                          acc_app=base_app + da, acc_ddos=base_ddos + dd,
                          blocks=base_blocks + db))
+    return _frame(rows)
+
+
+def _noninferiority_frame(acc_app_base=0.90, acc_ddos_base=0.85,
+                          app_relative_degradation=0.0,
+                          ddos_relative_degradation=0.0,
+                          treatment='joint-d005', baseline=INDEPENDENT_ARM_SLUG,
+                          n_splits=6, M=25, k=5):
+    """One baseline row and one treatment row per split, where the
+    treatment's accuracy is offset from the baseline by a stated FRACTION
+    of the baseline's own error -- `acc_treatment = acc_base -
+    relative_degradation * (1 - acc_base)` -- so `noninferiority_tests`'s
+    per-row relative margin and the delta it tests are both exactly
+    checkable from the inputs given here."""
+    app_treatment = acc_app_base - app_relative_degradation * (1.0 - acc_app_base)
+    ddos_treatment = acc_ddos_base - ddos_relative_degradation * (1.0 - acc_ddos_base)
+    rows = []
+    for split in range(n_splits):
+        rows.append(_row(arm_slug=baseline, M=M, split=split, k=k,
+                         acc_app=acc_app_base, acc_ddos=acc_ddos_base))
+        rows.append(_row(arm_slug=treatment, M=M, split=split, k=k,
+                         acc_app=app_treatment, acc_ddos=ddos_treatment))
     return _frame(rows)
 
 
@@ -947,3 +971,37 @@ def test_substitution_test_reports_the_split_count_next_to_the_pair_count():
 
     assert result['n_pairs'] == 16
     assert result['n_splits'] == 4
+
+
+# ---------------------------------------------------------------------------
+# noninferiority_tests -- D13: non-inferiority at a 5% relative-error margin
+# ---------------------------------------------------------------------------
+
+def test_non_inferiority_margin_is_relative_to_each_task_own_error():
+    """D13: 0.5 accuracy points is ~1.7% relative for App but ~17% for DDoS.
+    The margin uses the same currency as delta_frontier and delta_align."""
+    frame = _noninferiority_frame(acc_app_base=0.70, acc_ddos_base=0.97)
+    table = noninferiority_tests(frame)
+    app = table[table['metric'] == 'acc_app'].iloc[0]
+    ddos = table[table['metric'] == 'acc_ddos'].iloc[0]
+    assert app['margin'] == pytest.approx(0.05 * 0.30)
+    assert ddos['margin'] == pytest.approx(0.05 * 0.03)
+
+
+def test_the_non_inferiority_family_is_corrected_separately_from_the_35():
+    """Mirrors how `pair` and `split` units are already corrected
+    independently. Leaves the superiority family's power untouched."""
+    table = noninferiority_tests(_full_campaign_frame())
+    assert NONINFERIORITY_FAMILY_SIZE == 14      # 7 arms x 2 accuracies
+    assert len(table) == 14
+    assert set(table['metric']) == {'acc_app', 'acc_ddos'}
+    assert (table['n_comparisons'] == 14).all()
+
+
+def test_the_margin_is_capable_of_failing():
+    """A margin nothing can fail is worthless. 5% sits inside the +12.07%
+    DDoS relative degradation the pre-fix 2975-cell evidence measured."""
+    frame = _noninferiority_frame(ddos_relative_degradation=0.1207)
+    table = noninferiority_tests(frame)
+    ddos = table[table['metric'] == 'acc_ddos'].iloc[0]
+    assert not ddos['significant_holm']
