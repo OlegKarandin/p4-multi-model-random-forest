@@ -702,3 +702,28 @@ def test_resolving_flow_iat_mean_alone_auto_executes_its_dependency():
   dependency_index = apply_code.index(dependency_line)
   value_index = apply_code.index(value_line)
   assert dependency_index < value_index, apply_code
+
+
+# Tests for register_names_for and register_width_bits (Task 5)
+import src.p4gen.feature_registers as fr
+
+
+def test_register_names_for_deduplicates_shared_dependency_registers():
+  """flow_last_arrival_time serves flow_iat_max AND flow_iat_mean, so the
+  union is strictly smaller than the naive per-feature sum (spec 4.1)."""
+  names = fr.register_names_for(['flow_iat_max', 'flow_iat_mean'])
+  assert names.count('flow_last_arrival_time') == 1
+  assert len(names) == 3          # 1 shared dependency + 2 value registers
+
+
+def test_register_names_for_normalises_training_feature_names():
+  """The catalog is keyed on normalised names; the campaign passes
+  'Flow.IAT.Max'. Missing this makes every register_count read low."""
+  assert fr.register_names_for(['Flow.IAT.Max']) == \
+      fr.register_names_for(['flow_iat_max'])
+
+
+def test_the_whole_catalog_needs_twenty_one_distinct_registers():
+  """Spec 4.2: at k=17 the true figure is 20, not the reviewer's 17.
+  Over all 18 features it is 21 -- 18 value + 3 shared *_last_arrival_time."""
+  assert len(fr.register_names_for(fr.FEATURE_REGISTER_CATALOG)) == 21

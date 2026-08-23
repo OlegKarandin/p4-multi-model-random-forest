@@ -417,3 +417,86 @@ FEATURE_REGISTER_CATALOG = {
         "gated_by": None,
     },
 }
+
+
+def register_names_for(features, catalog=None):
+  """Return an ordered, deduplicated tuple of all register names needed by features.
+
+  features: Iterable of feature names (strings) or a dict-like object with keys
+    (e.g., FEATURE_REGISTER_CATALOG itself). Feature names are normalized via
+    normalise_feature_name() to match catalog keys.
+
+  catalog: Dict mapping normalized feature names to catalog entries (each with a
+    "registers" list). Defaults to FEATURE_REGISTER_CATALOG.
+
+  Returns: tuple[str, ...] of register names (e.g., "flow_last_arrival_time",
+    "flow_iat_max"), ordered dependency-first (as stored in catalog entries)
+    and deduplicated by first-seen (the ordering matches the first catalog
+    entry that declares each register, across all selected features).
+
+  Example:
+    >>> register_names_for(['flow_iat_max', 'flow_iat_mean'])
+    ('flow_last_arrival_time', 'flow_iat_max', 'flow_iat_mean')
+
+  Note: This helper does NOT replicate the cross-gate sharing guard from
+  generate_P4_registers_and_apply's _note_touch closure (build_p4_script.py
+  lines 2002-2012). That guard prevents a register from being shared between
+  two features with different gate classes (e.g., one ungated, one fwd-gated).
+  This function only tracks register names as they appear, in order; validation
+  of the cross-gate constraint is deferred to generate_P4_registers_and_apply.
+  """
+  # Import here to avoid circular dependency
+  from src.p4gen.build_p4_script import normalise_feature_name
+
+  if catalog is None:
+    catalog = FEATURE_REGISTER_CATALOG
+
+  # If features is a dict-like object (e.g., FEATURE_REGISTER_CATALOG), use keys()
+  if hasattr(features, 'keys'):
+    feature_names = features.keys()
+  else:
+    feature_names = features
+
+  register_order = []
+  seen = set()
+
+  for feature_name in feature_names:
+    # Normalize the feature name to match catalog keys
+    normalized_name = normalise_feature_name(feature_name)
+    entry = catalog.get(normalized_name)
+    if entry is None:
+      # Skip features not in the catalog
+      continue
+
+    # Walk through the registers in this feature's entry (dependency-first)
+    for register in entry["registers"]:
+      reg_name = register["name"]
+      if reg_name not in seen:
+        register_order.append(reg_name)
+        seen.add(reg_name)
+
+  return tuple(register_order)
+
+
+def register_width_bits(name, catalog=None):
+  """Return the bit width of a register by name.
+
+  name: Register name (e.g., "flow_last_arrival_time", "flow_iat_max").
+
+  catalog: Dict mapping normalized feature names to catalog entries. Defaults to
+    FEATURE_REGISTER_CATALOG.
+
+  Returns: int, the bit width of the named register (e.g., 16).
+
+  Raises: ValueError if the register name is not found in any catalog entry.
+  """
+  if catalog is None:
+    catalog = FEATURE_REGISTER_CATALOG
+
+  # Search through all features for the register
+  for entry in catalog.values():
+    for register in entry["registers"]:
+      if register["name"] == name:
+        return register["width"]
+
+  raise ValueError(f"Register '{name}' not found in catalog")
