@@ -348,23 +348,23 @@ def test_multi_model_memory_evaluation_end_to_end_on_real_forests(encoding):
     clf_app = _tiny_forest([0, 1, 2], seed=0)
     clf_ddos = _tiny_forest([-1, 1], seed=7)
 
-    stages, blocks, stage_depth = ev.multi_model_memory_evaluation(
+    usage = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, features, features, encoding)
 
-    assert isinstance(stages, int) and isinstance(blocks, int)
+    assert isinstance(usage.stages, int) and isinstance(usage.blocks, int)
     # Both models really do emit tables, so neither count can be zero.
-    assert stages >= 2   # at least one range stage and one ternary stage
-    assert blocks >= 2
+    assert usage.stages >= 2   # at least one range stage and one ternary stage
+    assert usage.blocks >= 2
     # Sanity upper bound: 4 tiny depth-3 trees over 4 features cannot need
     # anywhere near a full 12-stage Tofino pipeline's worth of tables.
-    assert stages <= 12
-    assert blocks <= 24 * stages
+    assert usage.stages <= 12
+    assert usage.blocks <= 24 * usage.stages
     # stage_depth (F5/F6) is a DIFFERENT quantity from stages -- pipeline
     # depth, not occupied-stage count -- so it can exceed stages, but never
     # be less than it (depth is at least the count of occupied indices).
-    assert isinstance(stage_depth, int)
-    assert stage_depth >= stages
-    assert stage_depth <= 12
+    assert isinstance(usage.stage_depth, int)
+    assert usage.stage_depth >= usage.stages
+    assert usage.stage_depth <= 12
 
 
 def test_multi_model_memory_evaluation_returns_a_frozen_resource_usage():
@@ -668,16 +668,20 @@ def test_multi_model_memory_evaluation_default_is_unchanged_by_discount_wiring()
     clf_app = _tiny_forest([0, 1, 2], seed=0)
     clf_ddos = _tiny_forest([-1, 1], seed=7)
 
-    assert ev.multi_model_memory_evaluation(
-        clf_app, clf_ddos, features, features, 'joint') == _PRE_TASK_MULTI_JOINT
-    assert ev.multi_model_memory_evaluation(
-        clf_app, clf_ddos, features, features, 'disjoint') == _PRE_TASK_MULTI_DISJOINT
+    usage_joint = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, features, features, 'joint')
+    assert (usage_joint.stages, usage_joint.blocks, usage_joint.stage_depth) == _PRE_TASK_MULTI_JOINT
+    usage_disjoint = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, features, features, 'disjoint')
+    assert (usage_disjoint.stages, usage_disjoint.blocks,
+            usage_disjoint.stage_depth) == _PRE_TASK_MULTI_DISJOINT
 
 
 @pytest.mark.parametrize("encoding", ["joint", "disjoint"])
 def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encoding):
-    # multi_model_memory_evaluation returns (stages, blocks, stage_depth) --
-    # the discounted ENTRY count it feeds into the block formula is never
+    # multi_model_memory_evaluation returns a ResourceUsage(stages, blocks,
+    # stage_depth, range_entries, ternary_entries) -- the discounted ENTRY
+    # count it feeds into the block formula is never
     # returned, and with these tiny forests every tree still fits in one
     # 207-entry TCAM block either way, so the discount would be invisible at
     # the real per-block capacity. Shrinking that one hardware constant for
@@ -695,13 +699,13 @@ def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encod
     clf_app = _tiny_forest([0, 1, 2], seed=0)
     clf_ddos = _tiny_forest([-1, 1], seed=7)
 
-    _, blocks_off, _ = ev.multi_model_memory_evaluation(
+    usage_off = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, features, features, encoding)
-    _, blocks_on, _ = ev.multi_model_memory_evaluation(
+    usage_on = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, features, features, encoding,
         use_default_action_discount=True)
 
-    assert blocks_on < blocks_off
+    assert usage_on.blocks < usage_off.blocks
 
 
 # ---------------------------------------------------------------------------
@@ -985,13 +989,13 @@ def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
     _, _, range_specs = ev.range_matching_resource_usage(intervals)
     assert ev.crossbar_stages_needed(range_specs).occupied == 1
 
-    stages, blocks, stage_depth = ev.multi_model_memory_evaluation(
+    usage = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, "joint")
 
-    assert stages == 3
+    assert usage.stages == 3
     # This IS the M2 fixture the brief's own worked example cites: depth 6,
     # where the real compiler needs 9 (stages_real, not measured here).
-    assert stage_depth == 6
+    assert usage.stage_depth == 6
 
 
 def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth():
@@ -1000,8 +1004,8 @@ def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth
     clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
     clf_ddos = _forest_using_all_four_catalog_features([-1, 1], seed=7)
 
-    stages, _, stage_depth = ev.multi_model_memory_evaluation(
+    usage = ev.multi_model_memory_evaluation(
         clf_app, clf_ddos, ["g0", "g1", "g2", "g3"], ["g0", "g1", "g2", "g3"], "joint")
 
-    assert stages == 2
-    assert stage_depth == 3
+    assert usage.stages == 2
+    assert usage.stage_depth == 3

@@ -62,10 +62,10 @@ def test_blocks_le_max_blocks_holds_for_the_RETURNED_models():
     for max_blocks in (40, 60, 90):
         out = _call(max_blocks=max_blocks)
 
-        _, remeasured, _ = multi_model_memory_evaluation(
+        remeasured = multi_model_memory_evaluation(
             out.model_A, out.model_B, FEATURE_NAMES, FEATURE_NAMES, 'disjoint')
 
-        assert remeasured == out.blocks, max_blocks
+        assert remeasured.blocks == out.blocks, max_blocks
         assert out.blocks <= max_blocks, max_blocks
 
 
@@ -245,11 +245,15 @@ def test_stage_depth_over_the_tofino_ceiling_records_stages_violation_not_the_ot
         captured['study'] = study
         return study
 
+    import src.p4gen.evaluation as ev
+
     monkeypatch.setattr(tm.optuna, 'create_study', capture)
     over_ceiling_depth = tm.TOFINO_PIPELINE_STAGES + 3
     monkeypatch.setattr(
         tm, 'multi_model_memory_evaluation',
-        lambda *a, **k: (1, 1, over_ceiling_depth))
+        lambda *a, **k: ev.ResourceUsage(
+            stages=1, blocks=1, stage_depth=over_ceiling_depth,
+            range_entries=1, ternary_entries=1))
 
     # Every trial is over-ceiling, so nothing is feasible -- same shape as
     # test_crossbar_key_too_wide_records_crossbar_violation_not_codeword.

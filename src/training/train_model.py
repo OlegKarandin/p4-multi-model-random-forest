@@ -209,7 +209,7 @@ def train_multi_RF_Optuna_multi_constrained(
 
         # (b) Constraint, on the shipped artifact -- exact, no proxy.
         try:
-            stages, blocks, stage_depth = multi_model_memory_evaluation(
+            usage = multi_model_memory_evaluation(
                 model_A, model_B, features_A, features_B, encoding)
         except CodewordTooLong as e:
             trial.set_user_attr('codeword_violation', e.args[1] - MAX_CODEWORD_LENGTH)
@@ -225,9 +225,9 @@ def train_multi_RF_Optuna_multi_constrained(
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
 
-        if blocks > max_blocks:
+        if usage.blocks > max_blocks:
             trial.set_user_attr('codeword_violation', 0.0)
-            trial.set_user_attr('blocks_violation', blocks - max_blocks)
+            trial.set_user_attr('blocks_violation', usage.blocks - max_blocks)
             trial.set_user_attr('crossbar_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
@@ -246,11 +246,11 @@ def train_multi_RF_Optuna_multi_constrained(
         # therefore a DEFINITE reject (the real pipeline can only need MORE
         # stages than predicted, never fewer); passing this check is NOT a
         # guarantee the real compile fits within TOFINO_PIPELINE_STAGES.
-        if stage_depth > TOFINO_PIPELINE_STAGES:
+        if usage.stage_depth > TOFINO_PIPELINE_STAGES:
             trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('crossbar_violation', 0.0)
-            trial.set_user_attr('stages_violation', stage_depth - TOFINO_PIPELINE_STAGES)
+            trial.set_user_attr('stages_violation', usage.stage_depth - TOFINO_PIPELINE_STAGES)
             return -1.0, -1.0, float('inf')
 
         # (c) Only FEASIBLE trials pay for scoring. At tight max_blocks most of
@@ -270,8 +270,8 @@ def train_multi_RF_Optuna_multi_constrained(
 
         trial.set_user_attr('acc_app', acc_A)
         trial.set_user_attr('acc_ddos', acc_B)
-        trial.set_user_attr('blocks', int(blocks))
-        trial.set_user_attr('stages', int(stages))
+        trial.set_user_attr('blocks', int(usage.blocks))
+        trial.set_user_attr('stages', int(usage.stages))
         trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 0.0)
         trial.set_user_attr('crossbar_violation', 0.0)
@@ -281,7 +281,7 @@ def train_multi_RF_Optuna_multi_constrained(
         # plots use REALIZED blocks as an axis: without minimize-blocks pressure
         # the realized values pile up near max_blocks and that axis loses all
         # resolution.
-        return acc_A, acc_B, float(blocks)
+        return acc_A, acc_B, float(usage.blocks)
 
     sampler = TPESampler(
         n_startup_trials=10,
@@ -346,32 +346,32 @@ def train_multi_RF_Optuna_multi_constrained(
     model_A, model_B = fit_pair(rf_params(best_trial.params, 'A'),
                                 rf_params(best_trial.params, 'B'),
                                 align_stats=align_stats)
-    stages, blocks, stage_depth = multi_model_memory_evaluation(
+    usage = multi_model_memory_evaluation(
         model_A, model_B, features_A, features_B, encoding)
 
-    if blocks != best_trial.user_attrs['blocks'] or blocks > max_blocks:
+    if usage.blocks != best_trial.user_attrs['blocks'] or usage.blocks > max_blocks:
         raise AssertionError(
             'refit of trial {} gave {} blocks, the search recorded {} '
             '(max {}) -- the pipeline is not deterministic'.format(
-                best_trial.number, blocks, best_trial.user_attrs['blocks'], max_blocks))
+                best_trial.number, usage.blocks, best_trial.user_attrs['blocks'], max_blocks))
 
     # F5: the winning trial already passed the stage_depth <= TOFINO_PIPELINE_STAGES
     # ceiling check inside objective() (a violation there returns the
     # infeasible triple, which trial_selection.select_best_trial never
     # selects), so the refit -- deterministic given the same params -- must
     # reproduce that too.
-    if stage_depth > TOFINO_PIPELINE_STAGES:
+    if usage.stage_depth > TOFINO_PIPELINE_STAGES:
         raise AssertionError(
             'refit of trial {} gave stage_depth {} exceeding the {}-stage '
             'ceiling -- the pipeline is not deterministic'.format(
-                best_trial.number, stage_depth, TOFINO_PIPELINE_STAGES))
+                best_trial.number, usage.stage_depth, TOFINO_PIPELINE_STAGES))
 
     return TrainResult(
         model_A=model_A,
         model_B=model_B,
-        stages=int(stages),
-        blocks=int(blocks),
-        stage_depth=int(stage_depth),
+        stages=int(usage.stages),
+        blocks=int(usage.blocks),
+        stage_depth=int(usage.stage_depth),
         acc_sel_A=best_trial.user_attrs['acc_app'],
         acc_sel_B=best_trial.user_attrs['acc_ddos'],
         best_params=dict(best_trial.params),
