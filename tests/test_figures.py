@@ -78,7 +78,8 @@ def _features_at(split, task, k):
 
 def _row(arm_slug='joint-d005', M=25, split=0, k=5,
          acc_app=0.90, acc_ddos=0.50, blocks=40.0, stages=3.0,
-         f1_app=None, f1_ddos=None):
+         f1_app=None, f1_ddos=None,
+         range_entries=100.0, ternary_entries=50.0):
     if f1_app is None:
         f1_app = acc_app - 0.02
     if f1_ddos is None:
@@ -92,6 +93,7 @@ def _row(arm_slug='joint-d005', M=25, split=0, k=5,
         'acc_app': acc_app, 'acc_ddos': acc_ddos,
         'f1_app': f1_app, 'f1_ddos': f1_ddos,
         'blocks': blocks, 'stages': stages,
+        'range_entries': range_entries, 'ternary_entries': ternary_entries,
         'delta_align_num': delta_num, 'delta_align_is_inf': is_inf,
         'features_app': _features_at(split, 'app', k),
         'features_ddos': _features_at(split, 'ddos', k),
@@ -112,11 +114,21 @@ BASE_ACC_APP = 0.90
 BASE_ACC_DDOS = 0.50
 BASE_ACC_MEAN = (BASE_ACC_APP + BASE_ACC_DDOS) / 2.0    # 0.70
 
+# Deliverable 8's fixed baseline entries, chosen so entries-saving and
+# blocks-saving both come out as clean, hand-checkable fractions:
+#   entries_saving = (500 - 400) / 500 = 0.20
+#   blocks_saving  = (40 - 35) / 40    = 0.125
+#   rounding_loss  = 0.20 - 0.125      = 0.075
+BASE_RANGE_ENTRIES = 300.0
+BASE_TERNARY_ENTRIES = 200.0
+
 
 def _constant_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS,
                        n_splits=4, m_values=(25, 50), k_values=(4, 5),
                        joint_d_app=-0.10, joint_d_ddos=-0.10,
-                       joint_d_blocks=-5.0):
+                       joint_d_blocks=-5.0,
+                       joint_d_range_entries=-60.0,
+                       joint_d_ternary_entries=-40.0):
     """Every arm x every (M, split, k) cell, with EXACTLY the injected
     per-task deltas on every joint arm.
 
@@ -140,7 +152,11 @@ def _constant_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS,
                         arm_slug=arm, M=M, split=split, k=k,
                         acc_app=BASE_ACC_APP + (joint_d_app if joint else 0.0),
                         acc_ddos=BASE_ACC_DDOS + (joint_d_ddos if joint else 0.0),
-                        blocks=40.0 + (joint_d_blocks if joint else 0.0)))
+                        blocks=40.0 + (joint_d_blocks if joint else 0.0),
+                        range_entries=BASE_RANGE_ENTRIES
+                                     + (joint_d_range_entries if joint else 0.0),
+                        ternary_entries=BASE_TERNARY_ENTRIES
+                                       + (joint_d_ternary_entries if joint else 0.0)))
     return _frame(rows)
 
 
@@ -162,7 +178,11 @@ def _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off', 'joint-d005'),
                                 + rng.normal(0, 0.002),
                         acc_ddos=0.40 + 0.03 * k - 0.01 * arm_index
                                  + rng.normal(0, 0.002),
-                        blocks=float(M) - 3.0 * k - (2.0 if joint else 0.0)))
+                        blocks=float(M) - 3.0 * k - (2.0 if joint else 0.0),
+                        range_entries=10.0 * (float(M) - 3.0 * k)
+                                     - (60.0 if joint else 0.0),
+                        ternary_entries=5.0 * (float(M) - 3.0 * k)
+                                       - (30.0 if joint else 0.0)))
     return _frame(rows)
 
 
@@ -869,15 +889,85 @@ def test_deliverable_7_writes_one_row_per_arm_M_and_split(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Deliverable 8 -- entries vs blocks (the TCAM quantization gap)
+# ---------------------------------------------------------------------------
+
+def test_deliverable_8_pairs_entry_savings_against_block_savings_by_k():
+    """T12 (reviews/todo.md:497): 'a table/plot of entries-saving vs
+    blocks-saving across k. If they diverge, T12 has found the paper's real
+    story.' Paired on (M, split, k) against independent."""
+    deliverable = figures.figure_8_entries_vs_blocks(_spread_campaign())
+    assert deliverable.number == 8
+    assert {'d_range_entries', 'd_ternary_entries', 'd_blocks', 'k'} <= \
+        set(deliverable.data.columns)
+    assert 'rounding_loss' in deliverable.data.columns
+
+
+def test_deliverable_8_rounding_loss_matches_the_hand_computed_ratio_gap():
+    """`_constant_campaign`'s injected entries/blocks deltas give a closed
+    form: entries_saving = (500 - 400) / 500 = 0.20, blocks_saving =
+    (40 - 35) / 40 = 0.125, so rounding_loss = 0.20 - 0.125 = 0.075 on
+    every paired cell, for every joint arm."""
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'))
+    deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
+    rows = deliverable.data[deliverable.data['arm_slug'] == 'joint-d005']
+    assert len(rows) > 0
+    np.testing.assert_allclose(rows['rounding_loss'].to_numpy(), 0.075,
+                               atol=1e-9)
+    np.testing.assert_allclose(rows['d_range_entries'].to_numpy(), -60.0)
+    np.testing.assert_allclose(rows['d_ternary_entries'].to_numpy(), -40.0)
+    np.testing.assert_allclose(rows['d_blocks'].to_numpy(), -5.0)
+
+
+def test_deliverable_8_caption_states_the_pooled_entries_and_blocks_savings():
+    """The caption must let a reader make or refute the claim directly:
+    'joint mapping removes N% of table entries; the block column moves by
+    M%; the gap is quantization.'"""
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'))
+    deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
+    assert '20.0%' in deliverable.caption
+    assert '12.5%' in deliverable.caption
+    assert '7.5%' in deliverable.caption
+
+
+def test_deliverable_8_marks_the_512_row_block_boundary():
+    df = _spread_campaign()
+    deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
+    assert '512' in deliverable.caption or '512' in (deliverable.markdown_body or '')
+
+
+def test_deliverable_8_facets_the_markdown_summary_by_odd_k_only():
+    """D7, matching Task 16's pattern: the markdown summary table breaks out
+    odd k only; even k is still pooled into the full per-cell CSV (`.data`)
+    but gets no row in the summary."""
+    df = _spread_campaign()    # k values (3, 4, 5): 4 is even
+    deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
+    assert set(deliverable.data['k'].unique()) == {3, 4, 5}
+    assert '| joint-d005 | 3 |' in deliverable.markdown_body
+    assert '| joint-d005 | 5 |' in deliverable.markdown_body
+    assert '| joint-d005 | 4 |' not in deliverable.markdown_body
+
+
+def test_deliverable_8_writes_csv_and_markdown_but_no_pdf(tmp_path):
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'))
+    deliverable = figures.figure_8_entries_vs_blocks(df,
+                                                      output_dir=str(tmp_path))
+    assert deliverable.figure is None
+    assert any(p.endswith('.csv') for p in deliverable.paths)
+    assert any(p.endswith('.md') for p in deliverable.paths)
+    assert not any(p.endswith('.pdf') for p in deliverable.paths)
+
+
+# ---------------------------------------------------------------------------
 # The whole set
 # ---------------------------------------------------------------------------
 
-def test_render_all_produces_the_seven_deliverables_numbered_one_to_seven(tmp_path):
+def test_render_all_produces_the_eight_deliverables_numbered_one_to_eight(tmp_path):
     csv_path = _synthetic_ceiling_csv(tmp_path / 'capacity_ceiling.csv')
     deliverables = figures.render_all(
         _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS),
         output_dir=str(tmp_path), ceiling_csv=csv_path)
-    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 6, 7]
+    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 6, 7, 8]
     for deliverable in deliverables:
         assert deliverable.paths
         for path in deliverable.paths:
@@ -891,7 +981,7 @@ def test_render_all_writes_nothing_when_no_output_directory_is_given(tmp_path):
     assert all(d.paths == () for d in deliverables)
     # ceiling_csv=None means "the measurement is not available here", and the
     # appendix is then omitted rather than fabricated.
-    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 7]
+    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 7, 8]
 
 
 def test_render_all_never_draws_the_average_of_the_two_task_accuracies(tmp_path):

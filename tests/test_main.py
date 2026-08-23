@@ -636,10 +636,10 @@ def test_plot_mode_end_to_end_writes_all_deliverables_that_apply_to_a_campaign_w
         results_dir=str(results_dir), output_dir=str(figures_dir),
         allow_partial_family=True)
 
-    # Six, not seven: deliverable 6 (capacity ceiling) is correctly omitted
-    # because no capacity_ceiling.csv exists under results_dir.
-    assert len(deliverables) == 6
-    assert sorted(d.number for d in deliverables) == [1, 2, 3, 4, 5, 7]
+    # Seven, not eight: deliverable 6 (capacity ceiling) is correctly
+    # omitted because no capacity_ceiling.csv exists under results_dir.
+    assert len(deliverables) == 7
+    assert sorted(d.number for d in deliverables) == [1, 2, 3, 4, 5, 7, 8]
     for deliverable in deliverables:
         assert len(deliverable.paths) > 0
         for path in deliverable.paths:

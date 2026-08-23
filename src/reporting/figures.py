@@ -1,8 +1,9 @@
-"""P7c: the seven thesis deliverables (spec C.5).
+"""P7c: the thesis deliverables (spec C.5) -- seven from the original plan
+plus deliverable 8 (S3.3, T12's entries-vs-blocks question).
 
-Everything upstream of this module exists to make these seven artifacts
-correct. `campaign_data.load_campaign` supplies the frame, `claims.py`
-supplies every statistic, and this module does one thing: render them.
+Everything upstream of this module exists to make these artifacts correct.
+`campaign_data.load_campaign` supplies the frame, `claims.py` supplies
+every statistic, and this module does one thing: render them.
 
 | # | artifact | answers |
 |---|---|---|
@@ -13,11 +14,12 @@ supplies every statistic, and this module does one thing: render them.
 | 5 | ablation table: constraint cost vs alignment cost | where the savings come from |
 | 6 | appendix: capacity-ceiling rederivation (B.7) | replaces "chosen manually" |
 | 7 | appendix: elimination order per split | reproducibility |
+| 8 | entries vs blocks, faceted by k (S3.3) | T12: is the joint-mapping saving real, or an artifact of TCAM block quantization? |
 
-Four and five are tables and six is a replay, so `Deliverable` carries a
-`figure` that is None for those; every deliverable is independently
-callable, because `main.py --mode plot` (P7d) and the pilot cell both need
-to invoke them one at a time.
+Four, five and eight are tables and six is a replay, so `Deliverable`
+carries a `figure` that is None for those; every deliverable is
+independently callable, because `main.py --mode plot` (P7d) and the pilot
+cell both need to invoke them one at a time.
 
 **Nothing here averages the two tasks.** The entire rerun exists because
 the old `analysis.py` reported one mean accuracy over App and DDoS -- the
@@ -1233,6 +1235,213 @@ def appendix_7_elimination_order(df, output_dir=DEFAULT_FIGURE_DIR):
 
 
 # ---------------------------------------------------------------------------
+# Deliverable 8 -- entries vs blocks (T12, reviews/todo.md:487-499)
+# ---------------------------------------------------------------------------
+
+# The physical TCAM block boundary this deliverable exists to expose --
+# `src/p4gen/build_p4_script.py:21`'s TERNARY_MATCHING_ENTRIES_PER_BLOCK.
+# Not imported directly: build_p4_script pulls in sklearn at module level
+# (the same reason appendix_6 imports scripts.capacity_ceiling lazily
+# instead of at module scope), which this reporting module otherwise never
+# needs. The value is stable -- it is a Tofino hardware constant, not a
+# tunable -- so duplicating it as a literal here is safe.
+_TCAM_ROWS_PER_BLOCK = 512
+
+_ENTRIES_VS_BLOCKS_SUMMARY_COLUMNS = (
+    'arm_slug', 'k', 'n_pairs', 'mean_d_range_entries',
+    'mean_d_ternary_entries', 'mean_d_blocks', 'mean_entries_saving',
+    'mean_blocks_saving', 'mean_rounding_loss')
+
+
+def entries_vs_blocks_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG,
+                            arms=None):
+    """One row per (arm, M, split, k) cell paired against `baseline`: the
+    entries and blocks deltas, plus T12's rounding loss between them.
+
+    Built directly on `campaign_data.pair_arms`, not `claims.arm_deltas`
+    alone: `arm_deltas` only returns the DIFFERENCE, and this deliverable's
+    whole point is a RATIO (entries-saving, blocks-saving) that needs the
+    raw baseline value as its denominator too.
+
+    `d_range_entries`, `d_ternary_entries`, `d_blocks` are signed
+    `treatment - baseline`, matching `arm_deltas`'s convention -- negative
+    means the treatment SAVED. `entries_saving` and `blocks_saving` are the
+    two ratios T12 (reviews/todo.md:487-494) asks to be paired:
+    `(baseline - treatment) / baseline` on, respectively, the SUM of
+    range_entries + ternary_entries (a smooth, continuous physical-row
+    count) and on `blocks` (an integer count, quantized in steps of
+    `_TCAM_ROWS_PER_BLOCK` physical rows per block). `rounding_loss` is
+    `entries_saving - blocks_saving`: positive means entries saved
+    proportionally MORE than blocks did -- quantization ate part of the
+    saving. A baseline of 0 in either denominator yields NaN, never a
+    division-by-zero infinity.
+    """
+    require_baseline(df, baseline, 'entries_vs_blocks_frame')
+    if arms is None:
+        arms = ordered_arms(df, include_baseline=False, baseline=baseline)
+
+    frames = []
+    for arm in arms:
+        paired = pair_arms(df, arm, baseline)
+        if len(paired) == 0:
+            continue
+        range_baseline = paired['range_entries_baseline'].astype('float64')
+        range_treatment = paired['range_entries_treatment'].astype('float64')
+        ternary_baseline = paired['ternary_entries_baseline'].astype('float64')
+        ternary_treatment = paired['ternary_entries_treatment'].astype('float64')
+        blocks_baseline = paired['blocks_baseline'].astype('float64')
+        blocks_treatment = paired['blocks_treatment'].astype('float64')
+
+        total_entries_baseline = range_baseline + ternary_baseline
+        total_entries_treatment = range_treatment + ternary_treatment
+
+        entries_saving = ((total_entries_baseline - total_entries_treatment)
+                          / total_entries_baseline).where(
+                              total_entries_baseline > 0, np.nan)
+        blocks_saving = ((blocks_baseline - blocks_treatment)
+                         / blocks_baseline).where(blocks_baseline > 0, np.nan)
+
+        frame = pd.DataFrame({
+            'arm_slug': arm,
+            'M': paired['M'], 'split': paired['split'], 'k': paired['k'],
+            'range_entries_baseline': range_baseline,
+            'range_entries_treatment': range_treatment,
+            'ternary_entries_baseline': ternary_baseline,
+            'ternary_entries_treatment': ternary_treatment,
+            'blocks_baseline': blocks_baseline,
+            'blocks_treatment': blocks_treatment,
+            'd_range_entries': range_treatment - range_baseline,
+            'd_ternary_entries': ternary_treatment - ternary_baseline,
+            'd_blocks': blocks_treatment - blocks_baseline,
+            'entries_saving': entries_saving,
+            'blocks_saving': blocks_saving,
+            'rounding_loss': entries_saving - blocks_saving,
+        })
+        frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame(columns=[
+            'arm_slug', 'M', 'split', 'k',
+            'range_entries_baseline', 'range_entries_treatment',
+            'ternary_entries_baseline', 'ternary_entries_treatment',
+            'blocks_baseline', 'blocks_treatment',
+            'd_range_entries', 'd_ternary_entries', 'd_blocks',
+            'entries_saving', 'blocks_saving', 'rounding_loss'])
+    long = pd.concat(frames, ignore_index=True)
+    return claims.attach_delta_columns(long, df)
+
+
+def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
+                               baseline=claims.INDEPENDENT_ARM_SLUG):
+    """T12 (reviews/todo.md:487-499): does joint mapping's memory saving
+    survive TCAM block quantization, or is it an artifact of rounding?
+
+    Pairs two saving ratios computed from the SAME cells: entries-saving (a
+    smooth, continuous physical-row count) against blocks-saving (the same
+    quantity after the campaign CSV's `blocks` column has already rounded it
+    up in steps of `_TCAM_ROWS_PER_BLOCK` rows per block). The gap between
+    them, `rounding_loss`, is descriptive only (D3) -- T12's question is
+    mechanistic ("where does the gap happen"), not "is there a gap", and
+    entries and blocks are too collinear for a second significance test to
+    spend Table 4's multiplicity budget on.
+
+    CSV + markdown only, no PDF: `entries_vs_blocks_frame`'s per-cell table
+    already answers T12's question directly, and a new scatter/plot type
+    would need its own defence of what "distance from the diagonal" means
+    that a table does not (matching deliverables 4, 5 and 7, which are also
+    table-only -- plan finding V7). The per-cell frame is `.data` (so a
+    reader can check any summary number against the row it came from); the
+    markdown body is a per-(arm, k) summary, faceted at odd k only (D7,
+    matching figures 1 and 2's `_facet_k_values` pattern) -- even k is still
+    in `.data` and still pooled into the caption's headline sentence, it
+    simply gets no row in the printed summary.
+    """
+    long = entries_vs_blocks_frame(df, baseline=baseline)
+
+    shown_k, dropped_k = _facet_k_values(
+        long['k'] if len(long) and 'k' in long.columns else None,
+        'figure 8')
+
+    summary = pd.DataFrame(columns=['arm_slug', 'k'])
+    if len(long):
+        summary = long.groupby(['arm_slug', 'k'], as_index=False).agg(
+            n_pairs=('rounding_loss', 'size'),
+            mean_d_range_entries=('d_range_entries', 'mean'),
+            mean_d_ternary_entries=('d_ternary_entries', 'mean'),
+            mean_d_blocks=('d_blocks', 'mean'),
+            mean_entries_saving=('entries_saving', 'mean'),
+            mean_blocks_saving=('blocks_saving', 'mean'),
+            mean_rounding_loss=('rounding_loss', 'mean'))
+    shown_summary = (summary[summary['k'].isin(shown_k)]
+                     if len(summary) and shown_k and shown_k[0] is not None
+                     else summary)
+
+    overall_entries_saving = (float(long['entries_saving'].mean())
+                              if len(long) else float('nan'))
+    overall_blocks_saving = (float(long['blocks_saving'].mean())
+                             if len(long) else float('nan'))
+    overall_rounding_loss = (float(long['rounding_loss'].mean())
+                             if len(long) else float('nan'))
+
+    caption = (
+        'T12 (reviews/todo.md:487-499): does joint mapping\'s memory saving '
+        'survive TCAM block quantization, or is it partly an artefact of '
+        'rounding? Per (arm, M, split, k) cell paired against the {baseline} '
+        'arm on `campaign_data.pair_arms`\'s (M, split, k) join key, this '
+        'compares two saving ratios computed from the SAME cells: '
+        'entries-saving = (baseline_entries - treatment_entries) / '
+        'baseline_entries (summing range_entries + ternary_entries, the '
+        'expanded PHYSICAL TCAM row counts -- a smooth, continuous '
+        'quantity), against blocks-saving = (baseline_blocks - '
+        'treatment_blocks) / baseline_blocks, where blocks is already '
+        'those same rows rounded UP in steps of {block_size} physical rows '
+        'per block (TERNARY_MATCHING_ENTRIES_PER_BLOCK, '
+        'src/p4gen/build_p4_script.py:21) -- a quantized, step-function '
+        'quantity. rounding_loss = entries-saving - blocks-saving: a '
+        'POSITIVE value means entries saved proportionally MORE than '
+        'blocks did, i.e. quantization ate part of the saving. Pooled over '
+        'every joint arm, M, split and k paired against {baseline} in this '
+        'campaign: joint mapping removes {entries_pct:.1%} of table '
+        'entries on average; the block column only moves by '
+        '{blocks_pct:.1%}; the {gap_pct:.1%} gap between them is '
+        'quantization, and the table below (faceted by k, D7; even k is '
+        'still pooled into this sentence but gets no row of its own) shows '
+        'where it concentrates. Descriptive only (D3): no p-value is '
+        'reported here and none should be -- this is a mechanistic "where" '
+        'question, not a "does it differ" one, and entries and blocks are '
+        'too collinear for a second test to add information Table 4\'s '
+        'blocks test does not already carry.'.format(
+            baseline=baseline, block_size=_TCAM_ROWS_PER_BLOCK,
+            entries_pct=overall_entries_saving,
+            blocks_pct=overall_blocks_saving,
+            gap_pct=overall_rounding_loss))
+
+    body_lines = [
+        'Block boundary: TERNARY_MATCHING_ENTRIES_PER_BLOCK = {0} physical '
+        'TCAM rows per block (src/p4gen/build_p4_script.py:21) is the '
+        'rounding step separating entries-saving from blocks-saving below; '
+        'blocks = ceil(range_entries / {0}) + ceil(ternary_entries / '
+        '{0}).'.format(_TCAM_ROWS_PER_BLOCK),
+        '',
+        (_markdown_table(_project_columns(
+            shown_summary, _ENTRIES_VS_BLOCKS_SUMMARY_COLUMNS))
+         if len(shown_summary) else '(no paired cells)'),
+    ]
+    if dropped_k:
+        body_lines += ['', (
+            'k = {} are still computed above (see the full per-cell CSV) '
+            'and pooled into the caption\'s headline sentence, but are not '
+            'broken out as their own row in this summary (facet is odd k '
+            'only, D7).'.format(', '.join(str(k) for k in dropped_k)))]
+
+    return _write(Deliverable(
+        number=8, slug='entries_vs_blocks',
+        title='Entries against blocks: the TCAM quantization gap',
+        caption=caption, data=long,
+        markdown_body='\n'.join(body_lines)), output_dir)
+
+
+# ---------------------------------------------------------------------------
 # The whole set
 # ---------------------------------------------------------------------------
 
@@ -1262,4 +1471,7 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
             ceiling_csv=ceiling_csv, output_dir=output_dir))
     deliverables.append(
         appendix_7_elimination_order(df, output_dir=output_dir))
+    deliverables.append(
+        figure_8_entries_vs_blocks(df, output_dir=output_dir,
+                                   baseline=baseline))
     return tuple(sorted(deliverables, key=lambda item: item.number))
