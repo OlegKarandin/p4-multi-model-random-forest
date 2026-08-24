@@ -30,6 +30,7 @@ from src.reporting.claims import (
     delta_frontier,
     holm_bonferroni,
     hypervolume_2d,
+    hypervolume_by_arm,
     noninferiority_tests,
     paired_tests,
     pareto_front_3d,
@@ -360,6 +361,111 @@ def test_a_non_empty_front_that_never_reaches_the_reference_is_a_real_zero_not_n
     result = hypervolume_2d(front, reference=(0.5, 25))
     assert result == 0.0
     assert not math.isnan(result)
+
+
+# ---------------------------------------------------------------------------
+# hypervolume_by_arm (Finding 1: wires hypervolume_2d to a real caller, via a
+# genuine 2-D Pareto filter -- hypervolume_2d's own contract assumes `front`
+# is already non-dominated in the (accuracy, blocks) plane).
+# ---------------------------------------------------------------------------
+
+def test_hypervolume_by_arm_matches_a_hand_computed_value():
+    """Small synthetic frame, one arm's app-task front hand-verified against
+    the same numbers `test_hypervolume_2d_is_the_area_above_the_per_M_
+    reference_point` already checks (front=[(0.9, 10), (0.8, 5)], neither
+    point dominates the other, reference (0.5, 25) -> hv = 7.5), plus a
+    baseline row whose own (acc_app, blocks) = (0.6, 20) gives a
+    hand-computable baseline hypervolume of (25 - 20) * (0.6 - 0.5) = 0.5,
+    so the gain (7.5 / 0.5 = 15.0) is checkable too."""
+    df = _frame([
+        _row(arm_slug=INDEPENDENT_ARM_SLUG, M=25, split=0, k=5,
+             acc_app=0.6, acc_ddos=0.6, blocks=20.0),
+        _row(arm_slug='joint-d005', M=25, split=0, k=5,
+             acc_app=0.9, acc_ddos=0.6, blocks=10.0),
+        _row(arm_slug='joint-d005', M=25, split=1, k=5,
+             acc_app=0.8, acc_ddos=0.6, blocks=5.0),
+    ])
+
+    table = hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG)
+
+    row = table[(table['arm_slug'] == 'joint-d005') & (table['M'] == 25)
+               & (table['task'] == 'app')].iloc[0]
+    assert row['hypervolume'] == pytest.approx(7.5)
+    assert row['baseline_hypervolume'] == pytest.approx(0.5)
+    assert row['hypervolume_gain'] == pytest.approx(15.0)
+
+
+def test_hypervolume_by_arm_pareto_filters_before_summing_so_a_dominated_point_cannot_corrupt_it():
+    """`hypervolume_2d` assumes its `front` argument is already a genuine
+    non-dominated 2-D front; the sweep silently gives a WRONG number if a
+    dominated point sneaks in. Here G=(acc=0.95, blocks=5) strictly
+    dominates D=(acc=0.94, blocks=10) (better accuracy AND fewer blocks), so
+    a correct implementation must drop D before summing. Hand-computed:
+
+    Filtered front {G, F=(0.96, 20)} at reference (0.5, 25):
+      (25-20)*(0.96-0.5) + (20-5)*(0.95-0.5) = 5*0.46 + 15*0.45 = 2.3 + 6.75
+      = 9.05
+    The raw, UNFILTERED three points would instead give 8.95 (verified by
+    hand and cross-checked against a direct `hypervolume_2d` call below) --
+    a different, wrong number that this regression test guards against ever
+    reappearing once a caller exists."""
+    df = _frame([
+        _row(arm_slug=INDEPENDENT_ARM_SLUG, M=25, split=0, k=5,
+             acc_app=0.5, acc_ddos=0.6, blocks=25.0),
+        _row(arm_slug='joint-d005', M=25, split=0, k=5,
+             acc_app=0.95, acc_ddos=0.6, blocks=5.0),
+        _row(arm_slug='joint-d005', M=25, split=1, k=5,
+             acc_app=0.94, acc_ddos=0.6, blocks=10.0),
+        _row(arm_slug='joint-d005', M=25, split=2, k=5,
+             acc_app=0.96, acc_ddos=0.6, blocks=20.0),
+    ])
+
+    table = hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG)
+    row = table[(table['arm_slug'] == 'joint-d005') & (table['M'] == 25)
+               & (table['task'] == 'app')].iloc[0]
+
+    unfiltered_raw = hypervolume_2d(
+        [(0.95, 5.0), (0.94, 10.0), (0.96, 20.0)], reference=(0.5, 25))
+    assert unfiltered_raw == pytest.approx(8.95)
+    assert row['hypervolume'] == pytest.approx(9.05)
+    assert row['hypervolume'] != pytest.approx(unfiltered_raw)
+
+
+def test_hypervolume_gain_is_nan_not_inf_when_the_baseline_hypervolume_is_zero_or_missing():
+    """A baseline front that never reaches the (0.5, M) reference gives a
+    real, measured hypervolume of 0.0 (not NaN, per `hypervolume_2d`'s own
+    contract) -- dividing by it must not raise or produce inf."""
+    df = _frame([
+        _row(arm_slug=INDEPENDENT_ARM_SLUG, M=25, split=0, k=5,
+             acc_app=0.2, acc_ddos=0.6, blocks=25.0),  # below ref accuracy
+        _row(arm_slug='joint-d005', M=25, split=0, k=5,
+             acc_app=0.9, acc_ddos=0.6, blocks=10.0),
+    ])
+
+    table = hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG)
+    row = table[(table['arm_slug'] == 'joint-d005') & (table['M'] == 25)
+               & (table['task'] == 'app')].iloc[0]
+
+    assert row['baseline_hypervolume'] == 0.0
+    assert math.isnan(row['hypervolume_gain'])
+    assert not math.isinf(row['hypervolume_gain'])
+
+
+def test_hypervolume_gain_is_nan_when_the_baseline_arm_is_entirely_absent_at_that_M():
+    """No baseline rows at all -> baseline hypervolume is NaN (an empty
+    front, per `hypervolume_2d`'s own empty-front contract) -> the gain must
+    be NaN, not a crash or an inf from dividing by NaN."""
+    df = _frame([
+        _row(arm_slug='joint-d005', M=25, split=0, k=5,
+             acc_app=0.9, acc_ddos=0.6, blocks=10.0),
+    ])
+
+    table = hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG)
+    row = table[(table['arm_slug'] == 'joint-d005') & (table['M'] == 25)
+               & (table['task'] == 'app')].iloc[0]
+
+    assert math.isnan(row['baseline_hypervolume'])
+    assert math.isnan(row['hypervolume_gain'])
 
 
 # ---------------------------------------------------------------------------

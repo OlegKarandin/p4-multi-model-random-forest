@@ -353,6 +353,21 @@ def pareto_front_3d(df, objectives=FRONT_OBJECTIVES, maximize=FRONT_MAXIMIZE):
     return df.loc[~dominated].copy()
 
 
+def _pareto_front_2d(df, objectives, maximize, label):
+    """Same dominance logic as `pareto_front_3d`, generalized to any
+    objective count -- used here for the 2-D (accuracy, blocks) front
+    `hypervolume_2d` needs, which is intentionally NOT the 3-D front
+    `pareto_front_3d` computes (a point can be 2-D-dominated on one task's
+    plane while remaining on the pooled 3-D front; hypervolume is a
+    per-task, per-M statistic, not a restatement of the 3-D front).
+    """
+    points = _objective_matrix(df, objectives, maximize, label)
+    if len(df) == 0:
+        return df.copy()
+    dominated = _dominates(points, points).any(axis=0)
+    return df.loc[~dominated].copy()
+
+
 def pareto_projections(front):
     """The three 2-D planes of a 3-D front, for plotting.
 
@@ -470,6 +485,93 @@ def hypervolume_2d(front, reference):
         hv += width * height
         prev_blocks = blocks
     return hv
+
+
+def hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG, arms=None):
+    """Per-(arm, M, task) 2-D hypervolume, reported as gain relative to
+    `baseline` (D5, amended by A2 -- see the module docstring's
+    "`hypervolume_2d` and the per-M reference point" section for the full
+    amendment, including why the reference is `(0.5, M)` per M-value rather
+    than the published fixed `(0.5, 100)`).
+
+    For each `M` present in `df['M'].unique()`, each arm (`arms`, or --
+    when not given -- every arm present in `df`, `baseline` first then
+    `JOINT_ARM_SLUGS` in sweep order, mirroring `figures.ordered_arms`), and
+    each task in `TASK_FRONT_OBJECTIVES`: pools every split and k at that
+    `(arm, M)` cell (matching how the rest of this module pools
+    replication -- see `pareto_front_3d`'s own per-arm pooling), reduces it
+    to a genuine 2-D Pareto front via `_pareto_front_2d` on that task's
+    `TASK_FRONT_OBJECTIVES` pair -- deliberately NOT `pareto_front_3d`'s
+    3-D front, see `_pareto_front_2d`'s docstring -- and calls
+    `hypervolume_2d` on the filtered `(accuracy, blocks)` pairs against the
+    per-M reference `(0.5, M)`. Pareto-filtering first is not optional:
+    `hypervolume_2d`'s sweep assumes the front it is given is already
+    non-dominated, and a raw, unfiltered set of cells would silently give a
+    wrong hypervolume.
+
+    Returns a tidy frame, one row per `(arm_slug, M, task)`:
+
+    * `hypervolume` -- this arm's 2-D hypervolume at that (M, task).
+    * `baseline_hypervolume` -- `baseline`'s hypervolume at the SAME
+      (M, task), computed the same way (pooled, then Pareto-filtered).
+    * `hypervolume_gain` -- `hypervolume / baseline_hypervolume`. NaN
+      (never inf, never a ZeroDivisionError) when the baseline hypervolume
+      is `0.0` or NaN -- matching this module's existing NaN-for-undefined
+      convention (e.g. `coverage_ratio_3d`'s empty-`b` case): a ratio over
+      an undefined or zero denominator is not a real gain number and must
+      not be reported as one.
+
+    `task` is `'app'` or `'ddos'` (the two `TASK_FRONT_OBJECTIVES` keys),
+    never the two tasks' accuracies averaged together -- see the module
+    docstring for why that averaging is exactly what this rerun exists to
+    undo.
+    """
+    if len(df) == 0 or 'M' not in df.columns:
+        m_values = []
+    else:
+        m_values = sorted(df['M'].unique().tolist())
+
+    if arms is None:
+        present = set(df['arm_slug'].unique()) if len(df) else set()
+        known = [baseline] + list(JOINT_ARM_SLUGS)
+        ordered = [slug for slug in known if slug in present]
+        extras = [slug for slug in present if slug not in known]
+        arms = tuple(ordered + extras)
+    else:
+        arms = tuple(arms)
+
+    def _hv(arm, M, task):
+        objectives = TASK_FRONT_OBJECTIVES[task]
+        cell = df[(df['arm_slug'] == arm) & (df['M'] == M)]
+        front = _pareto_front_2d(cell, objectives, TASK_FRONT_MAXIMIZE,
+                                 'hypervolume_by_arm')
+        pairs = list(zip(front[objectives[0]], front[objectives[1]]))
+        return hypervolume_2d(pairs, reference=(0.5, M))
+
+    rows = []
+    for M in m_values:
+        baseline_hv_by_task = {task: _hv(baseline, M, task)
+                               for task in TASK_FRONT_OBJECTIVES}
+        for arm in arms:
+            for task in TASK_FRONT_OBJECTIVES:
+                hv = _hv(arm, M, task)
+                baseline_hv = baseline_hv_by_task[task]
+                if not np.isfinite(baseline_hv) or baseline_hv == 0.0:
+                    gain = float('nan')
+                else:
+                    gain = hv / baseline_hv
+                rows.append({
+                    'arm_slug': arm,
+                    'M': M,
+                    'task': task,
+                    'hypervolume': hv,
+                    'baseline_hypervolume': baseline_hv,
+                    'hypervolume_gain': gain,
+                })
+
+    return pd.DataFrame(rows, columns=[
+        'arm_slug', 'M', 'task', 'hypervolume', 'baseline_hypervolume',
+        'hypervolume_gain'])
 
 
 # ---------------------------------------------------------------------------
