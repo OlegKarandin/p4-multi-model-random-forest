@@ -102,13 +102,34 @@ while IFS='|' read -r dest url_var want_size want_sha; do
         "(github.com -> Settings -> Codespaces -> Secrets, or repo/org secrets) named" \
         "exactly '$url_var', then rebuild the container."
 
+    # OneDrive personal share links need three things a plain `curl -fSL`
+    # does not do on its own, confirmed 2026-08-24 against the real links:
+    # (1) a cookie jar -- the 1drv.ms -> onedrive.live.com redirect hop sets
+    # a session cookie, and without it OneDrive treats the next hop as
+    # unauthenticated and serves a sign-in page (HTTP 200 text/html) instead
+    # of the file, even for a link shared with "Anyone"; (2) `download=1` on
+    # the query string -- without it, a .csv share resolves to the Excel
+    # Online viewer (Doc.aspx, HTTP 200 text/html) rather than raw bytes;
+    # (3) a browser-like User-Agent -- curl's default "curl/x.y.z" UA gets a
+    # bare HTTP 403, while a Chrome-like UA string does not. All three
+    # together give HTTP 200 application/octet-stream with the exact
+    # expected Content-Length (verified byte-for-byte, sha256-for-sha256,
+    # against both real dataset files).
+    cookie_jar="$(mktemp)"
+    case "$url_value" in
+        *'?'*) download_url="${url_value}&download=1" ;;
+        *)     download_url="${url_value}?download=1" ;;
+    esac
+    browser_ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
     log "downloading $dest from \$$url_var ..."
     rm -f "$dest"
-    if ! curl -fSL --retry 3 --retry-delay 5 -o "$dest" "$url_value"; then
-        rm -f "$dest"
+    if ! curl -fSL --retry 3 --retry-delay 5 -c "$cookie_jar" -A "$browser_ua" -o "$dest" "$download_url"; then
+        rm -f "$cookie_jar" "$dest"
         fail "download of $dest failed (curl error). If \$$url_var is a signed URL," \
             "it may have expired -- generate a fresh one and update the Codespace secret."
     fi
+    rm -f "$cookie_jar"
 
     if ! verify_file "$dest" "$want_size" "$want_sha"; then
         got_size="$(stat -c%s "$dest" 2>/dev/null || echo '?')"
