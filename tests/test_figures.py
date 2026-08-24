@@ -309,6 +309,38 @@ def test_rendering_every_deliverable_leaves_global_rcparams_untouched(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Finding 2: `_make_figure` must not multiply a fixed per-panel constant by
+# an unbounded panel count -- real campaign grids (deliverable 1's 9 odd-k
+# columns x 3 rows, deliverable 2's 9 columns x 5 rows) rendered at ~54in
+# wide with the old unconditional formula.
+# ---------------------------------------------------------------------------
+
+def test_make_figure_stays_within_bounds_at_the_largest_real_grid_shape():
+    """9 columns x 5 rows is deliverable 2's real shape on a full campaign
+    (odd k from 1..17, the five FRONTIER_METRICS rows). The old formula
+    (_PANEL_WIDTH * 9, _PANEL_HEIGHT * 5) = (54.0, 21.0) -- unusable as a
+    thesis figure. This is the review's Recommendation #3 smoke assertion."""
+    figure = figures._make_figure(5, 9)
+    width, height = figure.get_size_inches()
+    assert width <= 18.5
+    assert height <= 20.5
+    # Never shrink a panel below legibility, even at this largest grid.
+    assert width / 9 >= 1.6
+    assert height / 5 >= 1.6
+
+
+def test_make_figure_keeps_a_small_grid_at_essentially_the_original_size():
+    """A 1-row x 2-column grid (e.g. figure 3's shape with a single arm)
+    must not be shrunk: it is exactly the kind of small figure
+    `_PANEL_WIDTH` / `_PANEL_HEIGHT` were sized for, and the fix must not
+    regress it."""
+    figure = figures._make_figure(1, 2)
+    width, height = figure.get_size_inches()
+    assert width == pytest.approx(figures._PANEL_WIDTH * 2)
+    assert height == pytest.approx(figures._PANEL_HEIGHT * 1)
+
+
+# ---------------------------------------------------------------------------
 # Deliverable 1 -- per-task accuracy vs blocks, two panels, all arms overlaid
 # ---------------------------------------------------------------------------
 
@@ -447,6 +479,26 @@ def test_deliverable_1_writes_a_pdf_a_data_csv_and_a_caption(tmp_path):
                            if p.endswith('.csv')][0])
     assert 'acc_app' in written.columns and 'acc_ddos' in written.columns
     assert not any('avg' in column for column in written.columns)
+
+
+def test_deliverable_1_carries_hypervolume_gain_in_data_and_caption():
+    """Finding 1: `claims.hypervolume_2d` existed with no production caller.
+    Wired here via `claims.hypervolume_by_arm`, merged per (arm_slug, M)
+    into `.data` (so a reader can check the caption's headline number
+    against the row it came from -- deliverable 8's stated design
+    principle) and stated in the caption as a real, non-NaN number, with an
+    explicit disclosure that the per-M reference point diverges from the
+    published fixed (0.5, 100) reference (A2)."""
+    deliverable = figures.figure_1_accuracy_vs_blocks(_spread_campaign())
+    data = deliverable.data
+    assert {'hypervolume_gain_app', 'hypervolume_gain_ddos'} <= set(data.columns)
+    assert data['hypervolume_gain_app'].notna().any()
+    assert data['hypervolume_gain_ddos'].notna().any()
+
+    caption = deliverable.caption
+    assert 'hypervolume' in caption.lower()
+    assert '(0.5, 100)' in caption
+    assert 'nan' not in caption.lower()
 
 
 def test_the_renderer_says_which_k_values_it_computed_but_did_not_show(capsys):

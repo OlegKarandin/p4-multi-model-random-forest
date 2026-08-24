@@ -129,10 +129,28 @@ REL_ERROR_METRICS = tuple(REL_ERROR_PREFIX + key for key, _, _, _, _ in TASKS)
 F1_REL_ERROR_METRICS = tuple(F1_REL_ERROR_PREFIX + key for key, _, _, _, _ in TASKS)
 FRONTIER_METRICS = REL_ERROR_METRICS + F1_REL_ERROR_METRICS + (BLOCKS_DELTA,)
 
-# Per-panel size in inches. Multiplied by the panel counts a given frame
-# implies -- never a fixed canvas for a fixed grid.
+# Per-panel size in inches, for a SMALL grid -- multiplied by the panel
+# counts a given frame implies, never a fixed canvas for a fixed grid.
 _PANEL_WIDTH = 6.0
 _PANEL_HEIGHT = 4.2
+
+# A panel below this stops being legible, so `_make_figure` never scales a
+# grid down past it, no matter how many rows/columns the frame implies.
+_MIN_PANEL_SIZE = 1.8
+
+# Total-figure caps, per axis. Chosen as 3x the small-grid per-panel
+# constant above, which has two effects at once: (1) any grid of <=3
+# columns/rows -- the 1-3-panel shapes _PANEL_WIDTH/_PANEL_HEIGHT were
+# originally sized for (figure 3's 2-row grid, figure 1's 3-row trade-plane
+# grid, an old single-arm figure) -- divides out to exactly the original
+# per-panel size, unchanged; (2) a wider/taller grid trades panel size down
+# to keep the TOTAL figure at this cap instead of growing without bound.
+# At this branch's largest real grid (deliverable 2: 9 odd-k columns x 5
+# FRONTIER_METRICS rows), this caps the rendered PDF at 18.0in x 12.6in
+# instead of the (_PANEL_WIDTH * 9, _PANEL_HEIGHT * 5) = 54.0in x 21.0in an
+# unconditional per-panel multiply produces -- unusable as a thesis figure.
+_MAX_FIGURE_WIDTH = 3 * _PANEL_WIDTH
+_MAX_FIGURE_HEIGHT = 3 * _PANEL_HEIGHT
 
 # Marker cycle, used together with the colour cycle so that a campaign with
 # more arms than the qualitative colormap has colours stays readable.
@@ -232,8 +250,25 @@ def _arm_styles(arms):
 
 
 def _make_figure(n_rows, n_columns):
-    return Figure(figsize=(_PANEL_WIDTH * n_columns,
-                           _PANEL_HEIGHT * n_rows))
+    """A `Figure` sized from the grid a deliverable's data implies, never a
+    literal panel count (see the module docstring's state-hygiene rules).
+
+    Per-panel size is `min(_PANEL_WIDTH, _MAX_FIGURE_WIDTH / n_columns)`
+    (and the height equivalent): at <=3 columns/rows this divides out to
+    exactly `_PANEL_WIDTH`/`_PANEL_HEIGHT` unchanged (see
+    `_MAX_FIGURE_WIDTH`'s comment for why), and beyond that the panel
+    shrinks just enough to hold the total figure at the cap -- down to
+    `_MIN_PANEL_SIZE`, past which a panel stops being legible and the total
+    figure is allowed to exceed the cap rather than render unreadable
+    panels.
+    """
+    n_rows = max(n_rows, 1)
+    n_columns = max(n_columns, 1)
+    panel_width = max(_MIN_PANEL_SIZE,
+                      min(_PANEL_WIDTH, _MAX_FIGURE_WIDTH / n_columns))
+    panel_height = max(_MIN_PANEL_SIZE,
+                       min(_PANEL_HEIGHT, _MAX_FIGURE_HEIGHT / n_rows))
+    return Figure(figsize=(panel_width * n_columns, panel_height * n_rows))
 
 
 def _facet_k_values(k_series, context):
@@ -385,6 +420,15 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     """
     arms = ordered_arms(df, baseline=baseline)
     styles = _arm_styles(arms)
+
+    # Finding 1: `claims.hypervolume_2d` existed with no production caller.
+    # Computed once here, per (arm, M, task) -- pooling every split and k at
+    # that (arm, M), Pareto-filtered to a genuine 2-D front before
+    # `hypervolume_2d` sees it (see `claims._pareto_front_2d`'s docstring for
+    # why that filtering is not optional) -- and merged into `.data` below,
+    # never recomputed: this module recomputes no `claims.py` statistic (see
+    # the module docstring).
+    hv_table = claims.hypervolume_by_arm(df, baseline=baseline, arms=arms)
 
     shown_k, _dropped_k = _facet_k_values(
         df['k'] if 'k' in df.columns else None, 'figure 1')
@@ -562,6 +606,42 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
             'the run log for the full list of k omitted this way).'.format(
                 ', '.join('k={}'.format(k) for k in _dropped_k)))
 
+    # Finding 1: report hypervolume as GAIN relative to the baseline arm
+    # (D5, amended by A2), pooled over every M and task into one summary
+    # number per arm so the caption stays readable -- the per-(arm, M, task)
+    # numbers it is pooled from are the `hypervolume_gain_<task>` columns
+    # merged into `.data` above, so any reader can unpool it.
+    hypervolume_sentence = ''
+    if len(hv_table):
+        gain_by_arm = {}
+        for arm in arms:
+            if arm == baseline:
+                continue
+            arm_gains = hv_table.loc[hv_table['arm_slug'] == arm,
+                                     'hypervolume_gain'].dropna()
+            if len(arm_gains):
+                gain_by_arm[arm] = float(arm_gains.mean())
+        if gain_by_arm:
+            hypervolume_sentence = (
+                ' Hypervolume (D5, amended by A2) is computed PER TASK on '
+                '(acc_<task>, blocks) pairs -- never on the two tasks\' '
+                'accuracies averaged together -- from each arm\'s 2-D '
+                'Pareto front at each block budget M, against a reference '
+                'point (0.5, M) THAT TRACKS M rather than the published '
+                'Fig. results_2a\'s fixed (0.5, 100); this diverges from '
+                'the published numbers on purpose (a fixed 100 would '
+                'silently discard most of the front once M sweeps past '
+                'it) and the divergence is disclosed here rather than '
+                'hidden. Reported as gain relative to the {} baseline, '
+                'pooled over every M and task (`hypervolume_gain_app` / '
+                '`hypervolume_gain_ddos` in the data carry the '
+                'unpooled per-(M, task) numbers): {}.'.format(
+                    baseline,
+                    ', '.join(
+                        '{} averages {:.2f}x the baseline\'s hypervolume'
+                        .format(arm, gain)
+                        for arm, gain in gain_by_arm.items())))
+
     caption = (
         'Per-task accuracy against TCAM blocks: the top two rows are the '
         'two tasks, never averaged, and columns are odd feature counts k '
@@ -589,10 +669,32 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         'dominated in both accuracy-vs-blocks rows above. It carries no '
         'connecting line: unlike blocks on the x-axis of the rows above, '
         'acc_app and acc_ddos have no ordering between them for a line to '
-        'imply.'.format(facet_sentence, coverage_sentence))
+        'imply.{}'.format(facet_sentence, coverage_sentence,
+                          hypervolume_sentence))
 
     data = (pd.concat(front_frames, ignore_index=True)
             if front_frames else pd.DataFrame())
+
+    # Merge the per-(arm, M, task) hypervolume rows onto `.data`, pivoted
+    # wide by task (`hypervolume_app` / `hypervolume_ddos` etc.) so each
+    # merges cleanly onto the one-row-per-(arm, M, front-point) shape `data`
+    # already has -- a reader can look up any front point's (arm_slug, M)
+    # and see the hypervolume numbers the caption's pooled sentence above
+    # was computed from.
+    if len(data) and len(hv_table):
+        hv_pieces = []
+        for task, task_rows in hv_table.groupby('task'):
+            piece = task_rows[['arm_slug', 'M', 'hypervolume',
+                               'baseline_hypervolume', 'hypervolume_gain']]
+            piece = piece.rename(columns={
+                'hypervolume': 'hypervolume_{}'.format(task),
+                'baseline_hypervolume': 'baseline_hypervolume_{}'.format(task),
+                'hypervolume_gain': 'hypervolume_gain_{}'.format(task),
+            })
+            hv_pieces.append(piece.set_index(['arm_slug', 'M']))
+        hv_wide = pd.concat(hv_pieces, axis=1).reset_index()
+        data = data.merge(hv_wide, on=['arm_slug', 'M'], how='left')
+
     return _write(Deliverable(
         number=1, slug='accuracy_vs_blocks_per_task',
         title='Per-task accuracy against TCAM blocks, all arms',
