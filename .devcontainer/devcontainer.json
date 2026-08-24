@@ -25,6 +25,17 @@
   "name": "thesis-campaign",
   "image": "mcr.microsoft.com/devcontainers/miniconda:3",
 
+  // `gh codespace ssh` (the CLI path used to drive this container headlessly
+  // for the Task 28/29 rerun) needs a real sshd inside the container --
+  // measured live 2026-08-24: without this, `gh codespace ssh` fails with
+  // "failed to start SSH server ... Please check if an SSH server is
+  // installed". The miniconda base image doesn't bundle one.
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": {
+      "version": "latest"
+    }
+  },
+
   // Gates which Codespace machine sizes are offered/selected. The plan
   // wanted 16 cores, but `gh codespace create` against this repo measured
   // 2026-08-24: this account's Codespaces entitlement tops out at
