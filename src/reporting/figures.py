@@ -1527,6 +1527,43 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     overall_rounding_loss = (float(long['rounding_loss'].mean())
                              if len(long) else float('nan'))
 
+    # `overall_entries_saving`/`overall_rounding_loss` are NaN whenever
+    # `long['entries_saving']` is entirely NaN -- the real, documented case
+    # where every source CSV predates the range_entries/ternary_entries
+    # columns (campaign_data.py:120-124) and `entries_vs_blocks_frame` had
+    # nothing to divide. A partially-NaN column still yields a real mean
+    # over the non-NaN rows (`.mean()` already skips NaN), so this only
+    # triggers on the fully-missing case -- it must never interpolate NaN
+    # into prose that claims a specific percentage.
+    entries_data_unavailable = bool(np.isnan(overall_entries_saving))
+
+    if entries_data_unavailable:
+        pooled_sentence = (
+            'This run\'s source CSVs do not carry usable range_entries / '
+            'ternary_entries values (NaN on every paired cell -- written '
+            'before those columns existed, campaign_data.py:120-124), so '
+            'entries-saving and rounding_loss are UNAVAILABLE for this run '
+            'and cannot be computed or reported. Only blocks-saving is '
+            'available: pooled over every joint arm, M, split and k paired '
+            'against {baseline} in this campaign, the block column moves '
+            'by {blocks_pct:.1%} on average; the table below (faceted by '
+            'k, D7; even k is still pooled into this sentence but gets no '
+            'row of its own) reports blocks-saving broken out by k, with '
+            'the entries columns blank.'.format(
+                baseline=baseline, blocks_pct=overall_blocks_saving))
+    else:
+        pooled_sentence = (
+            'Pooled over every joint arm, M, split and k paired against '
+            '{baseline} in this campaign: joint mapping removes '
+            '{entries_pct:.1%} of table entries on average; the block '
+            'column only moves by {blocks_pct:.1%}; the {gap_pct:.1%} gap '
+            'between them is quantization, and the table below (faceted by '
+            'k, D7; even k is still pooled into this sentence but gets no '
+            'row of its own) shows where it concentrates.'.format(
+                baseline=baseline, entries_pct=overall_entries_saving,
+                blocks_pct=overall_blocks_saving,
+                gap_pct=overall_rounding_loss))
+
     caption = (
         'T12 (reviews/todo.md:487-499): does joint mapping\'s memory saving '
         'survive TCAM block quantization, or is it partly an artefact of '
@@ -1543,22 +1580,14 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         'src/p4gen/build_p4_script.py:21) -- a quantized, step-function '
         'quantity. rounding_loss = entries-saving - blocks-saving: a '
         'POSITIVE value means entries saved proportionally MORE than '
-        'blocks did, i.e. quantization ate part of the saving. Pooled over '
-        'every joint arm, M, split and k paired against {baseline} in this '
-        'campaign: joint mapping removes {entries_pct:.1%} of table '
-        'entries on average; the block column only moves by '
-        '{blocks_pct:.1%}; the {gap_pct:.1%} gap between them is '
-        'quantization, and the table below (faceted by k, D7; even k is '
-        'still pooled into this sentence but gets no row of its own) shows '
-        'where it concentrates. Descriptive only (D3): no p-value is '
+        'blocks did, i.e. quantization ate part of the saving. '.format(
+            baseline=baseline, block_size=tcam_rows_per_block)
+        + pooled_sentence +
+        ' Descriptive only (D3): no p-value is '
         'reported here and none should be -- this is a mechanistic "where" '
         'question, not a "does it differ" one, and entries and blocks are '
         'too collinear for a second test to add information Table 4\'s '
-        'blocks test does not already carry.'.format(
-            baseline=baseline, block_size=tcam_rows_per_block,
-            entries_pct=overall_entries_saving,
-            blocks_pct=overall_blocks_saving,
-            gap_pct=overall_rounding_loss))
+        'blocks test does not already carry.')
 
     body_lines = [
         'Block boundary: TERNARY_MATCHING_ENTRIES_PER_BLOCK = {0} physical '

@@ -1109,6 +1109,24 @@ def test_deliverable_8_caption_states_the_pooled_entries_and_blocks_savings():
     assert '7.5%' in deliverable.caption
 
 
+def test_deliverable_8_caption_states_entries_unavailable_when_columns_are_all_nan():
+    """Real on-disk `results/rf_t11_d14_M25_*.csv` files predate the
+    range_entries/ternary_entries columns, so `load_campaign` fills them in
+    as all-NaN (campaign_data.py:120-124). `entries_vs_blocks_frame` then
+    has entries_saving/rounding_loss all-NaN for every row while
+    blocks_saving stays populated -- the caption must say entries data is
+    unavailable instead of formatting NaN into 'nan%' prose, and must still
+    report the real blocks-saving percentage."""
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'))
+    df['range_entries'] = np.nan
+    df['ternary_entries'] = np.nan
+    deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
+    caption_lower = deliverable.caption.lower()
+    assert 'nan%' not in caption_lower
+    assert 'unavailable' in caption_lower
+    assert '12.5%' in deliverable.caption
+
+
 def test_deliverable_8_marks_the_real_block_boundary_constant():
     """The block size quoted in the caption/markdown must be the ACTUAL
     `TERNARY_MATCHING_ENTRIES_PER_BLOCK` (imported from build_p4_script,
