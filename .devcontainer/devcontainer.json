@@ -25,12 +25,20 @@
   "name": "thesis-campaign",
   "image": "mcr.microsoft.com/devcontainers/miniconda:3",
 
-  // Gates which Codespace machine sizes are offered/selected. A 2-core
-  // machine would give feature_selection.py's
-  // `max_workers = min(n_splits, cpu_count - 1)` only 1 worker against the
-  // pilot's 11-split runs; 16 cores matches the plan's requirement.
+  // Gates which Codespace machine sizes are offered/selected. The plan
+  // wanted 16 cores, but `gh codespace create` against this repo measured
+  // 2026-08-24: this account's Codespaces entitlement tops out at
+  // standardLinux32gb (4 cores) -- a hostRequirements.cpus above the
+  // account's ceiling makes `gh codespace create` report ZERO available
+  // machines for the repo, not a smaller fallback. Pinned to 4 so a
+  // codespace can actually be created; feature_selection.py's
+  // `max_workers = min(n_splits, cpu_count - 1)` gets 3 workers against the
+  // pilot's 15-split runs (vs. 11 on the original Windows pilot machine) --
+  // slower, not broken. Raise this back to 16 only after increasing the
+  // account's Codespaces spending limit/machine tier in GitHub billing
+  // settings; a stale value here just makes creation fail loudly again.
   "hostRequirements": {
-    "cpus": 16
+    "cpus": 4
   },
 
   // Prompts whoever creates the codespace to supply these if not already
