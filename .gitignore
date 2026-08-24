@@ -163,6 +163,7 @@ cython_debug/
 
 # P4 Compilation files
 log/
+logs/
 pcap/
 *_p4rt.txt
 *.p4i
