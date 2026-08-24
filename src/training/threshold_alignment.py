@@ -87,8 +87,12 @@ def joint_interval_count(intervals1, intervals2):
     REFINEMENT of both models' thresholds for that feature -- exactly what
     evaluation.py's multi_model_memory_evaluation builds (via
     get_feature_intervals_from_thresholds) from the pooled thresholds of the
-    merged tree set, returning a ResourceUsage with that count. For a feature only one model splits on, there is nothing
-    to pool, so its own interval count is added directly.
+    merged tree set. (ResourceUsage.range_entries is NOT this interval
+    count -- it is the expanded PHYSICAL TCAM ROW count computed from these
+    intervals; see evaluation.range_matching_resource_usage. No
+    ResourceUsage field holds a bare interval count.) For a feature only one
+    model splits on, there is nothing to pool, so its own interval count is
+    added directly.
 
     This is NOT the union of the two models' interval TUPLES: pooling
     thresholds {10} and {5} on the same feature partitions it into 3 ranges
