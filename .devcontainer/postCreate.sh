@@ -22,6 +22,24 @@
 # src/main.py:333-402).
 #
 # Does NOT launch the campaign itself -- see .devcontainer/run_campaign.sh.
+#
+# KNOWN LIMITATION (measured 2026-08-24 against the real Task 28 codespace):
+# both real share links are anonymous/"Anyone with the link", but this
+# particular OneDrive account has been migrated onto SharePoint Online
+# ("migratedtospo=true" in the redirect chain), which routes anonymous
+# fetches through a WOPI viewer page (Doc.aspx) rather than raw bytes. The
+# cookie-jar + download=1 + browser-UA combination below is necessary but
+# NOT sufficient from a Codespace's datacenter egress IP -- it was
+# sufficient from a residential IP in manual testing, so this is plausibly
+# an anti-bot heuristic keyed on IP reputation, not something fixable by
+# curl flags alone. Neither api.onedrive.com's legacy Shares API (now 401,
+# deprecated) nor a WOPI action=download override (silently redirected back
+# to action=default) got past it either. If postCreate.sh's download step
+# fails checksum verification with a small (~135 KB) HTML body, this is why
+# -- the documented fallback is `gh codespace cp -e <local csv>
+# 'remote:/workspaces/<repo>/resources/'` from a machine that already has
+# the verified files (this repo's working tree does; see this file's
+# verify_file, which then skips the download entirely on the next run).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
