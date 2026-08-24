@@ -517,6 +517,63 @@ def test_M_and_n_splits_flags_actually_take_effect():
 
 
 # ---------------------------------------------------------------------------
+# --max-workers
+#
+# max_workers was hardcoded to None (auto: min(n_splits, cpu_count - 1)) in
+# run_main(), reserving one core for the orchestrator process. A small
+# Codespace (e.g. a 4-core account ceiling) wants every core instead --
+# --max-workers makes that a command-line flag rather than an edit to this
+# file, same pattern as --M/--n-splits.
+# ---------------------------------------------------------------------------
+
+def test_max_workers_flag_defaults_to_none_so_run_main_can_supply_auto():
+    assert m.parse_args([]).max_workers is None
+
+
+def test_max_workers_flag_parses_as_an_int():
+    assert m.parse_args(["--max-workers", "4"]).max_workers == 4
+
+
+def test_max_workers_flag_rejects_zero_with_error_mentioning_flag_name(capsys):
+    """--max-workers 0 must fail with an error message that names the flag,
+    not fail incidentally inside ProcessPoolExecutor with a cryptic message."""
+    import pytest
+    with pytest.raises(SystemExit):
+        m.parse_args(["--max-workers", "0"])
+    captured = capsys.readouterr()
+    assert 'max_workers' in captured.err or '--max-workers' in captured.err
+
+
+def test_max_workers_flag_rejects_negative_with_error_mentioning_flag_name(capsys):
+    import pytest
+    with pytest.raises(SystemExit):
+        m.parse_args(["--max-workers", "-1"])
+    captured = capsys.readouterr()
+    assert 'max_workers' in captured.err or '--max-workers' in captured.err
+
+
+def test_omitting_max_workers_reproduces_todays_auto_behavior():
+    """The property that matters most: a campaign invocation with no
+    --max-workers must still let compare_independent_joint_mapping apply its
+    own min(n_splits, cpu_count - 1) auto-detection, not silently pin a
+    worker count."""
+    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
+         patch.object(sys, "argv", ["main.py", "--mode", "compute"]):
+        m.run_main()
+
+    assert mock_compute.call_args.kwargs['max_workers'] is None
+
+
+def test_max_workers_flag_actually_takes_effect():
+    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
+         patch.object(sys, "argv",
+                      ["main.py", "--mode", "compute", "--max-workers", "4"]):
+        m.run_main()
+
+    assert mock_compute.call_args.kwargs['max_workers'] == 4
+
+
+# ---------------------------------------------------------------------------
 # Gap 6 (P5): the run manifest, exercised end to end through
 # compare_independent_joint_mapping rather than only at the module level
 # (tests/test_manifest.py covers that). This is what proves the hook itself

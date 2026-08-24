@@ -104,6 +104,13 @@ def parse_args(argv=None):
         help="number of CV splits per (arm, M) cell in compute mode. "
              "Defaults to today's value (15) when omitted")
     parser.add_argument(
+        "--max-workers", dest="max_workers", type=_parse_max_workers, default=None,
+        help="number of parallel worker processes per (arm, M) cell in compute "
+             "mode. Defaults to min(n_splits, cpu_count - 1) when omitted, which "
+             "reserves one core for the orchestrator process; pass this to use "
+             "every core on a small machine (e.g. --max-workers 4 on a 4-core "
+             "Codespace) at the cost of the orchestrator competing with workers")
+    parser.add_argument(
         "--allow-partial-family", dest="allow_partial_family",
         action="store_true",
         help="in plot mode, render even when the campaign under results/ "
@@ -130,6 +137,15 @@ def _parse_n_splits(value):
     n = int(value)
     if n <= 0:
         raise argparse.ArgumentTypeError("--n-splits must be positive, got {!r}".format(value))
+    return n
+
+
+def _parse_max_workers(value):
+    """--max-workers' argparse type: positive integer worker-process count.
+    Rejects zero or negative values with an error message that names the flag."""
+    n = int(value)
+    if n <= 0:
+        raise argparse.ArgumentTypeError("--max-workers must be positive, got {!r}".format(value))
     return n
 
 
@@ -504,8 +520,10 @@ def run_main():
 
     n_splits = args.n_splits if args.n_splits is not None else 15
 
-    # Parallelization settings
-    max_workers = None   # None = auto (cpu_count - 1), or set to specific number
+    # Parallelization settings. None = auto (min(n_splits, cpu_count - 1));
+    # --max-workers (both default to None) lets a small Codespace use every
+    # core instead of an edit to this file, same pattern as --M/--n-splits.
+    max_workers = args.max_workers
 
     if args.mode == "compute":
         compare_independent_joint_mapping(
