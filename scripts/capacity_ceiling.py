@@ -526,8 +526,11 @@ def select(cells):
     chosen = tied.iloc[0]
     strict = at_corner(cells, LARGE_TREE, chosen.n_trees, chosen.max_depth).iloc[0]
     # The old (7, 10) placeholders' large-tree corner, quoted below -- read
-    # from this measurement rather than hardcoded, so it stays correct if
-    # the grid or corner definitions ever change.
+    # from this measurement rather than hardcoded, so it is never silently
+    # stale. This does NOT make it resilient to the grid/corner definitions
+    # changing: if (7, 10) ever leaves N_TREES_GRID / MAX_DEPTH_GRID,
+    # `.iloc[0]` raises IndexError -- a loud failure, not a silent one, but
+    # a failure nonetheless, not "stays correct".
     old_placeholder_cw = int(at_corner(cells, LARGE_TREE, 7, 10).iloc[0].joint_cw_max)
 
     deciding_leaf, deciding_split = corner_params(cells, DECIDING_CORNER)
