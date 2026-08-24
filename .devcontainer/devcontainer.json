@@ -39,10 +39,10 @@
   // postCreate.sh fails loudly -- non-zero exit, clear stderr message -- if
   // either is unset when a (re-)download is actually needed.
   "secrets": {
-    "THESIS_DATA_URL_APP": {
+    "DATA_URL_APP": {
       "description": "Signed OneDrive URL for resources/apps_flow_features.csv (120,758,907 bytes). Signed URLs expire -- rotate and re-set this secret if postCreate.sh reports a download or checksum failure."
     },
-    "THESIS_DATA_URL_DDOS": {
+    "DATA_URL_DDOS": {
       "description": "Signed OneDrive URL for resources/Wednesday-workingHours.pcap_ISCX.csv (285,642,925 bytes). Signed URLs expire -- rotate and re-set this secret if postCreate.sh reports a download or checksum failure."
     }
   },

@@ -5,9 +5,9 @@
 #      .devcontainer/environment-linux.yml.
 #   2. Downloads resources/apps_flow_features.csv and
 #      resources/Wednesday-workingHours.pcap_ISCX.csv from the signed URLs
-#      held in the THESIS_DATA_URL_APP / THESIS_DATA_URL_DDOS Codespace
-#      secrets (never hardcoded here -- see devcontainer.json's "secrets"
-#      block and D11 in the design spec).
+#      held in the DATA_URL_APP / DATA_URL_DDOS Codespace secrets (never
+#      hardcoded here -- see devcontainer.json's "secrets" block and D11 in
+#      the design spec).
 #   3. Verifies each download against a known byte size AND sha256 before
 #      accepting it -- a truncated/partial download (e.g. an expired signed
 #      URL cut short mid-transfer) must fail loudly here, not get trained on
@@ -85,8 +85,8 @@ verify_file() {
 # Sizes and hashes computed 2026-08-23 against the real files already
 # present locally in resources/ this session (task-27-brief's exact values).
 DATASET_SPECS="
-resources/apps_flow_features.csv|THESIS_DATA_URL_APP|120758907|49d0f482ebfce870f1b7786593bfe72f0686af03817c12dba55e08b5e1a03667
-resources/Wednesday-workingHours.pcap_ISCX.csv|THESIS_DATA_URL_DDOS|285642925|ed538e85b84181e8897dedb3d37d365982f44b27eccd67c477581a8b65f3d170
+resources/apps_flow_features.csv|DATA_URL_APP|120758907|49d0f482ebfce870f1b7786593bfe72f0686af03817c12dba55e08b5e1a03667
+resources/Wednesday-workingHours.pcap_ISCX.csv|DATA_URL_DDOS|285642925|ed538e85b84181e8897dedb3d37d365982f44b27eccd67c477581a8b65f3d170
 "
 
 while IFS='|' read -r dest url_var want_size want_sha; do
