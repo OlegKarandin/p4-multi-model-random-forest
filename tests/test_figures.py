@@ -1179,6 +1179,20 @@ def test_deliverable_8_caption_states_entries_unavailable_when_columns_are_all_n
     assert '12.5%' in deliverable.caption
 
 
+def test_deliverable_8_caption_states_no_data_when_there_are_zero_paired_rows():
+    """Finding 4: distinct from the all-NaN-entries case above (paired data
+    exists, only the entries columns are unusable). Here there is no paired
+    data AT ALL -- only the baseline arm is present, so `pair_arms` never
+    finds a treatment row to join against and `entries_vs_blocks_frame`
+    returns zero rows -- and `overall_blocks_saving` is ALSO NaN, so the
+    caption must not format it into 'nan%' either."""
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG,))
+    deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
+    caption_lower = deliverable.caption.lower()
+    assert 'nan%' not in caption_lower
+    assert 'no' in caption_lower and 'data' in caption_lower
+
+
 def test_deliverable_8_marks_the_real_block_boundary_constant():
     """The block size quoted in the caption/markdown must be the ACTUAL
     `TERNARY_MATCHING_ENTRIES_PER_BLOCK` (imported from build_p4_script,

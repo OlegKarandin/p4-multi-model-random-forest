@@ -294,10 +294,14 @@ def _facet_k_values(k_series, context):
     if not shown:
         shown, dropped = dropped, []
     if dropped:
-        _log('{}: {} computed but not shown (facet is odd k only, 1..17) '
+        # The shown range is derived from `shown` itself (never a literal
+        # "1..17"), so this stays honest if the k-grid ever widens beyond
+        # today's real max of 17.
+        _log('{}: {} computed but not shown (facet is odd k only, {}..{}) '
              '-- still pooled into every paired test and every pooled '
              'statistic.'.format(
-                 context, ', '.join('k={}'.format(k) for k in dropped)))
+                 context, ', '.join('k={}'.format(k) for k in dropped),
+                 min(shown), max(shown)))
     return shown, dropped
 
 
@@ -1638,8 +1642,24 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     # triggers on the fully-missing case -- it must never interpolate NaN
     # into prose that claims a specific percentage.
     entries_data_unavailable = bool(np.isnan(overall_entries_saving))
+    # Distinct from `entries_data_unavailable`: that case has paired rows
+    # whose entries columns are unusable, so `overall_blocks_saving` is
+    # still a real number. Here there is no paired data AT ALL -- `long`
+    # itself has zero rows (e.g. only the baseline arm is present, so
+    # `pair_arms` never found a treatment row to join) -- and
+    # `overall_blocks_saving` is ALSO NaN, so formatting it as blocks_pct
+    # below would print "nan%" for blocks too.
+    no_paired_data = len(long) == 0
 
-    if entries_data_unavailable:
+    if no_paired_data:
+        pooled_sentence = (
+            'No (arm, M, split, k) cell paired against {baseline} in this '
+            'campaign at all -- only the baseline arm (or no arm) is '
+            'present in this frame -- so there is nothing to report: '
+            'neither entries-saving, blocks-saving nor rounding_loss can '
+            'be computed, and the table below is empty.'.format(
+                baseline=baseline))
+    elif entries_data_unavailable:
         pooled_sentence = (
             'This run\'s source CSVs do not carry usable range_entries / '
             'ternary_entries values (NaN on every paired cell -- written '
