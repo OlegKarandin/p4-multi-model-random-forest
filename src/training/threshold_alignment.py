@@ -1,6 +1,7 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.p4gen.evaluation import band_factor
 from src.training.align_budget import BandBudget, codeword_floor, pooled_interval_count
+from src.training.align_targets import neighbour_writes
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
@@ -919,62 +920,46 @@ def restore_thresholds(rf, modifications):
         rf.estimators_[tree_idx].tree_.threshold[node_idx] = original_threshold
 
 
-def update_neighboring_ranges_and_index(ranges, target_idx, old_range, new_range, feature_idx, threshold_index):
+def update_neighboring_ranges_and_index(ranges, target_idx, old_range, new_range,
+                                        feature_idx, threshold_index):
+    """Apply a boundary move to `ranges` and the threshold index.
+
+    The arithmetic itself lives in align_targets.neighbour_writes, which C2's
+    admissibility filter also calls -- the predicate and the mutator cannot
+    drift because there is only one of them. This is now all-or-nothing: the
+    inversion is detected before any write lands, where the previous version
+    raised from the middle of the neighbour loop leaving earlier neighbours
+    already rewritten. The raise itself is unchanged.
+    """
+    effective_range, writes, inverted = neighbour_writes(
+        ranges, target_idx, old_range, new_range)
+
+    if inverted is not None:
+        (range_min, range_max), (bad_min, bad_max) = inverted
+        raise AlignmentInvariantError(
+            'neighboring range {} would invert to ({}, {}) while '
+            'absorbing the boundary move of target range {} -> {} '
+            'for feature {}'.format(
+                (range_min, range_max), bad_min, bad_max,
+                old_range, new_range, feature_idx))
+
+    if effective_range == old_range:
+        return
+
+    ranges[target_idx] = effective_range
+
     old_min, old_max = old_range
     new_min, new_max = new_range
-
-    # Apply the -1 adjustment for the threshold index
     threshold_old_min = old_min - 1 if old_min > 0 else old_min
     threshold_new_min = new_min - 1 if new_min > 0 else new_min
+    if threshold_old_min != threshold_new_min and threshold_old_min != 0:
+        update_threshold_index(threshold_index, feature_idx,
+                               threshold_old_min, threshold_new_min)
+    if old_max != new_max and old_max != INFINITE:
+        update_threshold_index(threshold_index, feature_idx, old_max, new_max)
 
-    threshold_old_max = old_max
-    threshold_new_max = new_max
-
-    # C5: mirror adjust_range_boundaries' own guards. It declines to move a
-    # threshold at 0 (min side) or at INFINITE (max side), so `ranges` must not
-    # claim those boundaries moved -- that disagreement between `ranges`,
-    # tree_.threshold and threshold_index IS C5.
-    effective_min = new_min if threshold_old_min != 0 else old_min
-    effective_max = new_max if threshold_old_max != INFINITE else old_max
-    effective_range = (effective_min, effective_max)
-
-    # Update the target range
-    if effective_range != old_range:
-        ranges[target_idx] = effective_range
-
-        # Update threshold index
-        if threshold_old_min != threshold_new_min and threshold_old_min != 0:
-            update_threshold_index(threshold_index, feature_idx, threshold_old_min, threshold_new_min)
-        if threshold_old_max != threshold_new_max and threshold_old_max != INFINITE:
-            update_threshold_index(threshold_index, feature_idx, threshold_old_max, threshold_new_max)
-
-        # Update neighboring ranges
-        for i, (range_min, range_max) in enumerate(ranges):
-            if i == target_idx:
-                continue
-
-            new_range_min = range_min
-            new_range_max = range_max
-
-            # Check if this range's max boundary matches the old min boundary
-            if range_max + 1 == old_min:
-                new_range_max = effective_min - 1
-
-            # Check if this range's min boundary matches the old max boundary
-            if range_min - 1 == old_max:
-                new_range_min = effective_max + 1
-
-            if new_range_min > new_range_max:
-                raise AlignmentInvariantError(
-                    'neighboring range {} would invert to ({}, {}) while '
-                    'absorbing the boundary move of target range {} -> {} '
-                    'for feature {}'.format(
-                        (range_min, range_max), new_range_min, new_range_max,
-                        old_range, new_range, feature_idx))
-
-            # Update the range tuple if needed
-            if new_range_min != range_min or new_range_max != range_max:
-                ranges[i] = (new_range_min, new_range_max)
+    for i, tup in writes:
+        ranges[i] = tup
 
 
 def update_threshold_index(threshold_index, feature_idx, old_threshold, new_threshold):

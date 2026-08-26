@@ -99,14 +99,22 @@ def test_neighbor_update_raises_alignment_invariant_error_on_inversion():
     this used to be a bare `raise RuntimeError("Smth is very-very wrong")`,
     which is indistinguishable from a bug in `ranges`/`threshold_index`
     bookkeeping unrelated to this invariant. It must now be the module's own
-    AlignmentInvariantError, like every other invariant site here."""
+    AlignmentInvariantError, like every other invariant site here.
+
+    All-or-nothing is the new, stronger contract (Task 9): the inversion is
+    now detected by align_targets.neighbour_writes BEFORE any write lands, so
+    `ranges` must come out of the raise completely untouched -- not partially
+    mutated the way the old mid-loop-raise version left it."""
     ranges = [(10, 20), (7, 9)]
+    snapshot = list(ranges)
     threshold_index = {(0, 9): [(0, 0)]}
 
     with pytest.raises(AlignmentInvariantError):
         ta.update_neighboring_ranges_and_index(
             ranges, target_idx=0, old_range=(10, 20), new_range=(5, 20),
             feature_idx=0, threshold_index=threshold_index)
+
+    assert ranges == snapshot
 
 
 def _forest_and_data(n_estimators=7, n=300, seed=5, min_samples_leaf=20):
