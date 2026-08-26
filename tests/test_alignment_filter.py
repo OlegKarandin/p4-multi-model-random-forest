@@ -63,10 +63,10 @@ def test_the_candidate_log_records_one_row_per_candidate_with_both_predictors():
     assert log, 'the fixture must produce candidates'
     # Every entry carries both predictors regardless of how it was decided.
     for entry in log:
-        assert set(entry) == {'feature_idx', 'range1', 'range2', 'overlap_ratio',
-                             'endpoint_ratio', 'shift_mass_1', 'shift_mass_2',
-                             'rel_deg', 'accepted', 'error_app', 'error_ddos',
-                             'round'}
+        assert set(entry) == {'feature_idx', 'range1', 'range2', 'target',
+                             'overlap_ratio', 'endpoint_ratio', 'shift_mass_1',
+                             'shift_mass_2', 'rel_deg', 'accepted', 'error_app',
+                             'error_ddos', 'round'}
         assert 0.0 <= entry['shift_mass_1'] <= 1.0
         # C3's recompute round this candidate was found in. It lives here and
         # not in align_stats deliberately: the stats dict's key set is pinned

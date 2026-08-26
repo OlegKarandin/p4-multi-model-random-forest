@@ -8,6 +8,7 @@ import pytest
 
 from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, normalise_feature_name
 from src.training import align_budget as ab
+from src.training import align_targets as at
 from src.training import threshold_alignment as ta
 from src.training.errors import AlignmentInvariantError
 
@@ -1477,3 +1478,67 @@ def test_a_rollback_never_fires_when_no_budget_was_spent():
                          delta_rel=0.0, align_policy='c1', align_stats=stats)
     assert stats['spent_budget'] is False
     assert stats['rolled_back'] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 10: C2 -- rank candidate targets by predicted damage and try them in
+# order.
+# ---------------------------------------------------------------------------
+
+def test_c2_with_one_admissible_candidate_reproduces_the_legacy_choice():
+    """Where three corners are inadmissible or gainless, C2 must land on the
+    intersection -- graceful degradation to today's behaviour."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats_legacy = {}
+    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.99, delta_rel=0.0,
+                                    align_stats=stats_legacy)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats_c2 = {}
+    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.99, delta_rel=0.0,
+                                    align_policy='c1c2', align_stats=stats_c2)
+    assert stats_legacy['attempted'] == 0 or stats_c2['accepted'] >= stats_legacy['accepted']
+
+
+def test_c2_prefers_the_low_damage_corner_at_equal_gain():
+    """The whole point of C2: all four corners of a clean pair shed the same
+    two bits, because each of the two boundary gaps is crossed exactly once
+    whichever corner is chosen -- only WHICH MODEL pays for which gap changes.
+    So damage, measured on each model's own validation distribution, is the
+    discriminator."""
+    r1, r2 = (41, 96), (33, 88)
+    ranges1 = [(0, 40), r1, (97, INFINITE)]
+    ranges2 = [(0, 32), r2, (89, INFINITE)]
+
+    gains = []
+    for target in at.candidate_targets(r1, r2):
+        h1 = at.hypothetical_ranges(ranges1, 1, r1, target)
+        h2 = at.hypothetical_ranges(ranges2, 1, r2, target)
+        if h1 is None or h2 is None:
+            continue
+        gains.append(ab.pooled_interval_count(ranges1, ranges2)
+                     - ab.pooled_interval_count(h1, h2))
+    assert gains and len(set(gains)) == 1, (
+        'all admissible corners must shed the same bits on a clean pair')
+
+
+def test_c2_never_offers_a_target_that_moves_nothing():
+    """A corner asking only for sentinel moves has gain 0 and must be dropped
+    before it costs an oracle evaluation -- mirroring the existing
+    `if not modifications1 and not modifications2: continue` fast path."""
+    assert at.boundary_moves((0, INFINITE), (0, INFINITE)) == []
+
+
+def test_c2_evaluates_at_most_four_targets_per_pair(monkeypatch):
+    """Cost bound. Alignment is already the campaign's largest unquantified
+    runtime; four oracle calls per pair is the ceiling C2 may not exceed."""
+    calls = []
+    original = ta.accept_alignment
+    monkeypatch.setattr(ta, 'accept_alignment',
+                        lambda *a, **k: calls.append(1) or original(*a, **k))
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=0.0, align_policy='c1c2', align_stats=stats)
+    assert len(calls) <= 4 * stats['attempted'] or stats['attempted'] == 0

@@ -1,7 +1,8 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.p4gen.evaluation import band_factor
 from src.training.align_budget import BandBudget, codeword_floor, pooled_interval_count
-from src.training.align_targets import neighbour_writes
+from src.training.align_targets import (boundary_moves, candidate_targets,
+                                        hypothetical_ranges, neighbour_writes)
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
@@ -138,6 +139,55 @@ def joint_interval_count(intervals1, intervals2):
     return total
 
 
+def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
+                  sorted_cols1, sorted_cols2):
+    """Admissible corner targets, best first (C2).
+
+    Sorted by (gain descending, damage ascending, generation order): a target
+    that sheds two bits beats one that sheds one whatever the damage, and the
+    accuracy guard is what bounds the damage anyway. In the common case where
+    s1 != s2, e1 != e2 and neither boundary sits on a sentinel, all four
+    corners shed the SAME two bits -- each of the two boundary gaps is crossed
+    exactly once whichever corner wins, and only WHICH MODEL pays for which
+    gap changes -- so damage is the effective discriminator and gain only
+    separates the degenerate cases.
+
+    Damage is a max over the two models, never a sum or a mean: the same
+    principle accept_alignment and rel_shortfall already enforce, that a gain
+    on one task may not offset a loss on the other. Generation order is the
+    final tiebreak so the ranking is a total order and the run stays
+    deterministic -- which the refit assertion at train_model.py:373-377
+    depends on.
+    """
+    before = pooled_interval_count(ranges1, ranges2)
+    scored = []
+    for order, target in enumerate(candidate_targets(range1, range2)):
+        hypo1 = hypothetical_ranges(ranges1, idx1, range1, target)
+        hypo2 = hypothetical_ranges(ranges2, idx2, range2, target)
+        if hypo1 is None or hypo2 is None:
+            continue
+
+        moves1 = boundary_moves(range1, target)
+        moves2 = boundary_moves(range2, target)
+        if not moves1 and not moves2:
+            continue
+
+        gain = before - pooled_interval_count(hypo1, hypo2)
+        if gain <= 0:
+            continue
+
+        damage = 0.0
+        for sorted_cols, moves in ((sorted_cols1, moves1), (sorted_cols2, moves2)):
+            for old, new in moves:
+                damage = max(damage,
+                             shift_mass(sorted_cols[:, feature_idx], old, new))
+
+        scored.append((-gain, damage, order, target))
+
+    scored.sort()
+    return [target for _, _, _, target in scored]
+
+
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
                         candidate_log=None, align_policy='legacy'):
@@ -194,16 +244,17 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
     X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
 
-    # One sort per model, for shift_mass -- a purely diagnostic quantity now
-    # (P3 Task 8: the shift_mass-derived pre-filter was removed; every
-    # overlap-eligible candidate reaches the real oracle check below). Only
-    # computed when candidate_log asks for it, so it costs nothing on the
-    # default (no-logging) hot path. Per-model is correct: damage to rf1
-    # depends on X_val1's distribution, not X_val2's. Feature indices line up
-    # -- trees are fit on X_*_train[:, remaining] and validated on
-    # X_*_val[:, remaining], the same column space.
+    # One sort per model, for shift_mass. Under C2 this is no longer
+    # diagnostic: it is how a candidate's predicted damage is priced, so it
+    # must be available whenever the policy ranks targets. One np.sort per
+    # model against a ~550 ms fit -- negligible, which is why the old
+    # candidate_log-only gating existed at all (the quantity was purely
+    # diagnostic then). Per-model is correct: damage to rf1 depends on
+    # X_val1's distribution, not X_val2's. Feature indices line up -- trees are
+    # fit on X_*_train[:, remaining] and validated on X_*_val[:, remaining],
+    # the same column space.
     sorted_cols1 = sorted_cols2 = None
-    if candidate_log is not None:
+    if candidate_log is not None or align_policy == 'c1c2':
         sorted_cols1 = np.sort(X_val1, axis=0)
         sorted_cols2 = np.sort(X_val2, axis=0)
 
@@ -340,146 +391,110 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 if overlap_ratio < overlap_threshold:
                     continue
 
-                target = calculate_target_range(range1, range2)
-
-                # Purely diagnostic now -- only computed when a candidate_log
-                # is actually requested (see the sorted_cols1/2 gating above).
-                mass1 = mass2 = None
-                if candidate_log is not None:
-                    mass1 = max(shift_mass(sorted_cols1[:, feature_idx], old, new)
-                                for old, new in ((range1[0], target[0]), (range1[1], target[1])))
-                    mass2 = max(shift_mass(sorted_cols2[:, feature_idx], old, new)
-                                for old, new in ((range2[0], target[0]), (range2[1], target[1])))
-
-                # Adjust boundaries to make ranges identical
-                modifications1 = adjust_range_boundaries(
-                    rf1, feature_idx, range1, target, threshold_index1
-                )
-
-                modifications2 = adjust_range_boundaries(
-                    rf2, feature_idx, range2, target, threshold_index2
-                )
-
-                if not modifications1 and not modifications2:
-                    # P5: adjust_range_boundaries declined every move (source
-                    # min is 0, source max is INFINITE, or source already
-                    # equals target). Every feature's interval list starts at 0
-                    # and ends at INFINITE, so this is a common path -- and
-                    # there is nothing to evaluate, restore or undo.
-                    continue
-
-                undo_info1 = update_cache_for_modifications(rf1, X_val1, tree_predictions1, node_to_samples1, modifications1)
-                undo_info2 = update_cache_for_modifications(rf2, X_val2, tree_predictions2, node_to_samples2, modifications2)
-
-                stats['attempted'] += 1
-
-                # Rollback tokens for the metric state, paired 1:1 with
-                # undo_info1/2. Bound to None here rather than only inside the
-                # else branch so the reject path below reads the same on every
-                # arm, including the inf one where no apply ever ran.
-                mtoken1 = mtoken2 = None
-
-                effective_delta = budget.delta_for_candidate()
-
-                if metrics1 is None:
-                    # Legacy at delta_rel=None: no oracle was ever built, so
-                    # every candidate is accepted unconditionally. This is the
-                    # branch that makes the inf anchor the cheapest arm.
-                    accepted = True
-                    after = None
+                if align_policy == 'c1c2':
+                    targets = _rank_targets(
+                        range1, range2, current_ranges1, current_ranges2,
+                        idx1, idx2, feature_idx, sorted_cols1, sorted_cols2)
                 else:
-                    # IncrementalMetrics' ordering contract: apply reads the NEW
-                    # per-tree predictions out of tree_predictions and the OLD
-                    # ones out of undo_info, so it must run AFTER
-                    # update_cache_for_modifications and BEFORE any
-                    # undo_cache_update.
-                    mtoken1 = metrics1.apply(tree_predictions1, undo_info1)
-                    mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
+                    targets = [calculate_target_range(range1, range2)]
 
-                    after = metrics1.metrics() + metrics2.metrics()
-                    accepted = accept_alignment(marks, after, effective_delta)
+                for target in targets:
+                    # Purely diagnostic -- only computed when a candidate_log
+                    # is actually requested.
+                    mass1 = mass2 = None
+                    if candidate_log is not None:
+                        mass1 = max(shift_mass(sorted_cols1[:, feature_idx], old, new)
+                                    for old, new in ((range1[0], target[0]),
+                                                     (range1[1], target[1])))
+                        mass2 = max(shift_mass(sorted_cols2[:, feature_idx], old, new)
+                                    for old, new in ((range2[0], target[0]),
+                                                     (range2[1], target[1])))
 
-                if candidate_log is not None:
-                    candidate_log.append({
-                        'feature_idx': int(feature_idx),
-                        # Which recompute round found this candidate. Diagnostic
-                        # only, and deliberately here rather than in align_stats
-                        # -- that dict's key set is pinned exactly, while
-                        # candidate_log is the structure meant to grow. round 1
-                        # is the pre-C3 candidate set; anything above 1 is a
-                        # candidate an accepted move created.
-                        'round': rounds,
-                        'range1': tuple(range1),
-                        'range2': tuple(range2),
-                        'overlap_ratio': float(overlap_ratio),
-                        'endpoint_ratio': float(endpoint_ratio(range1, range2)),
-                        # current is None only on the delta_rel=None (inf) arm,
-                        # where accept/reject -- and therefore any notion of
-                        # "current error" -- is skipped entirely; 0.0 mirrors
-                        # rel_deg's own placeholder for that arm below.
-                        'error_app': 1.0 - current[0] if current is not None else 0.0,
-                        'error_ddos': 1.0 - current[2] if current is not None else 0.0,
-                        'shift_mass_1': mass1,
-                        'shift_mass_2': mass2,
-                        # Local, immediate-effect degradation: current is the
-                        # actual model state right before THIS candidate, as
-                        # opposed to marks' cumulative per-task high-water mark
-                        # (which accept_alignment above correctly uses instead --
-                        # that ratchet is deliberate, spec B.4, and unaffected
-                        # by this diagnostic). Comparing a local physical bound
-                        # (shift_mass) against a cumulative quantity would be
-                        # apples-to-oranges.
-                        'rel_deg': tuple(rel_deg(b, a) for b, a in zip(current, after))
-                                   if after is not None else (0.0, 0.0, 0.0, 0.0),
-                        'accepted': bool(accepted),
-                    })
+                    modifications1 = adjust_range_boundaries(
+                        rf1, feature_idx, range1, target, threshold_index1)
+                    modifications2 = adjust_range_boundaries(
+                        rf2, feature_idx, range2, target, threshold_index2)
 
-                if not accepted:
-                    restore_thresholds(rf1, modifications1)
-                    restore_thresholds(rf2, modifications2)
-                    undo_cache_update(tree_predictions1, node_to_samples1, undo_info1)
-                    undo_cache_update(tree_predictions2, node_to_samples2, undo_info2)
-                    # The metric state is the fifth structure a rejected
-                    # candidate has to restore. revert is independent of
-                    # undo_cache_update (it restores from its own stored copy,
-                    # not from tree_predictions), so the order here is free --
-                    # but it must happen on EVERY reject, or the ratchet starts
-                    # comparing against a model state that no longer exists.
-                    if metrics1 is not None:
-                        metrics1.revert(mtoken1)
-                        metrics2.revert(mtoken2)
-                else:
-                    # Only an ACCEPTED move can change the candidate set: a
-                    # reject restores thresholds, both caches, the metric
-                    # state and the interval lists, so a rescan after one
-                    # would return exactly the list already being iterated.
+                    if not modifications1 and not modifications2:
+                        # P5: adjust_range_boundaries declined every move.
+                        # Under c1c2 _rank_targets has already dropped these,
+                        # but the legacy single-target path still reaches here
+                        # and there is nothing to evaluate, restore or undo.
+                        continue
+
+                    undo_info1 = update_cache_for_modifications(
+                        rf1, X_val1, tree_predictions1, node_to_samples1, modifications1)
+                    undo_info2 = update_cache_for_modifications(
+                        rf2, X_val2, tree_predictions2, node_to_samples2, modifications2)
+
+                    stats['attempted'] += 1
+                    mtoken1 = mtoken2 = None
+
+                    effective_delta = budget.delta_for_candidate()
+
+                    if metrics1 is None:
+                        accepted = True
+                        after = None
+                    else:
+                        mtoken1 = metrics1.apply(tree_predictions1, undo_info1)
+                        mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
+                        after = metrics1.metrics() + metrics2.metrics()
+                        accepted = accept_alignment(marks, after, effective_delta)
+
+                    if candidate_log is not None:
+                        candidate_log.append({
+                            'feature_idx': int(feature_idx),
+                            'round': rounds,
+                            'range1': tuple(range1),
+                            'range2': tuple(range2),
+                            'target': tuple(target),
+                            'overlap_ratio': float(overlap_ratio),
+                            'endpoint_ratio': float(endpoint_ratio(range1, range2)),
+                            'error_app': 1.0 - current[0] if current is not None else 0.0,
+                            'error_ddos': 1.0 - current[2] if current is not None else 0.0,
+                            'shift_mass_1': mass1,
+                            'shift_mass_2': mass2,
+                            'rel_deg': tuple(rel_deg(b, a) for b, a in zip(current, after))
+                                       if after is not None else (0.0, 0.0, 0.0, 0.0),
+                            'accepted': bool(accepted),
+                        })
+
+                    if not accepted:
+                        restore_thresholds(rf1, modifications1)
+                        restore_thresholds(rf2, modifications2)
+                        undo_cache_update(tree_predictions1, node_to_samples1, undo_info1)
+                        undo_cache_update(tree_predictions2, node_to_samples2, undo_info2)
+                        if metrics1 is not None:
+                            metrics1.revert(mtoken1)
+                            metrics2.revert(mtoken2)
+                        # C2: the pair is not dead yet -- try the next-ranked
+                        # corner. With a single target this falls straight out
+                        # of the loop, exactly as the old `continue` did.
+                        continue
+
                     progressed = True
                     stats['accepted'] += 1
                     if after is not None:
                         marks = ratchet(marks, after)
                         current = after
 
-                    # Realised shed for THIS move, measured on the one feature
-                    # that moved. Recomputing joint_interval_count here would be
-                    # O(total thresholds) paid thousands of times per trial;
-                    # these two lists hold 25-50 entries. Pinned against the
-                    # whole-run total by
-                    # test_the_per_move_sheds_sum_to_the_whole_runs_shed.
                     pooled_before = pooled_interval_count(current_ranges1,
                                                           current_ranges2)
 
                     update_neighboring_ranges_and_index(
                         current_ranges1, idx1, range1, target,
-                        feature_idx, threshold_index1
-                    )
-
+                        feature_idx, threshold_index1)
                     update_neighboring_ranges_and_index(
                         current_ranges2, idx2, range2, target,
-                        feature_idx, threshold_index2
-                    )
+                        feature_idx, threshold_index2)
 
                     budget.note_shed(pooled_before - pooled_interval_count(
                         current_ranges1, current_ranges2))
+
+                    # First acceptance wins: the ranking already put the
+                    # cheapest admissible corner first, and the tuples this
+                    # pair was named by no longer exist.
+                    break
 
         if progressed and rounds > 1:
             # Truncated while still accepting moves: the loop never reached a
