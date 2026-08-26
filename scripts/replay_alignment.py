@@ -27,6 +27,7 @@ Run (from the repository root):
       scripts/replay_alignment.py --limit 5 --timing
 """
 import argparse
+import collections
 import glob
 import json
 import os
@@ -178,8 +179,19 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
     return out
 
 
-def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify):
-    """Every (policy, overlap_threshold) cell for one campaign row."""
+def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
+               skip_counts=None):
+    """Every (policy, overlap_threshold) cell for one campaign row.
+
+    skip_counts, if given, is a collections.Counter (or any Counter-like
+    mapping) shared across calls that gets incremented per-policy every time
+    a swept cell is skipped -- lets main() report how many cells were
+    dropped and from which policy, without changing this function's return
+    value. A fresh, discarded Counter is used when the caller doesn't need
+    the tally.
+    """
+    if skip_counts is None:
+        skip_counts = collections.Counter()
     model_app, model_ddos, app, ddos, cols_app, cols_ddos = refit_pair(row, data)
     names_app = row['features_app'].split(';')
     names_ddos = row['features_ddos'].split(';')
@@ -230,6 +242,7 @@ def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify):
                       'overlap={} -- {}: {}'.format(
                           row['arm_slug'], row['M'], row['split'], row['k'],
                           policy, overlap, type(exc).__name__, exc))
+                skip_counts[policy] += 1
                 continue
             results.append(result)
 
@@ -277,11 +290,12 @@ def main(argv=None):
     data = load_campaign_data()
     ladder_delta = None if args.ladder_delta == 'inf' else float(args.ladder_delta)
 
+    skip_counts = collections.Counter()
     out, started = [], time.time()
     for i, (_, row) in enumerate(rows.iterrows()):
         out.extend(replay_row(row, data, args.policies.split(','),
                               floats(args.overlap_thresholds), ladder_delta,
-                              args.verify))
+                              args.verify, skip_counts=skip_counts))
         print('  [{}/{}] {} M={} split={} k={}  ({:.1f}s elapsed)'.format(
             i + 1, len(rows), row['arm_slug'], row['M'], row['split'], row['k'],
             time.time() - started))
@@ -299,6 +313,14 @@ def main(argv=None):
         if len(bad):
             print(bad[['source_arm', 'M', 'split', 'k',
                        'blocks_recorded', 'blocks']].to_string())
+
+    total_skipped = sum(skip_counts.values())
+    if total_skipped:
+        breakdown = ', '.join('{} x{}'.format(policy, n)
+                              for policy, n in skip_counts.most_common())
+        print('skipped {} cells: {}'.format(total_skipped, breakdown))
+    else:
+        print('skipped 0 cells')
 
     if args.timing:
         per_row = (time.time() - started) / max(len(rows), 1)

@@ -53,3 +53,55 @@ def test_scoring_is_paired_and_ignores_unmatched_rows():
     frame = frame[~((frame['policy'] == 'c1') & (frame['k'] == 1))]
     out = rs.score(rs.derive_columns(frame))
     assert out['S1']['detail'].startswith('1 paired')
+
+
+def test_s5_uses_the_tightest_swept_threshold_as_the_reference_not_literal_0_5():
+    """The reference ("tight") threshold must be derived from the data --
+    the maximum swept overlap_threshold -- not require the literal value 0.5
+    to be present in the sweep."""
+    rows = []
+    for threshold, after, blocks in ((0.3, 90, 28), (0.7, 96, 28)):
+        rows.append({'source_arm': 'joint-d020', 'M': 25, 'split': 10,
+                     'k': 0, 'overlap_threshold': threshold, 'policy': 'c1',
+                     'align_codeword_before': 100,
+                     'align_codeword_after': after, 'blocks': blocks,
+                     'acc_app': 0.90, 'acc_ddos': 0.95})
+    frame = pd.DataFrame(rows)
+    verdict = rs.score(rs.derive_columns(frame))
+    assert verdict['S5']['passed'] is True
+    assert '0.3' in verdict['S5']['detail']
+    assert '0.7' in verdict['S5']['detail']
+    assert '0.5' not in verdict['S5']['detail']
+
+
+def test_s5_reports_no_data_when_only_one_threshold_was_swept():
+    """A genuinely single-threshold sweep has nothing to compare against --
+    that must still fail honestly, distinct from the reference simply not
+    being 0.5."""
+    frame = _replay_frame()  # every row uses overlap_threshold=0.5 only
+    verdict = rs.score(rs.derive_columns(frame))
+    assert verdict['S5']['passed'] is False
+    assert 'no loosened-threshold rows to compare' in verdict['S5']['detail']
+
+
+def test_s5_and_s6_agree_on_the_best_available_policy_when_c1c2_is_absent():
+    """A run with only legacy/c1 (no c1c2) -- the exact shape of Task 6's
+    baseline sweep -- must have S5 and S6 pick the SAME fallback policy
+    (c1), not silently disagree (S5 falling back to legacy, S6 to c1)."""
+    rows = []
+    for policy, threshold, after, blocks in (
+            ('legacy', 0.3, 100, 30), ('legacy', 0.7, 100, 30),
+            ('c1', 0.3, 90, 28), ('c1', 0.7, 96, 28)):
+        rows.append({'source_arm': 'joint-d020', 'M': 25, 'split': 10,
+                     'k': 0, 'overlap_threshold': threshold, 'policy': policy,
+                     'align_codeword_before': 100,
+                     'align_codeword_after': after, 'blocks': blocks,
+                     'acc_app': 0.90, 'acc_ddos': 0.95})
+    frame = pd.DataFrame(rows)
+    verdict = rs.score(rs.derive_columns(frame))
+    # S5 compared c1's own thresholds (not legacy's), so it found the
+    # bits-shed widening; S6 pairs c1 against legacy, i.e. 'c1' appears in
+    # its detail string.
+    assert verdict['S5']['passed'] is True
+    assert verdict['S6']['detail'].startswith('2 paired') or \
+        'c1 saves' in verdict['S6']['detail']

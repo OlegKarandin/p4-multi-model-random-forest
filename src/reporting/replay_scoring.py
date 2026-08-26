@@ -66,14 +66,33 @@ def _verdict(n, passed, value, detail):
             'detail': '{} paired: {}'.format(n, detail)}
 
 
+def _best_policy(frame):
+    """Name of the best available policy actually present in this data.
+
+    S5 and S6 both mean "how does the best mechanism we have do", so they
+    must agree on what "best" resolves to: prefer c1c2, else c1, else
+    legacy -- whichever the run actually swept, never a hardcoded assumption
+    that all three exist. Returns None if none of the three is present.
+    """
+    present = frame['policy'].unique()
+    for policy in ('c1c2', 'c1', 'legacy'):
+        if policy in present:
+            return policy
+    return None
+
+
 def score(frame):
     """The six pre-registered verdicts. Missing policies yield n = 0, which
     fails rather than silently passing on an empty mean."""
     out = {}
 
-    # S1 -- C1 never loses accuracy relative to spending nothing. With the
-    # align_with_policy rollback this should hold BY CONSTRUCTION; a failure
-    # here means the rollback did not fire, not that C1 is merely unlucky.
+    # S1 -- c1 vs legacy at the SAME configured --ladder-delta (there is no
+    # legacy-at-delta_rel=0 arm to compare against "spending nothing"). A
+    # pass is evidence C1's own gating (BandBudget only spends when the next
+    # block-band is reachable) doesn't regress accuracy under the shared
+    # budget -- it is not a direct test of the align_with_policy rollback
+    # wrapper specifically, since C1's gating alone would hold this even if
+    # the rollback did nothing.
     pair = _paired(frame, 'c1', 'legacy')
     if len(pair):
         d_app = (pair['acc_app_a'] - pair['acc_app_b']).mean()
@@ -121,24 +140,26 @@ def score(frame):
     # all? Compared within one policy across overlap_threshold, so the
     # merge key drops that column.
     keys = [k for k in PAIR_KEYS if k != 'overlap_threshold']
-    best = frame[frame['policy'] == 'c1c2'] if (frame['policy'] == 'c1c2').any() \
-        else frame[frame['policy'] == 'legacy']
-    loose = best[best['overlap_threshold'] == best['overlap_threshold'].min()]
-    tight = best[best['overlap_threshold'] == 0.5]
+    top5 = _best_policy(frame)
+    best = frame[frame['policy'] == top5] if top5 is not None else frame.iloc[0:0]
+    loose_threshold = best['overlap_threshold'].min()
+    tight_threshold = best['overlap_threshold'].max()
+    loose = best[best['overlap_threshold'] == loose_threshold]
+    tight = best[best['overlap_threshold'] == tight_threshold]
     pair5 = loose.merge(tight, on=keys, suffixes=('_a', '_b'))
-    if len(pair5) and loose['overlap_threshold'].min() < 0.5:
+    if len(pair5) and loose_threshold < tight_threshold:
         delta = (pair5['bits_shed_a'] - pair5['bits_shed_b']).mean()
         out['S5'] = _verdict(len(pair5), delta > 0, delta,
-                             'mean {:+.2f} bits shed at threshold {:g} vs 0.5'.format(
-                                 delta, loose['overlap_threshold'].min()))
+                             'mean {:+.2f} bits shed at threshold {:g} vs {:g}'.format(
+                                 delta, loose_threshold, tight_threshold))
     else:
         out['S5'] = _verdict(len(pair5), False, 0.0,
                              'no loosened-threshold rows to compare')
 
     # S6 -- is the whole ladder worth a campaign? Best available policy against
     # legacy, on blocks, with no accuracy regression on either task.
-    top = 'c1c2' if (frame['policy'] == 'c1c2').any() else 'c1'
-    pair6 = _paired(frame, top, 'legacy')
+    top = _best_policy(frame)
+    pair6 = _paired(frame, top, 'legacy') if top is not None else frame.iloc[0:0]
     if len(pair6):
         saved = (pair6['blocks_b'] - pair6['blocks_a']).mean()
         d_app = (pair6['acc_app_a'] - pair6['acc_app_b']).mean()

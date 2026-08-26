@@ -1,3 +1,4 @@
+from collections import Counter
 from unittest import mock
 
 import numpy as np
@@ -156,3 +157,46 @@ def test_replay_row_verify_failure_does_not_block_later_swept_cells(capsys):
     assert results[0]['overlap_threshold'] == 0.5
     out = capsys.readouterr().out
     assert 'VERIFY FAILED (error)' in out
+
+
+def test_replay_row_skip_counts_accumulate_by_policy_across_calls():
+    """The shared skip_counts structure main() passes into every replay_row
+    call must accumulate across rows, broken down by policy -- this is how
+    main() learns how many cells were dropped and from which policy,
+    something the printed SKIPPED lines alone don't summarize."""
+    row, refit_result = _replay_row_fixture()
+
+    def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
+                            names_app, names_ddos, policy, delta_rel,
+                            overlap_threshold):
+        if policy in ('c1', 'c1c2'):
+            raise RuntimeError('infeasible cell')
+        return {'policy': policy, 'overlap_threshold': overlap_threshold,
+                'blocks': 10}
+
+    skip_counts = Counter()
+    with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
+         mock.patch.object(ra, 'run_one_policy', side_effect=fake_run_one_policy):
+        ra.replay_row(row, data=None, policies=['legacy', 'c1'],
+                      overlap_thresholds=[0.5], ladder_delta=0.20,
+                      verify=False, skip_counts=skip_counts)
+        ra.replay_row(row, data=None, policies=['c1', 'c1c2'],
+                      overlap_thresholds=[0.5], ladder_delta=0.20,
+                      verify=False, skip_counts=skip_counts)
+
+    assert skip_counts == Counter({'c1': 2, 'c1c2': 1})
+
+
+def test_replay_row_skip_counts_default_to_a_throwaway_counter():
+    """Callers that don't care about the tally (e.g. the existing tests
+    above) must keep working unchanged -- skip_counts is optional."""
+    row, refit_result = _replay_row_fixture()
+
+    with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
+         mock.patch.object(ra, 'run_one_policy',
+                           side_effect=RuntimeError('boom')):
+        results = ra.replay_row(row, data=None, policies=['c1'],
+                                overlap_thresholds=[0.5], ladder_delta=0.20,
+                                verify=False)
+
+    assert results == []
