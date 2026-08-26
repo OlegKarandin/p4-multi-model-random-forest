@@ -1,4 +1,5 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
+from src.p4gen.evaluation import band_factor
 from src.training.align_budget import BandBudget, codeword_floor, pooled_interval_count
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
@@ -992,3 +993,54 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
         threshold_index[(feature_idx, new_threshold)] = list(existing)
     else:
         threshold_index[(feature_idx, new_threshold)] = nodes
+
+
+def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
+                      overlap_threshold=0.5, delta_rel=0.0,
+                      align_policy='legacy', align_stats=None,
+                      candidate_log=None):
+    """align_rf_thresholds with C1's commit-or-rollback guarantee.
+
+    `band_target(L) >= floor` proves the next band is REACHABLE, not that it
+    will be REACHED: the candidate generator can run dry mid-flight, leaving a
+    run that paid accuracy and bought no block -- exactly the waste C1 exists
+    to remove, just narrower. So: run at the configured delta; if budget was
+    genuinely spent and the block factor did not fall, discard that result and
+    re-run the same pair at delta = 0, keeping only the free moves.
+
+    This is a whole-function retry rather than in-loop state surgery because
+    align_rf_thresholds is already a pure function of (models, validation data,
+    params) and already deep-copies its inputs (C8), so re-running it from the
+    caller's untouched forests IS the rollback. Cost is 2x alignment runtime
+    on exactly the runs where the speculation failed, and 1x everywhere else.
+
+    Turns success criterion S1 -- "C1 never loses accuracy relative to
+    legacy(d000)" -- from a measured hope into a property of the code.
+    """
+    stats = align_stats if align_stats is not None else {}
+    speculative = align_rf_thresholds(
+        rf1, rf2, X_val1, y_val1, X_val2, y_val2,
+        overlap_threshold=overlap_threshold, delta_rel=delta_rel,
+        align_policy=align_policy, align_stats=stats,
+        candidate_log=candidate_log)
+
+    if align_policy == 'legacy' or not stats['spent_budget']:
+        return speculative
+
+    if band_factor(stats['codeword_after']) < band_factor(stats['codeword_before']):
+        return speculative
+
+    # Spent and crossed nothing. Redo at delta = 0 and keep THAT.
+    if candidate_log is not None:
+        # The speculative run's candidates never happened as far as the
+        # returned models are concerned, so its log must not be reported
+        # alongside them.
+        del candidate_log[:]
+    stats.clear()
+    result = align_rf_thresholds(
+        rf1, rf2, X_val1, y_val1, X_val2, y_val2,
+        overlap_threshold=overlap_threshold, delta_rel=0.0,
+        align_policy=align_policy, align_stats=stats,
+        candidate_log=candidate_log)
+    stats['rolled_back'] = True
+    return result

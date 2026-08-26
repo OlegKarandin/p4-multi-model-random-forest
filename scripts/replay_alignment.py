@@ -41,16 +41,10 @@ from src.p4gen.build_p4_script import dt_thresholds_float_to_int
 from src.p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
 from src.p4gen.switch_semantics import switch_predict
 from src.training.splits import make_task_splits
-from src.training.threshold_alignment import align_rf_thresholds
+from src.training.threshold_alignment import align_with_policy
 from src.training.train_model import rf_params_from_params
 
 from sklearn.ensemble import RandomForestClassifier
-
-
-# align_rf_thresholds now accepts align_policy directly (Task 7). The real
-# commit-or-rollback align_with_policy wrapper lands in Task 8; this alias
-# keeps the harness runnable in between.
-align_with_policy = align_rf_thresholds
 
 
 # main.py:380 fixes random_state=42 for every campaign invocation, and

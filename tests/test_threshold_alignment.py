@@ -1412,3 +1412,60 @@ def test_c1_builds_the_oracle_even_at_an_unbounded_delta():
     # waved through, so accepted cannot equal attempted on a reject-capable
     # fixture unless the budget was genuinely unbounded throughout.
     assert stats['attempted'] > 0
+
+
+# ---------------------------------------------------------------------------
+# Task 8: align_with_policy -- commit or roll back.
+# ---------------------------------------------------------------------------
+
+def test_align_with_policy_is_a_pass_through_on_the_legacy_policy():
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    direct = {}
+    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=0.05,
+                                    align_stats=direct)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    wrapped = {}
+    b1, b2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
+                                  overlap_threshold=0.5, delta_rel=0.05,
+                                  align_policy='legacy', align_stats=wrapped)
+    assert direct == wrapped
+    for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
+        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
+
+
+def test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves():
+    """S1 by construction rather than by measurement: if budget was spent and
+    the block factor did not fall, the accuracy was given away for nothing, so
+    the run is redone at delta = 0 and THAT result is returned."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    a1, a2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
+                                  overlap_threshold=0.5, delta_rel=0.20,
+                                  align_policy='c1', align_stats=stats)
+    from src.p4gen.evaluation import band_factor
+    if not stats['rolled_back']:
+        assert (band_factor(stats['codeword_after'])
+                < band_factor(stats['codeword_before'])
+                or not stats['spent_budget'])
+        pytest.skip('this fixture crossed a band or never spent; nothing to roll back')
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    free = {}
+    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=0.0,
+                                    align_policy='c1', align_stats=free)
+    for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
+        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
+    assert stats['codeword_after'] == free['codeword_after']
+
+
+def test_a_rollback_never_fires_when_no_budget_was_spent():
+    """delta_rel = 0 gives nothing away, so there is never anything to undo and
+    the second pass must not be paid for."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                         delta_rel=0.0, align_policy='c1', align_stats=stats)
+    assert stats['spent_budget'] is False
+    assert stats['rolled_back'] is False
