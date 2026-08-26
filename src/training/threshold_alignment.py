@@ -1,4 +1,5 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
+from src.training.align_budget import codeword_floor
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
@@ -232,6 +233,18 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['accepted'] = 0
     stats['intervals_before'] = joint_interval_count(intervals1, intervals2)
 
+    # L -- the pooled split-threshold count, which IS the classification
+    # table's codeword length (see align_budget's module docstring). An
+    # interval list holds one more entry than it has thresholds, so the
+    # feature count is exactly what separates the two quantities. Recorded
+    # rather than derived downstream because the block cost is a step function
+    # of L and nothing else, and until now L appeared in no artifact at all.
+    n_features = len(set(intervals1) | set(intervals2))
+    stats['codeword_before'] = stats['intervals_before'] - n_features
+    stats['codeword_floor'] = codeword_floor(intervals1, intervals2)
+    stats['spent_budget'] = False
+    stats['rolled_back'] = False
+
     # Find common features
     common_features = set(intervals1.keys()) & set(intervals2.keys())
  
@@ -447,6 +460,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
     stats['intervals_after'] = joint_interval_count(
         extract_feature_intervals(rf1), extract_feature_intervals(rf2))
+    stats['codeword_after'] = stats['intervals_after'] - n_features
 
     return rf1, rf2 #, alignment_stats
 

@@ -848,7 +848,12 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
     rf1, rf2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
                            delta_rel=delta_rel, align_stats=stats)
 
-    assert stats == golden['stats']
+    # Compare only the keys the golden literal was captured for. The literal
+    # dates from commit 0fb5ace and must NOT be regenerated from post-change
+    # code (see this test's docstring); the codeword keys added later are
+    # instead checked by DERIVATION from the pinned interval counts, in
+    # test_align_stats_records_the_codeword_length_it_optimises.
+    assert {k: stats[k] for k in golden['stats']} == golden['stats']
     for key, rf in (('t1', rf1), ('t2', rf2)):
         for tree_idx, (estimator, expected) in enumerate(
                 zip(rf.estimators_, golden[key])):
@@ -1239,7 +1244,10 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     stats_c3, log_c3 = _align_golden_pair(delta_rel, ta.MAX_RECOMPUTE_ROUNDS, monkeypatch)
 
     # No new stats key -- 'round' lives in the candidate_log instead.
-    assert set(stats_c3) == {'attempted', 'accepted', 'intervals_before', 'intervals_after'}
+    assert set(stats_c3) == {
+        'attempted', 'accepted', 'intervals_before', 'intervals_after',
+        'codeword_before', 'codeword_after', 'codeword_floor',
+        'spent_budget', 'rolled_back'}
     assert stats_c3['intervals_before'] == stats_r1['intervals_before']
     assert stats_c3['attempted'] >= stats_r1['attempted']
     assert stats_c3['accepted'] >= stats_r1['accepted']
@@ -1262,3 +1270,44 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     # 1 are the appended work and nothing else.
     assert [e['round'] for e in log_r1] == [1] * len(log_r1)
     assert max(e['round'] for e in log_c3) > 1
+
+
+def test_align_stats_records_the_codeword_length_it_optimises():
+    """L is the quantity the block cost is a step function of, and it was
+    recorded nowhere -- the companion analysis had to solve for it and failed
+    on 8% of rows."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                           overlap_threshold=0.5, delta_rel=0.0, align_stats=stats)
+
+    assert set(stats) == {
+        'attempted', 'accepted', 'intervals_before', 'intervals_after',
+        'codeword_before', 'codeword_after', 'codeword_floor',
+        'spent_budget', 'rolled_back'}
+
+    n_features = len(set(ta.extract_feature_intervals(rf1))
+                     | set(ta.extract_feature_intervals(rf2)))
+    assert stats['codeword_before'] == stats['intervals_before'] - n_features
+    assert stats['codeword_after'] == stats['intervals_after'] - n_features
+    assert stats['codeword_floor'] <= stats['codeword_after']
+    assert stats['rolled_back'] is False
+
+
+def test_the_recorded_codeword_is_the_one_the_block_cost_was_computed_from():
+    """align_rf_thresholds counts in the models' COLUMN-INDEX space while
+    multi_model_memory_evaluation counts over the union of the two models'
+    selected feature NAMES. They coincide only when both models are fit on the
+    same column space -- which align_rf_thresholds documents as required
+    (threshold_alignment.py:180-184) and which holds throughout this campaign.
+    Pin it, or C1 could silently gate on the wrong number."""
+    from src.p4gen.evaluation import multi_model_memory_evaluation
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    names = ['f{}'.format(i) for i in range(X1.shape[1])]
+    stats = {}
+    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=0.0,
+                                    align_stats=stats)
+    usage = multi_model_memory_evaluation(a1, a2, names, names, 'joint')
+    assert stats['codeword_after'] == usage.codeword_length

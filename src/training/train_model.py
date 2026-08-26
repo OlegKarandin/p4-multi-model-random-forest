@@ -370,6 +370,20 @@ def train_multi_RF_Optuna_multi_constrained(
     usage = multi_model_memory_evaluation(
         model_A, model_B, features_A, features_B, encoding)
 
+    # C4 cross-check: align_rf_thresholds counts intervals in the models'
+    # COLUMN-INDEX space; multi_model_memory_evaluation counts over the union
+    # of the two models' selected feature NAMES. They are the same number only
+    # while both models are fit on the same column space -- true here (both
+    # tasks eliminate features together on the joint arm) and required by
+    # align_rf_thresholds' own contract, but a silent divergence would make
+    # every band decision wrong. Guarded on the key's presence so the arms
+    # where alignment never runs are unaffected.
+    if 'codeword_after' in align_stats:
+        assert align_stats['codeword_after'] == usage.codeword_length, (
+            'alignment measured codeword {} but the generator measured {} -- '
+            'the two feature spaces have diverged'.format(
+                align_stats['codeword_after'], usage.codeword_length))
+
     if usage.blocks != best_trial.user_attrs['blocks'] or usage.blocks > max_blocks:
         raise AssertionError(
             'refit of trial {} gave {} blocks, the search recorded {} '

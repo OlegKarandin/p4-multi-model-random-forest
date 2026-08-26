@@ -135,7 +135,10 @@ def test_alignment_reports_its_acceptance_rate_and_interval_counts():
                            align_stats=stats_loose)
 
     for stats in (stats_strict, stats_loose):
-        assert set(stats) == {'attempted', 'accepted', 'intervals_before', 'intervals_after'}
+        assert set(stats) == {
+            'attempted', 'accepted', 'intervals_before', 'intervals_after',
+            'codeword_before', 'codeword_after', 'codeword_floor',
+            'spent_budget', 'rolled_back'}
         assert stats['accepted'] <= stats['attempted']
         # #27: under the OLD union-of-interval-tuples joint_interval_count this
         # read like a theorem but was not one (a single accepted move could
