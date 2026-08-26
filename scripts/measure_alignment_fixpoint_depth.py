@@ -41,6 +41,7 @@ from src.training.errors import AlignmentInvariantError
 
 SEEDS = range(6)
 ARMS = (0.05, 0.0, None)
+POLICIES = ('legacy', 'c1', 'c1c2')
 
 # ~4x the shipped cap (32). Large enough that a run reaching it would be
 # unambiguous cycling, not a realistic fixpoint -- so no true depth measured
@@ -80,54 +81,72 @@ def main():
     ta.MAX_RECOMPUTE_ROUNDS = PROBE_CAP
     try:
         per_config_max = []
-        all_depths = []
+        all_depths = collections.defaultdict(list)
         for seed in SEEDS:
             X1, y1, X2, y2, rf1, rf2 = make_fixture(seed)
             for delta in ARMS:
-                log = []
-                try:
-                    ta.align_rf_thresholds(
-                        rf1, rf2, X1, y1, X2, y2,
-                        overlap_threshold=0.5, delta_rel=delta,
-                        candidate_log=log)
-                except AlignmentInvariantError as exc:
-                    print('seed={} delta={!r}: TRUNCATED at cap={} -- {}'.format(
-                        seed, delta, PROBE_CAP, exc))
-                    continue
+                for policy in POLICIES:
+                    log = []
+                    try:
+                        ta.align_rf_thresholds(
+                            rf1, rf2, X1, y1, X2, y2,
+                            overlap_threshold=0.5, delta_rel=delta,
+                            candidate_log=log, align_policy=policy)
+                    except AlignmentInvariantError as exc:
+                        print('seed={} delta={!r} policy={}: TRUNCATED at '
+                              'cap={} -- {}'.format(
+                                  seed, delta, policy, PROBE_CAP, exc))
+                        continue
 
-                depths = per_feature_depths(log)
-                if depths:
-                    config_max = max(depths.values())
-                    all_depths.extend(depths.values())
-                else:
-                    config_max = 1  # no common features ever got a candidate
-                per_config_max.append((seed, delta, config_max))
-                print('seed={} delta={!r:<6} features_touched={} max_depth={} '
-                      'depths={}'.format(
-                          seed, delta, len(depths), config_max,
-                          sorted(depths.values(), reverse=True)))
+                    depths = per_feature_depths(log)
+                    if depths:
+                        config_max = max(depths.values())
+                        all_depths[policy].extend(depths.values())
+                    else:
+                        config_max = 1  # no common features ever got a candidate
+                    per_config_max.append((seed, delta, policy, config_max))
+                    print('seed={} delta={!r:<6} policy={:<6} '
+                          'features_touched={} max_depth={} depths={}'.format(
+                              seed, delta, policy, len(depths), config_max,
+                              sorted(depths.values(), reverse=True)))
 
         print()
-        print('=== summary over {} seed x arm configurations ==='.format(
-            len(per_config_max)))
-        maxima = [m for _, _, m in per_config_max]
-        print('per-config max depth: min={} median={} max={}'.format(
-            min(maxima), sorted(maxima)[len(maxima) // 2], max(maxima)))
-        counts = collections.Counter(maxima)
-        print('distribution of per-config max depth: {}'.format(
-            dict(sorted(counts.items()))))
-        print('overall deepest feature across every config: {}'.format(
-            max(all_depths)))
-        depth_hist = collections.Counter(all_depths)
-        print('distribution of per-feature depths, all configs pooled: {}'.format(
-            dict(sorted(depth_hist.items()))))
-        near_cap = [(s, d, m) for s, d, m in per_config_max if m >= 16]
-        if near_cap:
-            print('!! configs with max depth >= 16 (halfway to the shipped '
-                  'cap of 32): {}'.format(near_cap))
-        else:
-            print('no config approached the shipped cap of 32 '
-                  '(nothing reached even half of it).')
+        print('=== summary over {} seed x arm x policy configurations '
+              '==='.format(len(per_config_max)))
+        maxima_all = [m for _, _, _, m in per_config_max]
+        print('per-config max depth, all policies pooled: min={} median={} '
+              'max={}'.format(min(maxima_all),
+                               sorted(maxima_all)[len(maxima_all) // 2],
+                               max(maxima_all)))
+
+        for policy in POLICIES:
+            policy_configs = [(s, d, m) for s, d, p, m in per_config_max
+                               if p == policy]
+            if not policy_configs:
+                continue
+            print()
+            print('--- policy={!r} ({} configs) ---'.format(
+                policy, len(policy_configs)))
+            maxima = [m for _, _, m in policy_configs]
+            print('per-config max depth: min={} median={} max={}'.format(
+                min(maxima), sorted(maxima)[len(maxima) // 2], max(maxima)))
+            counts = collections.Counter(maxima)
+            print('distribution of per-config max depth: {}'.format(
+                dict(sorted(counts.items()))))
+            pdepths = all_depths[policy]
+            if pdepths:
+                print('overall deepest feature under this policy: {}'.format(
+                    max(pdepths)))
+                depth_hist = collections.Counter(pdepths)
+                print('distribution of per-feature depths, pooled: '
+                      '{}'.format(dict(sorted(depth_hist.items()))))
+            near_cap = [(s, d, m) for s, d, m in policy_configs if m >= 16]
+            if near_cap:
+                print('!! configs with max depth >= 16 (halfway to the '
+                      'shipped cap of 32): {}'.format(near_cap))
+            else:
+                print('no config under this policy approached the shipped '
+                      'cap of 32 (nothing reached even half of it).')
     finally:
         ta.MAX_RECOMPUTE_ROUNDS = original_cap
 
