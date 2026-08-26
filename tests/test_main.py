@@ -295,8 +295,16 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
     for call in mock_csv.call_args_list:
         assert call.kwargs.get('mode', 'w') == 'w'
     # os.replace actually ran (not short-circuited): the three real files
-    # exist under results/, with no leftover .partial temp files.
-    written = sorted(p.name for p in (tmp_path / 'results').iterdir())
+    # exist under results/, with no leftover .partial temp files. Filtered to
+    # the (arm, M) CSVs: this invocation also writes a manifests/ subdir
+    # (write_run_manifest now sees X_app/X_ddos -- real numpy arrays from the
+    # mocked remove_correlated_features_both_datasets -- rather than a bare
+    # Mock's unserialisable .shape, so the manifest write, previously
+    # swallowed by write_run_manifest's best-effort exception handling,
+    # succeeds here too; see test_a_run_manifest_lands_in_results_manifests_
+    # with_the_grid_actually_used for that path exercised directly).
+    written = sorted(p.name for p in (tmp_path / 'results').iterdir()
+                     if p.name.endswith('.csv'))
     assert len(written) == 3
     assert all(not name.endswith('.partial') for name in written)
 
@@ -372,6 +380,7 @@ def test_a_cell_whose_file_already_exists_is_skipped():
          patch("src.main.read_DDOS_dataset"), \
          patch("src.main.remove_correlated_features_both_datasets",
                return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("src.main.write_run_manifest"), \
          patch("src.main.os.path.exists", return_value=True), \
          patch("pandas.DataFrame.to_csv"):
         m.compare_independent_joint_mapping(
@@ -394,6 +403,7 @@ def test_redo_forces_recomputation():
          patch("src.main.read_DDOS_dataset"), \
          patch("src.main.remove_correlated_features_both_datasets",
                return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("src.main.write_run_manifest"), \
          patch("src.main.os.path.exists", return_value=True), \
          patch("src.main.os.replace"), \
          patch("pandas.DataFrame.to_csv"):
@@ -428,6 +438,7 @@ def test_a_cell_where_every_split_failed_is_not_written():
          patch("src.main.read_DDOS_dataset"), \
          patch("src.main.remove_correlated_features_both_datasets",
                return_value=(X, X, ['Flow.IAT.Max'])), \
+         patch("src.main.write_run_manifest"), \
          patch("src.main.os.path.exists", return_value=False), \
          patch("src.main.os.replace") as mock_replace, \
          patch("pandas.DataFrame.to_csv") as mock_csv:
@@ -591,7 +602,6 @@ def test_a_run_manifest_lands_in_results_manifests_with_the_grid_actually_used(
     from unittest.mock import patch
 
     frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
-    X = np.zeros((10, 4))
     # Real DataFrames (unlike the bare-Mock read_*_dataset used by the other
     # compute-mode tests above) so df_app.shape[0] is a genuine, JSON-able
     # int -- the manifest write only actually lands when its inputs really
@@ -599,6 +609,13 @@ def test_a_run_manifest_lands_in_results_manifests_with_the_grid_actually_used(
     # docstring: build-then-serialise before any I/O).
     df_app = pd.DataFrame({'f': range(37), 'Label': [0] * 37})
     df_ddos = pd.DataFrame({'f': range(53), 'Label': [0] * 53})
+    # Row counts match df_app/df_ddos: remove_correlated_features_both_
+    # datasets only drops columns, never rows, and load_campaign_data's
+    # caller now reports dataset_rows from X_app/X_ddos (Task 4's fix), so
+    # this mock must preserve row count the way the real function does for
+    # the manifest assertion below to mean anything.
+    X_app = np.zeros((37, 4))
+    X_ddos = np.zeros((53, 4))
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / 'results').mkdir()
@@ -608,7 +625,7 @@ def test_a_run_manifest_lands_in_results_manifests_with_the_grid_actually_used(
          patch("src.main.read_app_dataset", return_value=df_app), \
          patch("src.main.read_DDOS_dataset", return_value=df_ddos), \
          patch("src.main.remove_correlated_features_both_datasets",
-               return_value=(X, X, ['Flow.IAT.Max'])), \
+               return_value=(X_app, X_ddos, ['Flow.IAT.Max'])), \
          patch("pandas.DataFrame.to_csv",
                side_effect=lambda p, **kw: open(p, 'w').close()):
         m.compare_independent_joint_mapping(
@@ -753,3 +770,14 @@ def test_plot_mode_end_to_end_raises_on_a_partial_campaign_when_allow_partial_fa
     with pytest.raises(ValueError):
         m.run_plot_mode(results_dir=str(results_dir),
                         output_dir=str(tmp_path / 'figures'))
+
+
+def test_load_campaign_data_returns_aligned_columns_and_names():
+    """The replay harness maps a CSV row's ';'-joined feature names back to
+    column indices, so the name list and the matrix must agree in width and
+    order."""
+    X_app, X_ddos, y_app, y_ddos, names = m.load_campaign_data()
+    assert X_app.shape[1] == len(names)
+    assert X_ddos.shape[1] == len(names)
+    assert len(y_app) == X_app.shape[0]
+    assert len(y_ddos) == X_ddos.shape[0]

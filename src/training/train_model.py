@@ -145,6 +145,24 @@ class TrainResult:
     register_sram_bits: int
 
 
+def rf_params_from_params(params, suffix):
+    """RandomForestClassifier kwargs from a recorded best_params dict.
+
+    Module level, not a closure, because scripts/replay_alignment.py refits
+    campaign winners from their CSV-recorded best_params and must build exactly
+    the estimator the campaign built. random_state is fixed at 42 here: that
+    determinism is what the refit assertion below and the whole replay design
+    depend on.
+    """
+    return {
+        'n_estimators': params['n_estimators_' + suffix],
+        'min_samples_leaf': params['min_samples_leaf_' + suffix],
+        'min_samples_split': params['min_samples_split_' + suffix],
+        'max_depth': params['max_depth_' + suffix],
+        'random_state': 42,
+    }
+
+
 def train_multi_RF_Optuna_multi_constrained(
         X_A, y_A, X_B, y_B,
         val_align_A, val_align_B,
@@ -183,13 +201,7 @@ def train_multi_RF_Optuna_multi_constrained(
                 'max_depth': source.suggest_int('max_depth_' + suffix, 2, cfg.max_depth),
                 'random_state': 42,
             }
-        return {
-            'n_estimators': source['n_estimators_' + suffix],
-            'min_samples_leaf': source['min_samples_leaf_' + suffix],
-            'min_samples_split': source['min_samples_split_' + suffix],
-            'max_depth': source['max_depth_' + suffix],
-            'random_state': 42,
-        }
+        return rf_params_from_params(source, suffix)
 
     def fit_pair(params_A, params_B, align_stats=None):
         """ONE fit per task on the FULL training set -- this IS the deployment

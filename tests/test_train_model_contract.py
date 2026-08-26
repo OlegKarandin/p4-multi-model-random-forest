@@ -419,3 +419,20 @@ def test_alignment_fields_are_none_not_zero_when_the_joint_arm_disables_alignmen
     assert out.align_accepted is None
     assert out.intervals_before is None
     assert out.intervals_after is None
+
+
+def test_rf_params_from_params_reproduces_the_search_space_mapping():
+    """The refit path and the replay harness must build identical estimators
+    from a recorded best_params dict, or a replayed model is not the campaign's
+    model. random_state is fixed at 42, which is what makes the refit
+    assertion at train_model.py:373-377 -- and the whole replay -- possible."""
+    import src.training.train_model as tm
+
+    params = {'n_estimators_A': 7, 'min_samples_leaf_A': 25,
+              'min_samples_split_A': 50, 'max_depth_A': 9,
+              'n_estimators_B': 3, 'min_samples_leaf_B': 15,
+              'min_samples_split_B': 30, 'max_depth_B': 4}
+    assert tm.rf_params_from_params(params, 'A') == {
+        'n_estimators': 7, 'min_samples_leaf': 25, 'min_samples_split': 50,
+        'max_depth': 9, 'random_state': 42}
+    assert tm.rf_params_from_params(params, 'B')['n_estimators'] == 3

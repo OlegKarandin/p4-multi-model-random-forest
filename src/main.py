@@ -306,6 +306,38 @@ def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):
     return X_app, X_ddos, remaining_features
 
 
+def load_campaign_data():
+    """The campaign's dataset, exactly as compare_independent_joint_mapping
+    sees it: both CSVs read, clipped at INFINITE, then correlation-pruned to
+    the shared feature set.
+
+    Extracted so scripts/replay_alignment.py cannot drift from the pipeline it
+    is replaying -- a replay on a differently-pruned feature set is not a
+    replay of anything.
+
+    Returns (X_app, X_ddos, y_app, y_ddos, selected_features), where
+    selected_features indexes the columns of both matrices.
+    """
+    threshold = INFINITE
+
+    selected_features = [
+        'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
+        'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
+        'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
+        'Fwd.IAT.Mean',  'Fwd.IAT.Max',  'Fwd.IAT.Min',
+        'Bwd.IAT.Mean',  'Bwd.IAT.Max',  'Bwd.IAT.Min',
+        'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
+
+    df_app = read_app_dataset(selected_features, threshold)
+    df_ddos = read_DDOS_dataset(selected_features, threshold)
+
+    X_app, X_ddos, selected_features = remove_correlated_features_both_datasets(
+        df_app, df_ddos)
+
+    return (X_app, X_ddos, df_app.Label.to_numpy(), df_ddos.Label.to_numpy(),
+            selected_features)
+
+
 def compare_independent_joint_mapping(M_values, n_splits, arms=None,
                                       max_workers=None,
                                       skip_existing=True):
@@ -321,23 +353,7 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
     if arms is None:
         arms = PRIMARY_ARMS
 
-    threshold = INFINITE
-
-    selected_features = [
-    'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
-    'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
-    'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
-    'Fwd.IAT.Mean',  'Fwd.IAT.Max',  'Fwd.IAT.Min',
-    'Bwd.IAT.Mean',  'Bwd.IAT.Max',  'Bwd.IAT.Min',
-    'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
-
-    df_app = read_app_dataset(selected_features, threshold)
-    df_ddos = read_DDOS_dataset(selected_features, threshold)
-
-    X_app, X_ddos, selected_features = remove_correlated_features_both_datasets(df_app, df_ddos)
-
-    y_app = df_app.Label.to_numpy()
-    y_ddos = df_ddos.Label.to_numpy()
+    X_app, X_ddos, y_app, y_ddos, selected_features = load_campaign_data()
 
     print("Starting per-task objective campaign")
     print("=" * 70)
@@ -345,12 +361,13 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
 
     # Gap 6 (P5, spec C.2): one manifest per invocation, recording the arms,
     # the grid ACTUALLY passed in (not run_main's defaults), dataset sizes,
-    # and git/library provenance. Row counts come from df_app/df_ddos -- the
-    # raw datasets -- rather than X_app/X_ddos, since remove_correlated_
+    # and git/library provenance. Row counts come from X_app/X_ddos -- the
+    # raw df_app/df_ddos are no longer in scope here (load_campaign_data
+    # returns only the matrices) -- which is safe because remove_correlated_
     # features_both_datasets only drops columns, never rows.
     manifest_path = write_run_manifest(
         arms=arms, M_values=M_values, n_splits=n_splits,
-        n_rows_app=df_app.shape[0], n_rows_ddos=df_ddos.shape[0],
+        n_rows_app=X_app.shape[0], n_rows_ddos=X_ddos.shape[0],
     )
     if manifest_path:
         print(f"Wrote run manifest: {manifest_path}")
