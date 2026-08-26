@@ -1,5 +1,5 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
-from src.training.align_budget import codeword_floor
+from src.training.align_budget import BandBudget, codeword_floor, pooled_interval_count
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
@@ -44,6 +44,14 @@ import numpy as np
 # the observed value. Smaller fixtures are far below it: 2 to 4 rounds on
 # the test suite's forests.
 MAX_RECOMPUTE_ROUNDS = 32
+
+
+# The alignment policy ladder. 'legacy' MUST stay byte-identical to the
+# pre-C behaviour -- tests/test_threshold_alignment.py pins pre-C3 golden
+# threshold arrays against it -- so every mechanism below is additive and
+# gated. 'c1' adds boundary-aware spending; 'c1c2' adds damage-ranked target
+# selection on top of it.
+ALIGN_POLICIES = ('legacy', 'c1', 'c1c2')
 
 
 def accept_alignment(before, after, delta_rel):
@@ -130,7 +138,7 @@ def joint_interval_count(intervals1, intervals2):
 
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
-                        candidate_log=None):
+                        candidate_log=None, align_policy='legacy'):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -143,6 +151,11 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
+    align_policy : one of ALIGN_POLICIES, default 'legacy'
+        'legacy' is a pure pass-through -- byte-identical to the pre-C
+        behaviour. 'c1' and 'c1c2' gate candidate acceptance through a
+        BandBudget so accuracy is only spent while the next block band is
+        still reachable.
 
     Returns:
     --------
@@ -151,6 +164,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         only way to get the aligned models; discarding it discards the
         alignment.
     """
+    if align_policy not in ALIGN_POLICIES:
+        raise ValueError('align_policy must be one of {}, got {!r}'.format(
+            ALIGN_POLICIES, align_policy))
+    gated = align_policy != 'legacy'
 
     # C8: deepcopy before anything below reads or mutates rf1/rf2, and
     # specifically before build_prediction_cache -- its tree_predictions feed
@@ -217,7 +234,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     marks = None
     current = None
     metrics1 = metrics2 = None
-    if delta_rel is not None:
+    # A gated policy's non-spending state judges candidates at delta = 0, which
+    # needs the oracle even when delta_rel is None -- so the dinf arm's
+    # "skip the metric machinery" cost advantage does not survive C1.
+    if delta_rel is not None or gated:
         metrics1 = IncrementalMetrics(tree_predictions1, rf1, y_val1, task="app")
         metrics2 = IncrementalMetrics(tree_predictions2, rf2, y_val2, task="ddos")
 
@@ -242,8 +262,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     n_features = len(set(intervals1) | set(intervals2))
     stats['codeword_before'] = stats['intervals_before'] - n_features
     stats['codeword_floor'] = codeword_floor(intervals1, intervals2)
-    stats['spent_budget'] = False
     stats['rolled_back'] = False
+
+    budget = BandBudget(stats['codeword_before'], stats['codeword_floor'],
+                        delta_rel, gated)
 
     # Find common features
     common_features = set(intervals1.keys()) & set(intervals2.keys())
@@ -355,9 +377,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 # arm, including the inf one where no apply ever ran.
                 mtoken1 = mtoken2 = None
 
-                if delta_rel is None:
-                    # The inf anchor: accept unconditionally. Skipping the
-                    # predict/metric machinery is why this arm is cheapest.
+                effective_delta = budget.delta_for_candidate()
+
+                if metrics1 is None:
+                    # Legacy at delta_rel=None: no oracle was ever built, so
+                    # every candidate is accepted unconditionally. This is the
+                    # branch that makes the inf anchor the cheapest arm.
                     accepted = True
                     after = None
                 else:
@@ -370,7 +395,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
 
                     after = metrics1.metrics() + metrics2.metrics()
-                    accepted = accept_alignment(marks, after, delta_rel)
+                    accepted = accept_alignment(marks, after, effective_delta)
 
                 if candidate_log is not None:
                     candidate_log.append({
@@ -418,7 +443,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     # not from tree_predictions), so the order here is free --
                     # but it must happen on EVERY reject, or the ratchet starts
                     # comparing against a model state that no longer exists.
-                    if delta_rel is not None:
+                    if metrics1 is not None:
                         metrics1.revert(mtoken1)
                         metrics2.revert(mtoken2)
                 else:
@@ -432,8 +457,17 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         marks = ratchet(marks, after)
                         current = after
 
+                    # Realised shed for THIS move, measured on the one feature
+                    # that moved. Recomputing joint_interval_count here would be
+                    # O(total thresholds) paid thousands of times per trial;
+                    # these two lists hold 25-50 entries. Pinned against the
+                    # whole-run total by
+                    # test_the_per_move_sheds_sum_to_the_whole_runs_shed.
+                    pooled_before = pooled_interval_count(current_ranges1,
+                                                          current_ranges2)
+
                     update_neighboring_ranges_and_index(
-                        current_ranges1, idx1, range1, target, 
+                        current_ranges1, idx1, range1, target,
                         feature_idx, threshold_index1
                     )
 
@@ -441,6 +475,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         current_ranges2, idx2, range2, target,
                         feature_idx, threshold_index2
                     )
+
+                    budget.note_shed(pooled_before - pooled_interval_count(
+                        current_ranges1, current_ranges2))
 
         if progressed and rounds > 1:
             # Truncated while still accepting moves: the loop never reached a
@@ -461,6 +498,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['intervals_after'] = joint_interval_count(
         extract_feature_intervals(rf1), extract_feature_intervals(rf2))
     stats['codeword_after'] = stats['intervals_after'] - n_features
+    stats['spent_budget'] = budget.spent_budget
 
     return rf1, rf2 #, alignment_stats
 

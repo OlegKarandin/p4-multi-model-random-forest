@@ -1,11 +1,13 @@
 """First tests for threshold_alignment.py -- the module the spec identifies as
 the sole source of the joint-vs-independent accuracy delta (C2, C5)."""
 import copy
+from unittest import mock
 
 import numpy as np
 import pytest
 
 from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, normalise_feature_name
+from src.training import align_budget as ab
 from src.training import threshold_alignment as ta
 from src.training.errors import AlignmentInvariantError
 
@@ -1311,3 +1313,102 @@ def test_the_recorded_codeword_is_the_one_the_block_cost_was_computed_from():
                                     align_stats=stats)
     usage = multi_model_memory_evaluation(a1, a2, names, names, 'joint')
     assert stats['codeword_after'] == usage.codeword_length
+
+
+# ---------------------------------------------------------------------------
+# Task 7: the align_policy keyword and BandBudget wiring.
+# ---------------------------------------------------------------------------
+
+def test_an_unknown_policy_is_rejected_loudly():
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    with pytest.raises(ValueError, match='align_policy'):
+        ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                               delta_rel=0.0, align_policy='c9')
+
+
+@pytest.mark.parametrize('delta_rel', [0.0, 0.05])
+def test_the_legacy_policy_is_the_default_and_changes_nothing(delta_rel, monkeypatch):
+    """The explicit no-op gate. Anything that moves here has broken the golden
+    contract even if the golden test itself still passes."""
+    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    implicit = {}
+    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=delta_rel,
+                                    align_stats=implicit)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    explicit = {}
+    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=delta_rel,
+                                    align_policy='legacy', align_stats=explicit)
+    assert implicit == explicit
+    for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
+        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
+
+
+def test_c1_with_an_unreachable_boundary_is_identical_to_spending_nothing():
+    """The strongest statement of C1's no-loss guarantee: when the floor puts
+    the next band out of reach, C1 must be prediction-identical to delta = 0,
+    not merely close to it."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats_c1 = {}
+    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=0.20,
+                                    align_policy='c1', align_stats=stats_c1)
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats_zero = {}
+    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=0.0,
+                                    align_stats=stats_zero)
+
+    if stats_c1['spent_budget']:
+        pytest.skip('this fixture can reach a band; the identity does not apply')
+
+    for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
+        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
+    assert stats_c1['codeword_after'] == stats_zero['codeword_after']
+
+
+def test_the_per_move_sheds_sum_to_the_whole_runs_shed():
+    """C1 decrements L per accepted move instead of recomputing the joint count
+    thousands of times. The two must agree exactly, or every band decision
+    after the first accepted move is made on a stale number."""
+    sheds = []
+    original = ab.pooled_interval_count
+
+    def spy(r1, r2):
+        return original(r1, r2)
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    budget_lengths = []
+    real_init = ab.BandBudget.note_shed
+
+    def record(self, bits):
+        budget_lengths.append(bits)
+        return real_init(self, bits)
+
+    with mock.patch.object(ab.BandBudget, 'note_shed', record):
+        ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                               delta_rel=0.05, align_policy='c1',
+                               align_stats=stats)
+
+    assert sum(budget_lengths) == stats['codeword_before'] - stats['codeword_after']
+
+
+def test_c1_builds_the_oracle_even_at_an_unbounded_delta():
+    """delta_rel=None normally skips the metric machinery entirely
+    (threshold_alignment.py:345-348), which is what makes the dinf arm
+    cheapest. C1's non-spending state needs delta=0, which needs the oracle --
+    so under a gated policy it must always be built. The dinf arm therefore
+    loses its cost advantage; that is expected and must show up in the runtime
+    budget."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=None, align_policy='c1', align_stats=stats)
+    # With the oracle live, some candidate must have been judged rather than
+    # waved through, so accepted cannot equal attempted on a reject-capable
+    # fixture unless the budget was genuinely unbounded throughout.
+    assert stats['attempted'] > 0

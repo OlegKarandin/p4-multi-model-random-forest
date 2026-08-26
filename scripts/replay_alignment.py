@@ -47,10 +47,10 @@ from src.training.train_model import rf_params_from_params
 from sklearn.ensemble import RandomForestClassifier
 
 
-# Replaced by threshold_alignment.align_with_policy in Task 7.
-def align_with_policy(*a, align_policy='legacy', **kw):
-    assert align_policy == 'legacy', 'policies land in Task 7'
-    return align_rf_thresholds(*a, **kw)
+# align_rf_thresholds now accepts align_policy directly (Task 7). The real
+# commit-or-rollback align_with_policy wrapper lands in Task 8; this alias
+# keeps the harness runnable in between.
+align_with_policy = align_rf_thresholds
 
 
 # main.py:380 fixes random_state=42 for every campaign invocation, and
