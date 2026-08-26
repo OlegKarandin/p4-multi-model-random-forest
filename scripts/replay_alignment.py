@@ -199,20 +199,45 @@ def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify):
         # `overlap_ratio < overlap_threshold` False for every pair, silently
         # disabling the candidate gate instead of failing.
         recorded = row.get('overlap_threshold')
-        own = run_one_policy(models, app, ddos, cols_app, cols_ddos,
-                             names_app, names_ddos, 'legacy',
-                             ARM_DELTA[row['arm_slug']],
-                             0.5 if pd.isna(recorded) else float(recorded))
-        own['policy'] = 'verify'
-        own['blocks_recorded'] = int(row['blocks'])
-        own['blocks_reproduced'] = own['blocks'] == int(row['blocks'])
-        results.append(own)
+        verify_overlap = 0.5 if pd.isna(recorded) else float(recorded)
+        try:
+            own = run_one_policy(models, app, ddos, cols_app, cols_ddos,
+                                 names_app, names_ddos, 'legacy',
+                                 ARM_DELTA[row['arm_slug']], verify_overlap)
+        except Exception as exc:
+            # This row's OWN recorded settings failed to reproduce -- that is
+            # a break in the harness's determinism claim, not merely "this
+            # swept combination happened to be infeasible", so it gets a
+            # visually distinct diagnostic from the swept-cell skip below.
+            print('  VERIFY FAILED (error): {} M={} split={} k={} '
+                  'policy=legacy overlap={} -- {}: {}'.format(
+                      row['arm_slug'], row['M'], row['split'], row['k'],
+                      verify_overlap, type(exc).__name__, exc))
+        else:
+            own['policy'] = 'verify'
+            own['blocks_recorded'] = int(row['blocks'])
+            own['blocks_reproduced'] = own['blocks'] == int(row['blocks'])
+            results.append(own)
 
     for policy in policies:
         for overlap in overlap_thresholds:
-            results.append(run_one_policy(
-                models, app, ddos, cols_app, cols_ddos, names_app, names_ddos,
-                policy, ladder_delta, overlap))
+            try:
+                result = run_one_policy(
+                    models, app, ddos, cols_app, cols_ddos, names_app,
+                    names_ddos, policy, ladder_delta, overlap)
+            except Exception as exc:
+                # An exploratory sweep cell landed outside the feasible
+                # region for this refit pair (e.g. CrossbarKeyTooWide at a
+                # (policy, overlap_threshold) the campaign never validated).
+                # Skip the cell rather than losing every row already
+                # computed -- matches select_rows' "drop infeasible rows"
+                # semantics for the campaign's own data.
+                print('  SKIPPED (error): {} M={} split={} k={} policy={} '
+                      'overlap={} -- {}: {}'.format(
+                          row['arm_slug'], row['M'], row['split'], row['k'],
+                          policy, overlap, type(exc).__name__, exc))
+                continue
+            results.append(result)
 
     for result in results:
         result.update({'source_arm': row['arm_slug'], 'M': int(row['M']),

@@ -1,3 +1,5 @@
+from unittest import mock
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -58,3 +60,99 @@ def test_split_random_state_is_the_campaign_formula():
     random_state + split_idx with random_state fixed at 42 (main.py:380)."""
     assert ra.split_random_state(10) == 52
     assert ra.split_random_state(24) == 66
+
+
+def _replay_row_fixture():
+    """A row/refit_pair pairing that never touches real models or data --
+    refit_pair is mocked out, so replay_row only needs opaque sentinels it
+    threads through to (also mocked) run_one_policy."""
+    row = {'arm_slug': 'joint-d000', 'M': 25, 'split': 10, 'k': 17,
+           'features_app': 'a;b', 'features_ddos': 'a;b', 'blocks': 20}
+    refit_result = ('model_app', 'model_ddos', 'app', 'ddos',
+                    'cols_app', 'cols_ddos')
+    return row, refit_result
+
+
+def test_replay_row_skips_a_failing_swept_cell_but_keeps_the_rest(capsys):
+    """One (policy, overlap_threshold) cell raising (e.g. CrossbarKeyTooWide
+    at a combination the campaign never validated) must not lose the other
+    cells already computed for this row."""
+    row, refit_result = _replay_row_fixture()
+
+    def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
+                            names_app, names_ddos, policy, delta_rel,
+                            overlap_threshold):
+        if overlap_threshold == 0.25:
+            # Stand-in for a real evaluation.CrossbarKeyTooWide -- any
+            # exception at this call site must be caught, so the fixture
+            # doesn't need the real exception class.
+            raise RuntimeError('table key is 67 crossbar bytes')
+        return {'policy': policy, 'overlap_threshold': overlap_threshold,
+                'blocks': 10}
+
+    with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
+         mock.patch.object(ra, 'run_one_policy', side_effect=fake_run_one_policy):
+        results = ra.replay_row(row, data=None, policies=['legacy'],
+                                overlap_thresholds=[0.25, 0.5],
+                                ladder_delta=0.20, verify=False)
+
+    assert len(results) == 1
+    assert results[0]['overlap_threshold'] == 0.5
+    out = capsys.readouterr().out
+    assert 'SKIPPED (error)' in out
+    assert 'VERIFY FAILED' not in out
+    assert 'joint-d000' in out and 'overlap=0.25' in out
+    assert 'RuntimeError' in out
+
+
+def test_replay_row_reports_a_failing_verify_call_distinctly(capsys):
+    """A failure reproducing the row's OWN recorded settings is a broken
+    determinism claim, not an ordinary infeasible sweep cell -- it must be
+    logged with a visually distinct prefix and must not crash replay_row,
+    and the (empty) sweep loop that follows must still run cleanly."""
+    row, refit_result = _replay_row_fixture()
+
+    with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
+         mock.patch.object(ra, 'run_one_policy',
+                           side_effect=RuntimeError('boom')):
+        results = ra.replay_row(row, data=None, policies=[],
+                                overlap_thresholds=[], ladder_delta=0.20,
+                                verify=True)
+
+    assert results == []
+    out = capsys.readouterr().out
+    assert 'VERIFY FAILED (error)' in out
+    assert 'SKIPPED (error)' not in out
+    assert 'joint-d000' in out
+    assert 'RuntimeError: boom' in out
+
+
+def test_replay_row_verify_failure_does_not_block_later_swept_cells(capsys):
+    """A broken verify call for a row must not prevent that same row's
+    ordinary swept cells from being attempted."""
+    row, refit_result = _replay_row_fixture()
+
+    # replay_row always issues the verify call before the sweep loop, so the
+    # first call is the (failing) verify call and the second is the swept
+    # cell -- no need to distinguish by policy/overlap value.
+    calls = []
+
+    def side_effect(models, app, ddos, cols_app, cols_ddos, names_app,
+                    names_ddos, policy, delta_rel, overlap_threshold):
+        calls.append((policy, overlap_threshold))
+        if len(calls) == 1:
+            raise RuntimeError('verify broke')
+        return {'policy': policy, 'overlap_threshold': overlap_threshold,
+                'blocks': 10}
+
+    with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
+         mock.patch.object(ra, 'run_one_policy', side_effect=side_effect):
+        results = ra.replay_row(row, data=None, policies=['legacy'],
+                                overlap_thresholds=[0.5], ladder_delta=0.20,
+                                verify=True)
+
+    assert len(calls) == 2
+    assert len(results) == 1
+    assert results[0]['overlap_threshold'] == 0.5
+    out = capsys.readouterr().out
+    assert 'VERIFY FAILED (error)' in out
