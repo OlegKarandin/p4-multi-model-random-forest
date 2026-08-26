@@ -428,14 +428,27 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         rf2, X_val2, tree_predictions2, node_to_samples2, modifications2)
 
                     stats['attempted'] += 1
+
+                    # Rollback tokens for the metric state, paired 1:1 with
+                    # undo_info1/2. Bound to None here rather than only inside the
+                    # else branch so the reject path below reads the same on every
+                    # arm, including the inf one where no apply ever ran.
                     mtoken1 = mtoken2 = None
 
                     effective_delta = budget.delta_for_candidate()
 
                     if metrics1 is None:
+                        # Legacy at delta_rel=None: no oracle was ever built, so
+                        # every candidate is accepted unconditionally. This is the
+                        # branch that makes the inf anchor the cheapest arm.
                         accepted = True
                         after = None
                     else:
+                        # IncrementalMetrics' ordering contract: apply reads the NEW
+                        # per-tree predictions out of tree_predictions and the OLD
+                        # ones out of undo_info, so it must run AFTER
+                        # update_cache_for_modifications and BEFORE any
+                        # undo_cache_update.
                         mtoken1 = metrics1.apply(tree_predictions1, undo_info1)
                         mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
                         after = metrics1.metrics() + metrics2.metrics()
@@ -450,10 +463,22 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                             'target': tuple(target),
                             'overlap_ratio': float(overlap_ratio),
                             'endpoint_ratio': float(endpoint_ratio(range1, range2)),
+                            # current is None only on the delta_rel=None (inf) arm,
+                            # where accept/reject -- and therefore any notion of
+                            # "current error" -- is skipped entirely; 0.0 mirrors
+                            # rel_deg's own placeholder for that arm below.
                             'error_app': 1.0 - current[0] if current is not None else 0.0,
                             'error_ddos': 1.0 - current[2] if current is not None else 0.0,
                             'shift_mass_1': mass1,
                             'shift_mass_2': mass2,
+                            # Local, immediate-effect degradation: current is the
+                            # actual model state right before THIS candidate, as
+                            # opposed to marks' cumulative per-task high-water mark
+                            # (which accept_alignment above correctly uses instead --
+                            # that ratchet is deliberate, spec B.4, and unaffected
+                            # by this diagnostic). Comparing a local physical bound
+                            # (shift_mass) against a cumulative quantity would be
+                            # apples-to-oranges.
                             'rel_deg': tuple(rel_deg(b, a) for b, a in zip(current, after))
                                        if after is not None else (0.0, 0.0, 0.0, 0.0),
                             'accepted': bool(accepted),
@@ -464,6 +489,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         restore_thresholds(rf2, modifications2)
                         undo_cache_update(tree_predictions1, node_to_samples1, undo_info1)
                         undo_cache_update(tree_predictions2, node_to_samples2, undo_info2)
+                        # The metric state is the fifth structure a rejected
+                        # candidate has to restore. revert is independent of
+                        # undo_cache_update (it restores from its own stored copy,
+                        # not from tree_predictions), so the order here is free --
+                        # but it must happen on EVERY reject, or the ratchet starts
+                        # comparing against a model state that no longer exists.
                         if metrics1 is not None:
                             metrics1.revert(mtoken1)
                             metrics2.revert(mtoken2)
@@ -472,12 +503,22 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         # of the loop, exactly as the old `continue` did.
                         continue
 
+                    # Only an ACCEPTED move can change the candidate set: a
+                    # reject restores thresholds, both caches, the metric
+                    # state and the interval lists, so a rescan after one
+                    # would return exactly the list already being iterated.
                     progressed = True
                     stats['accepted'] += 1
                     if after is not None:
                         marks = ratchet(marks, after)
                         current = after
 
+                    # Realised shed for THIS move, measured on the one feature
+                    # that moved. Recomputing joint_interval_count here would be
+                    # O(total thresholds) paid thousands of times per trial;
+                    # these two lists hold 25-50 entries. Pinned against the
+                    # whole-run total by
+                    # test_the_per_move_sheds_sum_to_the_whole_runs_shed.
                     pooled_before = pooled_interval_count(current_ranges1,
                                                           current_ranges2)
 

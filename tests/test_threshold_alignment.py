@@ -1542,3 +1542,75 @@ def test_c2_evaluates_at_most_four_targets_per_pair(monkeypatch):
     ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
                            delta_rel=0.0, align_policy='c1c2', align_stats=stats)
     assert len(calls) <= 4 * stats['attempted'] or stats['attempted'] == 0
+
+
+def test_rank_targets_orders_equal_gain_corners_by_max_damage_not_sum():
+    """Direct unit test for ta._rank_targets itself -- the brief's own four C2
+    tests never call it (see review notes on this task): three test pure
+    align_targets functions or align_rf_thresholds's dispatch, and the fourth
+    is a tautology (len(calls) <= 4 * attempted, for any per-pair target
+    count). None would catch a broken sort direction, a sum-instead-of-max
+    damage aggregation, or a broken tiebreak.
+
+    Reuses test_c2_prefers_the_low_damage_corner_at_equal_gain's exact
+    r1/r2/ranges1/ranges2/idx1/idx2 -- that test already proves every
+    admissible corner of this pair sheds the identical two bits, so the
+    intersection and union corners here are KNOWN to tie on gain. sorted_cols1
+    /sorted_cols2 are hand-built so damage differs between them, and --
+    deliberately -- so that MAX and SUM of the two per-model shift_masses
+    disagree about which corner is worse:
+
+      intersection: model1 moves (88,96] (9/20 rows), model2 moves (32,40]
+                    (9/20 rows) -> max damage 0.45, summed damage 0.90
+      union:        model1 moves (32,40] (2/20 rows), model2 moves (88,96]
+                    (10/20 rows) -> max damage 0.50, summed damage 0.60
+
+    By MAX (the real rule) the intersection is cheaper (0.45 < 0.50) and must
+    rank first. By SUM it would look worse (0.90 > 0.60) and a sum-based bug
+    would rank the union first instead -- so this one assertion catches that
+    bug directly. It also catches a reversed damage-ascending sort (flipping
+    `damage` to `-damage` in the score tuple also puts the union first).
+    Because these two corners tie on gain by construction, a reversed
+    gain-descending sort alone does not move either of them relative to the
+    other -- that failure mode needs a pair with UNEQUAL gain, which is
+    exactly what the existing (already-passing)
+    test_c2_prefers_the_low_damage_corner_at_equal_gain and
+    test_c2_with_one_admissible_candidate_reproduces_the_legacy_choice
+    partially cover from the outside; this test's job is specifically the
+    damage-ordering half of the ranking that those four leave untested.
+
+    RED/GREEN evidence (see task-10-report.md): fails when the damage
+    aggregation is changed from `max` to `sum`, and fails when the score
+    tuple's damage sign is flipped (`-damage` instead of `damage`) -- both
+    confirmed manually against the real _rank_targets, then reverted. Does
+    NOT fail under a flipped gain sign alone, for the reason above -- noted
+    here so a future reader does not assume this one test is a complete
+    substitute for gain-direction coverage.
+    """
+    r1, r2 = (41, 96), (33, 88)
+    ranges1 = [(0, 40), r1, (97, INFINITE)]
+    ranges2 = [(0, 32), r2, (89, INFINITE)]
+    idx1, idx2, feature_idx = 1, 1, 0
+
+    # 9/20 rows in (88, 96] (intersection's model1 move), 2/20 in (32, 40]
+    # (union's model1 move), the rest elsewhere.
+    sorted_cols1 = np.sort(
+        np.array([0] * 9 + [35] * 2 + [90] * 9, dtype=np.float64)
+    ).reshape(-1, 1)
+    # 9/20 rows in (32, 40] (intersection's model2 move), 10/20 in (88, 96]
+    # (union's model2 move), the rest elsewhere.
+    sorted_cols2 = np.sort(
+        np.array([0] * 1 + [35] * 9 + [90] * 10, dtype=np.float64)
+    ).reshape(-1, 1)
+
+    targets = ta._rank_targets(r1, r2, ranges1, ranges2, idx1, idx2,
+                               feature_idx, sorted_cols1, sorted_cols2)
+
+    intersection = (max(r1[0], r2[0]), min(r1[1], r2[1]))  # (41, 88)
+    union = (min(r1[0], r2[0]), max(r1[1], r2[1]))          # (33, 96)
+    assert intersection in targets and union in targets, (
+        'both corners must be admissible for this hand-built pair', targets)
+    assert targets.index(intersection) < targets.index(union), (
+        'the lower-damage corner (intersection, max damage 0.45) must be '
+        'tried before the higher-damage one (union, max damage 0.50)',
+        targets)
