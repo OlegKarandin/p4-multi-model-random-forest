@@ -1087,3 +1087,52 @@ def test_max_num_flows_matches_the_p4_template_it_claims_to_mirror():
     its first live use, so pin it against the authoritative source."""
     template = pathlib.Path('resources/p4_template.p4').read_text()
     assert 'const bit<32> MAX_NUM_FLOWS = {};'.format(bps.MAX_NUM_FLOWS) in template
+
+
+def _joint_pair_fixture():
+    """A joint-encoded pair of classifiers (app and ddos) trained on the same
+    feature space, used for multi_model_memory_evaluation tests."""
+    features = ["f0", "f1", "f2", "f3"]
+    clf_app = _tiny_forest([0, 1, 2], seed=0)
+    clf_ddos = _tiny_forest([-1, 1], seed=7)
+    return clf_app, clf_ddos, features
+
+
+def test_band_factor_matches_the_inline_expression_it_replaces():
+    """The 44-bit step structure C1 gates on. Boundaries are at L+4 == 44k,
+    i.e. L in {40, 84, 128, ...}, NOT at multiples of 44."""
+    assert ev.band_factor(0) == 1
+    assert ev.band_factor(40) == 1      # 44 key bits exactly
+    assert ev.band_factor(41) == 2      # first bit of the second block
+    assert ev.band_factor(84) == 2      # 88 key bits exactly
+    assert ev.band_factor(85) == 3
+
+
+def test_codeword_length_is_the_pooled_threshold_count():
+    """C1's central identity. generate_codewords emits exactly
+    len(intervals_f) - 1 bits per feature (build_p4_script.py:514/520), so the
+    codeword length is the pooled split-threshold count -- which is what
+    joint_interval_count measures, less one interval per feature.
+
+    If this fails, BandBudget's arithmetic is measuring the wrong quantity and
+    every task after this one is built on sand.
+    """
+    from src.training.threshold_alignment import (
+        joint_interval_count, extract_feature_intervals)
+
+    clf_app, clf_ddos, names = _joint_pair_fixture()
+    usage = ev.multi_model_memory_evaluation(clf_app, clf_ddos, names, names, 'joint')
+
+    iv1 = extract_feature_intervals(clf_app)
+    iv2 = extract_feature_intervals(clf_ddos)
+    n_features = len(set(iv1) | set(iv2))
+
+    assert usage.codeword_length == joint_interval_count(iv1, iv2) - n_features
+
+
+def test_resource_usage_carries_the_codeword_length_on_both_encodings():
+    clf_app, clf_ddos, names = _joint_pair_fixture()
+    for encoding in ('joint', 'disjoint'):
+        usage = ev.multi_model_memory_evaluation(clf_app, clf_ddos, names, names, encoding)
+        assert usage.codeword_length > 0
+        assert usage.codeword_length <= bps.MAX_CODEWORD_LENGTH

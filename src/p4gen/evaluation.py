@@ -69,6 +69,18 @@ class ResourceUsage:
   repeating it here would let a caller silently use the whole object where
   a count is meant.
 
+  codeword_length : classification-table key width in bits, before the
+                  CODEWORD_KEY_OVERHEAD_BITS the block factor adds. Under
+                  'joint' this is THE pooled split-threshold count of the
+                  merged tree set -- the quantity threshold alignment
+                  actually shrinks, and the one src/training/align_budget.py
+                  gates on. Under 'disjoint' the two models keep independent
+                  codewords and no single value is "the" codeword: the MAX of
+                  the two is reported, because that is the one the 512-bit
+                  MAX_CODEWORD_LENGTH limit binds on. Do NOT derive disjoint
+                  block counts from it -- each model's own factor is applied
+                  to its own trees (see the disjoint branch below).
+
   register_depth, register_count and register_sram_bits (Task 6, Spec
   4.1/4.2/4.3) report the Tofino `Register<>` state this design needs, on
   top of the match-table quantities above:
@@ -127,6 +139,7 @@ class ResourceUsage:
   stage_depth: int      # pipeline DEPTH (StagePlan.depth), what the 12-stage ceiling reads
   range_entries: int
   ternary_entries: int
+  codeword_length: int  # pooled split-threshold count under 'joint'; see docstring
   register_depth: int   # max readiness level over the selected feature(s); see class docstring
   register_count: int   # distinct Register<> instances, deduplicated by name across both models
   register_sram_bits: int  # catalog-only per-flow SRAM bits; under-counts flow_forward_srcaddr_reg
@@ -260,6 +273,24 @@ def ternary_table_key_bytes(feature_intervals):
              for intervals in feature_intervals.values())
 
 
+# The non-codeword key bits every classification-table row carries alongside
+# the codeword itself. Factored out of the inline `codeword_length + 4` this
+# replaces so the band arithmetic lives in exactly one place -- src/training/
+# align_budget.py gates C1's accuracy spending on it and must not re-declare
+# it. Its physical origin is not documented in this repo; the value is
+# pre-existing behaviour and is NOT changed here.
+CODEWORD_KEY_OVERHEAD_BITS = 4
+
+
+def band_factor(codeword_length):
+  """How many TCAM_BLOCK_KEY_LENGTH-wide key blocks one classification-table
+  row spans. THE step function alignment is optimising against: a shed bit is
+  worth nothing unless it carries codeword_length across a band boundary, and
+  then it is worth n_trees blocks at once."""
+  return math.ceil(
+      (codeword_length + CODEWORD_KEY_OVERHEAD_BITS) / TCAM_BLOCK_KEY_LENGTH)
+
+
 def ternary_matching_resource_usage(codewords, feature_intervals,
                                      use_default_action_discount=False):
   """Returns (ternary_entries, ternary_blocks, codeword_length,
@@ -303,7 +334,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
         "compiler rejects this table rather than splitting it across stages"
         % (table_bytes, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), table_bytes)
 
-  factor = math.ceil((codeword_length + 4) / TCAM_BLOCK_KEY_LENGTH)
+  factor = band_factor(codeword_length)
   for tree in codewords:
     tree_entry_count = len(codewords[tree])
     if use_default_action_discount and tree_entry_count > 0:
@@ -670,6 +701,10 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
     ternary_blocks = ternary_blocks_app + ternary_blocks_ddos
     ternary_entries = ternary_entries_app + ternary_entries_ddos
 
+    # Two independent codewords; see ResourceUsage.codeword_length's docstring
+    # for why max and not sum.
+    codeword_length = max(codeword_length_app, codeword_length_ddos)
+
     # Under disjoint encoding each model keeps its own feature intervals, so
     # both models' tables are independent tables competing for the same
     # per-stage budgets -- pack them together, per pool.
@@ -763,6 +798,7 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
       stage_depth=stage_depth,
       range_entries=range_entries,
       ternary_entries=ternary_entries,
+      codeword_length=codeword_length,
       register_depth=register_depth,
       register_count=register_count,
       register_sram_bits=register_sram_bits)
