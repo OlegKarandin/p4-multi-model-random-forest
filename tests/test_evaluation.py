@@ -1040,6 +1040,61 @@ def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth
     assert usage.stage_depth == 3
 
 
+@pytest.mark.parametrize("encoding", ["joint", "disjoint"])
+def test_stage_depth_equals_max_of_range_and_ternary_depth(encoding):
+    clf_app, clf_ddos, names = _joint_pair_fixture()
+    usage = ev.multi_model_memory_evaluation(clf_app, clf_ddos, names, names, encoding)
+    assert usage.stage_depth == max(usage.range_depth, usage.ternary_depth)
+
+
+def test_ternary_tables_equals_total_tree_count_regardless_of_encoding():
+    # ternary_matching_resource_usage builds one table PER TREE
+    # (evaluation.py:299-302's own docstring), so the count does not depend
+    # on whether the two models share a codeword -- only the total tree
+    # count across both forests does.
+    clf_app, clf_ddos, names = _joint_pair_fixture()
+    total_trees = clf_app.n_estimators + clf_ddos.n_estimators
+    for encoding in ('joint', 'disjoint'):
+        usage = ev.multi_model_memory_evaluation(clf_app, clf_ddos, names, names, encoding)
+        assert usage.ternary_tables == total_trees
+
+
+def test_joint_range_tables_are_fewer_than_disjoint_on_the_same_feature_union():
+    # D2's fixture requirement (spec Sec 4.1/Sec 7): under 'joint', every
+    # selected feature gets ONE range table shared by both models; under
+    # 'disjoint', each model gets its OWN table for the same feature name --
+    # so with identical feature lists on both sides, joint must have fewer
+    # range_tables than disjoint, since joint shares across models.
+    clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
+    clf_ddos = _forest_using_all_four_catalog_features([-1, 1], seed=7)
+
+    joint = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, 'joint')
+    disjoint = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, 'disjoint')
+
+    assert joint.range_tables == 4      # one table per feature in the union
+    assert disjoint.range_tables == 7   # app splits on all 4, ddos on 3 (no sharing)
+    assert joint.range_tables < disjoint.range_tables
+
+
+def test_register_depth_is_identical_under_joint_and_disjoint_encoding():
+    # D1 as a unit test (spec Sec 5.2, Sec 7): the premise the whole
+    # attribution rests on. register_depth is a function of the SELECTED
+    # FEATURE SET only (Sec 2.1), which 'joint' vs 'disjoint' never changes,
+    # so this must hold exactly, not approximately.
+    clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
+    clf_ddos = _forest_using_all_four_catalog_features([-1, 1], seed=7)
+
+    joint = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, 'joint')
+    disjoint = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, 'disjoint')
+
+    assert joint.register_depth == disjoint.register_depth
+    assert joint.register_depth > 0   # a real, nontrivial readiness level
+
+
 # ---------------------------------------------------------------------------
 # register_depth / register_count / register_sram_bits (Task 6).
 # ---------------------------------------------------------------------------

@@ -133,6 +133,25 @@ class ResourceUsage:
   stage, and whether these registers actually FIT has never been measured
   in this repo -- do not read register_depth/register_count/
   register_sram_bits as a feasibility guarantee.
+
+  range_depth  : StagePlan.depth for the range-matching pool ALONE (Task 6
+                extended by the stage-depth-attribution design's Phase 1).
+                Component of stage_depth, not itself a ceiling-checked
+                quantity -- only stage_depth is.
+  ternary_depth: StagePlan.depth for the ternary classification pool ALONE.
+                Equal to stage_depth in every non-degenerate design (the
+                classification pool is placed last, see stage_depth's own
+                docstring); the max() stage_depth takes exists only for the
+                degenerate zero-ternary-table case.
+  range_tables : count of range-matching tables (len(range_table_specs)) --
+                one per selected feature under 'joint' (the union of both
+                models' features), one per (model, feature) pair under
+                'disjoint' -- so identical feature lists on both sides give
+                disjoint exactly TWICE joint's range_tables.
+  ternary_tables: count of classification tables (len(ternary_table_specs))
+                -- one per tree in the merged tree set. Invariant across
+                encoding for the same two forests (every tree gets its own
+                table regardless of whether the codeword is shared).
   """
   stages: int           # occupied match-table stage COUNT
   blocks: int
@@ -143,6 +162,10 @@ class ResourceUsage:
   register_depth: int   # max readiness level over the selected feature(s); see class docstring
   register_count: int   # distinct Register<> instances, deduplicated by name across both models
   register_sram_bits: int  # catalog-only per-flow SRAM bits; under-counts flow_forward_srcaddr_reg
+  range_depth: int       # StagePlan.depth, range pool alone; see class docstring
+  ternary_depth: int     # StagePlan.depth, ternary pool alone; see class docstring
+  range_tables: int      # len(range_table_specs); see class docstring
+  ternary_tables: int    # len(ternary_table_specs); see class docstring
 
 
 def accuracy_metrics(y_true, y_pred, task):
@@ -801,4 +824,8 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
       codeword_length=codeword_length,
       register_depth=register_depth,
       register_count=register_count,
-      register_sram_bits=register_sram_bits)
+      register_sram_bits=register_sram_bits,
+      range_depth=range_plan.depth,
+      ternary_depth=ternary_plan.depth,
+      range_tables=len(range_table_specs),
+      ternary_tables=len(ternary_table_specs))
