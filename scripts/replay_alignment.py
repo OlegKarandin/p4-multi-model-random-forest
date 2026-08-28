@@ -22,12 +22,15 @@ all of them across the ladder is days of compute, so --k / --n-splits / --arms
 / --M select a deterministic subset. Start with --limit 5 --timing to measure
 per-row cost before committing to a grid.
 
+Pass --policies none,legacy,c1,c1c2 to get the full stage-depth-attribution
+cross (src/reporting/stage_attribution.py needs the 'none' rows).
 Run (from the repository root):
   PYTHONPATH=. "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" \
       scripts/replay_alignment.py --limit 5 --timing
 """
 import argparse
 import collections
+import dataclasses
 import glob
 import json
 import os
@@ -140,22 +143,55 @@ def refit_pair(row, data):
 
 def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos,
                    policy, delta_rel, overlap_threshold):
-    """One policy on one already-fit pair. Returns a result dict."""
+    """One policy on one already-fit pair. Returns a result dict.
+
+    Evaluates the resulting model pair under BOTH encodings -- 'joint' (the
+    columns this harness has always reported, still unprefixed as
+    blocks/stages/codeword_length so --verify's determinism check against
+    the campaign's own `blocks` column is unaffected) and 'disjoint' as a
+    COUNTERFACTUAL, prefixed counterfactual_disjoint_ -- never a bare
+    disjoint_ -- per the stage-depth-attribution design's naming
+    constraint: these are the SAME joint-arm models re-evaluated under
+    disjoint encoding, not the independently-searched `independent` arm.
+
+    policy='none' is a pseudo-policy: it skips align_with_policy entirely
+    and evaluates the refit pair as-is, giving the attribution an unaligned
+    control. It is never a member of ALIGN_POLICIES and produces no
+    align_* keys.
+    """
     model_app, model_ddos = models
     stats = {}
     started = time.time()
-    aligned_app, aligned_ddos = align_with_policy(
-        model_app, model_ddos,
-        app.X_val_align[:, cols_app], app.y_val_align,
-        ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
-        overlap_threshold=overlap_threshold,
-        delta_rel=delta_rel,
-        align_policy=policy,
-        align_stats=stats)
+    if policy == 'none':
+        aligned_app, aligned_ddos = model_app, model_ddos
+    else:
+        aligned_app, aligned_ddos = align_with_policy(
+            model_app, model_ddos,
+            app.X_val_align[:, cols_app], app.y_val_align,
+            ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
+            overlap_threshold=overlap_threshold,
+            delta_rel=delta_rel,
+            align_policy=policy,
+            align_stats=stats)
     elapsed = time.time() - started
 
-    usage = multi_model_memory_evaluation(
-        aligned_app, aligned_ddos, names_app, names_ddos, 'joint')
+    out = {'policy': policy, 'overlap_threshold': overlap_threshold,
+           'delta_rel': 'inf' if delta_rel is None else delta_rel,
+           'runtime_s': elapsed}
+
+    for encoding, prefix in (('joint', 'joint_'),
+                             ('disjoint', 'counterfactual_disjoint_')):
+        usage = multi_model_memory_evaluation(
+            aligned_app, aligned_ddos, names_app, names_ddos, encoding)
+        for field, value in dataclasses.asdict(usage).items():
+            out[prefix + field] = value
+
+    # Existing columns, sourced from 'joint' exactly as before this change --
+    # --verify's determinism check against the campaign's recorded `blocks`
+    # column depends on these staying byte-identical.
+    out['blocks'] = out['joint_blocks']
+    out['stages'] = out['joint_stages']
+    out['codeword_length'] = out['joint_codeword_length']
 
     # switch_predict, NOT model.predict: these must be the numbers the deployed
     # switch produces -- rf.predict's soft vote is up to 1.7 points optimistic
@@ -168,13 +204,8 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
             ddos.y_test, switch_predict(aligned_ddos, ddos.X_test[:, cols_ddos]),
             task='ddos')
 
-    out = {'policy': policy, 'overlap_threshold': overlap_threshold,
-           'delta_rel': 'inf' if delta_rel is None else delta_rel,
-           'blocks': int(usage.blocks), 'stages': int(usage.stages),
-           'codeword_length': int(usage.codeword_length),
-           'acc_app': acc_app, 'f1_app': f1_app,
-           'acc_ddos': acc_ddos, 'f1_ddos': f1_ddos,
-           'runtime_s': elapsed}
+    out['acc_app'], out['f1_app'] = acc_app, f1_app
+    out['acc_ddos'], out['f1_ddos'] = acc_ddos, f1_ddos
     out.update({'align_' + k: v for k, v in stats.items()})
     return out
 

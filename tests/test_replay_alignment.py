@@ -7,6 +7,86 @@ import pytest
 
 import scripts.replay_alignment as ra
 
+from sklearn.ensemble import RandomForestClassifier
+
+from src.p4gen.build_p4_script import dt_thresholds_float_to_int
+from src.training.splits import make_task_splits
+
+
+def _tiny_pair():
+    """A refit pair small enough to align and evaluate in milliseconds --
+    same shape as test_evaluation.py's own tiny-forest fixtures, but wired
+    through make_task_splits so run_one_policy's real val_align/test slicing
+    is exercised, not mocked."""
+    rng = np.random.RandomState(0)
+    X_app = rng.rand(200, 4)
+    y_app = rng.randint(0, 3, size=200)
+    X_ddos = rng.rand(200, 4)
+    y_ddos = rng.choice([-1, 1], size=200)
+
+    clf_app = dt_thresholds_float_to_int(
+        RandomForestClassifier(n_estimators=2, max_depth=3,
+                               random_state=0).fit(X_app, y_app))
+    clf_ddos = dt_thresholds_float_to_int(
+        RandomForestClassifier(n_estimators=2, max_depth=3,
+                               random_state=0).fit(X_ddos, y_ddos))
+
+    app = make_task_splits(X_app, y_app, random_state=42)
+    ddos = make_task_splits(X_ddos, y_ddos, random_state=42)
+    cols = [0, 1, 2, 3]
+    names = ['f0', 'f1', 'f2', 'f3']
+    return clf_app, clf_ddos, app, ddos, cols, names
+
+
+_RESOURCE_USAGE_FIELDS = (
+    'stages', 'blocks', 'stage_depth', 'range_entries', 'ternary_entries',
+    'codeword_length', 'register_depth', 'register_count',
+    'register_sram_bits', 'range_depth', 'ternary_depth', 'range_tables',
+    'ternary_tables')
+
+
+def test_run_one_policy_none_skips_alignment_and_reports_both_encodings():
+    clf_app, clf_ddos, app, ddos, cols, names = _tiny_pair()
+
+    result = ra.run_one_policy(
+        (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
+        'none', delta_rel=0.0, overlap_threshold=0.5)
+
+    assert not any(k.startswith('align_') for k in result)
+    assert result['blocks'] == result['joint_blocks']
+    assert result['stages'] == result['joint_stages']
+    assert result['codeword_length'] == result['joint_codeword_length']
+    for field in _RESOURCE_USAGE_FIELDS:
+        assert 'joint_' + field in result
+        assert 'counterfactual_disjoint_' + field in result
+
+
+def test_run_one_policy_legacy_still_runs_alignment_and_reports_align_stats():
+    clf_app, clf_ddos, app, ddos, cols, names = _tiny_pair()
+
+    result = ra.run_one_policy(
+        (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
+        'legacy', delta_rel=0.0, overlap_threshold=0.5)
+
+    assert any(k.startswith('align_') for k in result)
+    assert 'align_codeword_before' in result
+    assert 'joint_range_tables' in result
+    assert 'counterfactual_disjoint_range_tables' in result
+
+
+def test_run_one_policy_none_never_calls_align_with_policy():
+    # Spec Sec 7's test list: "the 'none' policy returns the model pair
+    # unchanged (identity, no threshold mutation)". align_with_policy is the
+    # ONLY code path that can mutate thresholds (it deep-copies internally,
+    # C8), so proving it is never invoked for 'none' is the strongest form
+    # of that guarantee.
+    clf_app, clf_ddos, app, ddos, cols, names = _tiny_pair()
+    with mock.patch.object(ra, 'align_with_policy') as mocked:
+        ra.run_one_policy(
+            (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
+            'none', delta_rel=0.0, overlap_threshold=0.5)
+    mocked.assert_not_called()
+
 
 def _frame():
     return pd.DataFrame([
