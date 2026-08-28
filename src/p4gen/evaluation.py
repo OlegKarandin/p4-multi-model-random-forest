@@ -146,8 +146,9 @@ class ResourceUsage:
   range_tables : count of range-matching tables (len(range_table_specs)) --
                 one per selected feature under 'joint' (the union of both
                 models' features), one per (model, feature) pair under
-                'disjoint' -- so identical feature lists on both sides give
-                disjoint exactly TWICE joint's range_tables.
+                'disjoint' -- so on identical feature lists, disjoint's
+                range_tables is at most twice joint's, with equality only
+                when both models actually split on every listed feature.
   ternary_tables: count of classification tables (len(ternary_table_specs))
                 -- one per tree in the merged tree set. Invariant across
                 encoding for the same two forests (every tree gets its own
