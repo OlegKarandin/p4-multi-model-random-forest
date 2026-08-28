@@ -76,8 +76,26 @@ def _per_cell_mean(frame, value_columns):
 
 
 def _empty_cells(detail):
-    return {'cells': pd.DataFrame(columns=CELL_KEYS + ['n']),
+    return {'cells': pd.DataFrame(columns=CELL_KEYS + ['n', 'passed']),
            'fraction_passing': 0.0, 'n_cells': 0, 'detail': detail}
+
+
+def _independent_pairs(subset, policy):
+    """Collapse rows that are byte-identical replays of the same model pair
+    down to one row per independent pair, so a cell's n (Sec 5.3) counts
+    model pairs, not sweep cells.
+
+    'none' is the only policy proven to ignore overlap_threshold entirely
+    (run_one_policy skips align_with_policy -- the only place
+    overlap_threshold is used -- for 'none'), so replaying one pair at N
+    swept --overlap-thresholds values produces N identical 'none' rows that
+    differ only in that column. An aligned policy like 'legacy' can
+    genuinely produce different results at different overlap_threshold
+    values, so it is never deduped here."""
+    if policy != 'none':
+        return subset
+    dedupe_keys = [k for k in PAIR_KEYS if k != 'overlap_threshold']
+    return subset.drop_duplicates(subset=dedupe_keys)
 
 
 def _d2(frame, policy):
@@ -86,6 +104,7 @@ def _d2(frame, policy):
     subset = frame[frame['policy'] == policy]
     if not len(subset):
         return _empty_cells('no rows for policy={!r}'.format(policy))
+    subset = _independent_pairs(subset, policy)
     cells = _per_cell_mean(subset, ['delta_encoding'])
     cells['passed'] = cells['delta_encoding'] > 0
     fraction = float(cells['passed'].mean())
@@ -101,6 +120,7 @@ def _d3(frame, policy):
     subset = frame[frame['policy'] == policy]
     if not len(subset):
         return _empty_cells('no rows for policy={!r}'.format(policy))
+    subset = _independent_pairs(subset, policy)
     cells = _per_cell_mean(subset, ['delta_range', 'delta_ternary_spill'])
     cells['passed'] = ((cells['delta_range'] > 0)
                        & (cells['delta_ternary_spill'] < 0))
@@ -153,11 +173,23 @@ def score(frame, policy='none'):
     """D1-D4 verdicts (spec Sec 5.2). D1 is a premise check: if it fails,
     D2-D4 are not computed -- Sec 5.2 states the attribution is invalid in
     that case, so reporting derived numbers would misrepresent them as
-    meaningful."""
+    meaningful.
+
+    --verify-injected rows (scripts/replay_alignment.py's replay_row,
+    policy='verify') are dropped before D1 is even computed: a verify row
+    re-runs 'legacy' at the row's own recorded arm delta, not the ladder
+    delta being swept, so leaving it in would inflate D1's n with a
+    duplicate of a pair already covered by a real policy and give D4 a
+    spurious 'verify' entry compared against the wrong alignment budget.
+    """
+    frame = frame[frame['policy'] != 'verify']
+
     d1 = _d1(frame)
     if not d1['passed']:
-        invalid = _empty_cells('D1 failed -- attribution invalid, not computed')
-        return {'D1': d1, 'D2': invalid, 'D3': invalid, 'D4': {}}
+        return {'D1': d1,
+               'D2': _empty_cells('D1 failed -- attribution invalid, not computed'),
+               'D3': _empty_cells('D1 failed -- attribution invalid, not computed'),
+               'D4': {}}
 
     derived = derive_columns(frame)
     return {'D1': d1, 'D2': _d2(derived, policy), 'D3': _d3(derived, policy),

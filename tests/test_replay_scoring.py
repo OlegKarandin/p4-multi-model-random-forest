@@ -84,6 +84,29 @@ def test_s5_reports_no_data_when_only_one_threshold_was_swept():
     assert 'no loosened-threshold rows to compare' in verdict['S5']['detail']
 
 
+def test_derive_columns_drops_none_policy_rows_without_crashing():
+    """policy='none' rows carry no align_* columns (run_one_policy skips
+    align_with_policy for 'none') -- band_factor(NaN) must not be reached,
+    and the aligned rows' scoring must be unaffected by 'none' rows being
+    present in the input frame."""
+    frame = _replay_frame()
+    none_rows = pd.DataFrame([
+        {'source_arm': 'joint-d020', 'M': 25, 'split': 10, 'k': pair,
+         'overlap_threshold': 0.5, 'policy': 'none',
+         'align_codeword_before': float('nan'),
+         'align_codeword_after': float('nan'), 'blocks': 30,
+         'acc_app': 0.90, 'acc_ddos': 0.95}
+        for pair in (0, 1)
+    ])
+    mixed = pd.concat([frame, none_rows], ignore_index=True)
+
+    out = rs.derive_columns(mixed)
+    assert 'none' not in out['policy'].unique()
+
+    verdict = rs.score(out)
+    assert verdict == rs.score(rs.derive_columns(frame))
+
+
 def test_s5_and_s6_agree_on_the_best_available_policy_when_c1c2_is_absent():
     """A run with only legacy/c1 (no c1c2) -- the exact shape of Task 6's
     baseline sweep -- must have S5 and S6 pick the SAME fallback policy

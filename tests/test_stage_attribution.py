@@ -104,6 +104,67 @@ def test_d3_requires_both_directions_fixed_in_advance():
     assert cells.loc[(25, 2), 'passed'] == False
 
 
+def test_score_excludes_verify_rows_from_d1_count_and_from_d4_keys():
+    """--verify injects an extra row with policy='verify' re-running
+    'legacy' at the row's own recorded arm delta (not the ladder delta
+    being swept). It must not inflate D1's paired-row count with a
+    duplicate of the 'legacy' pair already present, and must never appear
+    as its own key in D4 (which would compare it against the wrong
+    alignment budget)."""
+    rows = [
+        _row(k=17, split=10, policy='none', ternary_depth=(8, 9)),
+        _row(k=17, split=10, policy='legacy', ternary_depth=(6, 8)),
+        _row(k=17, split=10, policy='verify', ternary_depth=(6, 8)),
+    ]
+    frame = pd.DataFrame(rows)
+    verdict = sa.score(frame)
+    assert verdict['D1']['n'] == 2
+    assert 'verify' not in verdict['D4']
+    assert set(verdict['D4']) == {'legacy'}
+
+
+def test_d2_and_d3_dedupe_none_rows_replayed_at_multiple_overlap_thresholds():
+    """policy='none' ignores overlap_threshold entirely (run_one_policy
+    skips align_with_policy, the only place it's used, for 'none'), so
+    replaying the SAME pair at two swept --overlap-thresholds values
+    produces two byte-identical 'none' rows differing only in that column.
+    The cell's n must count independent model pairs (2), not sweep cells
+    (3)."""
+    rows = [
+        _row(k=17, split=10, overlap_threshold=0.3, policy='none',
+            ternary_depth=(6, 7)),
+        _row(k=17, split=10, overlap_threshold=0.7, policy='none',
+            ternary_depth=(6, 7)),
+        _row(k=17, split=11, overlap_threshold=0.5, policy='none',
+            ternary_depth=(5, 8)),
+    ]
+    frame = pd.DataFrame(rows)
+    verdict = sa.score(frame)
+    d2_cells = verdict['D2']['cells'].set_index(['M', 'k'])
+    d3_cells = verdict['D3']['cells'].set_index(['M', 'k'])
+    assert d2_cells.loc[(25, 17), 'n'] == 2
+    assert d3_cells.loc[(25, 17), 'n'] == 2
+
+
+def test_d1_failure_returns_independent_d2_and_d3_objects():
+    """D2 and D3 must not alias the same dict/DataFrame on the D1-failure
+    path -- a caller mutating one must not corrupt the other."""
+    frame = pd.DataFrame([_row(register_depth=(4, 5))])
+    verdict = sa.score(frame)
+    assert verdict['D2'] is not verdict['D3']
+    assert verdict['D2']['cells'] is not verdict['D3']['cells']
+
+
+def test_empty_cells_schema_matches_populated_cells_schema():
+    """The D1-failure path's 'cells' frame must carry the same columns as a
+    populated 'cells' frame (M, k, ..., n, passed) so callers can uniformly
+    do result['cells']['passed'].sum() without a KeyError on empty data."""
+    frame = pd.DataFrame([_row(register_depth=(4, 5))])
+    verdict = sa.score(frame)
+    assert 'passed' in verdict['D2']['cells'].columns
+    assert verdict['D2']['cells']['passed'].sum() == 0
+
+
 def test_d4_compares_none_against_every_aligned_policy_present():
     rows = [
         # pair 1 (k=17): legacy shrinks joint depth by 2, cf by only 1 -> passes.

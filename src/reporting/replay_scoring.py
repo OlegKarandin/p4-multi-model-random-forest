@@ -43,8 +43,15 @@ def derive_columns(frame):
     crossed that is every bit shed; if one was, it is only the overshoot past
     the boundary. Capped at bits_shed so a run that started deep inside its
     band is not charged for bits it never shed.
+
+    policy='none' rows are dropped here: 'none' is a pseudo-policy that skips
+    align_with_policy entirely (scripts/replay_alignment.py's run_one_policy),
+    so it carries no align_* columns at all -- band_factor would raise on the
+    resulting NaN. 'none' is an unaligned control never meant to be scored by
+    S1-S6, all of which reason about alignment's effect, so excluding it here
+    is correct, not merely a crash workaround.
     """
-    out = frame.copy()
+    out = frame[frame['policy'] != 'none'].copy()
     out['factor_before'] = out['align_codeword_before'].apply(band_factor)
     out['factor_after'] = out['align_codeword_after'].apply(band_factor)
     out['bits_shed'] = out['align_codeword_before'] - out['align_codeword_after']
