@@ -825,10 +825,101 @@ _ALIGNMENT_GOLDEN = {
     },
 }
 
+# Captured from THIS commit's c1c2 path by a throwaway script (see the
+# 2026-08-30 cost-aware-threshold-alignment plan, Task 1), at
+# MAX_RECOMPUTE_ROUNDS = 1, on _golden_alignment_pair().
+#
+# This literal's role is DIFFERENT from _ALIGNMENT_GOLDEN's above, and the
+# difference matters. _ALIGNMENT_GOLDEN is a HISTORICAL anchor: captured at
+# commit 0fb5ace from an implementation that no longer exists, it must never
+# be regenerated, because regenerating it would pin a change against itself.
+# This one is a DELETION-INVARIANCE anchor: it is captured from current code
+# deliberately, and its job is to be a fixed point across the commit that
+# deletes the legacy/c1 policies. Under that deletion c1c2's behaviour becomes
+# the ONLY behaviour, so these arrays must come through it bit-identical --
+# that is the whole proof that the deletion touched nothing that survived it.
+# It must likewise not be regenerated after the deletion.
+_ALIGNMENT_GOLDEN_C1C2 = {
+    0.0: {
+        'stats': {'attempted': 27, 'accepted': 17,
+                  'intervals_before': 91, 'intervals_after': 71},
+        't1': [
+            [49965, 37970, -2, 60939, 30850, -2, -2, -2, 29400, -2, 33384, -2,
+             -2],
+            [25153, 17906, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
+             -2],
+            [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
+             -2],
+            [11493, -2, 15571, -2, 26424, -2, 43169, 33744, -2, -2, 27856, -2,
+             -2],
+            [45724, 17518, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
+             49629, -2, -2],
+            [40514, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
+             50610, -2, -2, -2],
+            [40996, 17244, -2, 35130, -2, 58452, -2, -2, 52649, 65407, -2, -2,
+             -2],
+        ],
+        't2': [
+            [8902, -2, 58514, 50135, 29400, -2, -2, 30850, -2, -2, 33384, -2,
+             -2],
+            [14536, -2, 27856, -2, 40996, -2, 61298, 38258, -2, -2, -2],
+            [27458, 47461, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
+             -2],
+            [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
+             53373, -2, -2],
+            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
+             60939, -2, -2],
+            [54408, 44768, 33744, -2, -2, 62045, -2, -2, 17244, -2, 41360, -2,
+             52649, -2, -2],
+            [54766, 50955, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
+             -2],
+        ],
+    },
+    0.05: {
+        'stats': {'attempted': 32, 'accepted': 2,
+                  'intervals_before': 91, 'intervals_after': 88},
+        't1': [
+            [50148, 37970, -2, 64068, 30850, -2, -2, -2, 29481, -2, 36261, -2,
+             -2],
+            [25153, 17906, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
+             -2],
+            [9867, -2, 41694, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
+             -2],
+            [11493, -2, 16559, -2, 26336, -2, 43169, 33744, -2, -2, 26063, -2,
+             -2],
+            [45724, 8902, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
+             49629, -2, -2],
+            [40514, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 28712, -2,
+             50610, -2, -2, -2],
+            [40996, 17244, -2, 35130, -2, 58798, -2, -2, 52649, 65407, -2, -2,
+             -2],
+        ],
+        't2': [
+            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
+             -2],
+            [14536, -2, 26063, -2, 40514, -2, 61298, 38258, -2, -2, -2],
+            [27458, 48468, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
+             -2],
+            [61422, 45058, 26424, 15571, -2, -2, -2, 16443, -2, 57942, -2, -2,
+             53373, -2, -2],
+            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
+             60939, -2, -2],
+            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 18076, -2, 41360, -2,
+             48048, -2, -2],
+            [54766, 44845, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
+             -2],
+        ],
+    },
+}
 
+
+@pytest.mark.parametrize('align_policy,goldens', [
+    ('legacy', _ALIGNMENT_GOLDEN),
+    ('c1c2', _ALIGNMENT_GOLDEN_C1C2),
+])
 @pytest.mark.parametrize('delta_rel', [0.0, 0.05])
 def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
-        delta_rel, monkeypatch):
+        delta_rel, align_policy, goldens, monkeypatch):
     """The end-to-end numeric-neutrality gate for T2b, and the REGRESSION side
     of T3's two-sided gate.
 
@@ -848,8 +939,13 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
     changes which thresholds move, and every later candidate sees a different
     model. The observable consequence is the final threshold arrays and the
     stats dict -- so pin those.
+
+    Parametrized over both policies as of the re-anchor commit: `legacy` keeps
+    pinning the historical pre-C3 output, and `c1c2` pins the behaviour that
+    survives the ladder deletion. Both must be green in this commit; only the
+    c1c2 half is expected to survive it.
     """
-    golden = _ALIGNMENT_GOLDEN[delta_rel]
+    golden = goldens[delta_rel]
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
@@ -857,7 +953,7 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
     # C8: align_rf_thresholds no longer mutates rf1/rf2 in place -- it returns
     # copies -- so the aligned models to check are the returned ones.
     rf1, rf2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
-                           delta_rel=delta_rel, align_stats=stats)
+                           delta_rel=delta_rel, align_policy=align_policy, align_stats=stats)
 
     # Compare only the keys the golden literal was captured for. The literal
     # dates from commit 0fb5ace and must NOT be regenerated from post-change
