@@ -22,7 +22,7 @@ all of them across the ladder is days of compute, so --k / --n-splits / --arms
 / --M select a deterministic subset. Start with --limit 5 --timing to measure
 per-row cost before committing to a grid.
 
-Pass --policies none,legacy,c1,c1c2 to get the full stage-depth-attribution
+Pass --policies none,aligned to get the full stage-depth-attribution
 cross (src/reporting/stage_attribution.py needs the 'none' rows).
 Run (from the repository root):
   PYTHONPATH=. "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" \
@@ -59,6 +59,13 @@ CAMPAIGN_RANDOM_STATE = 42
 # neither can source a pair for an ALIGNMENT replay.
 ALIGNED_ARM_SLUGS = ('joint-d000', 'joint-d002', 'joint-d005',
                      'joint-d010', 'joint-d020', 'joint-dinf')
+
+# The replay's policy axis after the ladder's removal (design 2026-08-30
+# 2.9(a)): 'none' is the pseudo-policy that skips alignment entirely, and
+# 'aligned' is the single surviving alignment behaviour -- what used to be
+# called 'c1c2'. Rows produced under 'aligned' are directly comparable to
+# the c1c2 numbers quoted throughout the design document.
+REPLAY_POLICIES = ('none', 'aligned')
 
 # The delta_align each arm slug was run at, needed by --verify to reproduce a
 # row under its own settings. 'joint-dinf' is the accept-everything anchor.
@@ -156,7 +163,7 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
 
     policy='none' is a pseudo-policy: it skips align_with_policy entirely
     and evaluates the refit pair as-is, giving the attribution an unaligned
-    control. It is never a member of ALIGN_POLICIES and produces no
+    control. It is the one member of REPLAY_POLICIES that produces no
     align_* keys.
     """
     model_app, model_ddos = models
@@ -171,7 +178,6 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
             ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
             overlap_threshold=overlap_threshold,
             delta_rel=delta_rel,
-            align_policy=policy,
             align_stats=stats)
     elapsed = time.time() - started
 
@@ -239,7 +245,7 @@ def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
         verify_overlap = 0.5 if pd.isna(recorded) else float(recorded)
         try:
             own = run_one_policy(models, app, ddos, cols_app, cols_ddos,
-                                 names_app, names_ddos, 'legacy',
+                                 names_app, names_ddos, 'aligned',
                                  ARM_DELTA[row['arm_slug']], verify_overlap)
         except Exception as exc:
             # This row's OWN recorded settings failed to reproduce -- that is
@@ -247,7 +253,7 @@ def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
             # swept combination happened to be infeasible", so it gets a
             # visually distinct diagnostic from the swept-cell skip below.
             print('  VERIFY FAILED (error): {} M={} split={} k={} '
-                  'policy=legacy overlap={} -- {}: {}'.format(
+                  'policy=aligned overlap={} -- {}: {}'.format(
                       row['arm_slug'], row['M'], row['split'], row['k'],
                       verify_overlap, type(exc).__name__, exc))
         else:
@@ -292,12 +298,15 @@ def parse_args(argv=None):
     parser.add_argument('--M', default=None, help='comma-separated block budgets')
     parser.add_argument('--k', default=','.join(str(k) for k in DEFAULT_K))
     parser.add_argument('--n-splits', type=int, default=3)
-    parser.add_argument('--policies', default='legacy')
+    parser.add_argument('--policies', default='aligned',
+                        help="comma-separated subset of {}".format(REPLAY_POLICIES))
     parser.add_argument('--overlap-thresholds', default='0.5')
     parser.add_argument('--ladder-delta', default='0.20',
                         help="delta_rel every policy in the ladder runs at; 'inf' for accept-all")
     parser.add_argument('--verify', action='store_true',
-                        help="reproduce each row under its own arm settings and check `blocks`")
+                        help="reproduce each row under its own arm settings and check `blocks`"
+                             " (reproduces the row under 'aligned', not the 'legacy' the 20260825"
+                             " archive was produced with -- see that archive's attestation)")
     parser.add_argument('--limit', type=int, default=None)
     parser.add_argument('--timing', action='store_true',
                         help='print a per-row timing summary and an extrapolation')
@@ -309,13 +318,19 @@ def main(argv=None):
     ints = lambda s: [int(v) for v in s.split(',')] if s else None
     floats = lambda s: [float(v) for v in s.split(',')]
 
+    policies = args.policies.split(',')
+    unknown = [p for p in policies if p not in REPLAY_POLICIES]
+    if unknown:
+        raise SystemExit('unknown policies {}; expected a subset of {}'.format(
+            unknown, list(REPLAY_POLICIES)))
+
     frame = load_backup(args.results_dir)
     rows = select_rows(frame, args.arms.split(',') if args.arms else None,
                        ints(args.M), ints(args.k), args.n_splits)
     if args.limit:
         rows = rows.head(args.limit)
     print('replaying {} rows x {} policies x {} overlap thresholds'.format(
-        len(rows), len(args.policies.split(',')),
+        len(rows), len(policies),
         len(args.overlap_thresholds.split(','))))
 
     data = load_campaign_data()
@@ -324,7 +339,7 @@ def main(argv=None):
     skip_counts = collections.Counter()
     out, started = [], time.time()
     for i, (_, row) in enumerate(rows.iterrows()):
-        out.extend(replay_row(row, data, args.policies.split(','),
+        out.extend(replay_row(row, data, policies,
                               floats(args.overlap_thresholds), ladder_delta,
                               args.verify, skip_counts=skip_counts))
         print('  [{}/{}] {} M={} split={} k={}  ({:.1f}s elapsed)'.format(

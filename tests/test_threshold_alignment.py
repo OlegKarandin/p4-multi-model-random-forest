@@ -744,87 +744,6 @@ def _golden_alignment_pair(n=300):
     return rf1, X1, y1, rf2, X2, y2
 
 
-# Captured by running align_rf_thresholds on _golden_alignment_pair() at commit
-# 0fb5ace -- i.e. from the from-scratch compute_ensemble_prediction +
-# sklearn accuracy_metrics implementation, BEFORE the incremental state was
-# wired in. Regenerating these from the post-change code would pin the change
-# against itself and prove nothing.
-#
-# Both delta_rel values matter: 0.0 rejects 8 of 21 candidates and 0.05 rejects
-# only 1, so the pair covers a reject-heavy and an accept-heavy trajectory.
-_ALIGNMENT_GOLDEN = {
-    0.0: {
-        'stats': {'attempted': 21, 'accepted': 13,
-                  'intervals_before': 91, 'intervals_after': 73},
-        't1': [
-            [49965, 37970, -2, 60939, 30237, -2, -2, -2, 29400, -2, 33384, -2,
-             -2],
-            [25153, 17906, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
-             -2],
-            [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
-             -2],
-            [11493, -2, 15571, -2, 26336, -2, 43169, 33744, -2, -2, 26063, -2,
-             -2],
-            [45724, 17518, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
-             49629, -2, -2],
-            [39753, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
-             50610, -2, -2, -2],
-            [40996, 17244, -2, 35130, -2, 58452, -2, -2, 52649, 65407, -2, -2,
-             -2],
-        ],
-        't2': [
-            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
-             -2],
-            [14536, -2, 27856, -2, 40996, -2, 61298, 38258, -2, -2, -2],
-            [27458, 47461, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
-             -2],
-            [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
-             53373, -2, -2],
-            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
-             60939, -2, -2],
-            [54408, 44768, 33744, -2, -2, 62045, -2, -2, 17244, -2, 41360, -2,
-             52649, -2, -2],
-            [54766, 50955, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
-             -2],
-        ],
-    },
-    0.05: {
-        'stats': {'attempted': 21, 'accepted': 20,
-                  'intervals_before': 91, 'intervals_after': 68},
-        't1': [
-            [49965, 37970, -2, 60939, 30237, -2, -2, -2, 29400, -2, 33384, -2,
-             -2],
-            [25153, 17906, 42582, -2, -2, -2, 21985, -2, 65407, 47461, -2, -2,
-             -2],
-            [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
-             -2],
-            [11493, -2, 15571, -2, 27458, -2, 43169, 33254, -2, -2, 27856, -2,
-             -2],
-            [45724, 8902, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
-             49629, -2, -2],
-            [39753, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
-             48048, -2, -2, -2],
-            [40996, 17244, -2, 39702, -2, 58452, -2, -2, 52649, 65407, -2, -2,
-             -2],
-        ],
-        't2': [
-            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
-             -2],
-            [14536, -2, 27856, -2, 40996, -2, 61298, 38258, -2, -2, -2],
-            [27458, 47461, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
-             -2],
-            [61422, 43169, 26336, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
-             53373, -2, -2],
-            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
-             60939, -2, -2],
-            [49629, 44768, 33254, -2, -2, 62045, -2, -2, 17244, -2, 41360, -2,
-             52649, -2, -2],
-            [54766, 50955, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
-             -2],
-        ],
-    },
-}
-
 # Captured from THIS commit's c1c2 path by a throwaway script (see the
 # 2026-08-30 cost-aware-threshold-alignment plan, Task 1), at
 # MAX_RECOMPUTE_ROUNDS = 1, on _golden_alignment_pair().
@@ -913,13 +832,9 @@ _ALIGNMENT_GOLDEN_C1C2 = {
 }
 
 
-@pytest.mark.parametrize('align_policy,goldens', [
-    ('legacy', _ALIGNMENT_GOLDEN),
-    ('c1c2', _ALIGNMENT_GOLDEN_C1C2),
-])
 @pytest.mark.parametrize('delta_rel', [0.0, 0.05])
 def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
-        delta_rel, align_policy, goldens, monkeypatch):
+        delta_rel, monkeypatch):
     """The end-to-end numeric-neutrality gate for T2b, and the REGRESSION side
     of T3's two-sided gate.
 
@@ -940,12 +855,12 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
     model. The observable consequence is the final threshold arrays and the
     stats dict -- so pin those.
 
-    Parametrized over both policies as of the re-anchor commit: `legacy` keeps
-    pinning the historical pre-C3 output, and `c1c2` pins the behaviour that
-    survives the ladder deletion. Both must be green in this commit; only the
-    c1c2 half is expected to survive it.
+    The legacy parametrization was removed with the policy ladder; the
+    historical pre-C3 literal it pinned is preserved in git history at the
+    commit before the deletion, and its role is taken over by the c1c2
+    literal, which came through the deletion bit-identical.
     """
-    golden = goldens[delta_rel]
+    golden = _ALIGNMENT_GOLDEN_C1C2[delta_rel]
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
@@ -953,7 +868,7 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
     # C8: align_rf_thresholds no longer mutates rf1/rf2 in place -- it returns
     # copies -- so the aligned models to check are the returned ones.
     rf1, rf2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
-                           delta_rel=delta_rel, align_policy=align_policy, align_stats=stats)
+                           delta_rel=delta_rel, align_stats=stats)
 
     # Compare only the keys the golden literal was captured for. The literal
     # dates from commit 0fb5ace and must NOT be regenerated from post-change
@@ -1060,6 +975,23 @@ def _count_rounds(monkeypatch):
     return rounds
 
 
+def _isolate_c3(monkeypatch):
+    """Neutralise C1's budget gating and C2's damage-ranked target selection,
+    both unconditional since the 2026-08-30 policy-ladder deletion, so the
+    C3-recompute tests below keep testing the mechanism they were built for
+    -- round-by-round rescanning -- rather than incidentally re-deriving
+    whether THIS hand-built fixture's candidates clear the (now-mandatory)
+    accuracy gate or the gain filter. Both are covered by their own tests
+    (test_the_oracle_is_built_even_at_an_unbounded_delta and the C2 tests
+    respectively); restoring the pre-ladder single-target, always-accept
+    shape here reproduces this file's pre-Task-3 recompute numbers exactly.
+    """
+    monkeypatch.setattr(ta, 'accept_alignment', lambda *a, **k: True)
+    monkeypatch.setattr(
+        ta, '_rank_targets',
+        lambda range1, range2, *a, **k: [ta.calculate_target_range(range1, range2)])
+
+
 def test_a_widened_neighbour_becomes_a_candidate_only_after_the_recompute(monkeypatch):
     """THE motivating test for C3: without the rescan this pair is unreachable.
 
@@ -1070,6 +1002,7 @@ def test_a_widened_neighbour_becomes_a_candidate_only_after_the_recompute(monkey
     """
     new_pair = ((100, 2999), (1000, 2999))
 
+    _isolate_c3(monkeypatch)
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
     rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
     stats_one_round, log_one_round = {}, []
@@ -1081,7 +1014,12 @@ def test_a_widened_neighbour_becomes_a_candidate_only_after_the_recompute(monkey
         [((1000, 5999), (3000, 5999))]
     assert stats_one_round['attempted'] == 1
 
+    # undo() only lifts the MAX_RECOMPUTE_ROUNDS=1 patch -- _isolate_c3's two
+    # patches must stay in place for the full-recompute run below too, or the
+    # zero-gain filter and the now-unconditional accuracy gate reintroduce
+    # exactly the interference _isolate_c3 exists to remove.
     monkeypatch.undo()
+    _isolate_c3(monkeypatch)
     rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
     stats, log = {}, []
     ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
@@ -1137,6 +1075,7 @@ def test_the_recompute_cap_raises_instead_of_looping_without_end(monkeypatch):
     the constant moves. The motivating fixture needs three rounds (accept,
     accept, fixpoint), so a cap of 2 truncates it mid-progress.
     """
+    _isolate_c3(monkeypatch)
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 2)
     rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
 
@@ -1160,6 +1099,7 @@ def test_the_recompute_never_evaluates_the_same_value_pair_twice(monkeypatch):
         return real(range1, range2)
 
     monkeypatch.setattr(ta, 'calculate_range_overlap', spy)
+    _isolate_c3(monkeypatch)
     # The motivating fixture plus two intervals well above the region the
     # accepted moves touch:
     #   I1 = [(0,99),(100,999),(1000,5999),(6000,20000),(20001,INF)]
@@ -1361,7 +1301,16 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
 
     moves_r1, moves_c3 = _accepted_moves(log_r1), _accepted_moves(log_c3)
     assert moves_r1, 'the fixture must accept something in the single-round pass'
-    assert len(moves_c3) > len(moves_r1), 'C3 must find something new here'
+    # Under the now-unconditional c1c2 target ranking (2026-08-30 ladder
+    # deletion) a recomputed round can surface a candidate that C2's gain
+    # filter or the now-mandatory C1 accuracy gate then rejects, so on this
+    # fixture ACCEPTED count no longer strictly grows on every delta arm
+    # (measured: flat at 2 accepted for None and 0.05, still 17->18 for
+    # 0.0). attempted is the honest "C3 found something new" signal here --
+    # it strictly grows on every arm regardless of whether the extra
+    # candidate is accepted.
+    assert stats_c3['attempted'] > stats_r1['attempted'], 'C3 must find something new here'
+    assert len(moves_c3) >= len(moves_r1)
 
     features_r1 = list(dict.fromkeys(f for f, _, _ in moves_r1))
     features_c3 = list(dict.fromkeys(f for f, _, _ in moves_c3))
@@ -1421,37 +1370,10 @@ def test_the_recorded_codeword_is_the_one_the_block_cost_was_computed_from():
 
 
 # ---------------------------------------------------------------------------
-# Task 7: the align_policy keyword and BandBudget wiring.
+# Task 7: BandBudget wiring.
 # ---------------------------------------------------------------------------
 
-def test_an_unknown_policy_is_rejected_loudly():
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    with pytest.raises(ValueError, match='align_policy'):
-        ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
-                               delta_rel=0.0, align_policy='c9')
-
-
-@pytest.mark.parametrize('delta_rel', [0.0, 0.05])
-def test_the_legacy_policy_is_the_default_and_changes_nothing(delta_rel, monkeypatch):
-    """The explicit no-op gate. Anything that moves here has broken the golden
-    contract even if the golden test itself still passes."""
-    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    implicit = {}
-    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.5, delta_rel=delta_rel,
-                                    align_stats=implicit)
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    explicit = {}
-    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.5, delta_rel=delta_rel,
-                                    align_policy='legacy', align_stats=explicit)
-    assert implicit == explicit
-    for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
-        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
-
-
-def test_c1_with_an_unreachable_boundary_is_identical_to_spending_nothing():
+def test_an_unreachable_boundary_is_identical_to_spending_nothing():
     """The strongest statement of C1's no-loss guarantee: when the floor puts
     the next band out of reach, C1 must be prediction-identical to delta = 0,
     not merely close to it."""
@@ -1459,7 +1381,7 @@ def test_c1_with_an_unreachable_boundary_is_identical_to_spending_nothing():
     stats_c1 = {}
     a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                                     overlap_threshold=0.5, delta_rel=0.20,
-                                    align_policy='c1', align_stats=stats_c1)
+                                    align_stats=stats_c1)
 
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats_zero = {}
@@ -1496,23 +1418,22 @@ def test_the_per_move_sheds_sum_to_the_whole_runs_shed():
 
     with mock.patch.object(ab.BandBudget, 'note_shed', record):
         ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
-                               delta_rel=0.05, align_policy='c1',
-                               align_stats=stats)
+                               delta_rel=0.05, align_stats=stats)
 
     assert sum(budget_lengths) == stats['codeword_before'] - stats['codeword_after']
 
 
-def test_c1_builds_the_oracle_even_at_an_unbounded_delta():
+def test_the_oracle_is_built_even_at_an_unbounded_delta():
     """delta_rel=None normally skips the metric machinery entirely
     (threshold_alignment.py:345-348), which is what makes the dinf arm
     cheapest. C1's non-spending state needs delta=0, which needs the oracle --
-    so under a gated policy it must always be built. The dinf arm therefore
-    loses its cost advantage; that is expected and must show up in the runtime
-    budget."""
+    so now that gating is unconditional it must always be built. The dinf arm
+    therefore loses its cost advantage; that is expected and must show up in
+    the runtime budget."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
     ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
-                           delta_rel=None, align_policy='c1', align_stats=stats)
+                           delta_rel=None, align_stats=stats)
     # With the oracle live, some candidate must have been judged rather than
     # waved through, so accepted cannot equal attempted on a reject-capable
     # fixture unless the budget was genuinely unbounded throughout.
@@ -1523,22 +1444,6 @@ def test_c1_builds_the_oracle_even_at_an_unbounded_delta():
 # Task 8: align_with_policy -- commit or roll back.
 # ---------------------------------------------------------------------------
 
-def test_align_with_policy_is_a_pass_through_on_the_legacy_policy():
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    direct = {}
-    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.5, delta_rel=0.05,
-                                    align_stats=direct)
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    wrapped = {}
-    b1, b2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
-                                  overlap_threshold=0.5, delta_rel=0.05,
-                                  align_policy='legacy', align_stats=wrapped)
-    assert direct == wrapped
-    for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
-        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
-
-
 def test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves():
     """S1 by construction rather than by measurement: if budget was spent and
     the block factor did not fall, the accuracy was given away for nothing, so
@@ -1547,7 +1452,7 @@ def test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves():
     stats = {}
     a1, a2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
                                   overlap_threshold=0.5, delta_rel=0.20,
-                                  align_policy='c1', align_stats=stats)
+                                  align_stats=stats)
     from src.p4gen.evaluation import band_factor
     if not stats['rolled_back']:
         assert (band_factor(stats['codeword_after'])
@@ -1559,7 +1464,7 @@ def test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves():
     free = {}
     b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                                     overlap_threshold=0.5, delta_rel=0.0,
-                                    align_policy='c1', align_stats=free)
+                                    align_stats=free)
     for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
         assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
     assert stats['codeword_after'] == free['codeword_after']
@@ -1571,7 +1476,7 @@ def test_a_rollback_never_fires_when_no_budget_was_spent():
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
     ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
-                         delta_rel=0.0, align_policy='c1', align_stats=stats)
+                         delta_rel=0.0, align_stats=stats)
     assert stats['spent_budget'] is False
     assert stats['rolled_back'] is False
 
@@ -1580,22 +1485,6 @@ def test_a_rollback_never_fires_when_no_budget_was_spent():
 # Task 10: C2 -- rank candidate targets by predicted damage and try them in
 # order.
 # ---------------------------------------------------------------------------
-
-def test_c2_with_one_admissible_candidate_reproduces_the_legacy_choice():
-    """Where three corners are inadmissible or gainless, C2 must land on the
-    intersection -- graceful degradation to today's behaviour."""
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    stats_legacy = {}
-    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.99, delta_rel=0.0,
-                                    align_stats=stats_legacy)
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    stats_c2 = {}
-    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.99, delta_rel=0.0,
-                                    align_policy='c1c2', align_stats=stats_c2)
-    assert stats_legacy['attempted'] == 0 or stats_c2['accepted'] >= stats_legacy['accepted']
-
 
 def test_c2_prefers_the_low_damage_corner_at_equal_gain():
     """The whole point of C2: all four corners of a clean pair shed the same
@@ -1636,7 +1525,7 @@ def test_c2_evaluates_at_most_four_targets_per_pair(monkeypatch):
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
     ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
-                           delta_rel=0.0, align_policy='c1c2', align_stats=stats)
+                           delta_rel=0.0, align_stats=stats)
     assert len(calls) <= 4 * stats['attempted'] or stats['attempted'] == 0
 
 

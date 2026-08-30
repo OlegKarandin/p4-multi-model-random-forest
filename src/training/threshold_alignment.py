@@ -49,14 +49,6 @@ import numpy as np
 MAX_RECOMPUTE_ROUNDS = 32
 
 
-# The alignment policy ladder. 'legacy' MUST stay byte-identical to the
-# pre-C behaviour -- tests/test_threshold_alignment.py pins pre-C3 golden
-# threshold arrays against it -- so every mechanism below is additive and
-# gated. 'c1' adds boundary-aware spending; 'c1c2' adds damage-ranked target
-# selection on top of it.
-ALIGN_POLICIES = ('legacy', 'c1', 'c1c2')
-
-
 def accept_alignment(before, after, delta_rel):
     """Whether an alignment may stand, judged PER TASK (spec B.4).
 
@@ -190,7 +182,7 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
 
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
-                        candidate_log=None, align_policy='legacy'):
+                        candidate_log=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -203,11 +195,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
-    align_policy : one of ALIGN_POLICIES, default 'legacy'
-        'legacy' is a pure pass-through -- byte-identical to the pre-C
-        behaviour. 'c1' and 'c1c2' gate candidate acceptance through a
-        BandBudget so accuracy is only spent while the next block band is
-        still reachable.
 
     Returns:
     --------
@@ -216,11 +203,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         only way to get the aligned models; discarding it discards the
         alignment.
     """
-    if align_policy not in ALIGN_POLICIES:
-        raise ValueError('align_policy must be one of {}, got {!r}'.format(
-            ALIGN_POLICIES, align_policy))
-    gated = align_policy != 'legacy'
-
     # C8: deepcopy before anything below reads or mutates rf1/rf2, and
     # specifically before build_prediction_cache -- its tree_predictions feed
     # IncrementalMetrics' vote matrix, so if the copy happened after that
@@ -247,16 +229,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # One sort per model, for shift_mass. Under C2 this is no longer
     # diagnostic: it is how a candidate's predicted damage is priced, so it
     # must be available whenever the policy ranks targets. One np.sort per
-    # model against a ~550 ms fit -- negligible, which is why the old
-    # candidate_log-only gating existed at all (the quantity was purely
-    # diagnostic then). Per-model is correct: damage to rf1 depends on
-    # X_val1's distribution, not X_val2's. Feature indices line up -- trees are
-    # fit on X_*_train[:, remaining] and validated on X_*_val[:, remaining],
-    # the same column space.
-    sorted_cols1 = sorted_cols2 = None
-    if candidate_log is not None or align_policy == 'c1c2':
-        sorted_cols1 = np.sort(X_val1, axis=0)
-        sorted_cols2 = np.sort(X_val2, axis=0)
+    # model against a ~550 ms fit -- negligible. Per-model is correct: damage
+    # to rf1 depends on X_val1's distribution, not X_val2's. Feature indices
+    # line up -- trees are fit on X_*_train[:, remaining] and validated on
+    # X_*_val[:, remaining], the same column space.
+    sorted_cols1 = np.sort(X_val1, axis=0)
+    sorted_cols2 = np.sort(X_val2, axis=0)
 
     threshold_index1 = build_threshold_index(rf1)
 
@@ -284,22 +262,15 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # accuracy_metrics call at n=4000 against 256us for the prediction it was
     # measuring. Every number produced here is bit-identical to what those
     # calls produced; see incremental_metrics' module docstring.
-    marks = None
-    current = None
-    metrics1 = metrics2 = None
-    # A gated policy's non-spending state judges candidates at delta = 0, which
-    # needs the oracle even when delta_rel is None -- so the dinf arm's
-    # "skip the metric machinery" cost advantage does not survive C1.
-    if delta_rel is not None or gated:
-        metrics1 = IncrementalMetrics(tree_predictions1, rf1, y_val1, task="app")
-        metrics2 = IncrementalMetrics(tree_predictions2, rf2, y_val2, task="ddos")
+    metrics1 = IncrementalMetrics(tree_predictions1, rf1, y_val1, task="app")
+    metrics2 = IncrementalMetrics(tree_predictions2, rf2, y_val2, task="ddos")
 
-        # Four independent high-water marks, in (acc_app, f1_app, acc_ddos,
-        # f1_ddos) order.
-        marks = metrics1.metrics() + metrics2.metrics()
-        # Last-ACCEPTED state -- the model's actual current metrics, as opposed
-        # to marks' running per-task max. Before any candidate, both coincide.
-        current = marks
+    # Four independent high-water marks, in (acc_app, f1_app, acc_ddos,
+    # f1_ddos) order.
+    marks = metrics1.metrics() + metrics2.metrics()
+    # Last-ACCEPTED state -- the model's actual current metrics, as opposed
+    # to marks' running per-task max. Before any candidate, both coincide.
+    current = marks
 
     stats = align_stats if align_stats is not None else {}
     stats['attempted'] = 0
@@ -318,7 +289,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['rolled_back'] = False
 
     budget = BandBudget(stats['codeword_before'], stats['codeword_floor'],
-                        delta_rel, gated)
+                        delta_rel)
 
     # Find common features
     common_features = set(intervals1.keys()) & set(intervals2.keys())
@@ -391,12 +362,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 if overlap_ratio < overlap_threshold:
                     continue
 
-                if align_policy == 'c1c2':
-                    targets = _rank_targets(
-                        range1, range2, current_ranges1, current_ranges2,
-                        idx1, idx2, feature_idx, sorted_cols1, sorted_cols2)
-                else:
-                    targets = [calculate_target_range(range1, range2)]
+                targets = _rank_targets(
+                    range1, range2, current_ranges1, current_ranges2,
+                    idx1, idx2, feature_idx, sorted_cols1, sorted_cols2)
 
                 for target in targets:
                     # Purely diagnostic -- only computed when a candidate_log
@@ -429,30 +397,17 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
                     stats['attempted'] += 1
 
-                    # Rollback tokens for the metric state, paired 1:1 with
-                    # undo_info1/2. Bound to None here rather than only inside the
-                    # else branch so the reject path below reads the same on every
-                    # arm, including the inf one where no apply ever ran.
-                    mtoken1 = mtoken2 = None
-
                     effective_delta = budget.delta_for_candidate()
 
-                    if metrics1 is None:
-                        # Legacy at delta_rel=None: no oracle was ever built, so
-                        # every candidate is accepted unconditionally. This is the
-                        # branch that makes the inf anchor the cheapest arm.
-                        accepted = True
-                        after = None
-                    else:
-                        # IncrementalMetrics' ordering contract: apply reads the NEW
-                        # per-tree predictions out of tree_predictions and the OLD
-                        # ones out of undo_info, so it must run AFTER
-                        # update_cache_for_modifications and BEFORE any
-                        # undo_cache_update.
-                        mtoken1 = metrics1.apply(tree_predictions1, undo_info1)
-                        mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
-                        after = metrics1.metrics() + metrics2.metrics()
-                        accepted = accept_alignment(marks, after, effective_delta)
+                    # IncrementalMetrics' ordering contract: apply reads the NEW
+                    # per-tree predictions out of tree_predictions and the OLD
+                    # ones out of undo_info, so it must run AFTER
+                    # update_cache_for_modifications and BEFORE any
+                    # undo_cache_update.
+                    mtoken1 = metrics1.apply(tree_predictions1, undo_info1)
+                    mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
+                    after = metrics1.metrics() + metrics2.metrics()
+                    accepted = accept_alignment(marks, after, effective_delta)
 
                     if candidate_log is not None:
                         candidate_log.append({
@@ -463,12 +418,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                             'target': tuple(target),
                             'overlap_ratio': float(overlap_ratio),
                             'endpoint_ratio': float(endpoint_ratio(range1, range2)),
-                            # current is None only on the delta_rel=None (inf) arm,
-                            # where accept/reject -- and therefore any notion of
-                            # "current error" -- is skipped entirely; 0.0 mirrors
-                            # rel_deg's own placeholder for that arm below.
-                            'error_app': 1.0 - current[0] if current is not None else 0.0,
-                            'error_ddos': 1.0 - current[2] if current is not None else 0.0,
+                            'error_app': 1.0 - current[0],
+                            'error_ddos': 1.0 - current[2],
                             'shift_mass_1': mass1,
                             'shift_mass_2': mass2,
                             # Local, immediate-effect degradation: current is the
@@ -479,8 +430,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                             # by this diagnostic). Comparing a local physical bound
                             # (shift_mass) against a cumulative quantity would be
                             # apples-to-oranges.
-                            'rel_deg': tuple(rel_deg(b, a) for b, a in zip(current, after))
-                                       if after is not None else (0.0, 0.0, 0.0, 0.0),
+                            'rel_deg': tuple(rel_deg(b, a)
+                                             for b, a in zip(current, after)),
                             'accepted': bool(accepted),
                         })
 
@@ -495,9 +446,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         # not from tree_predictions), so the order here is free --
                         # but it must happen on EVERY reject, or the ratchet starts
                         # comparing against a model state that no longer exists.
-                        if metrics1 is not None:
-                            metrics1.revert(mtoken1)
-                            metrics2.revert(mtoken2)
+                        metrics1.revert(mtoken1)
+                        metrics2.revert(mtoken2)
                         # C2: the pair is not dead yet -- try the next-ranked
                         # corner. With a single target this falls straight out
                         # of the loop, exactly as the old `continue` did.
@@ -509,9 +459,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     # would return exactly the list already being iterated.
                     progressed = True
                     stats['accepted'] += 1
-                    if after is not None:
-                        marks = ratchet(marks, after)
-                        current = after
+                    marks = ratchet(marks, after)
+                    current = after
 
                     # Realised shed for THIS move, measured on the one feature
                     # that moved. Recomputing joint_interval_count here would be
@@ -1038,8 +987,7 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
 
 def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
                       overlap_threshold=0.5, delta_rel=0.0,
-                      align_policy='legacy', align_stats=None,
-                      candidate_log=None):
+                      align_stats=None, candidate_log=None):
     """align_rf_thresholds with C1's commit-or-rollback guarantee.
 
     `band_target(L) >= floor` proves the next band is REACHABLE, not that it
@@ -1062,10 +1010,9 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     speculative = align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         overlap_threshold=overlap_threshold, delta_rel=delta_rel,
-        align_policy=align_policy, align_stats=stats,
-        candidate_log=candidate_log)
+        align_stats=stats, candidate_log=candidate_log)
 
-    if align_policy == 'legacy' or not stats['spent_budget']:
+    if not stats['spent_budget']:
         return speculative
 
     if band_factor(stats['codeword_after']) < band_factor(stats['codeword_before']):
@@ -1081,7 +1028,6 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     result = align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         overlap_threshold=overlap_threshold, delta_rel=0.0,
-        align_policy=align_policy, align_stats=stats,
-        candidate_log=candidate_log)
+        align_stats=stats, candidate_log=candidate_log)
     stats['rolled_back'] = True
     return result

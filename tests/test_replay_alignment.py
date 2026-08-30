@@ -61,12 +61,12 @@ def test_run_one_policy_none_skips_alignment_and_reports_both_encodings():
         assert 'counterfactual_disjoint_' + field in result
 
 
-def test_run_one_policy_legacy_still_runs_alignment_and_reports_align_stats():
+def test_run_one_policy_aligned_runs_alignment_and_reports_align_stats():
     clf_app, clf_ddos, app, ddos, cols, names = _tiny_pair()
 
     result = ra.run_one_policy(
         (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-        'legacy', delta_rel=0.0, overlap_threshold=0.5)
+        'aligned', delta_rel=0.0, overlap_threshold=0.5)
 
     assert any(k.startswith('align_') for k in result)
     assert 'align_codeword_before' in result
@@ -173,7 +173,7 @@ def test_replay_row_skips_a_failing_swept_cell_but_keeps_the_rest(capsys):
 
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=fake_run_one_policy):
-        results = ra.replay_row(row, data=None, policies=['legacy'],
+        results = ra.replay_row(row, data=None, policies=['aligned'],
                                 overlap_thresholds=[0.25, 0.5],
                                 ladder_delta=0.20, verify=False)
 
@@ -228,7 +228,7 @@ def test_replay_row_verify_failure_does_not_block_later_swept_cells(capsys):
 
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=side_effect):
-        results = ra.replay_row(row, data=None, policies=['legacy'],
+        results = ra.replay_row(row, data=None, policies=['aligned'],
                                 overlap_thresholds=[0.5], ladder_delta=0.20,
                                 verify=True)
 
@@ -249,7 +249,7 @@ def test_replay_row_skip_counts_accumulate_by_policy_across_calls():
     def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
                             names_app, names_ddos, policy, delta_rel,
                             overlap_threshold):
-        if policy in ('c1', 'c1c2'):
+        if policy == 'aligned':
             raise RuntimeError('infeasible cell')
         return {'policy': policy, 'overlap_threshold': overlap_threshold,
                 'blocks': 10}
@@ -257,14 +257,14 @@ def test_replay_row_skip_counts_accumulate_by_policy_across_calls():
     skip_counts = Counter()
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=fake_run_one_policy):
-        ra.replay_row(row, data=None, policies=['legacy', 'c1'],
+        ra.replay_row(row, data=None, policies=['none', 'aligned'],
                       overlap_thresholds=[0.5], ladder_delta=0.20,
                       verify=False, skip_counts=skip_counts)
-        ra.replay_row(row, data=None, policies=['c1', 'c1c2'],
+        ra.replay_row(row, data=None, policies=['aligned'],
                       overlap_thresholds=[0.5], ladder_delta=0.20,
                       verify=False, skip_counts=skip_counts)
 
-    assert skip_counts == Counter({'c1': 2, 'c1c2': 1})
+    assert skip_counts == Counter({'aligned': 2})
 
 
 def test_replay_row_skip_counts_default_to_a_throwaway_counter():
@@ -275,7 +275,7 @@ def test_replay_row_skip_counts_default_to_a_throwaway_counter():
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy',
                            side_effect=RuntimeError('boom')):
-        results = ra.replay_row(row, data=None, policies=['c1'],
+        results = ra.replay_row(row, data=None, policies=['aligned'],
                                 overlap_thresholds=[0.5], ladder_delta=0.20,
                                 verify=False)
 

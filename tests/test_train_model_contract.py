@@ -318,15 +318,19 @@ def test_the_winner_is_refit_deterministically_not_cached(monkeypatch):
     assert out.n_feasible == len(feasible)
 
 
-def test_delta_align_none_accepts_every_move_without_scoring(monkeypatch):
-    """Spec A.2: the inf anchor skips the predict/restore/undo machinery, which
-    is also why it is the cheapest arm to run."""
+def test_delta_align_none_still_builds_the_oracle_now_that_gating_is_unconditional(monkeypatch):
+    """Spec A.2's inf-anchor claim -- that delta_rel=None skips the
+    predict/restore/undo machinery entirely, making it the cheapest arm --
+    no longer holds after the 2026-08-30 policy-ladder deletion: C1's
+    non-spending state judges candidates at delta=0, which needs the oracle
+    even when the caller asked for delta_rel=None, and that gating is now
+    unconditional (see threshold_alignment.align_rf_thresholds and
+    test_the_oracle_is_built_even_at_an_unbounded_delta in
+    test_threshold_alignment.py). So the inf arm no longer skips scoring at
+    this level either -- the number moved because target ranking and budget
+    gating are now unconditional."""
     from src.training import threshold_alignment as ta
 
-    # T2b: the scoring machinery is now IncrementalMetrics, constructed once
-    # per model and only on the delta_rel-is-not-None arm. Spying on the old
-    # ta.accuracy_metrics would pass vacuously -- the loop no longer calls it
-    # at all, so `scored` would be empty whatever the inf arm did.
     scored = []
     real_init = ta.IncrementalMetrics.__init__
 
@@ -340,7 +344,8 @@ def test_delta_align_none_accepts_every_move_without_scoring(monkeypatch):
           cfg=TrainConfig(delta_align=None, n_trials=6,
                           min_feasible_before_stop=2, lookback=2))
 
-    assert scored == [], 'delta_align=None must not evaluate accuracy at all'
+    assert scored, 'delta_align=None must still build the oracle now that gating is unconditional'
+    assert set(scored) == {'app', 'ddos'}
 
 
 def test_align_stats_on_the_result_describe_the_refit_not_an_earlier_trial(monkeypatch):

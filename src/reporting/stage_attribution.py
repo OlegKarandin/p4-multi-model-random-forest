@@ -6,7 +6,7 @@ overlap/delta/M/k findings document showed pooling across M hid a complete
 sign flip in the k=17 story.
 
 Requires scripts/replay_alignment.py to have been run with
-`--policies none,legacy,c1,c1c2` (or whichever subset is available) so
+`--policies none,aligned` (or whichever subset is available) so
 every row carries the joint_*/counterfactual_disjoint_* columns Phase 1
 (src/p4gen/evaluation.py's ResourceUsage) and Phase 2's run_one_policy
 change add.
@@ -89,7 +89,7 @@ def _independent_pairs(subset, policy):
     (run_one_policy skips align_with_policy -- the only place
     overlap_threshold is used -- for 'none'), so replaying one pair at N
     swept --overlap-thresholds values produces N identical 'none' rows that
-    differ only in that column. An aligned policy like 'legacy' can
+    differ only in that column. An aligned policy like 'aligned' can
     genuinely produce different results at different overlap_threshold
     values, so it is never deduped here."""
     if policy != 'none':
@@ -177,7 +177,7 @@ def score(frame, policy='none'):
 
     --verify-injected rows (scripts/replay_alignment.py's replay_row,
     policy='verify') are dropped before D1 is even computed: a verify row
-    re-runs 'legacy' at the row's own recorded arm delta, not the ladder
+    re-runs 'aligned' at the row's own recorded arm delta, not the ladder
     delta being swept, so leaving it in would inflate D1's n with a
     duplicate of a pair already covered by a real policy and give D4 a
     spurious 'verify' entry compared against the wrong alignment budget.

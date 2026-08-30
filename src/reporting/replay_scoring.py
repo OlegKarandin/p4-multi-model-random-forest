@@ -73,86 +73,39 @@ def _verdict(n, passed, value, detail):
             'detail': '{} paired: {}'.format(n, detail)}
 
 
-def _best_policy(frame):
-    """Name of the best available policy actually present in this data.
-
-    S5 and S6 both mean "how does the best mechanism we have do", so they
-    must agree on what "best" resolves to: prefer c1c2, else c1, else
-    legacy -- whichever the run actually swept, never a hardcoded assumption
-    that all three exist. Returns None if none of the three is present.
-    """
-    present = frame['policy'].unique()
-    for policy in ('c1c2', 'c1', 'legacy'):
-        if policy in present:
-            return policy
-    return None
-
-
 def score(frame):
-    """The six pre-registered verdicts. Missing policies yield n = 0, which
-    fails rather than silently passing on an empty mean."""
+    """The two surviving pre-registered verdicts.
+
+    S1/S2/S6 paired an aligned policy against 'legacy', and S4 paired 'c1c2'
+    against 'c1'; the 2026-08-30 design deletes the policy ladder, so all four
+    lost their referent and are removed rather than left to fail silently on
+    an empty merge. Their measured values remain in the findings documents as
+    historical results, which is where a superseded comparison belongs. S3 and
+    S5 reason within one policy and are unaffected.
+
+    Deliberately objective-BLIND: S3 and S5 are pre-registered against the
+    block domain, so re-pointing them at a run optimising stages would
+    invalidate them. The objective axis is scored separately, by
+    scripts/score_objective_replay.py.
+    """
     out = {}
 
-    # S1 -- c1 vs legacy at the SAME configured --ladder-delta (there is no
-    # legacy-at-delta_rel=0 arm to compare against "spending nothing"). A
-    # pass is evidence C1's own gating (BandBudget only spends when the next
-    # block-band is reachable) doesn't regress accuracy under the shared
-    # budget -- it is not a direct test of the align_with_policy rollback
-    # wrapper specifically, since C1's gating alone would hold this even if
-    # the rollback did nothing.
-    pair = _paired(frame, 'c1', 'legacy')
-    if len(pair):
-        d_app = (pair['acc_app_a'] - pair['acc_app_b']).mean()
-        d_ddos = (pair['acc_ddos_a'] - pair['acc_ddos_b']).mean()
-        worst = min(d_app, d_ddos)
-        out['S1'] = _verdict(len(pair), worst >= ACCURACY_TOLERANCE, worst,
-                             'mean d_acc app {:+.4f} ddos {:+.4f}'.format(d_app, d_ddos))
-    else:
-        out['S1'] = _verdict(0, False, 0.0, 'no c1/legacy pairs')
-
-    # S2 -- C1 DOMINATES legacy: blocks no worse AND accuracy no worse, per
-    # task, per pair. A mean would let a win on one pair pay for a loss on
-    # another, which is not what domination means.
-    if len(pair):
-        dominates = ((pair['blocks_a'] <= pair['blocks_b'])
-                     & (pair['acc_app_a'] >= pair['acc_app_b'] + ACCURACY_TOLERANCE)
-                     & (pair['acc_ddos_a'] >= pair['acc_ddos_b'] + ACCURACY_TOLERANCE))
-        share = dominates.mean()
-        out['S2'] = _verdict(len(pair), share == 1.0, share,
-                             '{:.1%} of pairs dominated'.format(share))
-    else:
-        out['S2'] = _verdict(0, False, 0.0, 'no c1/legacy pairs')
-
     # S3 -- the wasted-bit share falls from the campaign's measured 57.8%.
-    c1 = frame[frame['policy'] == 'c1']
-    shed = c1['bits_shed'].sum()
-    share = (c1['wasted_bits'].sum() / shed) if shed else 1.0
-    out['S3'] = _verdict(len(c1), share < WASTED_BITS_BASELINE, share,
+    aligned = frame[frame['policy'] == 'aligned']
+    shed = aligned['bits_shed'].sum()
+    share = (aligned['wasted_bits'].sum() / shed) if shed else 1.0
+    out['S3'] = _verdict(len(aligned), share < WASTED_BITS_BASELINE, share,
                          'wasted {:.1%} of {} shed bits (baseline {:.1%})'.format(
                              share, int(shed), WASTED_BITS_BASELINE))
 
-    # S4 -- C2 buys the SAME bits more cheaply, so restrict to pairs where the
-    # two policies shed identically and ask only about accuracy.
-    pair2 = _paired(frame, 'c1c2', 'c1')
-    equal = pair2[pair2['bits_shed_a'] == pair2['bits_shed_b']]
-    if len(equal):
-        gain = ((equal['acc_app_a'] - equal['acc_app_b'])
-                + (equal['acc_ddos_a'] - equal['acc_ddos_b'])).mean() / 2
-        out['S4'] = _verdict(len(equal), gain > 0, gain,
-                             'mean d_acc {:+.4f} at equal bits shed'.format(gain))
-    else:
-        out['S4'] = _verdict(0, False, 0.0, 'no equal-shed c1c2/c1 pairs')
-
     # S5 -- C3(c): does loosening the candidate gate widen the generator at
-    # all? Compared within one policy across overlap_threshold, so the
-    # merge key drops that column.
+    # all? Compared within one policy across overlap_threshold, so the merge
+    # key drops that column.
     keys = [k for k in PAIR_KEYS if k != 'overlap_threshold']
-    top5 = _best_policy(frame)
-    best = frame[frame['policy'] == top5] if top5 is not None else frame.iloc[0:0]
-    loose_threshold = best['overlap_threshold'].min()
-    tight_threshold = best['overlap_threshold'].max()
-    loose = best[best['overlap_threshold'] == loose_threshold]
-    tight = best[best['overlap_threshold'] == tight_threshold]
+    loose_threshold = aligned['overlap_threshold'].min()
+    tight_threshold = aligned['overlap_threshold'].max()
+    loose = aligned[aligned['overlap_threshold'] == loose_threshold]
+    tight = aligned[aligned['overlap_threshold'] == tight_threshold]
     pair5 = loose.merge(tight, on=keys, suffixes=('_a', '_b'))
     if len(pair5) and loose_threshold < tight_threshold:
         delta = (pair5['bits_shed_a'] - pair5['bits_shed_b']).mean()
@@ -162,21 +115,5 @@ def score(frame):
     else:
         out['S5'] = _verdict(len(pair5), False, 0.0,
                              'no loosened-threshold rows to compare')
-
-    # S6 -- is the whole ladder worth a campaign? Best available policy against
-    # legacy, on blocks, with no accuracy regression on either task.
-    top = _best_policy(frame)
-    pair6 = _paired(frame, top, 'legacy') if top is not None else frame.iloc[0:0]
-    if len(pair6):
-        saved = (pair6['blocks_b'] - pair6['blocks_a']).mean()
-        d_app = (pair6['acc_app_a'] - pair6['acc_app_b']).mean()
-        d_ddos = (pair6['acc_ddos_a'] - pair6['acc_ddos_b']).mean()
-        passed = (saved >= 1.0 and d_app >= ACCURACY_TOLERANCE
-                  and d_ddos >= ACCURACY_TOLERANCE)
-        out['S6'] = _verdict(len(pair6), passed, saved,
-                             '{} saves {:.2f} blocks/pair, d_acc app {:+.4f} '
-                             'ddos {:+.4f}'.format(top, saved, d_app, d_ddos))
-    else:
-        out['S6'] = _verdict(0, False, 0.0, 'no ladder/legacy pairs')
 
     return out

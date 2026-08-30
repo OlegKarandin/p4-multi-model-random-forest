@@ -90,24 +90,16 @@ class BandBudget:
     is NECESSARY, not sufficient -- the candidate generator can still run dry
     before the band is crossed, which is what threshold_alignment's
     align_with_policy rollback exists to undo.
-
-    `gated=False` is the legacy path: the budget is still constructed, so
-    `spent_budget` has exactly one definition across both policies, but
-    `spending()` is unconditionally True and the raw delta is handed out
-    every time. That is what keeps 'legacy' byte-identical.
     """
 
-    def __init__(self, codeword_length, floor, delta_rel, gated):
+    def __init__(self, codeword_length, floor, delta_rel):
         self.length = codeword_length
         self.floor = floor
         self.delta_rel = delta_rel
-        self.gated = gated
         self.spent_budget = False
         self._start_factor = band_factor(codeword_length)
 
     def spending(self):
-        if not self.gated:
-            return True
         return band_target(self.length) >= self.floor
 
     def delta_for_candidate(self):

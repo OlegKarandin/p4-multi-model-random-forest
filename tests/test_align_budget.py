@@ -63,43 +63,35 @@ def test_codeword_floor_counts_exclusive_features_in_full():
 
 
 def test_a_gated_budget_stops_spending_when_the_floor_blocks_the_band():
-    budget = ab.BandBudget(codeword_length=100, floor=99, delta_rel=0.2, gated=True)
+    budget = ab.BandBudget(codeword_length=100, floor=99, delta_rel=0.2)
     assert not budget.spending()          # target 84 < floor 99
     assert budget.delta_for_candidate() == 0.0
     assert budget.spent_budget is False
 
 
 def test_a_gated_budget_spends_while_the_band_is_reachable():
-    budget = ab.BandBudget(codeword_length=100, floor=10, delta_rel=0.2, gated=True)
+    budget = ab.BandBudget(codeword_length=100, floor=10, delta_rel=0.2)
     assert budget.spending()              # target 84 >= floor 10
     assert budget.delta_for_candidate() == 0.2
     assert budget.spent_budget is True
 
 
-def test_an_ungated_budget_always_hands_out_the_raw_delta():
-    """The legacy path: BandBudget is still constructed so spent_budget has one
-    definition, but it must never gate."""
-    budget = ab.BandBudget(codeword_length=100, floor=99, delta_rel=0.2, gated=False)
-    assert budget.spending()
-    assert budget.delta_for_candidate() == 0.2
-
-
 def test_a_zero_delta_is_not_recorded_as_spending_budget():
     """delta_rel == 0.0 gives nothing away, so it is not 'spending' even in the
     spending state -- otherwise S3's wasted-bit share is uninterpretable."""
-    budget = ab.BandBudget(codeword_length=100, floor=10, delta_rel=0.0, gated=True)
+    budget = ab.BandBudget(codeword_length=100, floor=10, delta_rel=0.0)
     assert budget.delta_for_candidate() == 0.0
     assert budget.spent_budget is False
 
 
 def test_an_unbounded_delta_is_recorded_as_spending_budget():
-    budget = ab.BandBudget(codeword_length=100, floor=10, delta_rel=None, gated=True)
+    budget = ab.BandBudget(codeword_length=100, floor=10, delta_rel=None)
     assert budget.delta_for_candidate() is None
     assert budget.spent_budget is True
 
 
 def test_shedding_across_the_boundary_retargets_the_next_band():
-    budget = ab.BandBudget(codeword_length=90, floor=10, delta_rel=0.2, gated=True)
+    budget = ab.BandBudget(codeword_length=90, floor=10, delta_rel=0.2)
     assert not budget.crossed_band()
     budget.note_shed(10)                  # 90 -> 80, factor 3 -> 2
     assert budget.length == 80
@@ -108,7 +100,7 @@ def test_shedding_across_the_boundary_retargets_the_next_band():
 
 
 def test_shedding_stops_spending_once_the_next_band_is_out_of_reach():
-    budget = ab.BandBudget(codeword_length=90, floor=50, delta_rel=0.2, gated=True)
+    budget = ab.BandBudget(codeword_length=90, floor=50, delta_rel=0.2)
     assert budget.spending()              # target 84 >= 50
     budget.note_shed(10)                  # 80, next target 40 < floor 50
     assert not budget.spending()
