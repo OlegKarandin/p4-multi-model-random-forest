@@ -982,9 +982,12 @@ def _isolate_c3(monkeypatch):
     -- round-by-round rescanning -- rather than incidentally re-deriving
     whether THIS hand-built fixture's candidates clear the (now-mandatory)
     accuracy gate or the gain filter. Both are covered by their own tests
-    (test_the_oracle_is_built_even_at_an_unbounded_delta and the C2 tests
-    respectively); restoring the pre-ladder single-target, always-accept
-    shape here reproduces this file's pre-Task-3 recompute numbers exactly.
+    (test_delta_align_none_still_builds_the_oracle_now_that_gating_is_
+    unconditional in test_train_model_contract.py, which actually proves the
+    oracle is always built by spying IncrementalMetrics.__init__ and
+    asserting both tasks were scored, and the C2 tests respectively);
+    restoring the pre-ladder single-target, always-accept shape here
+    reproduces this file's pre-Task-3 recompute numbers exactly.
     """
     monkeypatch.setattr(ta, 'accept_alignment', lambda *a, **k: True)
     monkeypatch.setattr(

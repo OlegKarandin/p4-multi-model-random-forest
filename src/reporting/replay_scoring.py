@@ -1,16 +1,18 @@
-"""Score an alignment replay ladder against the pre-registered criteria.
+"""Score an alignment replay against the surviving pre-registered criteria.
 
 Pure pandas over scripts/replay_alignment.py's output -- no fitting, so the
 arithmetic can be debugged without repeating an expensive run.
 
-EVERY criterion is PAIRED on PAIR_KEYS via an inner merge. That is the whole
-reason the replay exists: the campaign compared arms that had each run their
-own Optuna search, so any alignment effect was inseparable from search noise.
-Pooling across pairs instead of merging on them would reintroduce exactly the
-confound the harness removes, so a pair missing one policy is DROPPED, never
-averaged around -- and every verdict reports the surviving pair count first,
-so a criterion that passed on three pairs cannot be read as one that passed on
-three hundred.
+The two survivors, S3 and S5, are NOT both paired the same way (the deleted
+S1/S2/S4/S6 were the ones that merged one policy against another). S3 is a
+plain within-policy aggregate over every 'aligned' row -- no merge at all, so
+a single row already contributes to it. S5 merges 'aligned' rows against
+THEMSELVES, across overlap_threshold, on PAIR_KEYS with 'overlap_threshold'
+dropped from the join key (since that column is exactly what the two sides of
+the comparison must differ on); a (source_arm, M, split, k) cell present at
+one swept threshold but not the other is dropped from that comparison, never
+averaged around, and the verdict reports the surviving pair count first, so a
+result on three pairs cannot be read as one that held on three hundred.
 """
 import pandas as pd
 
@@ -24,10 +26,6 @@ PAIR_KEYS = ['source_arm', 'M', 'split', 'k', 'overlap_threshold']
 # The companion document's measured baseline: the share of shed bits that
 # crossed no band boundary across the whole campaign.
 WASTED_BITS_BASELINE = 0.578
-
-# One flipped validation sample at n ~ 3000 is ~0.0003, so -0.001 reads as
-# "no worse than noise" rather than "no worse at all".
-ACCURACY_TOLERANCE = -0.001
 
 
 def derive_columns(frame):
@@ -59,13 +57,6 @@ def derive_columns(frame):
                  - out['align_codeword_after']).clip(lower=0)
     out['wasted_bits'] = pd.concat([out['bits_shed'], overshoot], axis=1).min(axis=1)
     return out
-
-
-def _paired(frame, policy_a, policy_b):
-    """Rows of two policies merged on PAIR_KEYS, suffixed _a / _b."""
-    left = frame[frame['policy'] == policy_a]
-    right = frame[frame['policy'] == policy_b]
-    return left.merge(right, on=PAIR_KEYS, suffixes=('_a', '_b'))
 
 
 def _verdict(n, passed, value, detail):

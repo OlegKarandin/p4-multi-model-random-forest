@@ -166,25 +166,36 @@ def test_empty_cells_schema_matches_populated_cells_schema():
 
 
 def test_d4_compares_none_against_every_aligned_policy_present():
+    """stage_attribution is genuinely policy-name-agnostic (it takes the
+    'none' label as a parameter and treats every other value as an aligned
+    policy to compare against it), so this exercises D4's multi-label
+    grouping logic in the abstract. 'aligned' is the one real policy name
+    REPLAY_POLICIES can produce post-ladder-deletion; 'synthetic_other_arm'
+    is a made-up second label with no real-world counterpart, used only to
+    prove D4 keeps two distinct aligned-policy labels separate rather than
+    merging them -- a scenario REPLAY_POLICIES = ('none', 'aligned') cannot
+    itself produce, since there is now only one real aligned policy name.
+    """
     rows = [
-        # pair 1 (k=17): legacy shrinks joint depth by 2, cf by only 1 -> passes.
+        # pair 1 (k=17): aligned shrinks joint depth by 2, cf by only 1 -> passes.
         _row(k=17, split=10, policy='none', ternary_depth=(8, 9)),
-        _row(k=17, split=10, policy='legacy', ternary_depth=(6, 8)),
-        # pair 2 (k=2): legacy changes nothing -> fails (delta_align == 0).
+        _row(k=17, split=10, policy='aligned', ternary_depth=(6, 8)),
+        # pair 2 (k=2): aligned changes nothing -> fails (delta_align == 0).
         _row(k=2, split=20, policy='none', ternary_depth=(5, 5)),
-        _row(k=2, split=20, policy='legacy', ternary_depth=(5, 5)),
-        # a second aligned policy, present at only one pair -- must appear
-        # as its own key in D4's output, not merged with 'legacy'.
-        _row(k=17, split=10, policy='c1', ternary_depth=(7, 9)),
+        _row(k=2, split=20, policy='aligned', ternary_depth=(5, 5)),
+        # a second (synthetic, made-up) aligned policy label, present at only
+        # one pair -- must appear as its own key in D4's output, not merged
+        # with 'aligned'.
+        _row(k=17, split=10, policy='synthetic_other_arm', ternary_depth=(7, 9)),
     ]
     frame = pd.DataFrame(rows)
     verdict = sa.score(frame)
 
-    assert set(verdict['D4']) == {'legacy', 'c1'}
+    assert set(verdict['D4']) == {'aligned', 'synthetic_other_arm'}
 
-    legacy_cells = verdict['D4']['legacy']['cells'].set_index(['M', 'k'])
-    assert legacy_cells.loc[(25, 17), 'passed'] == True
-    assert legacy_cells.loc[(25, 2), 'passed'] == False
+    aligned_cells = verdict['D4']['aligned']['cells'].set_index(['M', 'k'])
+    assert aligned_cells.loc[(25, 17), 'passed'] == True
+    assert aligned_cells.loc[(25, 2), 'passed'] == False
 
-    c1_cells = verdict['D4']['c1']['cells'].set_index(['M', 'k'])
-    assert len(c1_cells) == 1   # only the k=17 pair has a 'c1' row to pair with
+    other_cells = verdict['D4']['synthetic_other_arm']['cells'].set_index(['M', 'k'])
+    assert len(other_cells) == 1   # only the k=17 pair has a row to pair with

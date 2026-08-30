@@ -1003,8 +1003,11 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     caller's untouched forests IS the rollback. Cost is 2x alignment runtime
     on exactly the runs where the speculation failed, and 1x everywhere else.
 
-    Turns success criterion S1 -- "C1 never loses accuracy relative to
-    legacy(d000)" -- from a measured hope into a property of the code.
+    Makes "accuracy is never spent for nothing" a property of the code rather
+    than a measured hope: a run that paid the configured tolerance but landed
+    in the same block band it started in is discarded and replaced by the
+    free-moves-only result, regardless of which policy or criterion is doing
+    the measuring.
     """
     stats = align_stats if align_stats is not None else {}
     speculative = align_rf_thresholds(
