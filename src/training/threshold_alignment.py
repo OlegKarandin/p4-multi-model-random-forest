@@ -1166,12 +1166,21 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
                       align_objective='blocks'):
     """align_rf_thresholds with C1's commit-or-rollback guarantee.
 
-    `band_target(L) >= floor` proves the next band is REACHABLE, not that it
-    will be REACHED: the candidate generator can run dry mid-flight, leaving a
-    run that paid accuracy and bought no block -- exactly the waste C1 exists
-    to remove, just narrower. So: run at the configured delta; if budget was
-    genuinely spent and the block factor did not fall, discard that result and
-    re-run the same pair at delta = 0, keeping only the free moves.
+    `band_target(L) >= floor` (and its stage-domain counterpart) proves the
+    next boundary is REACHABLE, not that it will be REACHED: the candidate
+    generator can run dry mid-flight, leaving a run that paid accuracy and
+    bought nothing -- exactly the waste C1 exists to remove, just narrower.
+    So: run at the configured delta; if budget was genuinely spent and the
+    run crossed no boundary the objective was aiming at
+    (`crossed_a_boundary`), discard that result and re-run the same pair at
+    delta = 0, keeping only the free moves.
+
+    align_objective : one of ALIGN_OBJECTIVES, default 'blocks'. Forwarded
+        unchanged to align_rf_thresholds on both the speculative and (if
+        needed) the delta=0 rerun, and it also decides what "crossed a
+        boundary" means here: under 'blocks' only a block-band drop keeps the
+        speculative run; under 'stages'/'both' a stage step ALSO keeps it,
+        even without a band drop (crossed_a_boundary does the check).
 
     This is a whole-function retry rather than in-loop state surgery because
     align_rf_thresholds is already a pure function of (models, validation data,
@@ -1180,10 +1189,10 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     on exactly the runs where the speculation failed, and 1x everywhere else.
 
     Makes "accuracy is never spent for nothing" a property of the code rather
-    than a measured hope: a run that paid the configured tolerance but landed
-    in the same block band it started in is discarded and replaced by the
-    free-moves-only result, regardless of which policy or criterion is doing
-    the measuring.
+    than a measured hope: a run that paid the configured tolerance but crossed
+    none of the boundaries its objective was aiming at is discarded and
+    replaced by the free-moves-only result, regardless of which policy,
+    objective, or criterion is doing the measuring.
     """
     stats = align_stats if align_stats is not None else {}
     speculative = align_rf_thresholds(
