@@ -990,9 +990,24 @@ def _isolate_c3(monkeypatch):
     reproduces this file's pre-Task-3 recompute numbers exactly.
     """
     monkeypatch.setattr(ta, 'accept_alignment', lambda *a, **k: True)
-    monkeypatch.setattr(
-        ta, '_rank_targets',
-        lambda range1, range2, *a, **k: [ta.calculate_target_range(range1, range2)])
+
+    def _single_legacy_target(range1, range2, ranges1, ranges2, idx1, idx2,
+                              *a, **k):
+        # Same stand-in as before (the legacy intersection target, offered
+        # unconditionally with no gain filter) reshaped to _rank_targets'
+        # (before, [(target, after), ...]) contract: `before`/`after` are
+        # computed for real via the same pure helpers _rank_targets itself
+        # uses, not faked, so the caller's shed bookkeeping stays numerically
+        # sound even though these C3 tests don't assert on it.
+        target = ta.calculate_target_range(range1, range2)
+        before = ta.pooled_interval_count(ranges1, ranges2)
+        hypo1 = ta.hypothetical_ranges(ranges1, idx1, range1, target)
+        hypo2 = ta.hypothetical_ranges(ranges2, idx2, range2, target)
+        after = (ta.pooled_interval_count(hypo1, hypo2)
+                 if hypo1 is not None and hypo2 is not None else before)
+        return before, [(target, after)]
+
+    monkeypatch.setattr(ta, '_rank_targets', _single_legacy_target)
 
 
 def test_a_widened_neighbour_becomes_a_candidate_only_after_the_recompute(monkeypatch):
@@ -1600,8 +1615,9 @@ def test_rank_targets_orders_equal_gain_corners_by_max_damage_not_sum():
         np.array([0] * 1 + [35] * 9 + [90] * 10, dtype=np.float64)
     ).reshape(-1, 1)
 
-    targets = ta._rank_targets(r1, r2, ranges1, ranges2, idx1, idx2,
-                               feature_idx, sorted_cols1, sorted_cols2)
+    _before, ranked = ta._rank_targets(r1, r2, ranges1, ranges2, idx1, idx2,
+                                       feature_idx, sorted_cols1, sorted_cols2)
+    targets = [target for target, _after in ranked]
 
     intersection = (max(r1[0], r2[0]), min(r1[1], r2[1]))  # (41, 88)
     union = (min(r1[0], r2[0]), max(r1[1], r2[1]))          # (33, 96)
@@ -1744,8 +1760,8 @@ def test_the_stages_objective_actually_changes_the_feature_order(monkeypatch):
     captured = {}
     real_feature_order = ta.feature_order
 
-    def spy(intervals1, intervals2, objective):
-        order = real_feature_order(intervals1, intervals2, objective)
+    def spy(intervals1, intervals2, objective, **kwargs):
+        order = real_feature_order(intervals1, intervals2, objective, **kwargs)
         captured[objective] = order
         return order
 
@@ -2696,6 +2712,67 @@ def test_single_pass_objectives_report_themselves_as_the_one_used():
                              align_objective=objective)
         assert stats['objective_used'] == objective
         assert stats['arms_differed'] is False
+
+
+def test_both_skips_the_stages_arm_when_no_stage_step_is_reachable(monkeypatch):
+    """§8: when stage_step_target is already None for the untouched pair, the
+    'stages' arm is provably a bit-for-bit duplicate of 'blocks' (see
+    align_with_policy's docstring on this precondition) -- so 'both' must not
+    pay to run it a second time. Pinned two ways: align_rf_thresholds must
+    only be called once (never with align_objective='stages'), and the
+    observable result must equal a plain 'blocks' run.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+
+    rng1 = np.random.default_rng(3)
+    X1 = np.clip(rng1.integers(0, 300, size=(300, 3)), 0, INFINITE).astype(float)
+    y1 = np.array([c % 2 for c in range(300)])
+    rf1 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=2, max_depth=3, min_samples_leaf=5,
+        random_state=3).fit(X1, y1))
+
+    rng2 = np.random.default_rng(4)
+    X2 = np.clip(rng2.integers(0, 300, size=(250, 3)), 0, INFINITE).astype(float)
+    y2 = np.where(np.arange(250) % 2 == 0, -1, 1)
+    rf2 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=2, max_depth=3, min_samples_leaf=5,
+        random_state=4).fit(X2, y2))
+
+    probe = {}
+    ta.align_rf_thresholds(copy.deepcopy(rf1), copy.deepcopy(rf2), X1, y1, X2, y2,
+                           delta_rel=0.05, align_stats=probe,
+                           align_objective='blocks')
+    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
+    assert ab.stage_step_target(probe['key_bytes_before'], n_tables) is None, (
+        'fixture must sit at the absorbing None precondition this test targets')
+
+    calls = []
+    real = ta.align_rf_thresholds
+
+    def spy(*a, **k):
+        calls.append(k.get('align_objective'))
+        return real(*a, **k)
+
+    monkeypatch.setattr(ta, 'align_rf_thresholds', spy)
+
+    both_stats = {}
+    b1, b2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, delta_rel=0.05,
+                                  align_stats=both_stats, align_objective='both')
+    assert calls == ['blocks'], (
+        "'stages' must never run when it is provably identical to 'blocks'",
+        calls)
+    assert both_stats['objective_used'] == 'blocks'
+    assert both_stats['arms_differed'] is False
+    monkeypatch.undo()
+
+    blocks_stats = {}
+    c1, c2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, delta_rel=0.05,
+                                  align_stats=blocks_stats,
+                                  align_objective='blocks')
+    for a, b in zip(b1.estimators_ + b2.estimators_,
+                    c1.estimators_ + c2.estimators_):
+        assert np.array_equal(a.tree_.threshold, b.tree_.threshold)
+    assert both_stats == blocks_stats
 
 
 def test_both_rolls_each_arm_back_before_ranking_them(monkeypatch):

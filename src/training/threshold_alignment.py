@@ -71,7 +71,7 @@ ALIGN_OBJECTIVES = ('blocks', 'stages', 'both')
 _SINGLE_PASS_OBJECTIVES = ('blocks', 'stages')
 
 
-def feature_order(intervals1, intervals2, objective):
+def feature_order(intervals1, intervals2, objective, *, widths=None, floors=None):
     """The order features are offered to the alignment loop.
 
     objective='blocks' reproduces the pre-existing order exactly: combined
@@ -94,6 +94,15 @@ def feature_order(intervals1, intervals2, objective):
     are structurally independent in the loop below -- each owns its interval
     lists, `seen` resets per feature, and no accepted move on one feature
     changes another's widths.
+
+    widths, floors : optional precomputed _pooled_widths(intervals1,
+        intervals2) / _own_floor_widths(intervals1, intervals2), used only
+        when objective != 'blocks'. Omitted (the default), each is computed
+        from scratch here, exactly as before -- every existing call site,
+        including this function's own direct unit tests, is unaffected.
+        align_rf_thresholds passes its own copies, already built for
+        stats['bits_to_reach'], instead of paying for the identical
+        O(n_features) pass twice.
     """
     common = set(intervals1) & set(intervals2)
     if objective == 'blocks':
@@ -101,8 +110,10 @@ def feature_order(intervals1, intervals2, objective):
                       key=lambda f: len(intervals1.get(f, [])) + len(intervals2.get(f, [])),
                       reverse=True)
 
-    widths = _pooled_widths(intervals1, intervals2)
-    floors = _own_floor_widths(intervals1, intervals2)
+    if widths is None:
+        widths = _pooled_widths(intervals1, intervals2)
+    if floors is None:
+        floors = _own_floor_widths(intervals1, intervals2)
 
     def key(feature):
         step = bits_to_next_byte(widths[feature])
@@ -177,22 +188,17 @@ def joint_interval_count(intervals1, intervals2):
     each model's OWN interval count never changes; a stat built from
     per-model sums alone is structurally constant and cannot reflect any TCAM
     savings at all.
+
+    Delegates to align_budget._pooled_widths -- the per-feature decomposition
+    of this exact total, already needed by the block/stage budgets -- instead
+    of re-deriving the same pooled threshold set a second way. A feature's
+    width is its pooled interval count minus one, so summing widths and
+    adding back one per feature recovers the interval count exactly; provably
+    equal to the direct computation this replaced, not merely observed equal
+    -- see the two functions' docstrings for the one-to-one correspondence.
     """
-    common = set(intervals1) & set(intervals2)
-
-    pooled = []
-    for f in common:
-        thresholds = set()
-        for intervals in (intervals1[f], intervals2[f]):
-            thresholds.update(hi for _, hi in intervals if hi != INFINITE)
-        pooled.extend((f, t) for t in thresholds)
-    pooled.sort()
-
-    total = sum(len(v) for v in
-                get_feature_intervals_from_thresholds(pooled).values())
-    total += sum(len(v) for f, v in intervals1.items() if f not in common)
-    total += sum(len(v) for f, v in intervals2.items() if f not in common)
-    return total
+    widths = _pooled_widths(intervals1, intervals2)
+    return sum(widths.values()) + len(widths)
 
 
 def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
@@ -214,6 +220,20 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
     final tiebreak so the ranking is a total order and the run stays
     deterministic -- which the refit assertion at train_model.py:373-377
     depends on.
+
+    Returns (before, ranked): `before` is pooled_interval_count(ranges1,
+    ranges2) at entry, unaffected by which target (if any) the caller later
+    accepts, and `ranked` is [(target, after), ...] best first, where `after`
+    is pooled_interval_count(hypo1, hypo2) for that target -- exactly what
+    the count becomes once update_neighboring_ranges_and_index applies it,
+    since both call the same neighbour_writes on the same (ranges, idx,
+    old_range, new_range) whenever nothing has mutated `ranges1`/`ranges2` in
+    between (true here: only an ACCEPTED move mutates them, and the caller's
+    loop over `ranked` stops at the first accept). Handing both numbers back
+    lets the caller's post-acceptance shed bookkeeping (BandBudget.note_shed,
+    StageBudget.note_shed_bytes) read counts already paid for while ranking,
+    instead of recomputing pooled_interval_count a second time around the
+    mutation it predicted.
     """
     before = pooled_interval_count(ranges1, ranges2)
     scored = []
@@ -228,7 +248,8 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
         if not moves1 and not moves2:
             continue
 
-        gain = before - pooled_interval_count(hypo1, hypo2)
+        after = pooled_interval_count(hypo1, hypo2)
+        gain = before - after
         if gain <= 0:
             continue
 
@@ -238,10 +259,10 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
                 damage = max(damage,
                              shift_mass(sorted_cols[:, feature_idx], old, new))
 
-        scored.append((-gain, damage, order, target))
+        scored.append((-gain, damage, order, target, after))
 
     scored.sort()
-    return [target for _, _, _, target in scored]
+    return before, [(target, after) for _, _, _, target, after in scored]
 
 
 # §2.2: the read-heavy setup align_rf_thresholds does before its first
@@ -453,10 +474,16 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['ternary_stages_before'] = ternary_stages(stats['key_bytes_before'],
                                                     n_tables)
     stats['stage_target'] = stage_step_target(stats['key_bytes_before'], n_tables)
+    # Computed once, shared with feature_order below: order_objective can
+    # only differ from 'blocks' (where feature_order needs these at all) when
+    # stage_target is not None (see order_objective's fallback just below),
+    # so this is never built for nothing.
+    pooled_widths = own_floor_widths = None
+    if stats['stage_target'] is not None:
+        pooled_widths = _pooled_widths(intervals1, intervals2)
+        own_floor_widths = _own_floor_widths(intervals1, intervals2)
     stats['bits_to_reach'] = (
-        bits_to_reach(_pooled_widths(intervals1, intervals2),
-                      _own_floor_widths(intervals1, intervals2),
-                      stats['stage_target'])
+        bits_to_reach(pooled_widths, own_floor_widths, stats['stage_target'])
         if stats['stage_target'] is not None else None)
 
     budget = BandBudget(stats['codeword_before'], stats['codeword_floor'],
@@ -475,7 +502,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     if align_objective == 'stages' and stats['stage_target'] is None:
         order_objective = 'blocks'
 
-    sorted_features = feature_order(intervals1, intervals2, order_objective)
+    sorted_features = feature_order(intervals1, intervals2, order_objective,
+                                    widths=pooled_widths, floors=own_floor_widths)
 
     for feature_idx in sorted_features:
         current_ranges1 = intervals1[feature_idx]
@@ -541,11 +569,11 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 if overlap_ratio < overlap_threshold:
                     continue
 
-                targets = _rank_targets(
+                pooled_before, ranked_targets = _rank_targets(
                     range1, range2, current_ranges1, current_ranges2,
                     idx1, idx2, feature_idx, sorted_cols1, sorted_cols2)
 
-                for target in targets:
+                for target, pooled_after in ranked_targets:
                     # Purely diagnostic -- only computed when a candidate_log
                     # is actually requested.
                     mass1 = mass2 = None
@@ -654,14 +682,14 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     current = after
 
                     # Realised shed for THIS move, measured on the one feature
-                    # that moved. Recomputing joint_interval_count here would be
-                    # O(total thresholds) paid thousands of times per trial;
-                    # these two lists hold 25-50 entries. Pinned against the
-                    # whole-run total by
+                    # that moved. `pooled_before`/`pooled_after` come straight
+                    # from `_rank_targets`, which already computed them while
+                    # ranking this exact target (see its own docstring for why
+                    # that is exact, not approximate) -- recomputing
+                    # joint_interval_count here would be O(total thresholds)
+                    # paid thousands of times per trial; these two lists hold
+                    # 25-50 entries. Pinned against the whole-run total by
                     # test_the_per_move_sheds_sum_to_the_whole_runs_shed.
-                    pooled_before = pooled_interval_count(current_ranges1,
-                                                          current_ranges2)
-
                     update_neighboring_ranges_and_index(
                         current_ranges1, idx1, range1, target,
                         feature_idx, threshold_index1)
@@ -669,8 +697,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         current_ranges2, idx2, range2, target,
                         feature_idx, threshold_index2)
 
-                    pooled_after = pooled_interval_count(current_ranges1,
-                                                         current_ranges2)
                     budget.note_shed(pooled_before - pooled_after)
                     if stage_budget is not None:
                         # An interval list holds one more entry than it has
@@ -1081,12 +1107,25 @@ def update_cache_for_modifications(rf, X_val, tree_predictions, node_to_samples,
             tree_predictions[tree_idx, sample_indices].copy()
         )
 
+        # tree_.decision_path bypasses estimator.predict/decision_path's
+        # sklearn-API input validation (check_array, tag lookups) -- dead
+        # weight here since X_val is already float32 C-contiguous (cast once
+        # at entry, see align_rf_thresholds). One CSR traversal instead of
+        # two: the leaf each sample lands on is the last node on its path,
+        # and the tree's own per-leaf class distribution gives the hard-vote
+        # prediction from that -- bit-identical to estimator.predict on this
+        # array (RandomForest sub-estimators have n_outputs_ == 1, so
+        # tree.value's middle axis is a length-1 dummy). Verified equal to
+        # estimator.predict/.decision_path across all trees of the
+        # regression fixture; ~3.4x faster per tree-call.
         X_subset = X_val[sample_indices]
-        new_predictions = rf.estimators_[tree_idx].predict(X_subset).astype(np.intp)
+        tree = rf.estimators_[tree_idx].tree_
+        raw_path = tree.decision_path(X_subset)
+        leaves = raw_path.indices[raw_path.indptr[1:] - 1]
+        new_predictions = np.argmax(tree.value[leaves, 0, :], axis=1).astype(np.intp)
         tree_predictions[tree_idx, sample_indices] = new_predictions
 
-        tree = rf.estimators_[tree_idx].tree_
-        decision_path = rf.estimators_[tree_idx].decision_path(X_subset).tocsc()
+        decision_path = raw_path.tocsc()
         decision_path.sort_indices()
 
         # Find all nodes that need updating: modified nodes and their descendants
@@ -1370,8 +1409,30 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     # ORIGINAL, untouched forests -- each arm still deep-copies them itself.
     state = _build_shared_setup(rf1, rf2, X_val1, X_val2)
 
+    # 'stages' cannot buy anything a 'blocks' run wouldn't already reach when
+    # stage_step_target is already None for the UNTOUCHED pair -- and when it
+    # is, running that arm is not merely wasted spend, it is a guaranteed
+    # bit-for-bit duplicate of 'blocks': align_rf_thresholds' own fallback
+    # sets order_objective = 'blocks' whenever stage_target is None at entry
+    # (same feature order both arms would use), and None is ABSORBING for the
+    # whole run after that -- shedding bytes only narrows the key further,
+    # and stage_step_target(B, T) is None only because ternary_stages(B, T)
+    # is already at its floor of 1 (shedding bytes cannot lower a stage count
+    # that low) or because no fit up to the 8-table cap improves on it
+    # (narrower B only ever raises fit, never lowers it), so StageBudget stays
+    # closed for every candidate. Verified on a narrow-key fixture: thresholds,
+    # stats and candidate_log came back identical between the two arms
+    # whenever this precondition held. Checked once, here, against the
+    # ORIGINAL forests -- not re-checked mid-run, since nothing about which
+    # arm runs may depend on an arm's own progress.
+    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
+    objectives_to_run = _SINGLE_PASS_OBJECTIVES
+    if stage_step_target(pooled_key_bytes(state.intervals1, state.intervals2),
+                         n_tables) is None:
+        objectives_to_run = ('blocks',)
+
     arms = {}
-    for objective in _SINGLE_PASS_OBJECTIVES:
+    for objective in objectives_to_run:
         # Each arm needs its own log: only the winner's candidates actually
         # happened as far as the returned models are concerned.
         arm_log = [] if candidate_log is not None else None
@@ -1380,6 +1441,11 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
             objective=objective, overlap_threshold=overlap_threshold,
             delta_rel=delta_rel, state=state, candidate_log=arm_log)
         arms[objective] = (models, arm_stats, arm_log)
+    if 'stages' not in arms:
+        # Provably identical to 'blocks' (see above) -- alias rather than
+        # rerun, so the ranking and 'arms_differed' logic below need no
+        # special case for the skipped arm.
+        arms['stages'] = arms['blocks']
 
     # Recorded before ranking, and it is the measurement §5 turns on: if the
     # two arms never reach different end states, the dual run is paying twice
