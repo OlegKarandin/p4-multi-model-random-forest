@@ -1229,13 +1229,24 @@ def _rank_key(stats, objective):
     (M=25, k=9), where both objectives crossed the identical block boundary
     and one paid 1.64pp more app accuracy for it.
 
+    The blocks tier compares band_factor(codeword_after), never raw
+    codeword_after -- band_factor is the step function blocks actually costs
+    against (crossed_a_boundary, one function above, already compares it this
+    way). Two arms can differ in raw codeword_after while sitting in the
+    identical band, in which case neither spent bits on anything a real
+    joint_blocks count would ever see; ranking on the raw value there would
+    let 'both' spend real accuracy_spent to win a purely cosmetic codeword
+    difference. Measured directly in the 2026-08-31 replay validation: all 9
+    of its codeword-differing cells shared one band_factor on both sides, so
+    joint_blocks never moved in any of them.
+
     The trailing constant is not decoration: on an exact tie the run must
     still be deterministic, because train_model.py:373-377 refits the winning
     trial rather than caching it. Same reason feature_order carries a trailing
     feature index and _rank_targets carries generation order.
     """
     return (stats['ternary_stages_after'],
-            stats['codeword_after'],
+            band_factor(stats['codeword_after']),
             stats['accuracy_spent'],
             0 if objective == 'blocks' else 1)
 

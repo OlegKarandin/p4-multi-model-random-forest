@@ -2629,9 +2629,26 @@ def test_rank_prefers_fewer_stages_over_everything_else():
         cheap_everything_else, 'blocks')
 
 
-def test_rank_falls_through_to_codeword_when_stages_tie():
+def test_rank_falls_through_to_band_factor_when_stages_tie():
+    """codeword 100 and 200 sit in different TCAM bands (band_factor 3 vs 5,
+    confirmed via evaluation.band_factor) -- a real block-count difference,
+    not a cosmetic one."""
     assert ta._rank_key(_rank_stats(2, 100, 0.9), 'blocks') < ta._rank_key(
-        _rank_stats(2, 128, 0.0), 'blocks')
+        _rank_stats(2, 200, 0.0), 'blocks')
+
+
+def test_rank_within_the_same_band_prefers_lower_accuracy_over_lower_codeword():
+    """The bug this fixes, pinned directly. codeword 100 and 128 sit in the
+    SAME TCAM band (band_factor 3 for both), so the extra bits codeword=100
+    sheds below 128 buy zero real blocks -- crossed_a_boundary already knows
+    this (it compares band_factor, not raw codeword_after); _rank_key must
+    agree with it, or 'both' spends real accuracy chasing a purely cosmetic
+    codeword win, exactly what the 2026-08-31 replay validation measured
+    happening in all 9 of its codeword-differing cells."""
+    same_band_cheap_codeword_expensive_accuracy = _rank_stats(2, 100, 0.9)
+    same_band_expensive_codeword_cheap_accuracy = _rank_stats(2, 128, 0.0)
+    assert ta._rank_key(same_band_expensive_codeword_cheap_accuracy, 'blocks') < ta._rank_key(
+        same_band_cheap_codeword_expensive_accuracy, 'blocks')
 
 
 def test_rank_falls_through_to_accuracy_spent_when_stages_and_blocks_tie():
