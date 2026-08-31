@@ -118,7 +118,20 @@ def tables_per_stage(key_bytes):
     that binds at 8 bytes and narrower. Never returns 0 -- a key wider than a
     whole stage is rejected outright by evaluation.CrossbarKeyTooWide, not
     packed zero-per-stage, and callers divide by it.
+
+    key_bytes <= 0 -- every classification table's key is genuinely empty,
+    which happens whenever neither forest split on any feature at all (a
+    real, reachable Optuna sample: e.g. min_samples_leaf close to n_samples
+    yields single-leaf trees) -- costs nothing on the byte budget, so only
+    the table-count cap binds. This is not a guess: crossbar_stages_needed's
+    own load() (evaluation.py) computes width / TERNARY_CROSSBAR_MAX_BYTES_
+    PER_STAGE, which is exactly 0 at width 0, leaving the
+    1 / TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE term as the only bound -- so
+    this is the real packer's own treatment of a 0-byte key, not a policy
+    invented here.
     """
+    if key_bytes <= 0:
+        return TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
     return min(TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
                max(1, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE // key_bytes))
 

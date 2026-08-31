@@ -1,6 +1,12 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.p4gen.evaluation import band_factor
-from src.training.align_budget import BandBudget, codeword_floor, pooled_interval_count
+from src.training.align_budget import (BandBudget, StageBudget, _own_floor_widths,
+                                       _pooled_widths, band_target,
+                                       bits_to_next_byte, bits_to_reach,
+                                       byte_width, codeword_floor,
+                                       key_bytes_floor, pooled_interval_count,
+                                       pooled_key_bytes, stage_step_target,
+                                       ternary_stages)
 from src.training.align_targets import (boundary_moves, candidate_targets,
                                         hypothetical_ranges, neighbour_writes)
 from src.training.errors import AlignmentInvariantError
@@ -47,6 +53,56 @@ import numpy as np
 # the observed value. Smaller fixtures are far below it: 2 to 4 rounds on
 # the test suite's forests.
 MAX_RECOMPUTE_ROUNDS = 32
+
+
+# What the shed bits are AIMED at -- an objective axis, not another policy
+# name. The two concerns were always independent: 'blocks' is today's
+# behaviour and the default everywhere, 'stages' aims at the step that
+# reduces ceil(T / floor(64/B)), and 'both' spends for either boundary and
+# keeps a run that crossed either (ordering rule in _stage_route_preferred).
+ALIGN_OBJECTIVES = ('blocks', 'stages', 'both')
+
+
+def feature_order(intervals1, intervals2, objective):
+    """The order features are offered to the alignment loop.
+
+    objective='blocks' reproduces the pre-existing order exactly: combined
+    interval count descending, over the set of common features.
+
+    Otherwise: features that can actually complete a byte come first,
+    cheapest first; the rest follow in the pre-existing order. A feature that
+    cannot complete a byte is NOT dropped -- its bits still shrink L and buy
+    blocks -- it only loses priority. Byte distance participates in the key
+    only for reachable features, so among unreachable ones the pre-existing
+    key still decides.
+
+    Key: (0 if reachable else 1, to_next_byte if reachable else 0, -combined, f)
+    reachable := bits_to_next_byte(w_f) <= w_f - max(own1_f, own2_f)
+
+    The trailing feature index makes it a total order, keeping the run
+    deterministic -- which train_model.py:373-377's refit assertion depends on.
+
+    Computed ONCE at entry, which is correct rather than a shortcut: features
+    are structurally independent in the loop below -- each owns its interval
+    lists, `seen` resets per feature, and no accepted move on one feature
+    changes another's widths.
+    """
+    common = set(intervals1) & set(intervals2)
+    if objective == 'blocks':
+        return sorted(common,
+                      key=lambda f: len(intervals1.get(f, [])) + len(intervals2.get(f, [])),
+                      reverse=True)
+
+    widths = _pooled_widths(intervals1, intervals2)
+    floors = _own_floor_widths(intervals1, intervals2)
+
+    def key(feature):
+        step = bits_to_next_byte(widths[feature])
+        reachable = step <= widths[feature] - floors[feature]
+        combined = len(intervals1[feature]) + len(intervals2[feature])
+        return (0 if reachable else 1, step if reachable else 0, -combined, feature)
+
+    return sorted(common, key=key)
 
 
 def accept_alignment(before, after, delta_rel):
@@ -180,9 +236,49 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
     return [target for _, _, _, target in scored]
 
 
+def _stage_route_preferred(stats, n_tables):
+    """§2.4: under objective='both', does the run use the STAGE feature order?
+
+    Payoff per bit, in each route's own unit:
+
+        band route:   payoff = T blocks
+                      cost   = codeword_length - band_target(codeword_length)
+        stage route:  payoff = stages saved by reaching stage_target
+                      cost   = bits_to_reach(..., stage_target)
+
+    The two payoffs are in different units and this deliberately does NOT
+    convert between them: whether a stage is worth more than T blocks depends
+    on which ceiling the design is running against, and in replay neither is a
+    constraint -- both are simply reported. So the ratios are compared as
+    stated, and ties go to the stage route.
+
+    Why prefer the fragile route when both are live. Structural reachability
+    bounds the best case for both without saying anything about the greedy run
+    that follows, and the two fail differently: the band route is served by
+    ANY merge on any feature, so a rejected candidate has many substitutes;
+    the stage route is served only by merges on features just above a byte
+    boundary, where there may be no substitute at all. Running the stage order
+    first orders the two by which is more likely to be lost. That preference
+    is a stated choice, not a derivation; E6 measures what it cost.
+    """
+    target = stats['stage_target']
+    cost = stats['bits_to_reach']
+    if target is None or target < stats['key_bytes_floor'] or cost is None:
+        return False
+    if cost == 0:
+        return True
+
+    stage_payoff = (stats['ternary_stages_before']
+                    - ternary_stages(target, n_tables))
+    band_cost = stats['codeword_before'] - band_target(stats['codeword_before'])
+    band_live = band_target(stats['codeword_before']) >= stats['codeword_floor']
+    band_ppb = (n_tables / band_cost) if band_live else 0.0
+    return stage_payoff / cost >= band_ppb
+
+
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
-                        candidate_log=None):
+                        candidate_log=None, *, align_objective='blocks'):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -195,6 +291,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
+    align_objective : one of ALIGN_OBJECTIVES, default 'blocks'
+        What the shed bits are aimed at. 'blocks' is the pre-existing
+        behaviour exactly. 'stages' orders features so that bits complete
+        whole crossbar bytes, and spends the tolerance while a paying stage
+        step is still reachable. 'both' does either, preferring the stage
+        route where both are live (see _stage_route_preferred).
 
     Returns:
     --------
@@ -203,6 +305,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         only way to get the aligned models; discarding it discards the
         alignment.
     """
+    if align_objective not in ALIGN_OBJECTIVES:
+        raise ValueError('align_objective must be one of {}, got {!r}'.format(
+            ALIGN_OBJECTIVES, align_objective))
     # C8: deepcopy before anything below reads or mutates rf1/rf2, and
     # specifically before build_prediction_cache -- its tree_predictions feed
     # IncrementalMetrics' vote matrix, so if the copy happened after that
@@ -288,15 +393,41 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['codeword_floor'] = codeword_floor(intervals1, intervals2)
     stats['rolled_back'] = False
 
+    # The byte domain, recorded unconditionally. T is the number of
+    # classification tables -- one per tree, both models
+    # (build_p4_script.py:636-659) -- and is constant for the run, since
+    # alignment relocates thresholds and never changes the forests.
+    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
+    stats['key_bytes_before'] = pooled_key_bytes(intervals1, intervals2)
+    stats['key_bytes_floor'] = key_bytes_floor(intervals1, intervals2)
+    stats['ternary_stages_before'] = ternary_stages(stats['key_bytes_before'],
+                                                    n_tables)
+    stats['stage_target'] = stage_step_target(stats['key_bytes_before'], n_tables)
+    stats['bits_to_reach'] = (
+        bits_to_reach(_pooled_widths(intervals1, intervals2),
+                      _own_floor_widths(intervals1, intervals2),
+                      stats['stage_target'])
+        if stats['stage_target'] is not None else None)
+
     budget = BandBudget(stats['codeword_before'], stats['codeword_floor'],
                         delta_rel)
 
-    # Find common features
-    common_features = set(intervals1.keys()) & set(intervals2.keys())
- 
-    sorted_features = sorted(common_features,
-                        key=lambda f: len(intervals1.get(f, [])) + len(intervals2.get(f, [])),
-                        reverse=True)
+    stage_budget = None
+    if align_objective != 'blocks':
+        stage_budget = StageBudget(stats['key_bytes_before'],
+                                   stats['key_bytes_floor'], delta_rel, n_tables)
+
+    # 'stages' with no target has nothing to chase, so it falls back to the
+    # block order rather than reordering for a step that cannot be bought.
+    # 'both' chooses by payoff per bit, computed once at entry.
+    order_objective = align_objective
+    if align_objective == 'stages' and stats['stage_target'] is None:
+        order_objective = 'blocks'
+    elif align_objective == 'both' and not _stage_route_preferred(
+            stats, n_tables):
+        order_objective = 'blocks'
+
+    sorted_features = feature_order(intervals1, intervals2, order_objective)
 
     for feature_idx in sorted_features:
         current_ranges1 = intervals1[feature_idx]
@@ -397,7 +528,19 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
                     stats['attempted'] += 1
 
+                    # Spending is the OR of the two budgets. BandBudget closes
+                    # EXACTLY when a band is crossed -- i.e. just after
+                    # shedding ~44 bits, which is when a byte is most likely
+                    # to be one or two bits away. Measured on real runs: the
+                    # band gate is closed while a byte is still reachable in
+                    # 1 of 24 cells at entry but 6 of 24 at exit, and one of
+                    # those six carries ~19% of the whole grid's stage
+                    # opportunity. Evaluating this at entry would have cut the
+                    # gate as dead weight.
                     effective_delta = budget.delta_for_candidate()
+                    if (stage_budget is not None and effective_delta == 0.0
+                            and delta_rel != 0.0):
+                        effective_delta = stage_budget.delta_for_candidate()
 
                     # IncrementalMetrics' ordering contract: apply reads the NEW
                     # per-tree predictions out of tree_predictions and the OLD
@@ -478,8 +621,17 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         current_ranges2, idx2, range2, target,
                         feature_idx, threshold_index2)
 
-                    budget.note_shed(pooled_before - pooled_interval_count(
-                        current_ranges1, current_ranges2))
+                    pooled_after = pooled_interval_count(current_ranges1,
+                                                         current_ranges2)
+                    budget.note_shed(pooled_before - pooled_after)
+                    if stage_budget is not None:
+                        # An interval list holds one more entry than it has
+                        # thresholds, so the width is the count minus one.
+                        # Only this feature moved, so only its byte-rounded
+                        # width can have changed.
+                        stage_budget.note_shed_bytes(
+                            byte_width(pooled_before - 1)
+                            - byte_width(pooled_after - 1))
 
                     # First acceptance wins: the ranking already put the
                     # cheapest admissible corner first, and the tuples this
@@ -502,10 +654,16 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 'MAX_RECOMPUTE_ROUNDS={} rounds'.format(
                     feature_idx, MAX_RECOMPUTE_ROUNDS))
 
-    stats['intervals_after'] = joint_interval_count(
-        extract_feature_intervals(rf1), extract_feature_intervals(rf2))
+    intervals1_after = extract_feature_intervals(rf1)
+    intervals2_after = extract_feature_intervals(rf2)
+    stats['intervals_after'] = joint_interval_count(intervals1_after,
+                                                    intervals2_after)
     stats['codeword_after'] = stats['intervals_after'] - n_features
-    stats['spent_budget'] = budget.spent_budget
+    stats['key_bytes_after'] = pooled_key_bytes(intervals1_after, intervals2_after)
+    stats['ternary_stages_after'] = ternary_stages(stats['key_bytes_after'],
+                                                   n_tables)
+    stats['spent_budget'] = budget.spent_budget or (
+        stage_budget is not None and stage_budget.spent_budget)
 
     return rf1, rf2 #, alignment_stats
 
@@ -985,9 +1143,27 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
         threshold_index[(feature_idx, new_threshold)] = nodes
 
 
+def crossed_a_boundary(stats, objective, n_tables):
+    """Did this run buy anything the objective was aiming at?
+
+    Under 'blocks' this is the pre-existing test exactly. Under the stage
+    objectives it also accepts a stage step -- compared on STAGES, never on
+    tables-per-stage: fit rising from 2 to 3 at T=4 leaves stage_depth
+    unchanged, and keeping such a run would reproduce in the byte domain
+    precisely the failure this rollback exists to prevent.
+    """
+    if band_factor(stats['codeword_after']) < band_factor(stats['codeword_before']):
+        return True
+    if objective == 'blocks':
+        return False
+    return (ternary_stages(stats['key_bytes_after'], n_tables)
+            < ternary_stages(stats['key_bytes_before'], n_tables))
+
+
 def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
                       overlap_threshold=0.5, delta_rel=0.0,
-                      align_stats=None, candidate_log=None):
+                      align_stats=None, candidate_log=None,
+                      align_objective='blocks'):
     """align_rf_thresholds with C1's commit-or-rollback guarantee.
 
     `band_target(L) >= floor` proves the next band is REACHABLE, not that it
@@ -1013,12 +1189,14 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     speculative = align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         overlap_threshold=overlap_threshold, delta_rel=delta_rel,
-        align_stats=stats, candidate_log=candidate_log)
+        align_stats=stats, candidate_log=candidate_log,
+        align_objective=align_objective)
 
     if not stats['spent_budget']:
         return speculative
 
-    if band_factor(stats['codeword_after']) < band_factor(stats['codeword_before']):
+    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
+    if crossed_a_boundary(stats, align_objective, n_tables):
         return speculative
 
     # Spent and crossed nothing. Redo at delta = 0 and keep THAT.
@@ -1031,6 +1209,7 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     result = align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         overlap_threshold=overlap_threshold, delta_rel=0.0,
-        align_stats=stats, candidate_log=candidate_log)
+        align_stats=stats, candidate_log=candidate_log,
+        align_objective=align_objective)
     stats['rolled_back'] = True
     return result

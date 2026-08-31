@@ -1293,11 +1293,16 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     stats_r1, log_r1 = _align_golden_pair(delta_rel, 1, monkeypatch)
     stats_c3, log_c3 = _align_golden_pair(delta_rel, ta.MAX_RECOMPUTE_ROUNDS, monkeypatch)
 
-    # No new stats key -- 'round' lives in the candidate_log instead.
+    # No new stats key from C3 itself -- 'round' lives in the candidate_log
+    # instead. The seven byte-domain keys below are Task 5's addition,
+    # recorded unconditionally regardless of C3 round depth.
     assert set(stats_c3) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
         'codeword_before', 'codeword_after', 'codeword_floor',
-        'spent_budget', 'rolled_back'}
+        'spent_budget', 'rolled_back',
+        'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
+        'ternary_stages_before', 'ternary_stages_after', 'stage_target',
+        'bits_to_reach'}
     assert stats_c3['intervals_before'] == stats_r1['intervals_before']
     assert stats_c3['attempted'] >= stats_r1['attempted']
     assert stats_c3['accepted'] >= stats_r1['accepted']
@@ -1343,7 +1348,10 @@ def test_align_stats_records_the_codeword_length_it_optimises():
     assert set(stats) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
         'codeword_before', 'codeword_after', 'codeword_floor',
-        'spent_budget', 'rolled_back'}
+        'spent_budget', 'rolled_back',
+        'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
+        'ternary_stages_before', 'ternary_stages_after', 'stage_target',
+        'bits_to_reach'}
 
     n_features = len(set(ta.extract_feature_intervals(rf1))
                      | set(ta.extract_feature_intervals(rf2)))
@@ -1602,3 +1610,203 @@ def test_rank_targets_orders_equal_gain_corners_by_max_damage_not_sum():
         'the lower-damage corner (intersection, max damage 0.45) must be '
         'tried before the higher-damage one (union, max damage 0.50)',
         targets)
+
+
+# ---------------------------------------------------------------------------
+# The align_objective axis (design 2026-08-30 §2.1-§2.4).
+# ---------------------------------------------------------------------------
+
+def _ordering_fixture():
+    """Two interval dicts whose byte-first order is a genuine reordering of
+    the combined-count order.
+
+    Each feature's own1 and own2 threshold sets are same-sized but only
+    PARTIALLY overlapping, so the pooled (union) width exceeds the floor
+    (max of the two own widths) by real room to shrink through alignment:
+      0: own1={1..17}, own2={9..25}  -> pooled 25, floor 17, room 8, step 1  REACHABLE
+      1: own1={1..30}, own2={3..32}  -> pooled 32, floor 30, room 2, step 8  unreachable
+      2: own1={1..10}, own2={9..18}  -> pooled 18, floor 10, room 8, step 2  REACHABLE
+    Combined-count order is 1, 0, 2 (widest first); byte-first order must be
+    0, 2, 1 -- cheapest reachable byte first, unreachable-but-widest last.
+    """
+    def interval_list(bounds):
+        # A gap-free tiling terminated at INFINITE, built from sorted finite
+        # threshold values -- the shape extract_feature_intervals actually
+        # produces, unlike a bare list of singleton (i, i) tuples (which
+        # smuggles in an extra threshold at 0 and breaks the width algebra).
+        intervals = []
+        lo = 0
+        for b in bounds:
+            intervals.append((lo, b))
+            lo = b + 1
+        intervals.append((lo, INFINITE))
+        return intervals
+
+    iv1 = {0: interval_list(range(1, 18)),
+          1: interval_list(range(1, 31)),
+          2: interval_list(range(1, 11))}
+    iv2 = {0: interval_list(range(9, 26)),
+          1: interval_list(range(3, 33)),
+          2: interval_list(range(9, 19))}
+    return iv1, iv2
+
+
+def test_feature_order_under_blocks_is_the_pre_existing_order():
+    """objective='blocks' must reproduce today's order EXACTLY -- combined
+    interval count descending -- or commit 3 is not additive."""
+    iv1, iv2 = _ordering_fixture()
+    common = set(iv1) & set(iv2)
+    expected = sorted(common,
+                      key=lambda f: len(iv1.get(f, [])) + len(iv2.get(f, [])),
+                      reverse=True)
+    assert ta.feature_order(iv1, iv2, 'blocks') == expected
+
+
+def test_feature_order_under_stages_puts_the_cheapest_reachable_byte_first():
+    """A feature that cannot complete a byte is NOT dropped -- its bits still
+    shrink L and buy blocks -- it only loses priority."""
+    iv1, iv2 = _ordering_fixture()
+    assert ta.feature_order(iv1, iv2, 'stages') == [0, 2, 1]
+
+
+def test_feature_order_keeps_the_pre_existing_key_among_unreachable_features():
+    """Byte distance decides only among features that can actually complete a
+    byte; the rest follow in the pre-existing order."""
+    def tiling(width):
+        return [(0, 0)] + [(i, i) for i in range(1, width + 1)]
+    # both unreachable (floor == pooled width), widths 20 and 28
+    iv = {0: tiling(20), 1: tiling(28)}
+    assert ta.feature_order(iv, iv, 'stages') == [1, 0]
+
+
+def test_feature_order_is_a_total_order():
+    """train_model.py:373-377's refit assertion depends on the run being
+    deterministic, so ties must be broken, not left to set iteration."""
+    def tiling(width):
+        return [(0, 0)] + [(i, i) for i in range(1, width + 1)]
+    iv = {0: tiling(20), 1: tiling(20), 2: tiling(20)}
+    assert ta.feature_order(iv, iv, 'stages') == [0, 1, 2]
+
+
+def test_an_unknown_objective_is_rejected_loudly():
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    with pytest.raises(ValueError, match='align_objective'):
+        ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                               delta_rel=0.0, align_objective='stage')
+
+
+def _boundary_stats(codeword_before, codeword_after, bytes_before, bytes_after):
+    return {'codeword_before': codeword_before, 'codeword_after': codeword_after,
+            'key_bytes_before': bytes_before, 'key_bytes_after': bytes_after}
+
+
+def test_crossed_a_boundary_reports_a_band_crossing_under_every_objective():
+    stats = _boundary_stats(100, 80, 35, 35)      # band factor 3 -> 2
+    for objective in ('blocks', 'stages', 'both'):
+        assert ta.crossed_a_boundary(stats, objective, n_tables=6)
+
+
+def test_crossed_a_boundary_reports_nothing_when_neither_moved():
+    stats = _boundary_stats(100, 99, 35, 35)
+    for objective in ('blocks', 'stages', 'both'):
+        assert not ta.crossed_a_boundary(stats, objective, n_tables=6)
+
+
+def test_a_stage_step_alone_counts_only_for_the_stage_objectives():
+    """Under 'blocks' the surviving policy keeps rolling back a run that
+    crossed only a stage step: its semantics are pinned by the re-anchored
+    goldens, and widening what counts as 'bought something' would change a
+    measured property of an already-reported arm."""
+    stats = _boundary_stats(100, 99, 35, 32)      # 6 stages -> 3, no band
+    assert not ta.crossed_a_boundary(stats, 'blocks', n_tables=6)
+    assert ta.crossed_a_boundary(stats, 'stages', n_tables=6)
+    assert ta.crossed_a_boundary(stats, 'both', n_tables=6)
+
+
+def test_a_fit_increase_that_saves_no_stage_is_not_a_crossing():
+    """Compare STAGES, not fit. fit rising 2 -> 3 at T=4 leaves stage_depth
+    unchanged, and keeping that run would reproduce in the byte domain exactly
+    the failure the rollback exists to prevent."""
+    stats = _boundary_stats(100, 99, 30, 21)
+    assert not ta.crossed_a_boundary(stats, 'stages', n_tables=4)  # 2 -> 2
+    assert ta.crossed_a_boundary(stats, 'stages', n_tables=6)      # 3 -> 2
+
+
+@pytest.mark.parametrize('align_objective', ['blocks', 'stages', 'both'])
+def test_the_byte_domain_stats_are_recorded_on_every_objective(align_objective):
+    """B is as fundamental to the stage cost as L is to the block cost, and
+    the validation needs these on 'blocks' runs to have anything to compare
+    against."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=0.05, align_stats=stats,
+                           align_objective=align_objective)
+    for key in ('key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
+                'ternary_stages_before', 'ternary_stages_after'):
+        assert isinstance(stats[key], int), key
+    assert stats['key_bytes_after'] <= stats['key_bytes_before']
+    assert stats['key_bytes_floor'] <= stats['key_bytes_after']
+
+
+@pytest.mark.parametrize('delta_rel', [0.0, 0.05])
+def test_the_blocks_objective_is_the_default_and_changes_nothing(delta_rel,
+                                                                 monkeypatch):
+    """Commit 3 is additive relative to the post-deletion code: the default
+    objective must be bit-identical to not passing one at all."""
+    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    implicit = {}
+    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=delta_rel,
+                                    align_stats=implicit)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    explicit = {}
+    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                    overlap_threshold=0.5, delta_rel=delta_rel,
+                                    align_stats=explicit,
+                                    align_objective='blocks')
+    assert implicit == explicit
+    for x, y in zip(a1.estimators_ + a2.estimators_,
+                    b1.estimators_ + b2.estimators_):
+        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
+
+
+def test_pooled_key_bytes_equals_the_evaluators_ternary_key_bytes():
+    """E1, the premise. If this fails the budget prices a table the switch
+    does not build, and nothing else in the byte domain may be read."""
+    from src.p4gen.build_p4_script import get_joint_feature_intervals
+    from src.p4gen.evaluation import ternary_table_key_bytes
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    names = ['f0', 'f1', 'f2', 'f3']
+    for models in ((rf1, rf2),
+                   ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                          overlap_threshold=0.5, delta_rel=0.05)):
+        m1, m2 = models
+        joint = get_joint_feature_intervals(m1, names, m2, names)
+        assert ab.pooled_key_bytes(ta.extract_feature_intervals(m1),
+                                   ta.extract_feature_intervals(m2)) == \
+            ternary_table_key_bytes(joint)
+
+
+@pytest.mark.parametrize('key_bytes,n_tables', [(30, 6), (21, 6), (35, 6),
+                                                (16, 4), (8, 8), (7, 8)])
+def test_ternary_stages_agrees_with_the_real_packer(key_bytes, n_tables):
+    """E1b. The classification tables all key on the same fields, so they
+    share one width; on such a uniform list the closed form must equal what
+    the FFD packer actually returns."""
+    from src.p4gen.evaluation import crossbar_stages_needed
+    specs = [(1, key_bytes)] * n_tables
+    assert ab.ternary_stages(key_bytes, n_tables) == \
+        crossbar_stages_needed(specs).occupied
+
+
+def test_ternary_stages_is_a_lower_bound_when_the_block_cap_binds():
+    """Documented limitation, pinned so it cannot be mistaken for agreement:
+    ternary_stages models the crossbar caps only. Where a table's BLOCK count
+    forces a stage on its own, the real packer needs more."""
+    from src.p4gen.evaluation import crossbar_stages_needed
+    specs = [(20, 8)] * 4                     # 20 blocks each, cap is 24/stage
+    assert ab.ternary_stages(8, 4) == 1
+    assert crossbar_stages_needed(specs).occupied == 4

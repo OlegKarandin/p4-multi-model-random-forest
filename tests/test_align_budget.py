@@ -145,6 +145,21 @@ def test_tables_per_stage_never_returns_zero():
     assert ab.tables_per_stage(200) == 1
 
 
+def test_tables_per_stage_handles_a_zero_byte_key():
+    """Regression: a forest that never split at all (a real, reachable Optuna
+    sample -- e.g. min_samples_leaf close to n_samples yields single-leaf
+    trees) gives pooled_key_bytes == 0, and a bare `64 // key_bytes` raises
+    ZeroDivisionError. A 0-byte key costs nothing on the crossbar byte
+    budget, so only the table-count cap should bind -- exactly what
+    evaluation.crossbar_stages_needed's own load() computes for a 0-width
+    table (its byte term is 0 / 64 == 0, leaving only 1 / 8)."""
+    from src.p4gen.evaluation import crossbar_stages_needed
+    assert ab.tables_per_stage(0) == 8
+    for n_tables in (1, 4, 8, 9, 20):
+        assert ab.ternary_stages(0, n_tables) == \
+            crossbar_stages_needed([(1, 0)] * n_tables).occupied
+
+
 def test_ternary_stages_is_the_byte_domain_step_function():
     assert ab.ternary_stages(30, 4) == 2
     assert ab.ternary_stages(21, 4) == 2
