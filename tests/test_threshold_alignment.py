@@ -1296,10 +1296,11 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     # No new stats key from C3 itself -- 'round' lives in the candidate_log
     # instead. The seven byte-domain keys below are Task 5's addition,
     # recorded unconditionally regardless of C3 round depth.
+    # Task 2 adds 'accuracy_spent', recorded on every objective.
     assert set(stats_c3) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
         'codeword_before', 'codeword_after', 'codeword_floor',
-        'spent_budget', 'rolled_back',
+        'spent_budget', 'rolled_back', 'accuracy_spent',
         'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
         'ternary_stages_before', 'ternary_stages_after', 'stage_target',
         'bits_to_reach'}
@@ -1348,7 +1349,7 @@ def test_align_stats_records_the_codeword_length_it_optimises():
     assert set(stats) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
         'codeword_before', 'codeword_after', 'codeword_floor',
-        'spent_budget', 'rolled_back',
+        'spent_budget', 'rolled_back', 'accuracy_spent',
         'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
         'ternary_stages_before', 'ternary_stages_after', 'stage_target',
         'bits_to_reach'}
@@ -2556,3 +2557,55 @@ def _policy_anchor_capture(objective):
 @pytest.mark.parametrize('objective', ['blocks', 'stages', 'both'])
 def test_align_with_policy_matches_its_captured_anchor(objective):
     assert _policy_anchor_capture(objective) == _POLICY_OBJECTIVE_ANCHOR[objective]
+
+
+@pytest.mark.parametrize('align_objective', ['blocks', 'stages'])
+@pytest.mark.parametrize('delta_rel', [0.0, 0.05, None])
+def test_accuracy_spent_is_recorded_on_every_objective_and_delta(
+        align_objective, delta_rel):
+    """§2.4: the ranking needs a price for every run, and the campaign needs
+    it on single-objective runs too -- otherwise there is nothing to compare
+    a 'both' run against."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=delta_rel, align_stats=stats,
+                           align_objective=align_objective)
+    assert isinstance(stats['accuracy_spent'], float)
+    assert 0.0 <= stats['accuracy_spent'] <= 1.0
+
+
+def test_accuracy_spent_is_zero_when_no_move_is_accepted(monkeypatch):
+    """A run that accepts nothing changed no threshold, so it spent nothing.
+    Forcing every candidate to be rejected is the cleanest way to pin the
+    floor of the quantity."""
+    monkeypatch.setattr(ta, 'accept_alignment', lambda before, after, d: False)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=0.05, align_stats=stats)
+    assert stats['accepted'] == 0
+    assert stats['accuracy_spent'] == 0.0
+
+
+def test_accuracy_spent_is_a_max_across_tasks_not_a_mean(monkeypatch):
+    """The module's own standard everywhere else (accept_alignment's all(),
+    ratchet, _rank_targets' damage). A run cheap on average but expensive on
+    one task is not cheap, and this field must not be the first place that
+    principle is violated."""
+    captured = {}
+    real = ta.rel_deg
+
+    def spy(before, after):
+        captured.setdefault('pairs', []).append((before, after))
+        return real(before, after)
+
+    monkeypatch.setattr(ta, 'rel_deg', spy)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=0.05, align_stats=stats)
+    # The final four calls are the accuracy_spent computation itself, one per
+    # metric, and its result must be their maximum.
+    final_four = captured['pairs'][-4:]
+    assert stats['accuracy_spent'] == max(real(b, a) for b, a in final_four)

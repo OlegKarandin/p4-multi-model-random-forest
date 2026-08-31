@@ -376,6 +376,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # Last-ACCEPTED state -- the model's actual current metrics, as opposed
     # to marks' running per-task max. Before any candidate, both coincide.
     current = marks
+    # The run's starting point, kept separate from `marks` because `marks`
+    # ratchets upward and would understate what a run gave away. §2.4's
+    # accuracy_spent is measured from HERE to the final `current`.
+    started_at = list(marks)
 
     stats = align_stats if align_stats is not None else {}
     stats['attempted'] = 0
@@ -664,6 +668,15 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                                                    n_tables)
     stats['spent_budget'] = budget.spent_budget or (
         stage_budget is not None and stage_budget.spent_budget)
+
+    # §2.4: what this run gave away, in the same units accept_alignment uses,
+    # priced as a MAX across the four metrics rather than a sum or a mean --
+    # the standard this module already applies in accept_alignment's all(),
+    # in ratchet, and in _rank_targets' damage. Recorded on every objective:
+    # 'both' ranks on it, and single-objective runs need it so a campaign has
+    # something to compare a 'both' run against.
+    stats['accuracy_spent'] = max(0.0, max(rel_deg(b, a)
+                                           for b, a in zip(started_at, current)))
 
     return rf1, rf2 #, alignment_stats
 
