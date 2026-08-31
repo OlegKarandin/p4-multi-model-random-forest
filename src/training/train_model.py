@@ -312,7 +312,13 @@ def train_multi_RF_Optuna_multi_constrained(
         trial.set_user_attr('acc_app', acc_A)
         trial.set_user_attr('acc_ddos', acc_B)
         trial.set_user_attr('blocks', int(usage.blocks))
+        # Two different quantities, never to be conflated: `stages` is the
+        # OCCUPIED match-table count, `stage_depth` is the PIPELINE DEPTH the
+        # 12-stage ceiling reads. §9 of the 2026-08-27 overlap findings
+        # reversed a stated conclusion by reading the first as the second.
+        # ResourceUsage already carries both; only the recording was missing.
         trial.set_user_attr('stages', int(usage.stages))
+        trial.set_user_attr('stage_depth', int(usage.stage_depth))
         trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 0.0)
         trial.set_user_attr('crossbar_violation', 0.0)

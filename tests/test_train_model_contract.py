@@ -435,6 +435,49 @@ def test_alignment_fields_are_none_not_zero_when_the_joint_arm_disables_alignmen
     assert out.intervals_after is None
 
 
+def test_a_feasible_trial_records_stage_depth_separately_from_stages(monkeypatch):
+    """§2.6. `stages` is OCCUPIED match-table count; `stage_depth` is PIPELINE
+    DEPTH. Conflating them already reversed one stated conclusion (2026-08-27
+    findings §9), so this asserts they are sourced from the two DIFFERENT
+    ResourceUsage fields -- not merely that both keys exist, which would pass
+    even if both were wired to usage.stages."""
+    import optuna
+    import src.training.train_model as tm
+    import src.p4gen.evaluation as ev
+
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        captured['study'] = study
+        return study
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    # Deliberately different values, both feasible: blocks under max_blocks,
+    # stage_depth under TOFINO_PIPELINE_STAGES, codeword short.
+    monkeypatch.setattr(
+        tm, 'multi_model_memory_evaluation',
+        lambda *a, **k: ev.ResourceUsage(
+            stages=3, blocks=8, stage_depth=7,
+            range_entries=1, ternary_entries=1, codeword_length=40,
+            register_depth=1, register_count=0, register_sram_bits=0,
+            range_depth=4, ternary_depth=7,
+            range_tables=1, ternary_tables=1))
+
+    _call(cfg=TrainConfig(n_trials=5, min_feasible_before_stop=2, lookback=2))
+
+    from src.training import early_stopping
+    feasible = [t for t in captured['study'].trials
+                if early_stopping.is_feasible(t)]
+    assert feasible, 'the search should have produced at least one feasible trial'
+    for trial in feasible:
+        assert trial.user_attrs['stages'] == 3
+        assert trial.user_attrs['stage_depth'] == 7
+
+
 def test_rf_params_from_params_reproduces_the_search_space_mapping():
     """The refit path and the replay harness must build identical estimators
     from a recorded best_params dict, or a replayed model is not the campaign's
