@@ -24,6 +24,10 @@ per-row cost before committing to a grid.
 
 Pass --policies none,aligned to get the full stage-depth-attribution
 cross (src/reporting/stage_attribution.py needs the 'none' rows).
+
+--objective selects what the shed bits are aimed at (blocks / stages /
+both); one run per objective, since the axis is single-valued. Every
+output row carries it.
 Run (from the repository root):
   PYTHONPATH=. "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" \
       scripts/replay_alignment.py --limit 5 --timing
@@ -45,7 +49,7 @@ from src.p4gen.build_p4_script import dt_thresholds_float_to_int
 from src.p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
 from src.p4gen.switch_semantics import switch_predict
 from src.training.splits import make_task_splits
-from src.training.threshold_alignment import align_with_policy
+from src.training.threshold_alignment import ALIGN_OBJECTIVES, align_with_policy
 from src.training.train_model import rf_params_from_params
 
 from sklearn.ensemble import RandomForestClassifier
@@ -149,7 +153,7 @@ def refit_pair(row, data):
 
 
 def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos,
-                   policy, delta_rel, overlap_threshold):
+                   policy, delta_rel, overlap_threshold, objective='blocks'):
     """One policy on one already-fit pair. Returns a result dict.
 
     Evaluates the resulting model pair under BOTH encodings -- 'joint' (the
@@ -165,6 +169,10 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
     and evaluates the refit pair as-is, giving the attribution an unaligned
     control. It is the one member of REPLAY_POLICIES that produces no
     align_* keys.
+
+    objective is threaded to align_with_policy as align_objective and
+    recorded on EVERY row, 'none' included, so the column stays dense --
+    a NaN there would make every downstream groupby drop the control rows.
     """
     model_app, model_ddos = models
     stats = {}
@@ -178,10 +186,12 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
             ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
             overlap_threshold=overlap_threshold,
             delta_rel=delta_rel,
-            align_stats=stats)
+            align_stats=stats,
+            align_objective=objective)
     elapsed = time.time() - started
 
-    out = {'policy': policy, 'overlap_threshold': overlap_threshold,
+    out = {'policy': policy, 'objective': objective,
+           'overlap_threshold': overlap_threshold,
            'delta_rel': 'inf' if delta_rel is None else delta_rel,
            'runtime_s': elapsed}
 
@@ -217,7 +227,7 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
 
 
 def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
-               skip_counts=None):
+               skip_counts=None, objective='blocks'):
     """Every (policy, overlap_threshold) cell for one campaign row.
 
     skip_counts, if given, is a collections.Counter (or any Counter-like
@@ -246,7 +256,8 @@ def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
         try:
             own = run_one_policy(models, app, ddos, cols_app, cols_ddos,
                                  names_app, names_ddos, 'aligned',
-                                 ARM_DELTA[row['arm_slug']], verify_overlap)
+                                 ARM_DELTA[row['arm_slug']], verify_overlap,
+                                 objective=objective)
         except Exception as exc:
             # This row's OWN recorded settings failed to reproduce -- that is
             # a break in the harness's determinism claim, not merely "this
@@ -267,7 +278,8 @@ def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
             try:
                 result = run_one_policy(
                     models, app, ddos, cols_app, cols_ddos, names_app,
-                    names_ddos, policy, ladder_delta, overlap)
+                    names_ddos, policy, ladder_delta, overlap,
+                    objective=objective)
             except Exception as exc:
                 # An exploratory sweep cell landed outside the feasible
                 # region for this refit pair (e.g. CrossbarKeyTooWide at a
@@ -300,6 +312,9 @@ def parse_args(argv=None):
     parser.add_argument('--n-splits', type=int, default=3)
     parser.add_argument('--policies', default='aligned',
                         help="comma-separated subset of {}".format(REPLAY_POLICIES))
+    parser.add_argument('--objective', default='blocks',
+                        help='alignment objective: {}'.format(
+                            ', '.join(ALIGN_OBJECTIVES)))
     parser.add_argument('--overlap-thresholds', default='0.5')
     parser.add_argument('--ladder-delta', default='0.20',
                         help="delta_rel every policy in the ladder runs at; 'inf' for accept-all")
@@ -323,15 +338,19 @@ def main(argv=None):
     if unknown:
         raise SystemExit('unknown policies {}; expected a subset of {}'.format(
             unknown, list(REPLAY_POLICIES)))
+    if args.objective not in ALIGN_OBJECTIVES:
+        raise SystemExit('unknown objective {!r}; expected one of {}'.format(
+            args.objective, list(ALIGN_OBJECTIVES)))
 
     frame = load_backup(args.results_dir)
     rows = select_rows(frame, args.arms.split(',') if args.arms else None,
                        ints(args.M), ints(args.k), args.n_splits)
     if args.limit:
         rows = rows.head(args.limit)
-    print('replaying {} rows x {} policies x {} overlap thresholds'.format(
-        len(rows), len(policies),
-        len(args.overlap_thresholds.split(','))))
+    print('replaying {} rows x {} policies x {} overlap thresholds '
+          'at objective={!r}'.format(
+              len(rows), len(policies), len(args.overlap_thresholds.split(',')),
+              args.objective))
 
     data = load_campaign_data()
     ladder_delta = None if args.ladder_delta == 'inf' else float(args.ladder_delta)
@@ -341,7 +360,8 @@ def main(argv=None):
     for i, (_, row) in enumerate(rows.iterrows()):
         out.extend(replay_row(row, data, policies,
                               floats(args.overlap_thresholds), ladder_delta,
-                              args.verify, skip_counts=skip_counts))
+                              args.verify, skip_counts=skip_counts,
+                              objective=args.objective))
         print('  [{}/{}] {} M={} split={} k={}  ({:.1f}s elapsed)'.format(
             i + 1, len(rows), row['arm_slug'], row['M'], row['split'], row['k'],
             time.time() - started))

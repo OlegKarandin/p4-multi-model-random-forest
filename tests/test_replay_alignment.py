@@ -162,7 +162,7 @@ def test_replay_row_skips_a_failing_swept_cell_but_keeps_the_rest(capsys):
 
     def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
                             names_app, names_ddos, policy, delta_rel,
-                            overlap_threshold):
+                            overlap_threshold, objective='blocks'):
         if overlap_threshold == 0.25:
             # Stand-in for a real evaluation.CrossbarKeyTooWide -- any
             # exception at this call site must be caught, so the fixture
@@ -219,7 +219,8 @@ def test_replay_row_verify_failure_does_not_block_later_swept_cells(capsys):
     calls = []
 
     def side_effect(models, app, ddos, cols_app, cols_ddos, names_app,
-                    names_ddos, policy, delta_rel, overlap_threshold):
+                    names_ddos, policy, delta_rel, overlap_threshold,
+                    objective='blocks'):
         calls.append((policy, overlap_threshold))
         if len(calls) == 1:
             raise RuntimeError('verify broke')
@@ -248,7 +249,7 @@ def test_replay_row_skip_counts_accumulate_by_policy_across_calls():
 
     def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
                             names_app, names_ddos, policy, delta_rel,
-                            overlap_threshold):
+                            overlap_threshold, objective='blocks'):
         if policy == 'aligned':
             raise RuntimeError('infeasible cell')
         return {'policy': policy, 'overlap_threshold': overlap_threshold,
@@ -280,3 +281,38 @@ def test_replay_row_skip_counts_default_to_a_throwaway_counter():
                                 verify=False)
 
     assert results == []
+
+
+def test_run_one_policy_threads_the_objective_and_records_it():
+    clf_app, clf_ddos, app, ddos, cols, names = _tiny_pair()
+
+    result = ra.run_one_policy(
+        (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
+        'aligned', delta_rel=0.0, overlap_threshold=0.5, objective='stages')
+
+    assert result['objective'] == 'stages'
+    assert result['align_key_bytes_before'] >= result['align_key_bytes_after']
+    assert 'align_stage_target' in result
+
+
+def test_run_one_policy_records_the_objective_on_none_rows_too():
+    """A dense column: 'none' carries no align_* keys, but leaving `objective`
+    NaN there would make every downstream groupby drop the control rows."""
+    clf_app, clf_ddos, app, ddos, cols, names = _tiny_pair()
+
+    result = ra.run_one_policy(
+        (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
+        'none', delta_rel=0.0, overlap_threshold=0.5, objective='both')
+
+    assert result['objective'] == 'both'
+    assert not any(k.startswith('align_') for k in result)
+
+
+def test_the_objective_defaults_to_blocks():
+    args = ra.parse_args([])
+    assert args.objective == 'blocks'
+
+
+def test_an_unknown_objective_is_rejected_before_any_refit():
+    with pytest.raises(SystemExit, match='objective'):
+        ra.main(['--objective', 'stage'])
