@@ -1,7 +1,7 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.p4gen.evaluation import band_factor
 from src.training.align_budget import (BandBudget, StageBudget, _own_floor_widths,
-                                       _pooled_widths, band_target,
+                                       _pooled_widths,
                                        bits_to_next_byte, bits_to_reach,
                                        byte_width, codeword_floor,
                                        key_bytes_floor, pooled_interval_count,
