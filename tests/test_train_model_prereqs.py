@@ -8,7 +8,7 @@ def test_importing_train_model_does_not_patch_sklearn_by_default():
     PolimiML env that implementation cannot round-trip trees through
     scikit-learn 1.6.1's Tree.__setstate__, so every .fit() raises. It also may
     not observe the in-place tree_.threshold mutations that
-    dt_thresholds_float_to_int and align_rf_thresholds depend on. Default off."""
+    dt_thresholds_float_to_int and align_with_policy depend on. Default off."""
     import src.training.train_model  # noqa: F401  -- the import IS the action under test
     from sklearn.ensemble import RandomForestClassifier
 

@@ -75,7 +75,7 @@ def test_delta_align_label_disjoint_encoding_suppresses_it_like_arm_slug():
 def test_overlap_threshold_label_is_what_goes_in_the_row():
     """Spec C.1: overlap_threshold is a float, or "" when alignment did not
     run -- mirrors delta_align_label, since overlap_threshold is only
-    consulted by align_rf_thresholds, which is never called for the
+    consulted by align_with_policy, which is never called for the
     independent arm or the joint-off ablation.
 
     Also covers the disjoint-encoding suppression that arm_slug and
@@ -114,3 +114,30 @@ def test_unknown_encoding_is_rejected_by_delta_align_label():
 def test_unknown_encoding_is_rejected_by_overlap_threshold_label():
     with pytest.raises(ValueError, match='encoding'):
         TrainConfig().overlap_threshold_label('mixed')
+
+
+def test_align_objective_defaults_to_blocks():
+    """Behaviour-preserving relative to the post-deletion code -- NOT relative
+    to the archive, which ran the since-deleted legacy path."""
+    assert TrainConfig().align_objective == 'blocks'
+
+
+def test_an_unknown_align_objective_is_rejected_at_construction():
+    with pytest.raises(ValueError, match='align_objective'):
+        TrainConfig(align_objective='stage')
+
+
+@pytest.mark.parametrize('objective', ['blocks', 'stages', 'both'])
+def test_every_declared_objective_constructs(objective):
+    assert TrainConfig(align_objective=objective).align_objective == objective
+
+
+def test_align_objective_does_not_enter_the_arm_slug():
+    """Deliberate: the slug format is what load_backup's filename parsing and
+    every existing analysis read. Distinguishing objectives in the filename is
+    a campaign-design decision (design 2026-08-30 §6), not part of this
+    wiring -- a campaign sweeping two objectives would overwrite its own
+    output and must change the slug first."""
+    a = TrainConfig(delta_align=0.20, align_objective='blocks')
+    b = TrainConfig(delta_align=0.20, align_objective='stages')
+    assert a.arm_slug('joint') == b.arm_slug('joint') == 'joint-d020'

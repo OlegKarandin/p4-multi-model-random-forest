@@ -99,7 +99,7 @@ def test_an_impossible_block_budget_raises_no_feasible_solution():
     assert excinfo.value.k == 3
 
 
-def test_alignment_enabled_false_never_calls_align_rf_thresholds(monkeypatch):
+def test_alignment_enabled_false_never_calls_align_with_policy(monkeypatch):
     """Spec A.2: the ablation arm is a genuine SKIP of the call, not
     delta_align = 0, so the arm is provably prediction-identical to the
     unaligned models."""
@@ -111,7 +111,7 @@ def test_alignment_enabled_false_never_calls_align_rf_thresholds(monkeypatch):
         calls.append(kwargs)
         return args[0], args[1]
 
-    monkeypatch.setattr(tm, 'align_rf_thresholds', spy)
+    monkeypatch.setattr(tm, 'align_with_policy', spy)
 
     _call(encoding='joint',
           cfg=TrainConfig(alignment_enabled=False, n_trials=6,
@@ -120,7 +120,12 @@ def test_alignment_enabled_false_never_calls_align_rf_thresholds(monkeypatch):
     assert calls == []
 
 
-def test_the_joint_arm_passes_delta_align_and_overlap_threshold_through(monkeypatch):
+def test_the_joint_arm_aligns_through_the_rollback_wrapper(monkeypatch):
+    """Design 2026-08-30 §2.7: the campaign called align_rf_thresholds
+    directly, so no campaign ever had C1's commit-or-rollback. Routing through
+    align_with_policy is what makes align_objective expressible at campaign
+    quality at all -- without it a rerun bakes 'blocks' into the new archive
+    and needs a second rerun to compare objectives."""
     import src.training.train_model as tm
 
     calls = []
@@ -129,13 +134,15 @@ def test_the_joint_arm_passes_delta_align_and_overlap_threshold_through(monkeypa
         calls.append(kwargs)
         return rf1, rf2
 
-    monkeypatch.setattr(tm, 'align_rf_thresholds', spy)
+    monkeypatch.setattr(tm, 'align_with_policy', spy)
 
     _call(encoding='joint',
-          cfg=TrainConfig(delta_align=0.05, overlap_threshold=0.4, n_trials=6,
+          cfg=TrainConfig(delta_align=0.05, overlap_threshold=0.4,
+                          align_objective='stages', n_trials=6,
                           min_feasible_before_stop=2, lookback=2))
 
     assert calls, 'alignment should have run in the joint arm'
+    assert all(c['align_objective'] == 'stages' for c in calls)
     assert all(c['delta_rel'] == 0.05 for c in calls)
     assert all(c['overlap_threshold'] == 0.4 for c in calls)
 
@@ -146,7 +153,7 @@ def test_the_independent_arm_never_aligns(monkeypatch):
     import src.training.train_model as tm
 
     calls = []
-    monkeypatch.setattr(tm, 'align_rf_thresholds',
+    monkeypatch.setattr(tm, 'align_with_policy',
                         lambda rf1, rf2, *a, **k: (calls.append(1), (rf1, rf2))[1])
 
     _call(encoding='disjoint')
@@ -356,7 +363,7 @@ def test_align_stats_on_the_result_describe_the_refit_not_an_earlier_trial(monke
     Force every call's stats to be visibly distinct (a monotonically
     increasing counter) and assert the RETURNED result carries the counter
     value from the LAST call, which is the refit -- one more than the number
-    of trials that called align_rf_thresholds during the search. Before gap
+    of trials that called align_with_policy during the search. Before gap
     1 is fixed, the refit calls fit_pair without an align_stats kwarg, so the
     dict this test reads from stays empty and the fields come back None
     instead of matching the counter."""
@@ -375,7 +382,7 @@ def test_align_stats_on_the_result_describe_the_refit_not_an_earlier_trial(monke
             stats['intervals_after'] = n
         return rf1, rf2
 
-    monkeypatch.setattr(tm, 'align_rf_thresholds', spy)
+    monkeypatch.setattr(tm, 'align_with_policy', spy)
 
     out = _call(encoding='joint',
                 cfg=TrainConfig(n_trials=6, min_feasible_before_stop=2, lookback=2))

@@ -9,6 +9,8 @@ filename is derived from the config that produced it.
 from dataclasses import dataclass
 from typing import Optional
 
+from src.training.threshold_alignment import ALIGN_OBJECTIVES
+
 
 def _validate_encoding(encoding):
     """Shared guard for `TrainConfig.arm_slug` / `delta_align_label` /
@@ -41,6 +43,14 @@ class TrainConfig:
     overlap_threshold : minimum overlap ratio for a range pair to be an
         alignment CANDIDATE -- a separate concern from whether a candidate is
         ACCEPTED (that is delta_align). Was hardcoded at the call site.
+    align_objective : what the shed bits are AIMED at -- 'blocks' (today's
+        behaviour, the default), 'stages', or 'both'. A different axis from
+        delta_align: that is how much accuracy may be spent, this is which
+        boundary it is spent to cross. Applies to the JOINT arm only, and is
+        deliberately absent from arm_slug -- distinguishing objectives in the
+        output filename is a campaign-design decision, and a campaign that
+        sweeps two objectives must change the slug before it can, or the two
+        runs overwrite one file.
     n_trees, max_depth : inclusive search bounds -- per-axis and independent,
         so `rf_params` may suggest either maximum without suggesting both at
         once. No -1 sentinel (F10i). Rederived from the measured capacity
@@ -61,6 +71,7 @@ class TrainConfig:
     alignment_enabled: bool = True
     delta_select: float = 0.02
     overlap_threshold: float = 0.5
+    align_objective: str = 'blocks'
     n_trees: int = 11
     max_depth: int = 14
     n_trials: int = 1000
@@ -77,6 +88,9 @@ class TrainConfig:
         if not 0.0 <= self.overlap_threshold <= 1.0:
             raise ValueError(
                 'overlap_threshold must be in [0, 1], got {!r}'.format(self.overlap_threshold))
+        if self.align_objective not in ALIGN_OBJECTIVES:
+            raise ValueError('align_objective must be one of {}, got {!r}'.format(
+                ALIGN_OBJECTIVES, self.align_objective))
 
     def arm_slug(self, encoding):
         """Filename-safe arm identity, per spec C.2.

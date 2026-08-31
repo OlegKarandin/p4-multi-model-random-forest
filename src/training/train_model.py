@@ -33,7 +33,7 @@ from src.p4gen.evaluation import (
     CodewordTooLong, CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
     multi_model_memory_evaluation)
 from src.p4gen.switch_semantics import switch_predict
-from src.training.threshold_alignment import align_rf_thresholds
+from src.training.threshold_alignment import align_with_policy
 from src.training import early_stopping
 from src.training import trial_selection
 
@@ -211,8 +211,9 @@ def train_multi_RF_Optuna_multi_constrained(
         cores), so -1 here oversubscribes.
 
         Fully deterministic given (params, data): random_state is fixed above,
-        and align_rf_thresholds is a deterministic function of the two models
-        and val_align. That determinism is what lets the winner be REFIT below
+        and align_with_policy is a deterministic function of the two models
+        and val_align (it is a wrapper that may run the same pure function
+        twice). That determinism is what lets the winner be REFIT below
         instead of cached (F8) -- a measured 401 KB per model pair, ~100 pairs
         per search, per worker.
         """
@@ -224,12 +225,19 @@ def train_multi_RF_Optuna_multi_constrained(
         model_B = dt_thresholds_float_to_int(model_B)
 
         if encoding == 'joint' and cfg.alignment_enabled:
-            model_A, model_B = align_rf_thresholds(
+            # align_with_policy, not align_rf_thresholds: the direct call gave
+            # this path no commit-or-rollback at all, so a run that spent
+            # accuracy and crossed no boundary kept the loss. Design
+            # 2026-08-30 §2.7 -- NOT behaviour-preserving relative to the
+            # archive, and deliberately so; §2.9(d) records what it costs and
+            # why a rerun settles it.
+            model_A, model_B = align_with_policy(
                 model_A, model_B,
                 val_align_A[0], val_align_A[1],
                 val_align_B[0], val_align_B[1],
                 overlap_threshold=cfg.overlap_threshold,
                 delta_rel=cfg.delta_align,
+                align_objective=cfg.align_objective,
                 align_stats=align_stats)
 
         return model_A, model_B
