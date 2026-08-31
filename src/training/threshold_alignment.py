@@ -1251,6 +1251,48 @@ def crossed_a_boundary(stats, objective, n_tables):
             < ternary_stages(stats['key_bytes_before'], n_tables))
 
 
+def _run_one_arm(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *, objective,
+                 overlap_threshold, delta_rel, state, candidate_log):
+    """One objective's complete commit-or-rollback cycle, on a fresh stats dict.
+
+    This is align_with_policy's original body verbatim, parameterised by which
+    single-pass objective to run and which shared setup to run it against.
+    Extracted so align_objective='both' can invoke it twice and get two
+    independently rollback-corrected results -- §2.3's ordering constraint:
+    correct each arm FIRST, rank SECOND. Ranking speculative results would let
+    an arm that spent accuracy and crossed nothing win on paper, which is
+    precisely the failure C1's rollback exists to prevent, moved one level up.
+    """
+    stats = {}
+    speculative = align_rf_thresholds(
+        rf1, rf2, X_val1, y_val1, X_val2, y_val2,
+        overlap_threshold=overlap_threshold, delta_rel=delta_rel,
+        align_stats=stats, candidate_log=candidate_log,
+        align_objective=objective, _state=state)
+
+    if not stats['spent_budget']:
+        return speculative, stats
+
+    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
+    if crossed_a_boundary(stats, objective, n_tables):
+        return speculative, stats
+
+    # Spent and crossed nothing. Redo at delta = 0 and keep THAT.
+    if candidate_log is not None:
+        # The speculative run's candidates never happened as far as the
+        # returned models are concerned, so its log must not be reported
+        # alongside them.
+        del candidate_log[:]
+    stats.clear()
+    result = align_rf_thresholds(
+        rf1, rf2, X_val1, y_val1, X_val2, y_val2,
+        overlap_threshold=overlap_threshold, delta_rel=0.0,
+        align_stats=stats, candidate_log=candidate_log,
+        align_objective=objective, _state=state)
+    stats['rolled_back'] = True
+    return result, stats
+
+
 def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
                       overlap_threshold=0.5, delta_rel=0.0,
                       align_stats=None, candidate_log=None,
@@ -1286,30 +1328,10 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     objective, or criterion is doing the measuring.
     """
     stats = align_stats if align_stats is not None else {}
-    speculative = align_rf_thresholds(
+    result, arm_stats = _run_one_arm(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-        overlap_threshold=overlap_threshold, delta_rel=delta_rel,
-        align_stats=stats, candidate_log=candidate_log,
-        align_objective=align_objective)
-
-    if not stats['spent_budget']:
-        return speculative
-
-    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
-    if crossed_a_boundary(stats, align_objective, n_tables):
-        return speculative
-
-    # Spent and crossed nothing. Redo at delta = 0 and keep THAT.
-    if candidate_log is not None:
-        # The speculative run's candidates never happened as far as the
-        # returned models are concerned, so its log must not be reported
-        # alongside them.
-        del candidate_log[:]
+        objective=align_objective, overlap_threshold=overlap_threshold,
+        delta_rel=delta_rel, state=None, candidate_log=candidate_log)
     stats.clear()
-    result = align_rf_thresholds(
-        rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-        overlap_threshold=overlap_threshold, delta_rel=0.0,
-        align_stats=stats, candidate_log=candidate_log,
-        align_objective=align_objective)
-    stats['rolled_back'] = True
+    stats.update(arm_stats)
     return result
