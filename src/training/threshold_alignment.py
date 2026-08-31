@@ -59,8 +59,10 @@ MAX_RECOMPUTE_ROUNDS = 32
 # What the shed bits are AIMED at -- an objective axis, not another policy
 # name. The two concerns were always independent: 'blocks' is today's
 # behaviour and the default everywhere, 'stages' aims at the step that
-# reduces ceil(T / floor(64/B)), and 'both' spends for either boundary and
-# keeps a run that crossed either (ordering rule in _stage_route_preferred).
+# reduces ceil(T / floor(64/B)), and 'both' runs BOTH orderings, rolls each
+# back independently, and keeps whichever ranks better (_rank_key). Only
+# align_with_policy understands 'both'; align_rf_thresholds validates against
+# _SINGLE_PASS_OBJECTIVES.
 ALIGN_OBJECTIVES = ('blocks', 'stages', 'both')
 
 # The objectives a SINGLE alignment pass can run. 'both' is not one of them:
@@ -242,46 +244,6 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
     return [target for _, _, _, target in scored]
 
 
-def _stage_route_preferred(stats, n_tables):
-    """§2.4: under objective='both', does the run use the STAGE feature order?
-
-    Payoff per bit, in each route's own unit:
-
-        band route:   payoff = T blocks
-                      cost   = codeword_length - band_target(codeword_length)
-        stage route:  payoff = stages saved by reaching stage_target
-                      cost   = bits_to_reach(..., stage_target)
-
-    The two payoffs are in different units and this deliberately does NOT
-    convert between them: whether a stage is worth more than T blocks depends
-    on which ceiling the design is running against, and in replay neither is a
-    constraint -- both are simply reported. So the ratios are compared as
-    stated, and ties go to the stage route.
-
-    Why prefer the fragile route when both are live. Structural reachability
-    bounds the best case for both without saying anything about the greedy run
-    that follows, and the two fail differently: the band route is served by
-    ANY merge on any feature, so a rejected candidate has many substitutes;
-    the stage route is served only by merges on features just above a byte
-    boundary, where there may be no substitute at all. Running the stage order
-    first orders the two by which is more likely to be lost. That preference
-    is a stated choice, not a derivation; E6 measures what it cost.
-    """
-    target = stats['stage_target']
-    cost = stats['bits_to_reach']
-    if target is None or target < stats['key_bytes_floor'] or cost is None:
-        return False
-    if cost == 0:
-        return True
-
-    stage_payoff = (stats['ternary_stages_before']
-                    - ternary_stages(target, n_tables))
-    band_cost = stats['codeword_before'] - band_target(stats['codeword_before'])
-    band_live = band_target(stats['codeword_before']) >= stats['codeword_floor']
-    band_ppb = (n_tables / band_cost) if band_live else 0.0
-    return stage_payoff / cost >= band_ppb
-
-
 # §2.2: the read-heavy setup align_rf_thresholds does before its first
 # candidate. It depends only on the ORIGINAL, unaligned forests and the
 # validation data -- never on feature order or delta_rel -- so two runs over
@@ -357,12 +319,13 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
-    align_objective : one of ALIGN_OBJECTIVES, default 'blocks'
+    align_objective : one of _SINGLE_PASS_OBJECTIVES, default 'blocks'
         What the shed bits are aimed at. 'blocks' is the pre-existing
         behaviour exactly. 'stages' orders features so that bits complete
         whole crossbar bytes, and spends the tolerance while a paying stage
-        step is still reachable. 'both' does either, preferring the stage
-        route where both are live (see _stage_route_preferred).
+        step is still reachable. 'both' is not accepted here -- only
+        align_with_policy understands it, expanding it into one run of each
+        single-pass objective and keeping whichever ranks better.
     _state : INTERNAL. A _SharedSetup from _build_shared_setup, or None.
         None -- the default and what every public caller passes -- builds the
         setup from scratch, exactly as before. Given, the objective-independent
@@ -379,9 +342,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         only way to get the aligned models; discarding it discards the
         alignment.
     """
-    if align_objective not in ALIGN_OBJECTIVES:
+    if align_objective not in _SINGLE_PASS_OBJECTIVES:
         raise ValueError('align_objective must be one of {}, got {!r}'.format(
-            ALIGN_OBJECTIVES, align_objective))
+            _SINGLE_PASS_OBJECTIVES, align_objective))
     # C8: deepcopy before anything below reads or mutates rf1/rf2, and
     # specifically before build_prediction_cache -- its tree_predictions feed
     # IncrementalMetrics' vote matrix, so if the copy happened after that
@@ -506,12 +469,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
     # 'stages' with no target has nothing to chase, so it falls back to the
     # block order rather than reordering for a step that cannot be bought.
-    # 'both' chooses by payoff per bit, computed once at entry.
+    # 'both' is not reachable here -- align_with_policy expands it into two
+    # runs of this function, one per single-pass objective (§2.1).
     order_objective = align_objective
     if align_objective == 'stages' and stats['stage_target'] is None:
-        order_objective = 'blocks'
-    elif align_objective == 'both' and not _stage_route_preferred(
-            stats, n_tables):
         order_objective = 'blocks'
 
     sorted_features = feature_order(intervals1, intervals2, order_objective)

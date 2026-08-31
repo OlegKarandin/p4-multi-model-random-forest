@@ -1733,68 +1733,6 @@ def test_a_fit_increase_that_saves_no_stage_is_not_a_crossing():
     assert ta.crossed_a_boundary(stats, 'stages', n_tables=6)      # 3 -> 2
 
 
-# ---------------------------------------------------------------------------
-# _stage_route_preferred (final-review finding I1): the sole decider of
-# feature order under align_objective='both', previously untested.
-# ---------------------------------------------------------------------------
-
-def _route_stats(stage_target, bits_to_reach, key_bytes_floor=0,
-                 ternary_stages_before=0, codeword_before=0, codeword_floor=0):
-    return {'stage_target': stage_target, 'bits_to_reach': bits_to_reach,
-           'key_bytes_floor': key_bytes_floor,
-           'ternary_stages_before': ternary_stages_before,
-           'codeword_before': codeword_before, 'codeword_floor': codeword_floor}
-
-
-def test_stage_route_not_preferred_when_there_is_no_stage_target():
-    stats = _route_stats(stage_target=None, bits_to_reach=5)
-    assert not ta._stage_route_preferred(stats, n_tables=6)
-
-
-def test_stage_route_not_preferred_below_the_key_bytes_floor():
-    stats = _route_stats(stage_target=32, bits_to_reach=5, key_bytes_floor=40)
-    assert not ta._stage_route_preferred(stats, n_tables=6)
-
-
-def test_stage_route_not_preferred_when_the_target_is_unreachable():
-    stats = _route_stats(stage_target=32, bits_to_reach=None, key_bytes_floor=10)
-    assert not ta._stage_route_preferred(stats, n_tables=6)
-
-
-def test_stage_route_preferred_when_it_is_free():
-    """cost == 0 short-circuits before the ratio is even computed."""
-    stats = _route_stats(stage_target=32, bits_to_reach=0, key_bytes_floor=10)
-    assert ta._stage_route_preferred(stats, n_tables=6)
-
-
-def test_stage_route_preferred_when_the_band_route_is_not_live():
-    # band_target(100) == 84 < codeword_floor 90 -> band route dead,
-    # band_ppb == 0.0, so any positive stage payoff wins the ratio compare.
-    stats = _route_stats(stage_target=32, bits_to_reach=5, key_bytes_floor=10,
-                         ternary_stages_before=6, codeword_before=100,
-                         codeword_floor=90)
-    assert ta._stage_route_preferred(stats, n_tables=6)
-
-
-def test_stage_route_ratio_comparison_against_a_live_band_route():
-    """band_target(100) == 84 >= codeword_floor 80 -> band route live.
-    band_cost = 100 - 84 = 16, band_ppb = 6 / 16 = 0.375.
-    stage_payoff = ternary_stages_before(6) - ternary_stages(32, 6)(3) = 3.
-    Sweeping bits_to_reach sweeps the stage ratio through win / lose / tie
-    against that fixed 0.375 band ratio; ties go to the stage route."""
-    base = dict(stage_target=32, key_bytes_floor=10, ternary_stages_before=6,
-               codeword_before=100, codeword_floor=80)
-
-    winning = _route_stats(bits_to_reach=5, **base)   # 3/5 = 0.6 > 0.375
-    assert ta._stage_route_preferred(winning, n_tables=6)
-
-    losing = _route_stats(bits_to_reach=20, **base)   # 3/20 = 0.15 < 0.375
-    assert not ta._stage_route_preferred(losing, n_tables=6)
-
-    tied = _route_stats(bits_to_reach=8, **base)       # 3/8 = 0.375 == 0.375
-    assert ta._stage_route_preferred(tied, n_tables=6)
-
-
 def test_the_stages_objective_actually_changes_the_feature_order(monkeypatch):
     """Integration-level check that align_objective='stages' really reaches
     feature_order end to end through align_rf_thresholds -- not just that the
@@ -1834,12 +1772,13 @@ def test_the_stages_objective_actually_changes_the_feature_order(monkeypatch):
 def test_the_byte_domain_stats_are_recorded_on_every_objective(align_objective):
     """B is as fundamental to the stage cost as L is to the block cost, and
     the validation needs these on 'blocks' runs to have anything to compare
-    against."""
+    against. Routed through align_with_policy because that is now the only
+    entry point that understands all three objectives (§2.1)."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
-                           delta_rel=0.05, align_stats=stats,
-                           align_objective=align_objective)
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                         delta_rel=0.05, align_stats=stats,
+                         align_objective=align_objective)
     for key in ('key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
                 'ternary_stages_before', 'ternary_stages_after'):
         assert isinstance(stats[key], int), key
@@ -2783,3 +2722,21 @@ def test_both_is_deterministic_across_repeated_runs():
     assert first_stats == second_stats
     for a, b in zip(first_trees, second_trees):
         assert np.array_equal(a, b)
+
+
+def test_align_rf_thresholds_refuses_both_because_one_pass_uses_one_order():
+    """§2.1: a single pass runs a single feature order, so 'both' was always a
+    value that only made sense one layer up. Accepting it here is what let an
+    a-priori route-prediction heuristic exist untestable-from-outside."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    with pytest.raises(ValueError, match='align_objective'):
+        ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                               delta_rel=0.0, align_objective='both')
+
+
+def test_align_with_policy_still_accepts_all_three_objectives():
+    """The public surface is unchanged -- only who understands 'both' moved."""
+    for objective in ta.ALIGN_OBJECTIVES:
+        rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+        ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                             delta_rel=0.0, align_objective=objective)
