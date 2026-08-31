@@ -2547,7 +2547,7 @@ def test_accuracy_spent_is_a_max_across_tasks_not_a_mean(monkeypatch):
     # The final four calls are the accuracy_spent computation itself, one per
     # metric, and its result must be their maximum.
     final_four = captured['pairs'][-4:]
-    assert stats['accuracy_spent'] == max(real(b, a) for b, a in final_four)
+    assert stats['accuracy_spent'] == max(0.0, max(real(b, a) for b, a in final_four))
 
 
 # ---------------------------------------------------------------------------

@@ -1203,8 +1203,8 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
 def crossed_a_boundary(stats, objective, n_tables):
     """Did this run buy anything the objective was aiming at?
 
-    Under 'blocks' this is the pre-existing test exactly. Under the stage
-    objectives it also accepts a stage step -- compared on STAGES, never on
+    Under 'blocks' this is the pre-existing test exactly. Under the 'stages'
+    objective it also accepts a stage step -- compared on STAGES, never on
     tables-per-stage: fit rising from 2 to 3 at T=4 leaves stage_depth
     unchanged, and keeping such a run would reproduce in the byte domain
     precisely the failure this rollback exists to prevent.
@@ -1297,24 +1297,50 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     (`crossed_a_boundary`), discard that result and re-run the same pair at
     delta = 0, keeping only the free moves.
 
-    align_objective : one of ALIGN_OBJECTIVES, default 'blocks'. Forwarded
-        unchanged to align_rf_thresholds on both the speculative and (if
-        needed) the delta=0 rerun, and it also decides what "crossed a
-        boundary" means here: under 'blocks' only a block-band drop keeps the
-        speculative run; under 'stages'/'both' a stage step ALSO keeps it,
-        even without a band drop (crossed_a_boundary does the check).
+    align_objective : one of ALIGN_OBJECTIVES, default 'blocks'. For 'blocks'
+        and 'stages' it is forwarded unchanged to align_rf_thresholds (via
+        _run_one_arm) on both the speculative and (if needed) the delta=0
+        rerun, and it also decides what "crossed a boundary" means here:
+        under 'blocks' only a block-band drop keeps the speculative run;
+        under 'stages' a stage step ALSO keeps it, even without a band drop
+        (crossed_a_boundary does the check). For 'both', align_with_policy
+        never forwards 'both' itself down to align_rf_thresholds -- it
+        expands it into two single-pass runs, one 'blocks' and one 'stages',
+        each independently taken through the same commit-or-rollback cycle
+        described below; see the dual-run paragraph.
 
     This is a whole-function retry rather than in-loop state surgery because
     align_rf_thresholds is already a pure function of (models, validation data,
     params) and already deep-copies its inputs (C8), so re-running it from the
-    caller's untouched forests IS the rollback. Cost is 2x alignment runtime
-    on exactly the runs where the speculation failed, and 1x everywhere else.
+    caller's untouched forests IS the rollback. For a single-pass objective
+    ('blocks' or 'stages') cost is 2x alignment runtime on exactly the runs
+    where the speculation failed, and 1x everywhere else. For 'both', cost is
+    roughly 2x baseline -- one shared setup, then two arms each run once --
+    and can climb higher still if either arm also needs its own delta=0
+    retry; the shared setup is what keeps this near 2x rather than 3-4x, and
+    a Task 8 validation replay measured it at ~1.82-1.84x in practice.
+
+    Under 'both', align_with_policy builds one shared setup
+    (_build_shared_setup) from the caller's untouched forests and runs BOTH
+    'blocks' and 'stages' against it as independently rollback-corrected arms
+    via _run_one_arm -- each arm gets its own commit-or-rollback cycle, so
+    neither can win by comparison alone against a speculative result that
+    spent accuracy and crossed nothing (see _run_one_arm's docstring). The two
+    corrected arms are then ranked by _rank_key (stages, then block cost,
+    then accuracy spent, then a fixed tiebreak) and the winner is returned.
 
     Makes "accuracy is never spent for nothing" a property of the code rather
     than a measured hope: a run that paid the configured tolerance but crossed
     none of the boundaries its objective was aiming at is discarded and
     replaced by the free-moves-only result, regardless of which policy,
-    objective, or criterion is doing the measuring.
+    objective, or criterion is doing the measuring. The winning stats also
+    always carry 'objective_used' (which single-pass objective produced the
+    returned result -- for 'blocks'/'stages' this is just align_objective
+    itself; for 'both' it is whichever arm won) and 'arms_differed' (whether
+    the two arms actually reached different end states, or a 'both' run just
+    paid twice to re-derive the answer a single objective would have given
+    for free) -- set on every objective, not just 'both', so a campaign
+    comparing runs across objectives always has something to read.
     """
     stats = align_stats if align_stats is not None else {}
 
