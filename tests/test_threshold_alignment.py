@@ -2609,3 +2609,62 @@ def test_accuracy_spent_is_a_max_across_tasks_not_a_mean(monkeypatch):
     # metric, and its result must be their maximum.
     final_four = captured['pairs'][-4:]
     assert stats['accuracy_spent'] == max(real(b, a) for b, a in final_four)
+
+
+# ---------------------------------------------------------------------------
+# _state shared setup (design 2026-08-31 §2.2). THE PREMISE: if the cached
+# path is not observationally identical to the from-scratch path, nothing
+# built on top of it may be trusted (the analogue of 2026-08-30's E1/E1b).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('align_objective', ['blocks', 'stages'])
+@pytest.mark.parametrize('delta_rel', [0.0, 0.05, None])
+def test_the_shared_state_path_is_observationally_identical(align_objective,
+                                                            delta_rel):
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    scratch_stats = {}
+    s1, s2 = ta.align_rf_thresholds(
+        rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5, delta_rel=delta_rel,
+        align_stats=scratch_stats, align_objective=align_objective)
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    state = ta._build_shared_setup(rf1, rf2, X1, X2)
+    cached_stats = {}
+    c1, c2 = ta.align_rf_thresholds(
+        rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5, delta_rel=delta_rel,
+        align_stats=cached_stats, align_objective=align_objective,
+        _state=state)
+
+    assert cached_stats == scratch_stats
+    for a, b in zip(s1.estimators_ + s2.estimators_,
+                    c1.estimators_ + c2.estimators_):
+        assert np.array_equal(a.tree_.threshold, b.tree_.threshold)
+
+
+def test_one_shared_state_serves_two_runs_without_cross_contamination():
+    """The whole point: 'both' reuses ONE state for two arms. If the first
+    arm's mutations leaked into the shared structures, the second arm would
+    start from the first arm's end state and differ from a fresh run."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    state = ta._build_shared_setup(rf1, rf2, X1, X2)
+
+    first = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=0.05, align_stats=first,
+                           align_objective='blocks', _state=state)
+    second = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=0.05, align_stats=second,
+                           align_objective='blocks', _state=state)
+    assert first == second
+
+
+def test_the_shared_state_builder_does_not_mutate_the_callers_forests():
+    """C8's guarantee, extended to the new entry point: _build_shared_setup
+    reads the caller's forests and must leave them untouched."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    before = [est.tree_.threshold.copy()
+              for est in rf1.estimators_ + rf2.estimators_]
+    ta._build_shared_setup(rf1, rf2, X1, X2)
+    for est, snapshot in zip(rf1.estimators_ + rf2.estimators_, before):
+        assert np.array_equal(est.tree_.threshold, snapshot)

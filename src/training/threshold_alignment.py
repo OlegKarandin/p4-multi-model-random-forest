@@ -12,6 +12,7 @@ from src.training.align_targets import (boundary_moves, candidate_targets,
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
+import collections
 import copy
 import sklearn
 import numpy as np
@@ -276,9 +277,69 @@ def _stage_route_preferred(stats, n_tables):
     return stage_payoff / cost >= band_ppb
 
 
+# §2.2: the read-heavy setup align_rf_thresholds does before its first
+# candidate. It depends only on the ORIGINAL, unaligned forests and the
+# validation data -- never on feature order or delta_rel -- so two runs over
+# the same pair can share it instead of each paying for it.
+#
+# Safe to build from the caller's forests and use inside a deep copy of them:
+# build_threshold_index returns (feature_idx, threshold) -> [(tree_idx,
+# node_idx)] and build_prediction_cache returns an array plus (tree_idx,
+# node_idx) -> sample indices. Every one of those is pure index/value data
+# holding NO reference to an estimator object, so it stays valid for any
+# structurally-identical copy. Had any of them held estimator references this
+# sharing would be unsound.
+_SharedSetup = collections.namedtuple('_SharedSetup', [
+    'X_val1', 'X_val2', 'sorted_cols1', 'sorted_cols2',
+    'threshold_index1', 'threshold_index2', 'intervals1', 'intervals2',
+    'tree_predictions1', 'tree_predictions2',
+    'node_to_samples1', 'node_to_samples2'])
+
+
+def _build_shared_setup(rf1, rf2, X_val1, X_val2):
+    """The objective-independent half of align_rf_thresholds' setup.
+
+    Read-only with respect to rf1/rf2 -- it never mutates the caller's
+    forests, so C8's guarantee is unaffected.
+    """
+    X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
+    X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
+    with sklearn.config_context(assume_finite=True):
+        tree_predictions1, node_to_samples1 = build_prediction_cache(rf1, X_val1)
+        tree_predictions2, node_to_samples2 = build_prediction_cache(rf2, X_val2)
+    return _SharedSetup(
+        X_val1=X_val1, X_val2=X_val2,
+        sorted_cols1=np.sort(X_val1, axis=0), sorted_cols2=np.sort(X_val2, axis=0),
+        threshold_index1=build_threshold_index(rf1),
+        threshold_index2=build_threshold_index(rf2),
+        intervals1=extract_feature_intervals(rf1),
+        intervals2=extract_feature_intervals(rf2),
+        tree_predictions1=tree_predictions1, tree_predictions2=tree_predictions2,
+        node_to_samples1=node_to_samples1, node_to_samples2=node_to_samples2)
+
+
+def _thaw(state):
+    """Per-arm mutable copies of `state`'s mutable members.
+
+    tree_predictions is mutated IN PLACE by update_cache_for_modifications, so
+    it needs a real array copy. node_to_samples' values are REPLACED rather
+    than mutated (see update_cache_for_modifications and undo_cache_update),
+    so a shallow dict copy isolates an arm correctly. threshold_index's and
+    intervals' list values are both mutated, so each list is copied. X_val and
+    sorted_cols are read-only and are shared as they are.
+    """
+    copy_of_lists = lambda d: {k: list(v) for k, v in d.items()}
+    return (copy_of_lists(state.threshold_index1),
+            copy_of_lists(state.threshold_index2),
+            copy_of_lists(state.intervals1), copy_of_lists(state.intervals2),
+            state.tree_predictions1.copy(), state.tree_predictions2.copy(),
+            dict(state.node_to_samples1), dict(state.node_to_samples2))
+
+
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
-                        candidate_log=None, *, align_objective='blocks'):
+                        candidate_log=None, *, align_objective='blocks',
+                        _state=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -297,6 +358,14 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         whole crossbar bytes, and spends the tolerance while a paying stage
         step is still reachable. 'both' does either, preferring the stage
         route where both are live (see _stage_route_preferred).
+    _state : INTERNAL. A _SharedSetup from _build_shared_setup, or None.
+        None -- the default and what every public caller passes -- builds the
+        setup from scratch, exactly as before. Given, the objective-independent
+        setup is taken from it (cheap per-arm copies) instead of rebuilt. Exists
+        only so align_with_policy can share one build across the two arms of
+        align_objective='both'; it is a performance parameter and must never be
+        observable in the result (pinned by
+        test_the_shared_state_path_is_observationally_identical).
 
     Returns:
     --------
@@ -318,39 +387,48 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     rf1 = copy.deepcopy(rf1)
     rf2 = copy.deepcopy(rf2)
 
-    # Cast ONCE. estimator.predict / decision_path each run
-    # check_array(X, dtype=np.float32) internally, and the arrays arriving from
-    # feature_selection are float64 -- so without this every one of the
-    # thousands of calls below re-casts and re-copies.
-    #
-    # Exactly value-preserving for this project's data: after
-    # dt_thresholds_float_to_int every threshold is an integer, and every
-    # feature value is an integer clipped at INFINITE = 65535 -- both far below
-    # float32's 2**24 exact-integer limit. Local copies, so the caller's arrays
-    # are untouched.
-    X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
-    X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
+    if _state is None:
+        # Cast ONCE. estimator.predict / decision_path each run
+        # check_array(X, dtype=np.float32) internally, and the arrays arriving from
+        # feature_selection are float64 -- so without this every one of the
+        # thousands of calls below re-casts and re-copies.
+        #
+        # Exactly value-preserving for this project's data: after
+        # dt_thresholds_float_to_int every threshold is an integer, and every
+        # feature value is an integer clipped at INFINITE = 65535 -- both far below
+        # float32's 2**24 exact-integer limit. Local copies, so the caller's arrays
+        # are untouched.
+        X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
+        X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
 
-    # One sort per model, for shift_mass. Under C2 this is no longer
-    # diagnostic: it is how a candidate's predicted damage is priced, so it
-    # must be available whenever the policy ranks targets. One np.sort per
-    # model against a ~550 ms fit -- negligible. Per-model is correct: damage
-    # to rf1 depends on X_val1's distribution, not X_val2's. Feature indices
-    # line up -- trees are fit on X_*_train[:, remaining] and validated on
-    # X_*_val[:, remaining], the same column space.
-    sorted_cols1 = np.sort(X_val1, axis=0)
-    sorted_cols2 = np.sort(X_val2, axis=0)
+        # One sort per model, for shift_mass. Under C2 this is no longer
+        # diagnostic: it is how a candidate's predicted damage is priced, so it
+        # must be available whenever the policy ranks targets. One np.sort per
+        # model against a ~550 ms fit -- negligible. Per-model is correct: damage
+        # to rf1 depends on X_val1's distribution, not X_val2's. Feature indices
+        # line up -- trees are fit on X_*_train[:, remaining] and validated on
+        # X_*_val[:, remaining], the same column space.
+        sorted_cols1 = np.sort(X_val1, axis=0)
+        sorted_cols2 = np.sort(X_val2, axis=0)
 
-    threshold_index1 = build_threshold_index(rf1)
+        threshold_index1 = build_threshold_index(rf1)
 
-    threshold_index2 = build_threshold_index(rf2)
+        threshold_index2 = build_threshold_index(rf2)
 
-    intervals1 = extract_feature_intervals(rf1)
-    intervals2 = extract_feature_intervals(rf2)
+        intervals1 = extract_feature_intervals(rf1)
+        intervals2 = extract_feature_intervals(rf2)
 
-    with sklearn.config_context(assume_finite=True):
-        tree_predictions1, node_to_samples1 = build_prediction_cache(rf1, X_val1)
-        tree_predictions2, node_to_samples2 = build_prediction_cache(rf2, X_val2)
+        with sklearn.config_context(assume_finite=True):
+            tree_predictions1, node_to_samples1 = build_prediction_cache(rf1, X_val1)
+            tree_predictions2, node_to_samples2 = build_prediction_cache(rf2, X_val2)
+    else:
+        # Shared with the other arm: read-only members are used as they are,
+        # mutable ones are copied so this pass cannot corrupt the other's.
+        X_val1, X_val2 = _state.X_val1, _state.X_val2
+        sorted_cols1, sorted_cols2 = _state.sorted_cols1, _state.sorted_cols2
+        (threshold_index1, threshold_index2, intervals1, intervals2,
+         tree_predictions1, tree_predictions2,
+         node_to_samples1, node_to_samples2) = _thaw(_state)
 
     # The per-model metric state -- vote matrix, per-sample winner, confusion
     # matrix -- seeded from the initial predictions. Only needed for the
