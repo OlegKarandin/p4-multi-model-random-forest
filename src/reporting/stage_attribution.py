@@ -181,7 +181,22 @@ def score(frame, policy='none'):
     delta being swept, so leaving it in would inflate D1's n with a
     duplicate of a pair already covered by a real policy and give D4 a
     spurious 'verify' entry compared against the wrong alignment budget.
+
+    Refuses a multi-objective frame outright rather than silently pooling
+    across it: Task 6 made 'objective' part of a replay row's identity (three
+    can now appear per model pair in one CSV), and PAIR_KEYS does not name
+    it, so a multi-objective frame would triplicate every aligned pair in
+    D1/D4 -- exactly the cross-pair-pooling confound PAIR_KEYS exists to
+    prevent, just along an axis it doesn't cover.
     """
+    if 'objective' in frame.columns and frame['objective'].nunique() > 1:
+        raise ValueError(
+            "score() is objective-blind by design and must not be handed a "
+            "multi-objective frame (found {} distinct objectives) -- pooling "
+            "would triplicate every aligned pair, reintroducing exactly the "
+            "cross-pair confound PAIR_KEYS exists to remove. Filter to one "
+            "objective before scoring.".format(frame['objective'].nunique()))
+
     frame = frame[frame['policy'] != 'verify']
 
     d1 = _d1(frame)

@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from src.reporting import replay_scoring as rs
 
@@ -85,3 +86,28 @@ def test_derive_columns_drops_none_policy_rows_without_crashing():
 
     verdict = rs.score(out)
     assert verdict == rs.score(rs.derive_columns(frame))
+
+
+def test_score_refuses_a_multi_objective_frame():
+    """Task 6 made 'objective' part of a replay row's identity -- three can
+    appear per model pair in one CSV (Task 7's committed replay data). S3 and
+    S5 key only on PAIR_KEYS, which does not name 'objective', so handing
+    score() a multi-objective frame must raise loudly rather than silently
+    triple-counting bits_shed / fanning out the S5 self-merge."""
+    blocks = _replay_frame()
+    blocks['objective'] = 'blocks'
+    stages = _replay_frame()
+    stages['objective'] = 'stages'
+    frame = pd.concat([blocks, stages], ignore_index=True)
+
+    with pytest.raises(ValueError, match='objective'):
+        rs.score(rs.derive_columns(frame))
+
+
+def test_score_accepts_a_frame_with_a_single_objective_value():
+    """The guard must not fire on a frame that merely carries the 'objective'
+    column -- only on one with more than one distinct value in it."""
+    frame = _replay_frame()
+    frame['objective'] = 'blocks'
+    verdict = rs.score(rs.derive_columns(frame))
+    assert verdict == rs.score(rs.derive_columns(_replay_frame()))

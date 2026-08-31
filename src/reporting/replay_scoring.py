@@ -78,7 +78,24 @@ def score(frame):
     block domain, so re-pointing them at a run optimising stages would
     invalidate them. The objective axis is scored separately, by
     scripts/score_objective_replay.py.
+
+    Being objective-blind is a claim about what this function READS, not
+    about what a caller may hand it: a frame carrying rows from more than one
+    align_objective (Task 6 made 'objective' part of a replay row's identity,
+    and Task 7's committed replay CSV has three) would have S3 sum bits_shed
+    across all of them and S5's self-merge fan out per cell -- the exact
+    cross-pair pooling this module's own docstring says PAIR_KEYS exists to
+    prevent, just along an axis PAIR_KEYS doesn't name. Refused outright
+    rather than silently mis-scored.
     """
+    if 'objective' in frame.columns and frame['objective'].nunique() > 1:
+        raise ValueError(
+            "score() is objective-blind by design and must not be handed a "
+            "multi-objective frame (found {} distinct objectives) -- pooling "
+            "would triple-count across objectives, reintroducing exactly the "
+            "confound this module exists to remove. Filter to one objective "
+            "before scoring.".format(frame['objective'].nunique()))
+
     out = {}
 
     # S3 -- the wasted-bit share falls from the campaign's measured 57.8%.

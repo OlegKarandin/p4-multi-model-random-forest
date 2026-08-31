@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from src.reporting import stage_attribution as sa
 
@@ -199,3 +200,27 @@ def test_d4_compares_none_against_every_aligned_policy_present():
 
     other_cells = verdict['D4']['synthetic_other_arm']['cells'].set_index(['M', 'k'])
     assert len(other_cells) == 1   # only the k=17 pair has a row to pair with
+
+
+def test_score_refuses_a_multi_objective_frame():
+    """Task 6 made 'objective' part of a replay row's identity -- three can
+    appear per model pair in one CSV (Task 7's committed replay data).
+    PAIR_KEYS does not name 'objective', so a multi-objective frame would
+    triplicate every aligned pair in D1/D4 -- score() must raise loudly
+    rather than silently pooling across it."""
+    frame = pd.DataFrame([_row(), _row(k=2)])
+    frame['objective'] = ['blocks', 'stages']
+    with pytest.raises(ValueError, match='objective'):
+        sa.score(frame)
+
+
+def test_score_accepts_a_frame_with_a_single_objective_value():
+    """The guard must not fire on a frame that merely carries the
+    'objective' column -- only on one with more than one distinct value."""
+    frame = pd.DataFrame([_row(), _row(k=2)])
+    frame['objective'] = 'blocks'
+    verdict = sa.score(frame)
+    baseline = sa.score(pd.DataFrame([_row(), _row(k=2)]))
+    assert verdict['D1'] == baseline['D1']
+    assert verdict['D2']['fraction_passing'] == baseline['D2']['fraction_passing']
+    assert verdict['D2']['n_cells'] == baseline['D2']['n_cells']
