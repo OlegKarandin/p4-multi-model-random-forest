@@ -2668,3 +2668,118 @@ def test_the_shared_state_builder_does_not_mutate_the_callers_forests():
     ta._build_shared_setup(rf1, rf2, X1, X2)
     for est, snapshot in zip(rf1.estimators_ + rf2.estimators_, before):
         assert np.array_equal(est.tree_.threshold, snapshot)
+
+
+# ---------------------------------------------------------------------------
+# 'both' = run both orderings, keep the best (design 2026-08-31 §2.3-§2.4).
+# ---------------------------------------------------------------------------
+
+def _rank_stats(ternary_stages_after, codeword_after, accuracy_spent):
+    return {'ternary_stages_after': ternary_stages_after,
+            'codeword_after': codeword_after,
+            'accuracy_spent': accuracy_spent}
+
+
+def test_rank_prefers_fewer_stages_over_everything_else():
+    """Priority order follows the recorded cost model: blocks rarely bind
+    (large headroom), the 64-byte crossbar cap is the one that typically
+    does, so a stage saved outranks a block saved."""
+    cheap_stages = _rank_stats(2, 200, 0.9)
+    cheap_everything_else = _rank_stats(3, 100, 0.0)
+    assert ta._rank_key(cheap_stages, 'blocks') < ta._rank_key(
+        cheap_everything_else, 'blocks')
+
+
+def test_rank_falls_through_to_codeword_when_stages_tie():
+    assert ta._rank_key(_rank_stats(2, 100, 0.9), 'blocks') < ta._rank_key(
+        _rank_stats(2, 128, 0.0), 'blocks')
+
+
+def test_rank_falls_through_to_accuracy_spent_when_stages_and_blocks_tie():
+    """The E3 fix, at the level of the key: two runs reaching the identical
+    end state are separated by what they paid to get there."""
+    assert ta._rank_key(_rank_stats(2, 128, 0.001), 'blocks') < ta._rank_key(
+        _rank_stats(2, 128, 0.020), 'blocks')
+
+
+def test_rank_breaks_an_exact_tie_in_favour_of_blocks_deterministically():
+    """train_model.py:373-377 refits the winner instead of caching it, which
+    is only valid while this is a total order."""
+    tied = _rank_stats(2, 128, 0.01)
+    assert ta._rank_key(tied, 'blocks') < ta._rank_key(tied, 'stages')
+
+
+def test_both_returns_one_of_the_two_single_pass_results_and_says_which():
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    b1, b2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
+                                  overlap_threshold=0.5, delta_rel=0.05,
+                                  align_stats=stats, align_objective='both')
+    assert stats['objective_used'] in ta._SINGLE_PASS_OBJECTIVES
+    assert isinstance(stats['arms_differed'], bool)
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    winner_stats = {}
+    w1, w2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
+                                  overlap_threshold=0.5, delta_rel=0.05,
+                                  align_stats=winner_stats,
+                                  align_objective=stats['objective_used'])
+    for a, b in zip(b1.estimators_ + b2.estimators_,
+                    w1.estimators_ + w2.estimators_):
+        assert np.array_equal(a.tree_.threshold, b.tree_.threshold)
+
+
+def test_single_pass_objectives_report_themselves_as_the_one_used():
+    """The column must stay dense: replay_alignment turns every stats key into
+    a result column, and a NaN there makes downstream groupbys drop rows."""
+    for objective in ('blocks', 'stages'):
+        rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+        stats = {}
+        ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                             delta_rel=0.05, align_stats=stats,
+                             align_objective=objective)
+        assert stats['objective_used'] == objective
+        assert stats['arms_differed'] is False
+
+
+def test_both_rolls_each_arm_back_before_ranking_them(monkeypatch):
+    """§2.3's ordering constraint, directly. An arm that spent budget and
+    crossed nothing must be replaced by its delta=0 rerun BEFORE it is
+    ranked -- otherwise a speculative arm that gave away accuracy for nothing
+    could win the comparison on paper."""
+    seen = []
+    real = ta.crossed_a_boundary
+
+    def never_crossed(stats, objective, n_tables):
+        seen.append(objective)
+        return False
+
+    monkeypatch.setattr(ta, 'crossed_a_boundary', never_crossed)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                         delta_rel=0.05, align_stats=stats,
+                         align_objective='both')
+    # Both arms were asked, and the surviving stats are a rolled-back run's.
+    assert sorted(seen) == ['blocks', 'stages']
+    assert stats['rolled_back'] is True
+    assert stats['accuracy_spent'] == 0.0
+    monkeypatch.setattr(ta, 'crossed_a_boundary', real)
+
+
+def test_both_is_deterministic_across_repeated_runs():
+    def once():
+        rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+        stats = {}
+        a1, a2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
+                                      overlap_threshold=0.5, delta_rel=0.05,
+                                      align_stats=stats,
+                                      align_objective='both')
+        return stats, [est.tree_.threshold.copy()
+                       for est in a1.estimators_ + a2.estimators_]
+
+    first_stats, first_trees = once()
+    second_stats, second_trees = once()
+    assert first_stats == second_stats
+    for a, b in zip(first_trees, second_trees):
+        assert np.array_equal(a, b)

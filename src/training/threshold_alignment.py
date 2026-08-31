@@ -63,6 +63,11 @@ MAX_RECOMPUTE_ROUNDS = 32
 # keeps a run that crossed either (ordering rule in _stage_route_preferred).
 ALIGN_OBJECTIVES = ('blocks', 'stages', 'both')
 
+# The objectives a SINGLE alignment pass can run. 'both' is not one of them:
+# one pass uses one feature order, so 'both' only ever made sense one layer
+# up, in align_with_policy, which expands it into these two.
+_SINGLE_PASS_OBJECTIVES = ('blocks', 'stages')
+
 
 def feature_order(intervals1, intervals2, objective):
     """The order features are offered to the alignment loop.
@@ -1251,6 +1256,29 @@ def crossed_a_boundary(stats, objective, n_tables):
             < ternary_stages(stats['key_bytes_before'], n_tables))
 
 
+def _rank_key(stats, objective):
+    """§2.4: how 'both' picks between two rollback-corrected arms.
+
+    Stages, then blocks, then accuracy, then a fixed tiebreak. That priority
+    follows the recorded cost model rather than taste: block headroom is
+    large and rarely binds, while the 64-byte ternary crossbar cap typically
+    does, so a stage saved is worth preferring over a block saved where the
+    two trade off. accuracy_spent lands last because it separates two arms
+    that reached the SAME place -- which is exactly the gap measured at
+    (M=25, k=9), where both objectives crossed the identical block boundary
+    and one paid 1.64pp more app accuracy for it.
+
+    The trailing constant is not decoration: on an exact tie the run must
+    still be deterministic, because train_model.py:373-377 refits the winning
+    trial rather than caching it. Same reason feature_order carries a trailing
+    feature index and _rank_targets carries generation order.
+    """
+    return (stats['ternary_stages_after'],
+            stats['codeword_after'],
+            stats['accuracy_spent'],
+            0 if objective == 'blocks' else 1)
+
+
 def _run_one_arm(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *, objective,
                  overlap_threshold, delta_rel, state, candidate_log):
     """One objective's complete commit-or-rollback cycle, on a fresh stats dict.
@@ -1328,10 +1356,50 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     objective, or criterion is doing the measuring.
     """
     stats = align_stats if align_stats is not None else {}
-    result, arm_stats = _run_one_arm(
-        rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-        objective=align_objective, overlap_threshold=overlap_threshold,
-        delta_rel=delta_rel, state=None, candidate_log=candidate_log)
+
+    if align_objective != 'both':
+        result, arm_stats = _run_one_arm(
+            rf1, rf2, X_val1, y_val1, X_val2, y_val2,
+            objective=align_objective, overlap_threshold=overlap_threshold,
+            delta_rel=delta_rel, state=None, candidate_log=candidate_log)
+        stats.clear()
+        stats.update(arm_stats)
+        stats['objective_used'] = align_objective
+        stats['arms_differed'] = False
+        return result
+
+    # §2.2: one setup build, shared by both arms. Built from the caller's
+    # ORIGINAL, untouched forests -- each arm still deep-copies them itself.
+    state = _build_shared_setup(rf1, rf2, X_val1, X_val2)
+
+    arms = {}
+    for objective in _SINGLE_PASS_OBJECTIVES:
+        # Each arm needs its own log: only the winner's candidates actually
+        # happened as far as the returned models are concerned.
+        arm_log = [] if candidate_log is not None else None
+        models, arm_stats = _run_one_arm(
+            rf1, rf2, X_val1, y_val1, X_val2, y_val2,
+            objective=objective, overlap_threshold=overlap_threshold,
+            delta_rel=delta_rel, state=state, candidate_log=arm_log)
+        arms[objective] = (models, arm_stats, arm_log)
+
+    # Recorded before ranking, and it is the measurement §5 turns on: if the
+    # two arms never reach different end states, the dual run is paying twice
+    # to re-derive one answer and 'both' should not enter a campaign at all.
+    compared = ('codeword_after', 'key_bytes_after', 'ternary_stages_after',
+                'accuracy_spent')
+    blocks_stats, stages_stats = arms['blocks'][1], arms['stages'][1]
+    differed = any(blocks_stats[k] != stages_stats[k] for k in compared)
+
+    winner = min(_SINGLE_PASS_OBJECTIVES,
+                 key=lambda o: _rank_key(arms[o][1], o))
+    models, winning_stats, winning_log = arms[winner]
+
     stats.clear()
-    stats.update(arm_stats)
-    return result
+    stats.update(winning_stats)
+    stats['objective_used'] = winner
+    stats['arms_differed'] = differed
+    if candidate_log is not None:
+        del candidate_log[:]
+        candidate_log.extend(winning_log)
+    return models
