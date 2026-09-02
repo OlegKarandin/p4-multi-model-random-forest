@@ -6,6 +6,7 @@ Per spec 2.1's task-4 scope, this does NOT run the script end-to-end (that's
 a later gate) -- only the side-effect-free helpers that don't touch Optuna,
 sklearn, or the campaign search itself.
 """
+import os
 import types
 
 import optuna
@@ -19,9 +20,11 @@ from scripts.feasibility_frontier import (
     FULL_GRID_SIZE,
     SPLIT_INDICES,
     T_VALUES,
+    already_done,
     any_feasible_at,
     build_grid,
     cfg_for_arm,
+    collect,
     load_cell_features,
     reach,
     summarize_trials,
@@ -322,3 +325,124 @@ def test_load_cell_features_unknown_k_raises():
     with pytest.raises(ValueError, match='no archived row'):
         load_cell_features(
             feasibility_frontier.CAMPAIGN_BACKUP_DIR, M=25, k=999, split_idx=10)
+
+
+# --------------------------------------------------------------------------
+# already_done
+# --------------------------------------------------------------------------
+
+def test_already_done_empty_when_file_does_not_exist(tmp_path):
+    out_path = str(tmp_path / 'does_not_exist.csv')
+    assert already_done(out_path) == set()
+
+
+def test_already_done_reads_the_five_key_columns_as_tuples(tmp_path):
+    out_path = str(tmp_path / 'results.csv')
+    frame = pd.DataFrame([
+        {'M': 25, 'k': 9, 'T': 1, 'arm': 'control', 'split': 10,
+         'any_feasible': True},
+        {'M': 25, 'k': 9, 'T': 2, 'arm': 'aligned_only', 'split': 11,
+         'any_feasible': False},
+    ])
+    frame.to_csv(out_path, index=False)
+
+    assert already_done(out_path) == {
+        (25, 9, 1, 'control', 10),
+        (25, 9, 2, 'aligned_only', 11),
+    }
+
+
+# --------------------------------------------------------------------------
+# collect: resume + parallelism
+#
+# _fake_run_one_point is a real MODULE-LEVEL function (not a closure, and not
+# a monkeypatch applied in place to feasibility_frontier.run_one_point)
+# because collect() ships it to ProcessPoolExecutor workers, which on this
+# platform are separate spawned processes: pickle serializes a function by
+# (module, qualname) reference, not by value, so the worker re-imports THIS
+# test module and looks up this exact name. A closure has no importable
+# qualname and cannot be pickled at all; and even though the test below does
+# `monkeypatch.setattr(feasibility_frontier, 'run_one_point',
+# _fake_run_one_point)`, what gets pickled at the executor.submit() call
+# site is this function object itself (its own __module__/__qualname__ are
+# unaffected by being assigned to a *different* name on a *different*
+# module), so the worker finds the real stand-in below rather than silently
+# falling back to the genuine (expensive, Optuna-calling) run_one_point.
+# Verified empirically (see test_collect_parallel_actually_uses_worker_processes)
+# by having each row record os.getpid() and confirming it differs from the
+# test process's own pid.
+# --------------------------------------------------------------------------
+
+def _fake_run_one_point(point, data, campaign_dir):
+    row = dict(point)
+    row.update({'any_feasible': True, 'n_trials_run': 1, 'n_feasible': 1,
+                'dominant_violation_type': None, 'pid': os.getpid()})
+    return row
+
+
+def _fake_load_campaign_data():
+    return (None, None, None, None, None)
+
+
+def test_collect_resume_skips_already_done_points_and_appends_only_new_rows(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point)
+    monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
+    out_path = str(tmp_path / 'resume.csv')
+
+    frame1, _started1, n_done1 = collect(
+        'unused_campaign_dir', out_path, limit=3, max_workers=1)
+    assert n_done1 == 3
+    assert len(frame1) == 3
+
+    # Second invocation, same --out: must skip the 3 points already recorded
+    # and process the NEXT 3 (not re-select the first 3).
+    frame2, _started2, n_done2 = collect(
+        'unused_campaign_dir', out_path, limit=3, max_workers=1)
+    assert n_done2 == 3
+    assert len(frame2) == 6
+
+    keys = list(zip(frame2['M'], frame2['k'], frame2['T'], frame2['arm'], frame2['split']))
+    assert len(keys) == len(set(keys)), 'duplicate (M,k,T,arm,split) rows across both invocations'
+
+
+def test_collect_with_no_remaining_points_is_a_noop(tmp_path, monkeypatch):
+    """Re-running collect() once every grid point is already recorded prints
+    a nothing-to-do message and returns n_done=0, without touching --out."""
+    monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point)
+    monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
+    monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:2])
+    out_path = str(tmp_path / 'exhausted.csv')
+
+    frame1, _started1, n_done1 = collect('unused_campaign_dir', out_path, max_workers=1)
+    assert n_done1 == 2
+    assert len(frame1) == 2
+
+    frame2, _started2, n_done2 = collect('unused_campaign_dir', out_path, max_workers=1)
+    assert n_done2 == 0
+    assert len(frame2) == 2
+
+
+def test_collect_parallel_actually_uses_worker_processes(tmp_path, monkeypatch):
+    """max_workers=2 against 4 synthetic points: exactly 4 rows come back, no
+    duplicates, and at least one row's pid differs from this test process's
+    own pid -- confirming run_one_point genuinely executed in a separate
+    ProcessPoolExecutor worker rather than silently degrading to serial,
+    in-process execution."""
+    monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point)
+    monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
+    monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:4])
+    out_path = str(tmp_path / 'parallel.csv')
+
+    frame, _started, n_done = collect(
+        'unused_campaign_dir', out_path, max_workers=2)
+
+    assert n_done == 4
+    assert len(frame) == 4
+    keys = list(zip(frame['M'], frame['k'], frame['T'], frame['arm'], frame['split']))
+    assert len(keys) == len(set(keys))
+
+    this_pid = os.getpid()
+    worker_pids = set(frame['pid'])
+    assert all(pid != this_pid for pid in worker_pids), (
+        'a row ran in the test process itself, not a ProcessPoolExecutor worker')

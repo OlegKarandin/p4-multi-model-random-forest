@@ -45,6 +45,7 @@ import argparse
 import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Running a file inside scripts/ puts scripts/ on sys.path, not the repo root,
 # so `src` would not import under the command in the docstring above.
@@ -95,6 +96,18 @@ def build_grid():
     return [{'M': M, 'k': k, 'T': T, 'arm': arm, 'split': split}
             for (M, k) in CELLS for T in T_VALUES
             for arm in ARM_NAMES for split in SPLIT_INDICES]
+
+
+def already_done(out_path):
+    """(M, k, T, arm, split) tuples already recorded at out_path, or an
+    empty set if it doesn't exist yet -- lets collect() resume a partial
+    run instead of losing everything on a crash/interrupt (Task 5's gate
+    found no checkpointing existed, and the full grid is a ~10h
+    single-threaded / ~2.5h at 4 workers run under Task 7's Codespace)."""
+    if not os.path.exists(out_path):
+        return set()
+    frame = pd.read_csv(out_path)
+    return set(zip(frame['M'], frame['k'], frame['T'], frame['arm'], frame['split']))
 
 
 def load_cell_features(campaign_dir, M, k, split_idx):
@@ -218,19 +231,65 @@ def run_one_point(point, data, campaign_dir):
     return row
 
 
-def collect(campaign_dir, limit=None):
+def collect(campaign_dir, out, limit=None, max_workers=None):
+    """Run remaining grid points in parallel via ProcessPoolExecutor, writing
+    each row to `out` as its future completes (checkpointing: Task 5's gate
+    found the old serial, write-once-at-the-end collect() would lose an
+    entire ~10h run on any crash/interrupt).
+
+    Points already recorded at `out` (per already_done) are skipped, so
+    re-invoking with the same --out resumes a partial run instead of redoing
+    it -- mirroring src/main.py's compare_independent_joint_mapping
+    (skip_existing) and src/training/feature_selection.py's
+    compare_feature_selection_approaches_parallel (ProcessPoolExecutor +
+    as_completed), just at CSV-row granularity instead of one-file-per-cell.
+
+    --limit counts only REMAINING (not-yet-done) points, since resuming a
+    partial run with the same --limit should make progress, not re-select
+    already-completed points.
+
+    Returns (frame, started, n_done): frame is read back from `out` after
+    writing, so it reflects the FULL accumulated file across every resume,
+    not just this invocation's new rows. n_done is how many points THIS
+    invocation actually ran -- distinct from len(frame) (everything ever
+    recorded) and from limit/FULL_GRID_SIZE -- so callers computing
+    per-search timing divide by n_done, not by any of those three (which
+    would silently overcount on a resumed run).
+    """
     data = load_campaign_data()
-    points = build_grid()
+    os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
+    done = already_done(out)
+    points = [p for p in build_grid()
+              if (p['M'], p['k'], p['T'], p['arm'], p['split']) not in done]
     if limit:
         points = points[:limit]
-    rows, started = [], time.time()
-    for i, point in enumerate(points):
-        row = run_one_point(point, data, campaign_dir)
-        rows.append(row)
-        print('  [{}/{}] M={} k={} T={} arm={} split={} any_feasible={} ({:.1f}s elapsed)'.format(
-            i + 1, len(points), point['M'], point['k'], point['T'], point['arm'],
-            point['split'], row['any_feasible'], time.time() - started))
-    return pd.DataFrame(rows), started
+
+    if not points:
+        print('nothing to do -- every grid point already recorded at {}'.format(out))
+        frame = pd.read_csv(out) if os.path.exists(out) else pd.DataFrame()
+        return frame, time.time(), 0
+
+    if max_workers is None:
+        max_workers = min(len(points), max(1, os.cpu_count() - 1))
+    print('Using {} parallel workers for {} remaining points'.format(max_workers, len(points)))
+
+    file_exists = os.path.exists(out) and os.path.getsize(out) > 0
+    started = time.time()
+    n_done = 0
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(run_one_point, point, data, campaign_dir): point
+                   for point in points}
+        for future in as_completed(futures):
+            point = futures[future]
+            row = future.result()
+            n_done += 1
+            pd.DataFrame([row]).to_csv(out, mode='a', header=not file_exists, index=False)
+            file_exists = True
+            print('  [{}/{}] M={} k={} T={} arm={} split={} any_feasible={} ({:.1f}s elapsed)'.format(
+                n_done, len(points), point['M'], point['k'], point['T'], point['arm'],
+                point['split'], row['any_feasible'], time.time() - started))
+
+    return pd.read_csv(out), started, n_done
 
 
 def print_reach_table(frame):
@@ -265,6 +324,16 @@ def report(frame):
     print_violation_breakdown(frame)
 
 
+def _parse_max_workers(value):
+    """--max-workers' argparse type: positive integer worker-process count.
+    Rejects zero or negative values with an error message that names the
+    flag -- mirrors src/main.py's own _parse_max_workers."""
+    n = int(value)
+    if n <= 0:
+        raise argparse.ArgumentTypeError('--max-workers must be positive, got {!r}'.format(value))
+    return n
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--campaign-dir', default=CAMPAIGN_BACKUP_DIR)
@@ -272,21 +341,26 @@ def parse_args(argv=None):
     parser.add_argument('--limit', type=int, default=None)
     parser.add_argument('--timing', action='store_true',
                         help='print a per-search timing summary and an extrapolation')
+    parser.add_argument(
+        '--max-workers', dest='max_workers', type=_parse_max_workers, default=None,
+        help='number of parallel worker processes. Defaults to min(remaining points, '
+             'cpu_count - 1) when omitted; pass this to use every core on a small '
+             'machine (e.g. --max-workers 4 on a 4-core Codespace)')
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    frame, started = collect(args.campaign_dir, args.limit)
-    os.makedirs(os.path.dirname(args.out) or '.', exist_ok=True)
-    frame.to_csv(args.out, index=False)
-    print('wrote {} rows to {}'.format(len(frame), args.out))
-    if args.timing:
-        n = args.limit if args.limit else len(frame)
-        per_search = (time.time() - started) / max(n, 1)
+    frame, started, n_done = collect(args.campaign_dir, args.out, args.limit, args.max_workers)
+    print('{} total rows on disk at {}'.format(len(frame), args.out))
+    if args.timing and n_done:
+        per_search = (time.time() - started) / n_done
         print('per-search cost: {:.1f}s -- a full {}-search grid would take '
-              '{:.1f}h single-threaded'.format(
-                  per_search, FULL_GRID_SIZE, per_search * FULL_GRID_SIZE / 3600))
+              '{:.1f}h single-threaded ({:.1f}h at {} workers)'.format(
+                  per_search, FULL_GRID_SIZE,
+                  per_search * FULL_GRID_SIZE / 3600,
+                  per_search * FULL_GRID_SIZE / 3600 / (args.max_workers or 1),
+                  args.max_workers or 1))
     report(frame)
 
 
