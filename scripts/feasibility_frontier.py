@@ -468,7 +468,21 @@ def print_violation_breakdown(frame):
 def report(frame):
     """Split from main() so src/reporting/figures.py could replay this output
     from results/feasibility_frontier.csv alone, mirroring
-    scripts/capacity_ceiling.py's report()."""
+    scripts/capacity_ceiling.py's report().
+
+    Guards the genuinely-empty case (no columns at all) separately from a
+    merely-small one: collect() returns a bare pd.DataFrame() when `out`
+    was never created (Finding 8) -- e.g. every point in this invocation
+    raised (Finding 4's per-future isolation means that no longer aborts
+    the run, it just leaves nothing to report). print_reach_table/
+    print_violation_breakdown both index frame['M'] etc., which raises
+    KeyError on a column-less frame rather than reporting "nothing found".
+    """
+    if frame.empty:
+        print('\nno rows to report -- every point in this run failed, or '
+              'nothing was run. Re-run to retry (checkpointing means '
+              'already-recorded points are skipped, so this is safe).')
+        return
     print_reach_table(frame)
     print_violation_breakdown(frame)
 

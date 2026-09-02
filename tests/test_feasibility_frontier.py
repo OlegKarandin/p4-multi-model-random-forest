@@ -722,6 +722,23 @@ def test_collect_returns_empty_frame_when_every_point_fails_and_out_never_create
 
 
 # --------------------------------------------------------------------------
+# report(): the genuinely-empty, column-less frame that collect() can now
+# return (Finding 8) must not crash print_reach_table/print_violation_
+# breakdown, which both index frame['M'] etc. Discovered live: the first
+# real Codespace run hit exactly this path (every point failed because
+# results/campaign_backup_20260825/ hadn't been copied yet) and main()
+# crashed with KeyError: 'M' inside report() after printing the graceful
+# "N points failed" message -- the crash happened one line further down
+# than any existing test looked.
+# --------------------------------------------------------------------------
+
+def test_report_on_a_genuinely_empty_frame_does_not_raise(capsys):
+    feasibility_frontier.report(pd.DataFrame())
+    captured = capsys.readouterr()
+    assert 'no rows to report' in captured.out
+
+
+# --------------------------------------------------------------------------
 # print_violation_breakdown: per-(M, k, T, arm) grouping, not per-row
 # (code review Finding 5)
 # --------------------------------------------------------------------------
