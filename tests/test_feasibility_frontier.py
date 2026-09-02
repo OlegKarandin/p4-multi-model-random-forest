@@ -390,14 +390,14 @@ def test_collect_resume_skips_already_done_points_and_appends_only_new_rows(
     monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
     out_path = str(tmp_path / 'resume.csv')
 
-    frame1, _started1, n_done1 = collect(
+    frame1, _started1, n_done1, _workers1 = collect(
         'unused_campaign_dir', out_path, limit=3, max_workers=1)
     assert n_done1 == 3
     assert len(frame1) == 3
 
     # Second invocation, same --out: must skip the 3 points already recorded
     # and process the NEXT 3 (not re-select the first 3).
-    frame2, _started2, n_done2 = collect(
+    frame2, _started2, n_done2, _workers2 = collect(
         'unused_campaign_dir', out_path, limit=3, max_workers=1)
     assert n_done2 == 3
     assert len(frame2) == 6
@@ -414,11 +414,11 @@ def test_collect_with_no_remaining_points_is_a_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:2])
     out_path = str(tmp_path / 'exhausted.csv')
 
-    frame1, _started1, n_done1 = collect('unused_campaign_dir', out_path, max_workers=1)
+    frame1, _started1, n_done1, _workers1 = collect('unused_campaign_dir', out_path, max_workers=1)
     assert n_done1 == 2
     assert len(frame1) == 2
 
-    frame2, _started2, n_done2 = collect('unused_campaign_dir', out_path, max_workers=1)
+    frame2, _started2, n_done2, _workers2 = collect('unused_campaign_dir', out_path, max_workers=1)
     assert n_done2 == 0
     assert len(frame2) == 2
 
@@ -434,11 +434,12 @@ def test_collect_parallel_actually_uses_worker_processes(tmp_path, monkeypatch):
     monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:4])
     out_path = str(tmp_path / 'parallel.csv')
 
-    frame, _started, n_done = collect(
+    frame, _started, n_done, resolved_max_workers = collect(
         'unused_campaign_dir', out_path, max_workers=2)
 
     assert n_done == 4
     assert len(frame) == 4
+    assert resolved_max_workers == 2
     keys = list(zip(frame['M'], frame['k'], frame['T'], frame['arm'], frame['split']))
     assert len(keys) == len(set(keys))
 
@@ -446,3 +447,108 @@ def test_collect_parallel_actually_uses_worker_processes(tmp_path, monkeypatch):
     worker_pids = set(frame['pid'])
     assert all(pid != this_pid for pid in worker_pids), (
         'a row ran in the test process itself, not a ProcessPoolExecutor worker')
+
+
+# --------------------------------------------------------------------------
+# collect: per-future exception isolation (code review Finding 1)
+#
+# _fake_run_one_point_with_one_failure is, like _fake_run_one_point above, a
+# real module-level function (not a closure) for the same picklability reason
+# documented above it: ProcessPoolExecutor workers on this platform are
+# spawned, fresh-imported processes, so only a by-reference-importable
+# function survives being shipped to one.
+# --------------------------------------------------------------------------
+
+def _fake_run_one_point_with_one_failure(point, data, campaign_dir):
+    """Raises for exactly one grid point (arm='aligned_only', split=10) and
+    delegates to _fake_run_one_point for every other point -- lets a test
+    confirm that one bad point doesn't abort collection of the rest."""
+    if point['arm'] == 'aligned_only' and point['split'] == 10:
+        raise RuntimeError('synthetic failure for point {}'.format(point))
+    return _fake_run_one_point(point, data, campaign_dir)
+
+
+def test_collect_isolates_a_single_point_exception_and_continues(tmp_path, monkeypatch):
+    """A run_one_point failure on exactly one grid point must not abort
+    collection of the rest -- mirrors src/training/feature_selection.py's
+    compare_feature_selection_approaches_parallel (~line 783-788), which
+    wraps `future.result()` in try/except, logs which split failed, and
+    `continue`s so the ProcessPoolExecutor's `with` block still completes
+    and the other futures' results still get written, rather than letting
+    the exception propagate out of the as_completed loop and having
+    __exit__'s `shutdown(wait=True)` discard every other in-flight future's
+    result. The failed point should simply be ABSENT from the output (it
+    stays outside already_done()'s set and is retried on the next
+    invocation -- the same resumability collect() already provides for a
+    crash/interrupt)."""
+    monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point_with_one_failure)
+    monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
+    monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:4])
+    out_path = str(tmp_path / 'partial_failure.csv')
+
+    frame, _started, n_done, _resolved_max_workers = collect(
+        'unused_campaign_dir', out_path, max_workers=2)
+
+    # build_grid()[:4] for CELLS[0] == (25, 9): 3 'control' points (one per
+    # split) then the first 'aligned_only' point (split=10), which is the one
+    # rigged to fail -- so exactly 3 of the 4 submitted points should survive.
+    assert n_done == 3
+    assert len(frame) == 3
+    keys = list(zip(frame['M'], frame['k'], frame['T'], frame['arm'], frame['split']))
+    assert (25, 9, 1, 'aligned_only', 10) not in keys
+    assert len(keys) == len(set(keys))
+
+
+# --------------------------------------------------------------------------
+# collect: resolved max_workers exposed to callers (code review Finding 2)
+# --------------------------------------------------------------------------
+
+def test_collect_returns_the_auto_computed_worker_count_when_max_workers_omitted(
+        tmp_path, monkeypatch):
+    """When max_workers=None (the --max-workers-omitted default-use case),
+    collect() must return the worker count it actually resolved to and used
+    -- min(len(points), max(1, os.cpu_count() - 1)) -- not just echo back the
+    None it was passed. Patches os.cpu_count (via the feasibility_frontier
+    module's own `os` reference, restored by monkeypatch) to a small,
+    deterministic value so the expected worker count differs from both 1 and
+    len(points), ruling out a fix that accidentally still hardcodes either."""
+    monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point)
+    monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
+    monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:4])
+    monkeypatch.setattr(feasibility_frontier.os, 'cpu_count', lambda: 3)
+    out_path = str(tmp_path / 'auto_workers.csv')
+
+    frame, _started, n_done, resolved_max_workers = collect(
+        'unused_campaign_dir', out_path, max_workers=None)
+
+    assert n_done == 4
+    assert len(frame) == 4
+    assert resolved_max_workers == 2  # min(4 points, max(1, 3 - 1)) == 2
+    assert resolved_max_workers != 1
+    assert resolved_max_workers != len(frame)
+
+
+def test_main_timing_reports_the_resolved_worker_count_when_max_workers_omitted(
+        tmp_path, monkeypatch, capsys):
+    """main()'s --timing line used to compute `args.max_workers or 1`, which
+    is always 1 whenever --max-workers is omitted (the documented default
+    use case) since collect() resolves its own worker count internally and
+    main() never learned it. Stubs collect() itself so this test is a pure
+    main()-level check on the printed message, independent of the
+    lower-level collect() test above."""
+    fake_frame = pd.DataFrame([{'any_feasible': True}])
+
+    def _fake_collect(campaign_dir, out, limit, max_workers):
+        assert max_workers is None  # --max-workers omitted on the CLI
+        return fake_frame, 1000.0, 4, 3  # started, n_done=4, resolved_max_workers=3
+
+    monkeypatch.setattr(feasibility_frontier, 'collect', _fake_collect)
+    monkeypatch.setattr(feasibility_frontier, 'report', lambda frame: None)
+    monkeypatch.setattr(feasibility_frontier.time, 'time', lambda: 1040.0)
+
+    out_path = str(tmp_path / 'main_out.csv')
+    feasibility_frontier.main(['--out', out_path, '--timing'])
+
+    captured = capsys.readouterr()
+    assert 'at 3 workers' in captured.out
+    assert 'at 1 workers' not in captured.out

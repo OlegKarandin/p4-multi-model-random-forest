@@ -248,13 +248,18 @@ def collect(campaign_dir, out, limit=None, max_workers=None):
     partial run with the same --limit should make progress, not re-select
     already-completed points.
 
-    Returns (frame, started, n_done): frame is read back from `out` after
-    writing, so it reflects the FULL accumulated file across every resume,
-    not just this invocation's new rows. n_done is how many points THIS
-    invocation actually ran -- distinct from len(frame) (everything ever
-    recorded) and from limit/FULL_GRID_SIZE -- so callers computing
-    per-search timing divide by n_done, not by any of those three (which
-    would silently overcount on a resumed run).
+    Returns (frame, started, n_done, resolved_max_workers): frame is read back
+    from `out` after writing, so it reflects the FULL accumulated file across
+    every resume, not just this invocation's new rows. n_done is how many
+    points THIS invocation actually ran -- distinct from len(frame)
+    (everything ever recorded) and from limit/FULL_GRID_SIZE -- so callers
+    computing per-search timing divide by n_done, not by any of those three
+    (which would silently overcount on a resumed run). resolved_max_workers is
+    the actual worker-process count this invocation used -- equal to
+    `max_workers` when the caller passed one explicitly, or the auto-computed
+    `min(len(points), max(1, os.cpu_count() - 1))` otherwise -- so callers
+    printing a "per-search cost at N workers" figure report the real N
+    instead of guessing.
     """
     data = load_campaign_data()
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
@@ -267,7 +272,7 @@ def collect(campaign_dir, out, limit=None, max_workers=None):
     if not points:
         print('nothing to do -- every grid point already recorded at {}'.format(out))
         frame = pd.read_csv(out) if os.path.exists(out) else pd.DataFrame()
-        return frame, time.time(), 0
+        return frame, time.time(), 0, max_workers
 
     if max_workers is None:
         max_workers = min(len(points), max(1, os.cpu_count() - 1))
@@ -281,7 +286,12 @@ def collect(campaign_dir, out, limit=None, max_workers=None):
                    for point in points}
         for future in as_completed(futures):
             point = futures[future]
-            row = future.result()
+            try:
+                row = future.result()
+            except Exception as e:
+                print('  point M={} k={} T={} arm={} split={} raised exception: {}'.format(
+                    point['M'], point['k'], point['T'], point['arm'], point['split'], e))
+                continue
             n_done += 1
             pd.DataFrame([row]).to_csv(out, mode='a', header=not file_exists, index=False)
             file_exists = True
@@ -289,7 +299,7 @@ def collect(campaign_dir, out, limit=None, max_workers=None):
                 n_done, len(points), point['M'], point['k'], point['T'], point['arm'],
                 point['split'], row['any_feasible'], time.time() - started))
 
-    return pd.read_csv(out), started, n_done
+    return pd.read_csv(out), started, n_done, max_workers
 
 
 def print_reach_table(frame):
@@ -351,16 +361,18 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
-    frame, started, n_done = collect(args.campaign_dir, args.out, args.limit, args.max_workers)
+    frame, started, n_done, resolved_max_workers = collect(
+        args.campaign_dir, args.out, args.limit, args.max_workers)
     print('{} total rows on disk at {}'.format(len(frame), args.out))
     if args.timing and n_done:
         per_search = (time.time() - started) / n_done
+        workers = resolved_max_workers or 1
         print('per-search cost: {:.1f}s -- a full {}-search grid would take '
               '{:.1f}h single-threaded ({:.1f}h at {} workers)'.format(
                   per_search, FULL_GRID_SIZE,
                   per_search * FULL_GRID_SIZE / 3600,
-                  per_search * FULL_GRID_SIZE / 3600 / (args.max_workers or 1),
-                  args.max_workers or 1))
+                  per_search * FULL_GRID_SIZE / 3600 / workers,
+                  workers))
     report(frame)
 
 
