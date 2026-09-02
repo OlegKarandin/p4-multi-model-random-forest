@@ -1,10 +1,19 @@
-"""Unit tests for scripts/feasibility_frontier.py's pure, module-level
-functions (Task 3): build_grid, cfg_for_arm, trial_violation_type,
-summarize_trials, any_feasible_at, reach, load_cell_features.
+"""Unit tests for scripts/feasibility_frontier.py.
 
-Per spec 2.1's task-4 scope, this does NOT run the script end-to-end (that's
-a later gate) -- only the side-effect-free helpers that don't touch Optuna,
-sklearn, or the campaign search itself.
+Covers the pure, module-level helpers (Task 3): build_grid, cfg_for_arm,
+trial_violation_type, summarize_trials, any_feasible_at, reach,
+load_cell_features, print_reach_table, print_violation_breakdown.
+
+It ALSO exercises already_done's on-disk resume logic and collect()'s
+ProcessPoolExecutor-based orchestration end-to-end against real, spawned
+worker processes writing real CSV files under tmp_path (resume/skip,
+initializer-based dataset passing, per-future exception isolation, the
+--limit / --max-workers plumbing) -- with run_one_point and
+load_campaign_data monkeypatched to cheap, deterministic stand-ins so this
+still never touches Optuna, sklearn, or the real campaign search itself.
+main() is touched only via a stubbed collect() (see
+test_main_timing_reports_the_resolved_worker_count_when_max_workers_omitted),
+not run against real data.
 """
 import os
 import types
@@ -26,6 +35,7 @@ from scripts.feasibility_frontier import (
     cfg_for_arm,
     collect,
     load_cell_features,
+    print_violation_breakdown,
     reach,
     summarize_trials,
     trial_violation_type,
@@ -131,7 +141,13 @@ def test_trial_violation_type_all_zero_is_none():
 
 def test_trial_violation_type_missing_attributes_is_none():
     """A trial that never reached objective()'s attribute-setting code has no
-    user_attrs at all -- must read as feasible-shaped (None), not crash."""
+    user_attrs at all -- trial_violation_type (the F6 "which violation type"
+    diagnostic) must not crash, and reports "no violation type" (None).
+
+    This is NOT the same as being feasible: summarize_trials deliberately
+    does not use this function's None to decide feasibility -- see
+    test_summarize_trials_missing_attrs_trial_counts_as_infeasible below,
+    which is the actual feasibility-decision test for this case."""
     assert trial_violation_type({}) is None
 
 
@@ -202,6 +218,43 @@ def test_summarize_trials_all_feasible_dominant_violation_type_is_none():
     out = summarize_trials(trials)
     assert out['any_feasible'] is True
     assert out['dominant_violation_type'] is None
+
+
+def test_summarize_trials_missing_attrs_trial_counts_as_infeasible():
+    """Code review Finding 3: feasibility must come from the public
+    early_stopping.is_feasible, not from trial_violation_type's own
+    missing-attribute-defaults-to-0.0 logic. A COMPLETE trial with NO
+    violation user_attrs at all (never reached objective()'s
+    attribute-setting code -- e.g. it failed before that point) must read as
+    INFEASIBLE here, per early_stopping.constraint_values' own documented
+    convention (missing attribute -> inf -> infeasible), even though
+    trial_violation_type({}) itself reports None ("no violation type")."""
+    trial = types.SimpleNamespace(state=optuna.trial.TrialState.COMPLETE, user_attrs={})
+    out = summarize_trials([trial])
+    assert out['n_trials_run'] == 1
+    assert out['n_feasible'] == 0
+    assert out['any_feasible'] is False
+    # Still reports "no diagnosable violation type" for this trial, since
+    # trial_violation_type genuinely can't tell WHICH constraint was hit when
+    # no attributes were ever set -- but it must not count as feasible.
+    assert all(out['n_' + name] == 0 for name in early_stopping._VIOLATION_ATTRS)
+
+
+def test_summarize_trials_mixed_missing_and_real_violations():
+    """A more realistic mix: one genuinely feasible trial, one COMPLETE trial
+    with a real violation, and one COMPLETE trial with no violation
+    attributes at all (must count as infeasible, not feasible, per Finding
+    3) -- n_feasible must reflect only the genuinely feasible trial."""
+    trials = [
+        _trial(),  # feasible
+        _trial(blocks_violation=2.0),  # infeasible: blocks
+        types.SimpleNamespace(state=optuna.trial.TrialState.COMPLETE, user_attrs={}),
+    ]
+    out = summarize_trials(trials)
+    assert out['n_trials_run'] == 3
+    assert out['n_feasible'] == 1
+    assert out['any_feasible'] is True
+    assert out['n_blocks_violation'] == 1
 
 
 # --------------------------------------------------------------------------
@@ -352,6 +405,22 @@ def test_already_done_reads_the_five_key_columns_as_tuples(tmp_path):
     }
 
 
+def test_already_done_ignores_a_torn_row_with_null_any_feasible(tmp_path):
+    """Code review Finding 6: pd.to_csv(mode='a') isn't atomic, so a crash
+    mid-write can leave a torn, truncated trailing row -- pd.read_csv pads
+    its missing trailing column(s) with NaN, even though the row's key
+    columns (M/k/T/arm/split) are still intact. Such a row must NOT count as
+    "done": it never actually completed cleanly, so it must be retried, not
+    permanently poison the resume checkpoint."""
+    out_path = str(tmp_path / 'torn.csv')
+    with open(out_path, 'w') as f:
+        f.write('M,k,T,arm,split,any_feasible\n')
+        f.write('25,9,1,control,10,True\n')
+        f.write('25,9,2,control,11,\n')  # torn: any_feasible truncated away
+
+    assert already_done(out_path) == {(25, 9, 1, 'control', 10)}
+
+
 # --------------------------------------------------------------------------
 # collect: resume + parallelism
 #
@@ -371,12 +440,31 @@ def test_already_done_reads_the_five_key_columns_as_tuples(tmp_path):
 # Verified empirically (see test_collect_parallel_actually_uses_worker_processes)
 # by having each row record os.getpid() and confirming it differs from the
 # test process's own pid.
+#
+# Code review Finding 2: collect() no longer passes the dataset as a per-call
+# run_one_point argument through the pool -- it loads it once and hands it to
+# ProcessPoolExecutor's `initializer` (_init_worker), which sets each worker
+# process's own _worker_data global exactly once. So collect() must now
+# submit run_one_point with data=None, and _fake_run_one_point asserts
+# exactly that (data is None) -- a regression back to piping the whole
+# dataset through per-call would fail this assertion in every test below
+# that uses it. It also reports whether THIS (genuinely separate, freshly
+# re-imported) worker process's feasibility_frontier._worker_data matches
+# what _fake_load_campaign_data() would produce, confirming the initializer
+# really did run and really did set the global inside the worker -- not just
+# that data=None was passed.
 # --------------------------------------------------------------------------
 
 def _fake_run_one_point(point, data, campaign_dir):
+    assert data is None, (
+        'collect() must submit run_one_point through the pool with data=None '
+        'and rely on the ProcessPoolExecutor initializer instead of piping '
+        'the (real, ~95MB) dataset through as a per-call argument (Finding 2)')
     row = dict(point)
     row.update({'any_feasible': True, 'n_trials_run': 1, 'n_feasible': 1,
-                'dominant_violation_type': None, 'pid': os.getpid()})
+                'dominant_violation_type': None, 'pid': os.getpid(),
+                'worker_data_is_expected':
+                    feasibility_frontier._worker_data == _fake_load_campaign_data()})
     return row
 
 
@@ -428,7 +516,12 @@ def test_collect_parallel_actually_uses_worker_processes(tmp_path, monkeypatch):
     duplicates, and at least one row's pid differs from this test process's
     own pid -- confirming run_one_point genuinely executed in a separate
     ProcessPoolExecutor worker rather than silently degrading to serial,
-    in-process execution."""
+    in-process execution.
+
+    Also confirms Finding 2's initializer-based data passing genuinely works
+    across those real, separate worker processes: every row's
+    worker_data_is_expected (computed inside its own worker, from that
+    worker's own feasibility_frontier._worker_data global) must be True."""
     monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point)
     monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
     monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:4])
@@ -442,6 +535,9 @@ def test_collect_parallel_actually_uses_worker_processes(tmp_path, monkeypatch):
     assert resolved_max_workers == 2
     keys = list(zip(frame['M'], frame['k'], frame['T'], frame['arm'], frame['split']))
     assert len(keys) == len(set(keys))
+    assert frame['worker_data_is_expected'].all(), (
+        'a worker process never saw the dataset the ProcessPoolExecutor '
+        'initializer was supposed to set into its _worker_data global')
 
     this_pid = os.getpid()
     worker_pids = set(frame['pid'])
@@ -468,7 +564,7 @@ def _fake_run_one_point_with_one_failure(point, data, campaign_dir):
     return _fake_run_one_point(point, data, campaign_dir)
 
 
-def test_collect_isolates_a_single_point_exception_and_continues(tmp_path, monkeypatch):
+def test_collect_isolates_a_single_point_exception_and_continues(tmp_path, monkeypatch, capsys):
     """A run_one_point failure on exactly one grid point must not abort
     collection of the rest -- mirrors src/training/feature_selection.py's
     compare_feature_selection_approaches_parallel (~line 783-788), which
@@ -480,7 +576,13 @@ def test_collect_isolates_a_single_point_exception_and_continues(tmp_path, monke
     result. The failed point should simply be ABSENT from the output (it
     stays outside already_done()'s set and is retried on the next
     invocation -- the same resumability collect() already provides for a
-    crash/interrupt)."""
+    crash/interrupt).
+
+    Also (code review Finding 4): the per-future exception log must include
+    the exception TYPE and a full traceback (not just str(e), which for e.g.
+    a bare KeyError('study') would print as just the word "study" -- useless
+    10 hours later with no other context), and collect() must print a
+    one-line summary of how many points failed this invocation."""
     monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point_with_one_failure)
     monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
     monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:4])
@@ -497,6 +599,12 @@ def test_collect_isolates_a_single_point_exception_and_continues(tmp_path, monke
     keys = list(zip(frame['M'], frame['k'], frame['T'], frame['arm'], frame['split']))
     assert (25, 9, 1, 'aligned_only', 10) not in keys
     assert len(keys) == len(set(keys))
+
+    captured = capsys.readouterr()
+    assert 'RuntimeError' in captured.out, 'exception TYPE must be logged, not just str(e)'
+    assert 'Traceback (most recent call last)' in captured.out, 'full traceback must be logged'
+    assert '1 points failed this run' in captured.out
+    assert 'retried on the next invocation' in captured.out
 
 
 # --------------------------------------------------------------------------
@@ -552,3 +660,138 @@ def test_main_timing_reports_the_resolved_worker_count_when_max_workers_omitted(
     captured = capsys.readouterr()
     assert 'at 3 workers' in captured.out
     assert 'at 1 workers' not in captured.out
+
+
+# --------------------------------------------------------------------------
+# collect: --limit 0 means "run nothing" (code review Finding 7)
+# --------------------------------------------------------------------------
+
+def test_collect_limit_zero_runs_nothing(tmp_path, monkeypatch, capsys):
+    """--limit 0 must be indistinguishable from "run nothing", not from
+    "--limit omitted" -- `if limit:` (truthiness) cannot tell 0 apart from
+    None, so it would silently run the full remaining grid instead. Uses the
+    normal (successful, not raising) _fake_run_one_point, so a regression
+    back to truthiness-based limit handling would genuinely make all 4
+    synthetic points run and get recorded, failing the assertions below for
+    real rather than incidentally via an unrelated exception."""
+    monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point)
+    monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
+    monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:4])
+    out_path = str(tmp_path / 'limit_zero.csv')
+
+    frame, _started, n_done, _resolved_max_workers = collect(
+        'unused_campaign_dir', out_path, limit=0, max_workers=1)
+
+    assert n_done == 0
+    assert len(frame) == 0
+    assert not os.path.exists(out_path), '--limit 0 must not write anything to --out'
+    captured = capsys.readouterr()
+    assert 'nothing to do' in captured.out
+
+
+# --------------------------------------------------------------------------
+# collect: every submitted point failing this invocation (code review
+# Finding 8) -- out is never created, so the final read must not raise a
+# bare FileNotFoundError.
+# --------------------------------------------------------------------------
+
+def _fake_run_one_point_always_fails(point, data, campaign_dir):
+    raise RuntimeError('synthetic failure for point {}'.format(point))
+
+
+def test_collect_returns_empty_frame_when_every_point_fails_and_out_never_created(
+        tmp_path, monkeypatch, capsys):
+    """If every future raised this invocation (Finding 4's per-future
+    exception handling catches each one), `out` is never created -- the final
+    `pd.read_csv(out)` must be guarded the same way the nothing-to-do
+    early-return path already guards it, returning an empty DataFrame instead
+    of a bare, unguarded FileNotFoundError."""
+    monkeypatch.setattr(feasibility_frontier, 'run_one_point', _fake_run_one_point_always_fails)
+    monkeypatch.setattr(feasibility_frontier, 'load_campaign_data', _fake_load_campaign_data)
+    monkeypatch.setattr(feasibility_frontier, 'build_grid', lambda: build_grid()[:2])
+    out_path = str(tmp_path / 'all_failed.csv')
+
+    frame, _started, n_done, _resolved_max_workers = collect(
+        'unused_campaign_dir', out_path, max_workers=1)
+
+    assert n_done == 0
+    assert len(frame) == 0
+    assert not os.path.exists(out_path)
+    captured = capsys.readouterr()
+    assert '2 points failed this run' in captured.out
+
+
+# --------------------------------------------------------------------------
+# print_violation_breakdown: per-(M, k, T, arm) grouping, not per-row
+# (code review Finding 5)
+# --------------------------------------------------------------------------
+
+def _violation_row(M, k, T, arm, split, any_feasible, dominant_violation_type):
+    return {'M': M, 'k': k, 'T': T, 'arm': arm, 'split': split,
+            'any_feasible': any_feasible,
+            'dominant_violation_type': dominant_violation_type}
+
+
+def test_print_violation_breakdown_counts_each_infeasible_cell_once(capsys):
+    """A cell infeasible on all 3 of its recorded splits must contribute
+    exactly ONE count to the table, not 3 -- spec 2.1/F6 wants one count per
+    infeasible (M, k, T, arm), not per raw row."""
+    rows = [
+        _violation_row(25, 9, 1, 'control', 10, False, 'blocks_violation'),
+        _violation_row(25, 9, 1, 'control', 11, False, 'blocks_violation'),
+        _violation_row(25, 9, 1, 'control', 12, False, 'blocks_violation'),
+    ]
+    frame = pd.DataFrame(rows)
+    print_violation_breakdown(frame)
+    captured = capsys.readouterr()
+    assert '| blocks_violation | 1 |' in captured.out
+
+
+def test_print_violation_breakdown_excludes_a_cell_feasible_on_any_split(capsys):
+    """A cell feasible on even one of its 3 splits is not "infeasible" at all
+    (any_feasible_at/reach OR across splits) -- it must not appear in the F6
+    breakdown, even though 2 of its 3 rows individually recorded
+    any_feasible=False."""
+    rows = [
+        _violation_row(25, 9, 1, 'control', 10, False, 'blocks_violation'),
+        _violation_row(25, 9, 1, 'control', 11, False, 'blocks_violation'),
+        _violation_row(25, 9, 1, 'control', 12, True, None),
+    ]
+    frame = pd.DataFrame(rows)
+    print_violation_breakdown(frame)
+    captured = capsys.readouterr()
+    assert 'no infeasible points in this run' in captured.out
+
+
+def test_print_violation_breakdown_counts_two_distinct_infeasible_cells_separately(capsys):
+    """Two distinct (M, k, T, arm) cells, each infeasible on all 3 splits with
+    a different dominant violation type, must produce two separate rows in
+    the table -- 1 count each, not merged."""
+    rows = (
+        [_violation_row(25, 9, 1, 'control', s, False, 'blocks_violation')
+         for s in SPLIT_INDICES]
+        + [_violation_row(25, 9, 2, 'control', s, False, 'codeword_violation')
+           for s in SPLIT_INDICES]
+    )
+    frame = pd.DataFrame(rows)
+    print_violation_breakdown(frame)
+    captured = capsys.readouterr()
+    assert '| blocks_violation | 1 |' in captured.out
+    assert '| codeword_violation | 1 |' in captured.out
+
+
+def test_print_violation_breakdown_does_not_crash_on_a_torn_row(capsys):
+    """A torn/corrupted row (NaN any_feasible, from a crash mid pd.to_csv
+    append -- see already_done's fix for Finding 6) must not crash this table
+    with a TypeError on `~` against an object-dtype column; grouping and
+    `.any()`-based feasibility must tolerate it."""
+    import numpy as np
+    rows = [
+        _violation_row(25, 9, 1, 'control', 10, False, 'blocks_violation'),
+        _violation_row(25, 9, 1, 'control', 11, False, 'blocks_violation'),
+        _violation_row(25, 9, 1, 'control', 12, np.nan, np.nan),
+    ]
+    frame = pd.DataFrame(rows)
+    print_violation_breakdown(frame)  # must not raise
+    captured = capsys.readouterr()
+    assert '| blocks_violation | 1 |' in captured.out

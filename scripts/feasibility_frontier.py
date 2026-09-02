@@ -40,11 +40,22 @@ best_params), so a full 576-point grid is expensive -- use --limit and
 Run (from the repository root):
   PYTHONPATH=. "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" \\
       scripts/feasibility_frontier.py --limit 5 --timing
+
+The real, unattended Codespace run (full 576-point grid, one worker process
+per core on a 4-core machine):
+  PYTHONPATH=. "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" \\
+      scripts/feasibility_frontier.py --max-workers 4
+
+Re-running that exact command with the same --out path RESUMES rather than
+restarts: already-recorded (M, k, T, arm, split) points are skipped (see
+already_done/collect), so an interrupted or crashed run can simply be
+re-invoked to pick up where it left off.
 """
 import argparse
 import os
 import sys
 import time
+import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Running a file inside scripts/ puts scripts/ on sys.path, not the repo root,
@@ -107,6 +118,15 @@ def already_done(out_path):
     if not os.path.exists(out_path):
         return set()
     frame = pd.read_csv(out_path)
+    # A crash mid-write (pd.to_csv(mode='a') isn't atomic) can leave a torn,
+    # truncated trailing row; pd.read_csv pads its missing trailing columns
+    # with NaN. Such a row's key columns (M/k/T/arm/split) can still look
+    # intact while any_feasible and the metric columns are garbage -- only
+    # count a row as "done" when any_feasible is present, so a torn row gets
+    # silently retried instead of permanently poisoning the resume checkpoint
+    # (and, via the resulting NaN/object-dtype any_feasible column, later
+    # crashing report()'s boolean logic).
+    frame = frame[frame['any_feasible'].notna()]
     return set(zip(frame['M'], frame['k'], frame['T'], frame['arm'], frame['split']))
 
 
@@ -126,7 +146,18 @@ def load_cell_features(campaign_dir, M, k, split_idx):
 
 def trial_violation_type(user_attrs):
     """Which of early_stopping._VIOLATION_ATTRS is >0 for one trial, or None
-    (feasible, or never reached objective()'s attribute-setting code)."""
+    (no violation attribute is set to a positive value).
+
+    This is the F6 "which violation type" DIAGNOSTIC only -- it is deliberately
+    NOT the feasibility decision (see summarize_trials, which uses the public
+    early_stopping.is_feasible for that). A missing attribute reads as 0.0
+    here, so a trial with no user_attrs at all comes back None ("no violation
+    type to report"), never a crash -- but summarize_trials must not mistake
+    that None for "this trial is feasible": early_stopping.constraint_values'
+    own docstring is explicit that a missing attribute means the objective
+    never ran far enough to set it (failed/pruned/still running), and that
+    must read as INFEASIBLE, not feasible-by-default.
+    """
     for name in early_stopping._VIOLATION_ATTRS:
         if user_attrs.get(name, 0.0) > 0:
             return name
@@ -136,18 +167,29 @@ def trial_violation_type(user_attrs):
 def summarize_trials(trials):
     """Pure aggregation (spec 2.1/F6) over trial-like objects exposing .state
     and .user_attrs -- duck-typed like early_stopping.is_feasible, so it is
-    unit-testable with plain stand-ins."""
+    unit-testable with plain stand-ins.
+
+    The FEASIBLE count and any_feasible boolean come from the public
+    early_stopping.is_feasible(trial) -- the same function
+    ParetoStagnationStopper itself uses -- not from trial_violation_type's
+    missing-attribute-defaults-to-0.0 logic, so a trial with no violation
+    attributes at all (never reached objective()'s attribute-setting code)
+    reads as infeasible here, consistent with early_stopping's own documented
+    convention, instead of silently counting as feasible. trial_violation_type
+    is used only for the separate F6 diagnostic -- which violation a NOT
+    -feasible trial hit -- computed for every trial is_feasible rejects."""
     n_feasible = 0
     counts = {name: 0 for name in early_stopping._VIOLATION_ATTRS}
     n_run = 0
     for trial in trials:
         n_run += 1
+        if early_stopping.is_feasible(trial):
+            n_feasible += 1
+            continue
         if trial.state != optuna.trial.TrialState.COMPLETE:
             continue
         vtype = trial_violation_type(trial.user_attrs)
-        if vtype is None:
-            n_feasible += 1
-        else:
+        if vtype is not None:
             counts[vtype] += 1
     dominant = max(counts, key=counts.get) if any(counts.values()) else None
     out = {'n_trials_run': n_run, 'n_feasible': n_feasible,
@@ -174,16 +216,58 @@ def reach(frame, M, k, arm):
     return max(feasible_Ts) if feasible_Ts else None
 
 
+# Set once per worker process by _init_worker (ProcessPoolExecutor's
+# `initializer`), never mutated afterward -- see run_one_point.
+_worker_data = None
+
+
+def _init_worker(data):
+    """ProcessPoolExecutor `initializer`: load the ~95MB campaign dataset
+    (load_campaign_data()'s 5-tuple) into a process-global exactly ONCE per
+    worker process, at pool-startup time.
+
+    Without this, collect() would pass `data` as a per-call argument to
+    run_one_point, and ProcessPoolExecutor.submit pickles each call's
+    arguments independently as tasks are queued -- so submitting `data` to
+    each of the grid's up to 576 tasks would pickle/unpickle the whole ~95MB
+    dataset 576 times (~55GB of IPC), instead of once per worker process."""
+    global _worker_data
+    _worker_data = data
+
+
 def run_one_point(point, data, campaign_dir):
-    """One grid point. Captures the underlying optuna.Study by temporarily
-    reassigning optuna.create_study (same technique used throughout
+    """One grid point. Runs CONCURRENTLY as a ProcessPoolExecutor worker task
+    (collect() submits this function once per remaining grid point).
+
+    Captures the underlying optuna.Study by temporarily reassigning
+    optuna.create_study (same technique used throughout
     tests/test_train_model_contract.py's monkeypatch-based tests, applied here
     without pytest's monkeypatch since this is script, not test, code).
     Necessary because NoFeasibleSolution discards the local `study` before
     this caller ever sees it, and even on success TrainResult exposes only
     summary counts (n_trials_run, n_feasible), not F6's per-violation-type
-    breakdown. Serial loop, not thread-safe -- matches capacity_ceiling.py and
-    replay_alignment.py's own precedent."""
+    breakdown.
+
+    That reassignment is a mutation of a PROCESS-GLOBAL (the `optuna` module's
+    own `create_study` attribute), which is safe here ONLY because each
+    concurrently-running call executes in its own separate OS process (a
+    ProcessPoolExecutor worker): every process gets its own private copy of
+    the `optuna` module, so one call's reassign-then-restore of
+    optuna.create_study can never race against another call's. This function
+    must NEVER be moved to a ThreadPoolExecutor -- concurrently-running
+    threads share one process's `optuna` module object, so two calls'
+    reassignments of the same global attribute would race, and one call could
+    end up capturing (or restoring) another call's Study.
+
+    `data` is the (X_app, X_ddos, y_app, y_ddos, names) 5-tuple from
+    load_campaign_data(). Pass it explicitly for any DIRECT (non-pool) call --
+    e.g. a `--limit 1` sanity check, or a test that calls run_one_point
+    itself. When collect() submits this function to a ProcessPoolExecutor, it
+    passes data=None and this function falls back to the process-global
+    `_worker_data`, which _init_worker already set once at pool-startup time
+    (see _init_worker's docstring for why)."""
+    if data is None:
+        data = _worker_data
     X_app, X_ddos, y_app, y_ddos, names = data
     M, k, T, arm, split_idx = (point['M'], point['k'], point['T'],
                                point['arm'], point['split'])
@@ -246,27 +330,43 @@ def collect(campaign_dir, out, limit=None, max_workers=None):
 
     --limit counts only REMAINING (not-yet-done) points, since resuming a
     partial run with the same --limit should make progress, not re-select
-    already-completed points.
+    already-completed points. `limit=0` genuinely means "run nothing" (checked
+    via `is not None`, not truthiness) -- a natural way to ask for just the
+    current report/state without doing any new work.
+
+    The dataset (`load_campaign_data()`'s ~95MB 5-tuple) is loaded once here
+    and handed to the ProcessPoolExecutor as its `initializer`'s argument, so
+    each worker process loads it into its own process-global exactly once,
+    rather than it being pickled/unpickled separately as a per-call argument
+    for every one of the (up to 576) submitted tasks -- see run_one_point and
+    _init_worker's docstrings.
+
+    A future that raises is caught, logged (type + full traceback), and
+    skipped -- that point is simply absent from `out` this invocation, so it
+    is retried on the next one (same mechanism as an interrupt/crash). A
+    summary count of how many points failed this invocation is printed after
+    the pool closes.
 
     Returns (frame, started, n_done, resolved_max_workers): frame is read back
     from `out` after writing, so it reflects the FULL accumulated file across
-    every resume, not just this invocation's new rows. n_done is how many
-    points THIS invocation actually ran -- distinct from len(frame)
-    (everything ever recorded) and from limit/FULL_GRID_SIZE -- so callers
-    computing per-search timing divide by n_done, not by any of those three
-    (which would silently overcount on a resumed run). resolved_max_workers is
-    the actual worker-process count this invocation used -- equal to
-    `max_workers` when the caller passed one explicitly, or the auto-computed
-    `min(len(points), max(1, os.cpu_count() - 1))` otherwise -- so callers
-    printing a "per-search cost at N workers" figure report the real N
-    instead of guessing.
+    every resume, not just this invocation's new rows -- or an empty
+    DataFrame if `out` was never actually created (e.g. every submitted point
+    failed this invocation). n_done is how many points THIS invocation
+    actually ran -- distinct from len(frame) (everything ever recorded) and
+    from limit/FULL_GRID_SIZE -- so callers computing per-search timing divide
+    by n_done, not by any of those three (which would silently overcount on a
+    resumed run). resolved_max_workers is the actual worker-process count this
+    invocation used -- equal to `max_workers` when the caller passed one
+    explicitly, or the auto-computed `min(len(points), max(1, os.cpu_count() -
+    1))` otherwise -- so callers printing a "per-search cost at N workers"
+    figure report the real N instead of guessing.
     """
     data = load_campaign_data()
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
     done = already_done(out)
     points = [p for p in build_grid()
               if (p['M'], p['k'], p['T'], p['arm'], p['split']) not in done]
-    if limit:
+    if limit is not None:
         points = points[:limit]
 
     if not points:
@@ -281,16 +381,25 @@ def collect(campaign_dir, out, limit=None, max_workers=None):
     file_exists = os.path.exists(out) and os.path.getsize(out) > 0
     started = time.time()
     n_done = 0
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(run_one_point, point, data, campaign_dir): point
+    n_failed = 0
+    # initializer/initargs load the ~95MB dataset into each worker process's
+    # own _worker_data global exactly ONCE at pool-startup time; the per-call
+    # `data` argument below is always None so it never gets independently
+    # pickled for each of the (up to 576) submitted tasks (see _init_worker
+    # and run_one_point's docstrings).
+    with ProcessPoolExecutor(max_workers=max_workers,
+                             initializer=_init_worker, initargs=(data,)) as executor:
+        futures = {executor.submit(run_one_point, point, None, campaign_dir): point
                    for point in points}
         for future in as_completed(futures):
             point = futures[future]
             try:
                 row = future.result()
-            except Exception as e:
-                print('  point M={} k={} T={} arm={} split={} raised exception: {}'.format(
-                    point['M'], point['k'], point['T'], point['arm'], point['split'], e))
+            except Exception:
+                n_failed += 1
+                print('  point M={} k={} T={} arm={} split={} raised an exception:\n{}'.format(
+                    point['M'], point['k'], point['T'], point['arm'], point['split'],
+                    traceback.format_exc()))
                 continue
             n_done += 1
             pd.DataFrame([row]).to_csv(out, mode='a', header=not file_exists, index=False)
@@ -299,7 +408,12 @@ def collect(campaign_dir, out, limit=None, max_workers=None):
                 n_done, len(points), point['M'], point['k'], point['T'], point['arm'],
                 point['split'], row['any_feasible'], time.time() - started))
 
-    return pd.read_csv(out), started, n_done, max_workers
+    if n_failed:
+        print('{} points failed this run and were not recorded -- they will be '
+              'retried on the next invocation'.format(n_failed))
+
+    frame = pd.read_csv(out) if os.path.exists(out) else pd.DataFrame()
+    return frame, started, n_done, max_workers
 
 
 def print_reach_table(frame):
@@ -315,14 +429,39 @@ def print_reach_table(frame):
         print('| ' + ' | '.join(line) + ' |')
 
 
+def _cell_dominant_violation_type(group):
+    """One (M, k, T, arm) cell's dominant violation type: the most common
+    per-split `dominant_violation_type` across the cell's up to 3 recorded
+    splits. Series.mode() drops NaN and is stable (first-encountered order),
+    so a torn/corrupted row (NaN dominant_violation_type) is ignored rather
+    than winning a tie, and a genuine 3-way disagreement resolves to whichever
+    type appears first among the group's rows -- an arbitrary but deterministic
+    tie-break, since spec's F6 doesn't define what "dominant" means when a
+    cell's splits disagree."""
+    modes = group['dominant_violation_type'].mode()
+    return modes.iloc[0] if len(modes) else None
+
+
 def print_violation_breakdown(frame):
     print('\n### Dominant violation type per infeasible grid point (F6)\n')
-    infeasible = frame[~frame['any_feasible']]
-    if not len(infeasible):
+    # spec 2.1/F6 wants one count per infeasible (cell, T, arm) -- i.e. one
+    # per (M, k, T, arm) -- not one per raw row. The grid records up to 3
+    # splits per such group (any_feasible_at/reach OR across them), so
+    # counting raw rows would count a cell infeasible on all 3 splits three
+    # times over. A group counts as infeasible here only when NONE of its
+    # recorded splits were feasible; `.any()` (not `~`, which raises on the
+    # object-dtype column a torn/NaN any_feasible row produces) also means a
+    # corrupted row doesn't crash this table, just gets folded in harmlessly.
+    cell_types = []
+    for _, group in frame.groupby(['M', 'k', 'T', 'arm']):
+        if group['any_feasible'].any():
+            continue  # this (cell, T, arm) is feasible overall (>=1 split worked)
+        cell_types.append(_cell_dominant_violation_type(group))
+    if not cell_types:
         print('no infeasible points in this run')
         return
     print('| violation type | count |\n|---|---|')
-    for name, count in infeasible['dominant_violation_type'].value_counts().items():
+    for name, count in pd.Series(cell_types).value_counts(dropna=False).items():
         print('| {} | {} |'.format(name, count))
 
 
