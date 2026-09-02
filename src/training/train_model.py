@@ -41,6 +41,13 @@ import optuna
 from optuna.samplers import TPESampler
 optuna.logging.set_verbosity(optuna.logging.CRITICAL)
 
+# Positive floor for log-uniform ccp_alpha sampling -- suggest_float(..., log=True)
+# cannot include 0.0. That this floor is small enough to be bit-identical to
+# ccp_alpha=0 (the search space provably CONTAINS the unmodified baseline) is
+# tested, not assumed -- see test_ccp_alpha_min_floor_nests_the_unpruned_baseline
+# in tests/test_train_model_contract.py.
+CCP_ALPHA_MIN = 1e-6
+
 
 def _vary_hyperparams(params: dict, n_trees: int, max_depth: int) -> dict:
     """
@@ -160,6 +167,7 @@ def rf_params_from_params(params, suffix):
         'min_samples_split': params['min_samples_split_' + suffix],
         'max_depth': params['max_depth_' + suffix],
         'random_state': 42,
+        'ccp_alpha': params.get('ccp_alpha_' + suffix, 0.0),
     }
 
 
@@ -194,13 +202,18 @@ def train_multi_RF_Optuna_multi_constrained(
         the two cannot drift. `source` is a trial (during the search) or a plain
         params dict (when refitting the winner)."""
         if hasattr(source, 'suggest_int'):
-            return {
-                'n_estimators': source.suggest_int('n_estimators_' + suffix, 1, cfg.n_trees, step=2),
+            params = {
+                'n_estimators': source.suggest_int(
+                    'n_estimators_' + suffix, cfg.n_trees_min, cfg.n_trees, step=2),
                 'min_samples_leaf': source.suggest_int('min_samples_leaf_' + suffix, 5, 200, step=10),
                 'min_samples_split': source.suggest_int('min_samples_split_' + suffix, 10, 400, step=10),
                 'max_depth': source.suggest_int('max_depth_' + suffix, 2, cfg.max_depth),
                 'random_state': 42,
             }
+            if cfg.ccp_alpha_max > 0.0:
+                params['ccp_alpha'] = source.suggest_float(
+                    'ccp_alpha_' + suffix, CCP_ALPHA_MIN, cfg.ccp_alpha_max, log=True)
+            return params
         return rf_params_from_params(source, suffix)
 
     def fit_pair(params_A, params_B, align_stats=None):

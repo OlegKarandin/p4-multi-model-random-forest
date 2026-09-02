@@ -491,5 +491,103 @@ def test_rf_params_from_params_reproduces_the_search_space_mapping():
               'min_samples_split_B': 30, 'max_depth_B': 4}
     assert tm.rf_params_from_params(params, 'A') == {
         'n_estimators': 7, 'min_samples_leaf': 25, 'min_samples_split': 50,
-        'max_depth': 9, 'random_state': 42}
+        'max_depth': 9, 'random_state': 42, 'ccp_alpha': 0.0}
     assert tm.rf_params_from_params(params, 'B')['n_estimators'] == 3
+
+
+def test_ccp_alpha_min_floor_nests_the_unpruned_baseline():
+    """CCP_ALPHA_MIN must be small enough that fitting at ccp_alpha=CCP_ALPHA_MIN
+    is bit-identical to fitting at ccp_alpha=0 (today's baseline)."""
+    import src.training.train_model as tm
+    from sklearn.ensemble import RandomForestClassifier
+    rng = np.random.default_rng(5)
+    X = rng.integers(0, 90000, size=(300, 4)).astype(float)
+    y = np.array([c % 3 for c in range(300)])
+    kwargs = dict(n_estimators=7, max_depth=5, min_samples_leaf=20, random_state=0)
+
+    baseline = RandomForestClassifier(ccp_alpha=0.0, **kwargs).fit(X, y)
+    floored = RandomForestClassifier(ccp_alpha=tm.CCP_ALPHA_MIN, **kwargs).fit(X, y)
+
+    assert len(baseline.estimators_) == len(floored.estimators_)
+    for t1, t2 in zip(baseline.estimators_, floored.estimators_):
+        assert np.array_equal(t1.tree_.threshold, t2.tree_.threshold)
+        assert np.array_equal(t1.tree_.feature, t2.tree_.feature)
+        assert np.array_equal(t1.tree_.children_left, t2.tree_.children_left)
+        assert np.array_equal(t1.tree_.children_right, t2.tree_.children_right)
+
+
+def test_n_trees_min_pins_the_n_estimators_dimension(monkeypatch):
+    """cfg.n_trees_min == cfg.n_trees must collapse the n_estimators search
+    dimension to a single value -- the T-pinning mechanism config.py's
+    n_trees_min docstring describes."""
+    import optuna
+    import src.training.train_model as tm
+
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        captured['study'] = study
+        return study
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    _call(cfg=TrainConfig(n_trees_min=3, n_trees=3, n_trials=6,
+                          min_feasible_before_stop=2, lookback=2))
+
+    trials = captured['study'].trials
+    assert trials, 'the search should have run at least one trial'
+    for trial in trials:
+        assert trial.params['n_estimators_A'] == 3
+        assert trial.params['n_estimators_B'] == 3
+
+
+def test_default_cfg_search_space_has_no_ccp_alpha_dimension_and_n_estimators_low_of_1(monkeypatch):
+    """Structural contract at default cfg (n_trees_min=1, ccp_alpha_max=0.0):
+    the n_estimators dimension keeps today's low=1 bound, and the ccp_alpha
+    dimension must be entirely ABSENT -- not present-but-zero -- since a
+    present dimension would change the search space Optuna's sampler sees
+    even if every sampled value happened to collapse to 0."""
+    import optuna
+    import src.training.train_model as tm
+
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        captured['study'] = study
+        return study
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    _call(cfg=TrainConfig(n_trials=6, min_feasible_before_stop=2, lookback=2))
+
+    trials = captured['study'].trials
+    assert trials, 'the search should have run at least one trial'
+    for trial in trials:
+        assert trial.distributions['n_estimators_A'].low == 1
+        assert trial.distributions['n_estimators_B'].low == 1
+        assert 'ccp_alpha_A' not in trial.distributions
+        assert 'ccp_alpha_B' not in trial.distributions
+        assert 'ccp_alpha_A' not in trial.params
+        assert 'ccp_alpha_B' not in trial.params
+
+
+def test_rf_params_from_params_ccp_alpha_get_default_round_trip():
+    """Archived best_params dicts (all of campaign_backup_20260825) have no
+    ccp_alpha_* key -- rf_params_from_params must default to 0.0 for those,
+    and honor the key when a future archive does carry it."""
+    import src.training.train_model as tm
+
+    archive_shaped = {
+        'n_estimators_A': 7, 'min_samples_leaf_A': 25,
+        'min_samples_split_A': 50, 'max_depth_A': 9,
+    }
+    assert tm.rf_params_from_params(archive_shaped, 'A')['ccp_alpha'] == 0.0
+
+    with_ccp_alpha = dict(archive_shaped, ccp_alpha_A=0.00042)
+    assert tm.rf_params_from_params(with_ccp_alpha, 'A')['ccp_alpha'] == 0.00042
