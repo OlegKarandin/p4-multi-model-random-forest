@@ -65,6 +65,13 @@ class TrainConfig:
         ceil(n_trees / 2) * (max_depth - 1) = 78. The predecessor (7, 10) was
         a placeholder whose comment said P4 would derive it; nothing had
         measured the ceiling, which is what this replaces.
+    n_trees_min : inclusive lower bound on the search space for n_trees.
+        Defaults to 1, which is `rf_params`'s old hardcoded lower bound.
+        Set to n_trees to pin that dimension (the T-pinning mechanism used by
+        `scripts/feasibility_frontier.py`).
+    ccp_alpha_max : inclusive upper bound on the cost-complexity pruning
+        parameter sweep. Defaults to 0.0, meaning the ccp_alpha dimension is
+        absent (today's unmodified behaviour).
     """
 
     delta_align: Optional[float] = 0.0
@@ -77,6 +84,8 @@ class TrainConfig:
     n_trials: int = 1000
     min_feasible_before_stop: int = 25
     lookback: int = 20
+    n_trees_min: int = 1
+    ccp_alpha_max: float = 0.0
 
     def __post_init__(self):
         if self.delta_align is not None and self.delta_align < 0:
@@ -91,6 +100,13 @@ class TrainConfig:
         if self.align_objective not in ALIGN_OBJECTIVES:
             raise ValueError('align_objective must be one of {}, got {!r}'.format(
                 ALIGN_OBJECTIVES, self.align_objective))
+        if not 1 <= self.n_trees_min <= self.n_trees:
+            raise ValueError(
+                'n_trees_min must be in [1, n_trees] ({}), got {!r}'.format(
+                    self.n_trees, self.n_trees_min))
+        if self.ccp_alpha_max < 0.0:
+            raise ValueError(
+                'ccp_alpha_max must be >= 0.0, got {!r}'.format(self.ccp_alpha_max))
 
     def arm_slug(self, encoding):
         """Filename-safe arm identity, per spec C.2.

@@ -141,3 +141,35 @@ def test_align_objective_does_not_enter_the_arm_slug():
     a = TrainConfig(delta_align=0.20, align_objective='blocks')
     b = TrainConfig(delta_align=0.20, align_objective='stages')
     assert a.arm_slug('joint') == b.arm_slug('joint') == 'joint-d020'
+
+
+def test_n_trees_min_and_ccp_alpha_max_defaults():
+    """Both fields default to today's unmodified behavior."""
+    cfg = TrainConfig()
+    assert cfg.n_trees_min == 1
+    assert cfg.ccp_alpha_max == 0.0
+
+
+@pytest.mark.parametrize('n_trees_min_value', [0, 12])
+def test_n_trees_min_out_of_range_rejected(n_trees_min_value):
+    """n_trees_min must be in [1, n_trees], where n_trees defaults to 11."""
+    with pytest.raises(ValueError, match='n_trees_min'):
+        TrainConfig(n_trees_min=n_trees_min_value)
+
+
+def test_n_trees_min_equal_to_n_trees_accepted():
+    """n_trees_min == n_trees is accepted (the T-pinning mechanism)."""
+    cfg = TrainConfig(n_trees_min=11)
+    assert cfg.n_trees_min == 11
+
+
+def test_ccp_alpha_max_negative_rejected():
+    """ccp_alpha_max must be >= 0.0."""
+    with pytest.raises(ValueError, match='ccp_alpha_max'):
+        TrainConfig(ccp_alpha_max=-0.01)
+
+
+def test_ccp_alpha_max_zero_accepted():
+    """ccp_alpha_max == 0.0 is accepted (off-by-one guard)."""
+    cfg = TrainConfig(ccp_alpha_max=0.0)
+    assert cfg.ccp_alpha_max == 0.0
