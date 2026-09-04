@@ -670,3 +670,57 @@ def test_multiplier_minimum_is_the_smallest_binding_integer():
     assert tm.MIN_SAMPLES_SPLIT_MULT_MIN == 3
     assert tm.min_samples_split_from_mult(25, 2) == 50  # == 2*leaf, inert
     assert tm.min_samples_split_from_mult(25, 3) == 75  # > 2*leaf, binds
+
+
+def _search_distributions(cfg=None):
+    """Every Optuna distribution the search declares, keyed by param name.
+
+    rf_params is a closure inside train_multi_RF_Optuna_multi_constrained, so
+    the search space is not directly callable. Capturing the Study the way
+    scripts/feasibility_frontier.py:285-287 does is how a test reads it.
+    """
+    import optuna
+    cfg = cfg or TrainConfig(n_trials=6, min_feasible_before_stop=2, lookback=2)
+    captured = {}
+    real_create_study = optuna.create_study
+    optuna.create_study = (
+        lambda *a, **kw: captured.setdefault('study', real_create_study(*a, **kw)))
+    try:
+        _call(cfg=cfg)
+    except Exception:
+        pass
+    finally:
+        optuna.create_study = real_create_study
+    return captured['study'].trials[0].distributions
+
+
+def test_min_samples_leaf_range_is_narrowed_to_the_region_the_search_uses():
+    """Archive utilisation: 44% sit at the floor, p75 = 35, 0% at the 200 cap.
+    [35,200] was near-unused, so the top of the range was wasted budget.
+    Reachable set is {5,15,25,35,45,55}, a strict SUBSET of the old reachable
+    set -- nothing previously reachable inside the retained band is lost."""
+    dist = _search_distributions()['min_samples_leaf_A']
+
+    assert (dist.low, dist.high, dist.step) == (5, 55, 10)
+    reachable = list(range(dist.low, dist.high + 1, dist.step))
+    assert reachable == [5, 15, 25, 35, 45, 55]
+
+
+def test_the_search_declares_a_multiplier_and_no_raw_split():
+    """The reparameterisation must actually replace the dimension, not add to
+    it -- a search carrying both would be strictly worse than before."""
+    names = set(_search_distributions())
+
+    assert 'min_samples_split_mult_A' in names
+    assert 'min_samples_split_mult_B' in names
+    assert 'min_samples_split_A' not in names
+    assert 'min_samples_split_B' not in names
+
+
+def test_default_config_still_declares_no_ccp_alpha_dimension():
+    """Non-campaign callers are unaffected by the campaign's arm settings:
+    TrainConfig() defaults ccp_alpha_max to 0.0, so the dimension is absent."""
+    names = set(_search_distributions())
+
+    assert 'ccp_alpha_A' not in names
+    assert 'ccp_alpha_B' not in names

@@ -90,8 +90,8 @@ def _vary_hyperparams(params: dict, n_trees: int, max_depth: int) -> dict:
             delta = np.random.choice([-1, 0, 1])
             varied[key] = max(2, min(max_depth, varied[key] + delta))
         elif 'min_samples_leaf' in key:
-            delta = np.random.choice([-20, -10, 0, 10, 20])
-            varied[key] = max(5, min(200, varied[key] + delta))
+            delta = np.random.choice([-10, 0, 10])
+            varied[key] = max(5, min(55, varied[key] + delta))
         elif 'min_samples_split_mult' in key:
             delta = np.random.choice([-2, -1, 0, 1, 2])
             varied[key] = max(MIN_SAMPLES_SPLIT_MULT_MIN,
@@ -243,7 +243,13 @@ def train_multi_RF_Optuna_multi_constrained(
         the two cannot drift. `source` is a trial (during the search) or a plain
         params dict (when refitting the winner)."""
         if hasattr(source, 'suggest_int'):
-            leaf = source.suggest_int('min_samples_leaf_' + suffix, 5, 200, step=10)
+            # [5,200] -> [5,60]: the archive puts 44% at the floor and p75 at
+            # 35, with 0% at the cap, so [35,200] was near-unused range that
+            # TPE still had to explore. Reachable set {5,15,25,35,45,55} is a
+            # strict subset of the old one, so this loses no configuration the
+            # search was actually reaching. If a rerun then piles at 55, widen
+            # it -- narrowing is the cheap direction to be wrong in.
+            leaf = source.suggest_int('min_samples_leaf_' + suffix, 5, 60, step=10)
             mult = source.suggest_int(
                 'min_samples_split_mult_' + suffix,
                 MIN_SAMPLES_SPLIT_MULT_MIN, MIN_SAMPLES_SPLIT_MULT_MAX)
