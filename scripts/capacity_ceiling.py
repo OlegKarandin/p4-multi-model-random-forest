@@ -3,7 +3,7 @@
 `TrainConfig.n_trees` and `TrainConfig.max_depth` are *inclusive search
 bounds*, not fixed hyperparameters: `train_model.rf_params` suggests
 `n_estimators in [1, cfg.n_trees]` and `max_depth in [2, cfg.max_depth]`
-(train_model.py:96-99). Their values were placeholders, justified in the thesis
+(train_model.py:200-217). Their values were placeholders, justified in the thesis
 only as "chosen manually because larger values gave overly long codewords".
 This script replaces that sentence with a table: it measures, over a grid of
 bounds, where the 512-bit codeword limit (`MAX_CODEWORD_LENGTH`) starts to
@@ -19,16 +19,20 @@ not the quality of a model.
 Two corners, because the ceiling is not a property of (n_trees, max_depth)
 alone. A cell is a BOUND, so measuring "its" codeword length means fixing the
 regularization that `rf_params` also searches -- `min_samples_leaf` over
-[5, 200] step 10 (Optuna's `suggest_int` therefore clips the reachable set to
-[5, 195]; 200 is never actually selectable) and `min_samples_split` over
-[10, 400] step 10 (400 IS reachable: 10 + 10*39) -- and the answer depends on
-which end you fix it at. Both ends are measured for every cell:
+[5, 60] step 10 (Optuna's `suggest_int` therefore clips the reachable set to
+{5,15,25,35,45,55}; 60 is never actually selectable), `min_samples_split`
+expressed as MIN_SAMPLES_SPLIT_MULT_MIN..MAX times min_samples_leaf rather than
+as a free integer, and `ccp_alpha` (only shrinks trees, never grows them) --
+and the answer depends on which end you fix them at. Both ends are measured
+for every cell:
 
-  pruned      min_samples_leaf=195, min_samples_split=400 -- the smallest
-              forests the box admits. A cell feasible here is a cell the
-              campaign can genuinely reach, with pruning.
-  large-tree  min_samples_leaf=5, min_samples_split=10 -- the largest forests
-              the box admits, i.e. the longest codeword anywhere in the box.
+  pruned      min_samples_leaf=55, min_samples_split=55*MIN_SAMPLES_SPLIT_MULT_MAX,
+              ccp_alpha=0.05 -- the smallest forests the box admits. A cell
+              feasible here is a cell the campaign can genuinely reach, with
+              pruning.
+  large-tree  min_samples_leaf=5, min_samples_split=5*MIN_SAMPLES_SPLIT_MULT_MIN,
+              ccp_alpha=CCP_ALPHA_MIN -- the largest forests the box admits,
+              i.e. the longest codeword anywhere in the box.
 
 Which corner decides (Ruling P4-2): the PRUNED one. A cell counts as feasible
 when ANY configuration the search can actually reach there is feasible.
@@ -124,6 +128,9 @@ from src.p4gen.evaluation import (
     multi_model_memory_evaluation)
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.training.splits import make_task_splits
+from src.training.train_model import (
+    CCP_ALPHA_MIN, MIN_SAMPLES_SPLIT_MULT_MAX, MIN_SAMPLES_SPLIT_MULT_MIN,
+    min_samples_split_from_mult)
 
 SELECTED_FEATURES = [
     'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
@@ -142,16 +149,21 @@ MAX_DEPTH_GRID = (2, 4, 6, 8, 10, 12, 14)
 SPLIT_INDICES = (10, 11, 12)
 SPLIT_RANDOM_STATE = 42
 
-# The two ends of rf_params' regularization ranges (train_model.py:96-99).
-# min_samples_leaf is suggested as suggest_int(5, 200, step=10), which Optuna
-# clips to the reachable set [5, 195] -- 200 is never actually selectable, so
-# the pruned corner uses 195, the true edge of the search space. Effect is
-# nil in practice: the deciding corner (11, 14) measures 413 bits against the
-# 512-bit limit either way, comfortable margin regardless of which of the two
-# values is used.
-Corner = namedtuple('Corner', 'name min_samples_leaf min_samples_split')
-PRUNED = Corner('pruned', 195, 400)
-LARGE_TREE = Corner('large-tree', 5, 10)
+# The corners of rf_params' regularization ranges (train_model.py:200-217).
+# min_samples_leaf is suggested as suggest_int(5, 60, step=10), whose reachable
+# set is {5,15,25,35,45,55} -- 60 is never selectable, so the pruned corner
+# uses 55, the true edge of the search space. min_samples_split is no longer a
+# free dimension: it is MULT x min_samples_leaf, so the corner is the extreme
+# multiplier rather than a raw count. ccp_alpha joins the corner because a
+# ceiling measured at ccp_alpha=0 is conservative but no longer tight -- ccp
+# pruning only shrinks trees, so a deep tree pruned back may fit where an
+# unpruned one does not.
+Corner = namedtuple('Corner', 'name min_samples_leaf min_samples_split ccp_alpha')
+PRUNED = Corner('pruned', 55,
+                min_samples_split_from_mult(55, MIN_SAMPLES_SPLIT_MULT_MAX), 0.05)
+LARGE_TREE = Corner('large-tree', 5,
+                    min_samples_split_from_mult(5, MIN_SAMPLES_SPLIT_MULT_MIN),
+                    CCP_ALPHA_MIN)
 CORNERS = (PRUNED, LARGE_TREE)
 
 # Ruling P4-2: a cell is feasible when the search can reach ANY feasible
@@ -162,12 +174,16 @@ RF_RANDOM_STATE = 42
 
 
 def cardinality_of(n_trees, max_depth):
-    """Reachable `(n_estimators, max_depth)` pairs inside the bounds.
+    """Reachable (n_estimators, max_depth) pairs in a cell -- the "largest
+    reachable search space" objective, restated for the new parameterisation.
 
-    `n_estimators` is suggested with step=2 from 1, so the tree axis offers
-    ceil(n_trees / 2) values, not n_trees (Ruling P4-3). `max_depth` is
-    suggested with the default step of 1 from 2, so its axis offers
-    max_depth - 1 values.
+    ceil on the tree axis because rf_params uses step=2; -1 on the depth axis
+    because it runs from 2 with step 1. The other three dimensions are counted
+    NOT AT ALL, deliberately: min_samples_leaf (6 reachable values) and the
+    min_samples_split multiplier contribute the same constant factor in every
+    cell, and ccp_alpha is continuous so it has no cardinality at all. A
+    cell-independent factor cannot change which cell is the argmax, so
+    including them would scale every number without moving the decision.
     """
     return -(-n_trees // 2) * (max_depth - 1)
 
@@ -234,6 +250,7 @@ def fit(X, y, n_estimators, max_depth, corner):
         n_estimators=n_estimators, max_depth=max_depth,
         min_samples_leaf=corner.min_samples_leaf,
         min_samples_split=corner.min_samples_split,
+        ccp_alpha=corner.ccp_alpha,
         random_state=RF_RANDOM_STATE, n_jobs=1).fit(X, y))
 
 

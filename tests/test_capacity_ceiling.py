@@ -102,3 +102,38 @@ def test_collect_marks_crossbar_rejected_cell_as_not_within_limit(monkeypatch):
         'codeword length was within the limit, but the crossbar rejected '
         'the table (measure() returned None) -- disjoint_within_limit must '
         'be False, not just codeword-length-derived')
+
+
+def test_corners_witness_the_new_search_space_not_the_old_one():
+    """min_samples_leaf=195 left the space when [5,200] became [5,60], and the
+    corner must carry ccp_alpha or it witnesses a search the campaign no
+    longer runs. A cell counts as feasible when the search can reach ANY
+    feasible configuration there (Ruling P4-2), so the witness has to be the
+    smallest tree the search can actually reach."""
+    from scripts.capacity_ceiling import PRUNED, LARGE_TREE, DECIDING_CORNER
+    from src.training.train_model import (
+        MIN_SAMPLES_SPLIT_MULT_MAX, MIN_SAMPLES_SPLIT_MULT_MIN,
+        min_samples_split_from_mult, CCP_ALPHA_MIN)
+
+    assert PRUNED.min_samples_leaf == 55
+    assert PRUNED.min_samples_split == min_samples_split_from_mult(
+        55, MIN_SAMPLES_SPLIT_MULT_MAX)
+    assert PRUNED.ccp_alpha == 0.05
+
+    assert LARGE_TREE.min_samples_leaf == 5
+    assert LARGE_TREE.min_samples_split == min_samples_split_from_mult(
+        5, MIN_SAMPLES_SPLIT_MULT_MIN)
+    assert LARGE_TREE.ccp_alpha == CCP_ALPHA_MIN
+
+    assert DECIDING_CORNER is PRUNED
+
+
+def test_fit_passes_the_corner_ccp_alpha_through():
+    """ccp_alpha only ever shrinks trees, so a ceiling measured without it is
+    conservative rather than wrong -- but it is no longer TIGHT, and the
+    re-derivation exists to make it tight again."""
+    import inspect
+    from scripts import capacity_ceiling
+
+    source = inspect.getsource(capacity_ceiling.fit)
+    assert 'ccp_alpha=corner.ccp_alpha' in source

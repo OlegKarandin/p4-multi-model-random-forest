@@ -11,12 +11,15 @@ def test_defaults_are_the_primary_joint_arm_at_delta_zero():
     assert cfg.alignment_enabled is True
     assert cfg.delta_select == 0.02
     assert cfg.overlap_threshold == 0.5
-    # Rederived from the measured capacity ceiling, not chosen by hand:
-    # (11, 14) is the grid cell with the largest reachable search space,
-    # ceil(n_trees / 2) * (max_depth - 1) = 78, whose joint codeword stays
-    # within 512 bits on all 3 splits at a configuration the search can
-    # reach (scripts/capacity_ceiling.py, results/capacity_ceiling.csv).
-    assert cfg.n_trees == 11
+    # n_trees is set by utilisation (design 2026-09-03 spec 2.1(b)), not by
+    # the measured capacity ceiling: the archive never reaches 11 trees and
+    # p75 is 3. max_depth is kept at its previous 14 -- the re-derived grid
+    # (scripts/capacity_ceiling.py, results/capacity_ceiling.csv) found no
+    # cell within the measured n_trees<=15/max_depth<=14 box that exceeded
+    # the 512-bit codeword limit, so raising max_depth was not ruled out by
+    # the measurement, but is deliberately not adopted here (see config.py's
+    # docstring).
+    assert cfg.n_trees == 7
     assert cfg.max_depth == 14
     assert cfg.n_trials == 1000
     assert cfg.min_feasible_before_stop == 25
@@ -159,7 +162,7 @@ def test_n_trees_min_out_of_range_rejected(n_trees_min_value):
 
 def test_n_trees_min_equal_to_n_trees_accepted():
     """n_trees_min == n_trees is accepted (the T-pinning mechanism)."""
-    cfg = TrainConfig(n_trees_min=11)
+    cfg = TrainConfig(n_trees=11, n_trees_min=11)
     assert cfg.n_trees_min == 11
 
 

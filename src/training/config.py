@@ -61,17 +61,36 @@ class TrainConfig:
     n_trees, max_depth : inclusive search bounds -- per-axis and independent,
         so `rf_params` may suggest either maximum without suggesting both at
         once. No -1 sentinel (F10i). Rederived from the measured capacity
-        ceiling rather than chosen by hand: `scripts/capacity_ceiling.py` fits
-        both models over a n_trees x max_depth grid on 3 splits at the full
-        feature set and records where the 512-bit codeword limit starts to
-        bind, at both ends of rf_params' regularization ranges
-        (results/capacity_ceiling.csv). A cell counts as feasible when ANY
-        configuration the search can reach there compiles -- witnessed by the
-        pruned corner, min_samples_leaf=200 / min_samples_split=400 -- and
-        (11, 14) is the feasible cell with the largest reachable search space,
-        ceil(n_trees / 2) * (max_depth - 1) = 78. The predecessor (7, 10) was
-        a placeholder whose comment said P4 would derive it; nothing had
-        measured the ceiling, which is what this replaces.
+        ceiling: `scripts/capacity_ceiling.py` fits both models over a
+        n_trees x max_depth grid on 3 splits at the full feature set and
+        records where the 512-bit codeword limit starts to bind, at both
+        ends of rf_params' regularization ranges -- now including ccp_alpha
+        -- (results/capacity_ceiling.csv). A cell counts as feasible when
+        ANY configuration the search can reach there compiles -- witnessed
+        by the pruned corner, min_samples_leaf=55 / min_samples_split=
+        55*MIN_SAMPLES_SPLIT_MULT_MAX (3630) / ccp_alpha=0.05. All 49 cells
+        of the measured grid (n_trees up to 15, max_depth up to 14) stayed
+        within the limit on all 3 splits -- the ceiling did not bind
+        anywhere the grid reached, and the largest admissible search space
+        in it, ceil(n_trees / 2) * (max_depth - 1) = 104, is attained at the
+        grid's own top corner (15, 14).
+
+        n_trees is NOT set from that ceiling: it is set by a utilisation
+        argument instead (design 2026-09-03 spec 2.1(b)) -- the archive
+        never reaches 11 trees and p75 is 3, so headroom the ceiling would
+        permit goes unused in practice. n_trees = 7 regardless of what the
+        grid allows. max_depth is kept at its previous value of 14 even
+        though the measurement did not rule out raising it: spec 2.1's
+        boxed warning is that codeword length is essentially total leaf
+        count across both forests, and `joint` pools both models' leaves
+        into one 512-bit codeword while `independent` never pools, so
+        raising max_depth would push `joint` toward CodewordTooLong faster
+        than `independent`, widening a dimension that structurally
+        disadvantages the arm under study -- raising it is therefore a
+        separate, explicit decision, not an automatic consequence of this
+        measurement. The predecessor (7, 10) was a placeholder whose
+        comment said P4 would derive it; nothing had measured the ceiling,
+        which is what this replaces.
     n_trees_min : inclusive lower bound on the search space for n_trees.
         Defaults to 1, which is `rf_params`'s old hardcoded lower bound.
         Set to n_trees to pin that dimension (the T-pinning mechanism used by
@@ -86,7 +105,7 @@ class TrainConfig:
     delta_select: float = 0.02
     overlap_threshold: float = DEFAULT_OVERLAP_THRESHOLD
     align_objective: str = 'blocks'
-    n_trees: int = 11
+    n_trees: int = 7
     max_depth: int = 14
     n_trials: int = 1000
     min_feasible_before_stop: int = 25
