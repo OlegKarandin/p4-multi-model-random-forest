@@ -153,3 +153,40 @@ def build_sample(frame, strata=STRATA_STAGE_DEPTHS, groups=GROUPS,
                 row_id = '{}_{}_sd{}'.format(group, band, stage_depth)
                 rows.append((row_id, group, band, stage_depth, row))
     return rows, missing
+
+
+def _is_missing(value):
+    """True for None and for a float NaN (pandas' representation of a
+    missing cell after a CSV round-trip); False for any real value,
+    0 included."""
+    return value is None or (isinstance(value, float) and pd.isna(value))
+
+
+def gap_stages(row):
+    """stages_real - stage_depth (V1/V2's subject), or None when there is
+    no real compile result to compare against (void row)."""
+    if _is_missing(row['stages_real']):
+        return None
+    return row['stages_real'] - row['stage_depth']
+
+
+def gap_blocks(row):
+    """tcam_real - blocks (V5, confirmatory), or None when there is no
+    real compile result to compare against (void row)."""
+    if _is_missing(row['tcam_real']):
+        return None
+    return row['tcam_real'] - row['blocks']
+
+
+def is_void(row):
+    """True when this row has no usable real-compiler comparison: either
+    compile_errors is a positive int (the real p4c reported errors) or a
+    non-numeric string (the F2 'unavailable' degrade-path reason -- see
+    run_one_row). A void row is excluded from every V1-V5 aggregate and
+    reported separately by name (V6)."""
+    errors = row.get('compile_errors')
+    if _is_missing(errors):
+        return False
+    if isinstance(errors, str):
+        return True
+    return int(errors) > 0

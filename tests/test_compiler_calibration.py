@@ -113,3 +113,47 @@ def test_build_sample_invalid_on_missing_raises():
     frame = add_group_and_band(_synthetic_frame([]))
     with pytest.raises(ValueError, match='on_missing'):
         build_sample(frame, on_missing='bogus')
+
+
+import math
+
+from scripts.compiler_calibration import gap_blocks, gap_stages, is_void
+
+
+def test_gap_stages_computes_real_minus_predicted():
+    row = {'stage_depth': 6, 'stages_real': 9}
+    assert gap_stages(row) == 3
+
+
+def test_gap_stages_none_when_stages_real_is_none():
+    assert gap_stages({'stage_depth': 6, 'stages_real': None}) is None
+
+
+def test_gap_stages_none_when_stages_real_is_nan():
+    assert gap_stages({'stage_depth': 6, 'stages_real': float('nan')}) is None
+
+
+def test_gap_blocks_computes_real_minus_predicted():
+    row = {'blocks': 4, 'tcam_real': 4}
+    assert gap_blocks(row) == 0
+
+
+def test_gap_blocks_none_when_tcam_real_is_none():
+    assert gap_blocks({'blocks': 4, 'tcam_real': None}) is None
+
+
+def test_is_void_false_when_compile_errors_is_zero():
+    assert is_void({'compile_errors': 0}) is False
+
+
+def test_is_void_true_when_compile_errors_is_a_positive_int():
+    assert is_void({'compile_errors': 2}) is True
+
+
+def test_is_void_true_for_the_unavailable_reason_string():
+    assert is_void({'compile_errors': "no FEATURE_REGISTER_CATALOG entry for 'x'"}) is True
+
+
+def test_is_void_false_when_compile_errors_is_none_or_nan():
+    assert is_void({'compile_errors': None}) is False
+    assert is_void({'compile_errors': float('nan')}) is False
