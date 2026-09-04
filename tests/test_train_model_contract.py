@@ -591,3 +591,82 @@ def test_rf_params_from_params_ccp_alpha_get_default_round_trip():
 
     with_ccp_alpha = dict(archive_shaped, ccp_alpha_A=0.00042)
     assert tm.rf_params_from_params(with_ccp_alpha, 'A')['ccp_alpha'] == 0.00042
+
+
+def test_rf_params_from_params_still_reads_archived_raw_min_samples_split():
+    """Every one of campaign_backup_20260825's 7055 rows records a raw
+    min_samples_split_<suffix>. The multiplier parameterisation must not make
+    those rows unrefittable, or every replay study over the archive breaks
+    silently -- design 2026-09-03 §2.1(a), the highest-risk item."""
+    import src.training.train_model as tm
+
+    archived = {'n_estimators_A': 3, 'min_samples_leaf_A': 75,
+                'min_samples_split_A': 270, 'max_depth_A': 11}
+    assert tm.rf_params_from_params(archived, 'A') == {
+        'n_estimators': 3, 'min_samples_leaf': 75, 'min_samples_split': 270,
+        'max_depth': 11, 'random_state': 42, 'ccp_alpha': 0.0}
+
+
+def test_rf_params_from_params_reads_the_new_multiplier_key():
+    """Rows written after the reparameterisation carry a multiplier instead."""
+    import src.training.train_model as tm
+
+    new_shape = {'n_estimators_A': 3, 'min_samples_leaf_A': 25,
+                 'min_samples_split_mult_A': 4, 'max_depth_A': 11}
+    built = tm.rf_params_from_params(new_shape, 'A')
+    assert built['min_samples_split'] == 100
+    assert built['min_samples_leaf'] == 25
+
+
+def test_archived_best_params_refit_to_a_byte_identical_forest():
+    """Stronger than the kwargs check: the actual estimator is unchanged.
+    Uses the archived fixture's own recorded best_params."""
+    import json
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+    import pandas as pd
+    import src.training.train_model as tm
+
+    frame = pd.read_csv('tests/fixtures/rf_t11_d14_M25_historical.csv')
+    params = json.loads(frame['best_params'].dropna().iloc[0])
+
+    rng = np.random.default_rng(0)
+    X = rng.integers(0, 400, size=(600, 3)).astype(float)
+    y = (X[:, 0] // 134).astype(int)
+
+    via_helper = RandomForestClassifier(
+        **tm.rf_params_from_params(params, 'A'), n_jobs=1).fit(X, y)
+    literal = RandomForestClassifier(
+        n_estimators=params['n_estimators_A'],
+        min_samples_leaf=params['min_samples_leaf_A'],
+        min_samples_split=params['min_samples_split_A'],
+        max_depth=params['max_depth_A'],
+        random_state=42, ccp_alpha=0.0, n_jobs=1).fit(X, y)
+
+    assert len(via_helper.estimators_) == len(literal.estimators_)
+    for a, b in zip(via_helper.estimators_, literal.estimators_):
+        assert np.array_equal(a.tree_.threshold, b.tree_.threshold)
+        assert np.array_equal(a.tree_.feature, b.tree_.feature)
+
+
+@pytest.mark.parametrize('leaf', [5, 15, 25, 35, 45, 55, 65, 105, 195])
+def test_no_reachable_multiplier_pair_is_inert(leaf):
+    """min_samples_split <= 2*min_samples_leaf cannot bind: a node needs
+    min_samples_split samples AND both children need min_samples_leaf. That
+    inert region covered ~400 of the old grid's 800 combinations. Expressing
+    split as a multiplier removes it by construction rather than clamping,
+    which would preserve the many-to-one mapping that wastes the TPE budget."""
+    import src.training.train_model as tm
+
+    for mult in range(tm.MIN_SAMPLES_SPLIT_MULT_MIN,
+                      tm.MIN_SAMPLES_SPLIT_MULT_MAX + 1):
+        assert tm.min_samples_split_from_mult(leaf, mult) > 2 * leaf
+
+
+def test_multiplier_minimum_is_the_smallest_binding_integer():
+    """mult=2 gives split == 2*leaf, which is exactly the inert boundary."""
+    import src.training.train_model as tm
+
+    assert tm.MIN_SAMPLES_SPLIT_MULT_MIN == 3
+    assert tm.min_samples_split_from_mult(25, 2) == 50  # == 2*leaf, inert
+    assert tm.min_samples_split_from_mult(25, 3) == 75  # > 2*leaf, binds

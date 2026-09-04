@@ -48,6 +48,30 @@ optuna.logging.set_verbosity(optuna.logging.CRITICAL)
 # in tests/test_train_model_contract.py.
 CCP_ALPHA_MIN = 1e-6
 
+# min_samples_split is expressed as an integer multiple of min_samples_leaf so
+# that every reachable pair BINDS. A node needs min_samples_split samples to be
+# considered for a split AND both children need min_samples_leaf, so any
+# min_samples_split <= 2*min_samples_leaf is inert -- that covered ~400 of the
+# old [5,200]x[10,400] grid's 800 combinations, and TPE spent budget
+# distinguishing configurations that are the identical model. mult >= 3 is the
+# smallest integer that always binds. MAX is set from the archive's own
+# split/leaf ratio distribution (design 2026-09-03 §2.1a): measured p99 of the
+# binding leaf<=60 subset of campaign_backup_20260825 is 66.0 (n=9029 of
+# 14110 total leaf/split pairs, 70.4% binding).
+MIN_SAMPLES_SPLIT_MULT_MIN = 3
+MIN_SAMPLES_SPLIT_MULT_MAX = 66
+
+
+def min_samples_split_from_mult(min_samples_leaf, mult):
+    """The one place the multiplier is resolved.
+
+    Both the search branch and the refit branch of rf_params call this, for the
+    same reason rf_params has a single body: if the two computed the product
+    independently they could drift, and a refit that differs from the searched
+    model breaks the determinism assertion the whole replay design rests on.
+    """
+    return int(mult) * int(min_samples_leaf)
+
 
 def _vary_hyperparams(params: dict, n_trees: int, max_depth: int) -> dict:
     """
@@ -68,9 +92,10 @@ def _vary_hyperparams(params: dict, n_trees: int, max_depth: int) -> dict:
         elif 'min_samples_leaf' in key:
             delta = np.random.choice([-20, -10, 0, 10, 20])
             varied[key] = max(5, min(200, varied[key] + delta))
-        elif 'min_samples_split' in key:
-            delta = np.random.choice([-20, -10, 0, 10, 20])
-            varied[key] = max(10, min(400, varied[key] + delta))
+        elif 'min_samples_split_mult' in key:
+            delta = np.random.choice([-2, -1, 0, 1, 2])
+            varied[key] = max(MIN_SAMPLES_SPLIT_MULT_MIN,
+                              min(MIN_SAMPLES_SPLIT_MULT_MAX, varied[key] + delta))
 
     return varied
 
@@ -160,11 +185,27 @@ def rf_params_from_params(params, suffix):
     the estimator the campaign built. random_state is fixed at 42 here: that
     determinism is what the refit assertion below and the whole replay design
     depend on.
+
+    TWO KEY NAMESPACES COEXIST PERMANENTLY, and both must keep working:
+      - archived rows (all 7055 of campaign_backup_20260825) record a raw
+        'min_samples_split_<suffix>';
+      - rows written after the multiplier reparameterisation record
+        'min_samples_split_mult_<suffix>' instead.
+    Reading whichever is present is what keeps every replay study over the
+    archive valid. Same technique as ccp_alpha's .get() default below, which
+    exists because archived rows predate that dimension.
     """
+    leaf = params['min_samples_leaf_' + suffix]
+    raw_split = params.get('min_samples_split_' + suffix)
+    if raw_split is None:
+        split = min_samples_split_from_mult(
+            leaf, params['min_samples_split_mult_' + suffix])
+    else:
+        split = raw_split
     return {
         'n_estimators': params['n_estimators_' + suffix],
-        'min_samples_leaf': params['min_samples_leaf_' + suffix],
-        'min_samples_split': params['min_samples_split_' + suffix],
+        'min_samples_leaf': leaf,
+        'min_samples_split': split,
         'max_depth': params['max_depth_' + suffix],
         'random_state': 42,
         'ccp_alpha': params.get('ccp_alpha_' + suffix, 0.0),
@@ -202,11 +243,15 @@ def train_multi_RF_Optuna_multi_constrained(
         the two cannot drift. `source` is a trial (during the search) or a plain
         params dict (when refitting the winner)."""
         if hasattr(source, 'suggest_int'):
+            leaf = source.suggest_int('min_samples_leaf_' + suffix, 5, 200, step=10)
+            mult = source.suggest_int(
+                'min_samples_split_mult_' + suffix,
+                MIN_SAMPLES_SPLIT_MULT_MIN, MIN_SAMPLES_SPLIT_MULT_MAX)
             params = {
                 'n_estimators': source.suggest_int(
                     'n_estimators_' + suffix, cfg.n_trees_min, cfg.n_trees, step=2),
-                'min_samples_leaf': source.suggest_int('min_samples_leaf_' + suffix, 5, 200, step=10),
-                'min_samples_split': source.suggest_int('min_samples_split_' + suffix, 10, 400, step=10),
+                'min_samples_leaf': leaf,
+                'min_samples_split': min_samples_split_from_mult(leaf, mult),
                 'max_depth': source.suggest_int('max_depth_' + suffix, 2, cfg.max_depth),
                 'random_state': 42,
             }
