@@ -26,30 +26,58 @@ import os
 import numpy as np
 
 
-# Spec A.2's arm grid. Two anchors bracket the frontier: `joint-off` is a
-# genuine SKIP of the align_rf_thresholds call -- not delta = 0 -- so the arm is
-# provably prediction-identical to the unaligned models and doubles as the
-# requested ablation; `joint-dinf` accepts every alignment unconditionally and
-# bounds the maximum achievable sharing.
-PRIMARY_ARMS = [
-    ('independent', TrainConfig()),
-    ('joint', TrainConfig(alignment_enabled=False)),
-    ('joint', TrainConfig(delta_align=0.0)),
-]
+# Design 2026-09-03 §2.1(c): ccp_alpha is implemented, validated and was
+# switched off for the whole archive. It carries the larger of the two measured
+# feasibility effects (+15.4pp vs alignment's +5.3pp at T >= 4), never costs
+# feasibility, and uses its range rather than a degenerate corner. The cap does
+# not bind -- 0.2% of winners land within 2x of it -- so raising it would only
+# add dead space at the degenerate-pruning end.
+CAMPAIGN_CCP_ALPHA_MAX = 0.05
 
-# The swept variable. delta = 0.01 is deliberately excluded: at val_align ~3000
-# and DDoS error ~0.04, one flipped sample is 0.83% relative error, so 1%
-# permits at most one flip and is operationally identical to 0. The grid reaches
-# 20% and inf on purpose -- today's effective behaviour sits around 10-20%
-# relative on DDoS, so the sweep must bracket it, and the frontier should show
-# saturation rather than only its steep part.
-SENSITIVITY_ARMS = [
-    ('joint', TrainConfig(delta_align=0.02)),
-    ('joint', TrainConfig(delta_align=0.05)),
-    ('joint', TrainConfig(delta_align=0.10)),
-    ('joint', TrainConfig(delta_align=0.20)),
-    ('joint', TrainConfig(delta_align=None)),
-]
+# §2.4, the one added factor. Applied to the ALIGNED JOINT arms only:
+# independent has no alignment so no overlap axis, and joint-off likewise.
+# 0.1 is OFF the measured grid (replay tested {0.25,0.50,0.75}) -- loosening
+# monotonically increases candidate count, so more blocks saved and more
+# accuracy spent is the expectation, but the shape below 0.25 is unmeasured
+# and 0.1 must be reported separately as exploratory.
+OVERLAP_THRESHOLDS = (0.5, 0.25, 0.1)
+
+# §2.3: unchanged from the archive's own arm set. The sweep replicated cleanly
+# there -- the feasibility-rate effect is monotone in delta_align to 0.20 and
+# falls back at inf -- and dinf earns its place as the anchor that shows the
+# mechanism has a cost.
+DELTA_ALIGNS = (0.0, 0.02, 0.05, 0.10, 0.20, None)
+
+# §2.5: the ARCHIVE's grid, not the code's previous default
+# [25,40,50,60,75,90,100]. C3 and C4 are matched-(M,k) comparisons against the
+# archive; the old default shared only {25,50,100} with it and would leave
+# those criteria without matched cells at 150 and 250.
+DEFAULT_M_GRID = [25, 50, 100, 150, 250]
+
+
+def _joint(delta_align, overlap_threshold):
+    return ('joint', TrainConfig(delta_align=delta_align,
+                                 overlap_threshold=overlap_threshold,
+                                 ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
+
+
+# Two anchors bracket the frontier: `joint-off` is a genuine SKIP of the
+# align_rf_thresholds call -- not delta = 0 -- so the arm is provably
+# prediction-identical to the unaligned models and doubles as the requested
+# ablation; `joint-dinf` accepts every alignment unconditionally and bounds the
+# maximum achievable sharing.
+PRIMARY_ARMS = [
+    ('independent', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
+    ('joint', TrainConfig(alignment_enabled=False,
+                          ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
+] + [_joint(0.0, overlap) for overlap in OVERLAP_THRESHOLDS]
+
+# The swept variables. delta = 0.01 is deliberately excluded: at val_align
+# ~3000 and DDoS error ~0.04, one flipped sample is 0.83% relative error, so 1%
+# permits at most one flip and is operationally identical to 0.
+SENSITIVITY_ARMS = [_joint(delta, overlap)
+                    for delta in DELTA_ALIGNS[1:]
+                    for overlap in OVERLAP_THRESHOLDS]
 
 
 def select_arms(which):
@@ -97,7 +125,7 @@ def parse_args(argv=None):
         help="comma-separated TCAM block budgets to sweep in compute mode, "
              "e.g. '--M 25' for a single pilot cell or '--M 25,40,60' for a "
              "partial sweep. Defaults to today's full grid "
-             "[25,40,50,60,75,90,100] when omitted, so a pilot run is a "
+             "[25,50,100,150,250] when omitted, so a pilot run is a "
              "command-line flag rather than an edit to this file")
     parser.add_argument(
         "--n-splits", dest="n_splits", type=_parse_n_splits, default=None,
@@ -533,7 +561,7 @@ def run_main():
     # --M / --n-splits (both default to None) let a pilot cell run as a
     # command -- e.g. --M 25 --n-splits 2 -- instead of an edit to this file.
     # Omitting both must reproduce today's grid exactly.
-    M = args.M if args.M is not None else [25, 40, 50, 60, 75, 90, 100]
+    M = args.M if args.M is not None else DEFAULT_M_GRID
 
     n_splits = args.n_splits if args.n_splits is not None else 15
 

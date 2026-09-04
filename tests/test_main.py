@@ -282,14 +282,14 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
         m.compare_independent_joint_mapping(
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
 
-    assert mock_run.call_count == 3       # one call per primary arm
+    assert mock_run.call_count == 5       # one call per primary arm
     # Each call actually carried ITS OWN (arm, cfg) pair, not e.g. the same
-    # cfg reused three times or arm/cfg transposed between calls.
+    # cfg reused across calls or arm/cfg transposed between calls.
     assert [c.kwargs['arm'] for c in mock_run.call_args_list] == \
         [arm for arm, _ in m.PRIMARY_ARMS]
     assert [c.kwargs['cfg'] for c in mock_run.call_args_list] == \
         [cfg for _, cfg in m.PRIMARY_ARMS]
-    assert mock_csv.call_count == 3       # one file per (arm, M)
+    assert mock_csv.call_count == 5       # one file per (arm, M)
     # Overwrite, never append: a re-run cell must replace its rows, not double
     # them. Every C.3 claim is a paired test on (M, split, k).
     for call in mock_csv.call_args_list:
@@ -305,7 +305,7 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
     # with_the_grid_actually_used for that path exercised directly).
     written = sorted(p.name for p in (tmp_path / 'results').iterdir()
                      if p.name.endswith('.csv'))
-    assert len(written) == 3
+    assert len(written) == 5
     assert all(not name.endswith('.partial') for name in written)
 
 
@@ -410,7 +410,7 @@ def test_redo_forces_recomputation():
         m.compare_independent_joint_mapping(
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS, skip_existing=False)
 
-    assert mock_run.call_count == 3
+    assert mock_run.call_count == 5
 
 
 def test_redo_flag_defaults_to_off():
@@ -445,7 +445,7 @@ def test_a_cell_where_every_split_failed_is_not_written():
         m.compare_independent_joint_mapping(
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
 
-    assert mock_run.call_count == 3
+    assert mock_run.call_count == 5
     assert mock_csv.call_count == 0
     assert mock_replace.call_count == 0
 
@@ -503,14 +503,14 @@ def test_omitting_M_and_n_splits_reproduces_todays_grid_exactly():
     """The property that matters most: a campaign invocation with no --M or
     --n-splits must run the exact same grid it runs today. A test asserting
     only that the flags parse would not catch a default that quietly drifted
-    from [25, 40, 50, 60, 75, 90, 100] / 15 -- the failure mode this guards
-    against is a full ~40h campaign that silently runs a truncated grid and
-    looks like it succeeded."""
+    from [25, 50, 100, 150, 250] / 15 -- the failure mode this guards against
+    is a full ~40h campaign that silently runs a truncated grid and looks
+    like it succeeded."""
     with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
          patch.object(sys, "argv", ["main.py", "--mode", "compute"]):
         m.run_main()
 
-    assert mock_compute.call_args.kwargs['M_values'] == [25, 40, 50, 60, 75, 90, 100]
+    assert mock_compute.call_args.kwargs['M_values'] == [25, 50, 100, 150, 250]
     assert mock_compute.call_args.kwargs['n_splits'] == 15
 
 
@@ -642,7 +642,7 @@ def test_a_run_manifest_lands_in_results_manifests_with_the_grid_actually_used(
     assert loaded['M_values'] == [25, 40]
     assert loaded['n_splits'] == 2
     assert loaded['dataset_rows'] == {'app': 37, 'ddos': 53}
-    assert len(loaded['arms']) == 3
+    assert len(loaded['arms']) == 5
 
     # And the protected assertion elsewhere in this file (the exact file
     # listing of results/) is exactly why this lives one level down: the top
