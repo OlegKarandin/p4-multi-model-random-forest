@@ -275,6 +275,69 @@ def test_run_one_row_creates_compiles_dir_before_calling_compile_p4(tmp_path, mo
     assert row['compile_errors'] == 0
 
 
+def test_run_one_row_passes_generate_p4_code_a_p4_dir_with_a_trailing_separator(tmp_path, monkeypatch):
+    """Regression test: generate_P4_code (build_p4_script.py) builds its
+    final path via raw string concatenation -- output_dir + output_filename,
+    NOT os.path.join -- an established project convention (feature_selection.py's
+    real caller passes its output dir with a trailing slash for the same
+    reason). If run_one_row's p4_dir lacks a trailing separator, the
+    concatenation glues the directory name straight onto the filename (e.g.
+    'p4_srcindependent_low_sd5.p4' landing directly under output_root instead
+    of inside p4_src/), and a real p4c compile then can't find the file.
+
+    This fake mimics the real concatenation exactly, so it fails against the
+    old code (no trailing separator) and passes once p4_dir carries one."""
+    archived_row = pd.Series({
+        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10,
+        'best_params': json.dumps({'n_estimators_A': 3, 'n_estimators_B': 3}),
+        'features_app': 'f1', 'features_ddos': 'f1',
+    })
+
+    class _FakeUsage:
+        stage_depth, blocks, stages = 5, 10, 3
+        range_entries = ternary_entries = register_depth = register_count = 0
+
+    class _FakeCompileResult:
+        stages = tcam = sram = map_ram = 0
+        errors = 0
+
+    monkeypatch.setattr(cc, 'refit_pair', lambda row, data: (
+        object(), object(), None, None, [0], [0]))
+    monkeypatch.setattr(cc, 'multi_model_memory_evaluation', lambda *a, **kw: _FakeUsage())
+    monkeypatch.setattr(cc, 'get_feature_intervals', lambda *a, **kw: {})
+
+    received = {}
+
+    def _fake_generate_P4_code(*a, output_dir, output_filename, **kw):
+        # Mirrors build_p4_script.py:1623's real concatenation exactly.
+        received['output_dir'] = output_dir
+        return output_dir + output_filename
+
+    def _fake_compile_p4(written_path, output_dir_arg):
+        received['written_path'] = written_path
+        return _FakeCompileResult()
+
+    monkeypatch.setattr(cc, 'generate_P4_code', _fake_generate_P4_code)
+    monkeypatch.setattr(cc, 'compile_p4', _fake_compile_p4)
+
+    output_root = str(tmp_path)
+    row_id = 'independent_low_sd5'
+    row = run_one_row(row_id, 'independent', archived_row, None, output_root)
+
+    # The fake was handed a directory with a trailing separator, so its
+    # own output_dir + output_filename concatenation (mirroring the real
+    # build_p4_script.py:1623) lands the file INSIDE p4_src/ ...
+    expected_p4_dir = os.path.join(output_root, 'p4_src') + os.sep
+    assert received['output_dir'] == expected_p4_dir
+    assert os.path.dirname(received['written_path']) == os.path.dirname(expected_p4_dir)
+    assert os.path.basename(received['written_path']) == row_id + '.p4'
+    # ... instead of the garbled 'p4_srcindependent_low_sd5.p4' the old
+    # (no-trailing-separator) code produced directly under output_root.
+    garbled_filename = 'p4_src' + row_id + '.p4'
+    assert os.path.basename(received['written_path']) != garbled_filename
+    assert row['compile_errors'] == 0
+
+
 from scripts.compiler_calibration import collect
 
 

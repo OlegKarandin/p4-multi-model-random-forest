@@ -249,7 +249,7 @@ def run_one_row(row_id, group, archived_row, data, output_root):
         feature_intervals_app = get_feature_intervals(model_app, names_app)
         feature_intervals_ddos = get_feature_intervals(model_ddos, names_ddos)
 
-    p4_dir = os.path.join(output_root, 'p4_src')
+    p4_dir = os.path.join(output_root, 'p4_src') + os.sep
     os.makedirs(p4_dir, exist_ok=True)
     filename = row_id + '.p4'
     try:
