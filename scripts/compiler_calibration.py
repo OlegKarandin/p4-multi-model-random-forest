@@ -183,10 +183,19 @@ def is_void(row):
     compile_errors is a positive int (the real p4c reported errors) or a
     non-numeric string (the F2 'unavailable' degrade-path reason -- see
     run_one_row). A void row is excluded from every V1-V5 aggregate and
-    reported separately by name (V6)."""
+    reported separately by name (V6).
+
+    compile_errors may arrive as a genuine int (fresh from run_one_row) OR
+    as a string after a CSV round-trip: once any row in the accumulated
+    output has a non-numeric reason string, pandas reads the WHOLE
+    compile_errors column back as str, so a numeric string like '0' must
+    still be recognised as a real, non-void error count."""
     errors = row.get('compile_errors')
     if _is_missing(errors):
         return False
     if isinstance(errors, str):
-        return True
+        try:
+            errors = int(errors)
+        except ValueError:
+            return True
     return int(errors) > 0

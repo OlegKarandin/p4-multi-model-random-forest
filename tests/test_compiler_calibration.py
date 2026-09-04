@@ -157,3 +157,39 @@ def test_is_void_true_for_the_unavailable_reason_string():
 def test_is_void_false_when_compile_errors_is_none_or_nan():
     assert is_void({'compile_errors': None}) is False
     assert is_void({'compile_errors': float('nan')}) is False
+
+
+def test_is_void_true_int_string_survives_csv_round_trip_with_a_void_row(tmp_path):
+    """Regression test: pandas reads an entire mixed int/string column back as
+    str once any row has a non-numeric value. A numeric string like '0' must
+    still be recognised as a real, non-void error count after a CSV round-trip.
+
+    Scenario: one row with compile_errors=0 (real success) and one row with
+    compile_errors="unavailable reason" (F2 degrade path). Write to CSV, read
+    back with pd.read_csv, and verify is_void classifies both correctly."""
+    import io
+
+    # Create a small DataFrame with one successful row (0 errors) and one void row
+    df = pd.DataFrame({
+        'row_id': ['success', 'void_row'],
+        'compile_errors': [0, "no FEATURE_REGISTER_CATALOG entry for 'x'"],
+    })
+
+    # Write to CSV
+    csv_file = tmp_path / 'test.csv'
+    df.to_csv(csv_file, index=False)
+
+    # Read back -- pandas will coerce the entire compile_errors column to str
+    df_read = pd.read_csv(csv_file)
+
+    # Verify that compile_errors is now entirely string type
+    assert df_read['compile_errors'].dtype == object  # pandas uses object for str columns
+
+    # Extract the rows and test is_void on each
+    success_row = df_read[df_read['row_id'] == 'success'].iloc[0].to_dict()
+    void_row = df_read[df_read['row_id'] == 'void_row'].iloc[0].to_dict()
+
+    # The numeric string '0' should NOT be void (it's a real 0-error count)
+    assert is_void(success_row) is False
+    # The non-numeric reason string should be void
+    assert is_void(void_row) is True
