@@ -55,9 +55,11 @@ CCP_ALPHA_MIN = 1e-6
 # old [5,200]x[10,400] grid's 800 combinations, and TPE spent budget
 # distinguishing configurations that are the identical model. mult >= 3 is the
 # smallest integer that always binds. MAX is set from the archive's own
-# split/leaf ratio distribution (design 2026-09-03 §2.1a): measured p99 of the
-# binding leaf<=60 subset of campaign_backup_20260825 is 66.0 (n=9029 of
-# 14110 total leaf/split pairs, 70.4% binding).
+# split/leaf ratio distribution (design 2026-09-03 §2.1a): of the 14110 total
+# leaf/split pairs in campaign_backup_20260825, 9931 (70.4%) are binding
+# overall; restricting further to leaf<=60, 9029 pairs (64.0% of the same
+# 14110) are binding, and the measured p99 of THAT leaf<=60 binding subset is
+# 66.0.
 MIN_SAMPLES_SPLIT_MULT_MIN = 3
 MIN_SAMPLES_SPLIT_MULT_MAX = 66
 

@@ -153,9 +153,9 @@ def test_n_trees_min_and_ccp_alpha_max_defaults():
     assert cfg.ccp_alpha_max == 0.0
 
 
-@pytest.mark.parametrize('n_trees_min_value', [0, 12])
+@pytest.mark.parametrize('n_trees_min_value', [0, 8])
 def test_n_trees_min_out_of_range_rejected(n_trees_min_value):
-    """n_trees_min must be in [1, n_trees], where n_trees defaults to 11."""
+    """n_trees_min must be in [1, n_trees], where n_trees defaults to 7."""
     with pytest.raises(ValueError, match='n_trees_min'):
         TrainConfig(n_trees_min=n_trees_min_value)
 

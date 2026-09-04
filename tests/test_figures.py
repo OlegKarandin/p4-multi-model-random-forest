@@ -990,6 +990,7 @@ def _synthetic_ceiling_csv(path, pruned_min_samples_leaf=None):
                         'corner': corner.name,
                         'min_samples_leaf': leaf,
                         'min_samples_split': corner.min_samples_split,
+                        'ccp_alpha': corner.ccp_alpha,
                         'split_idx': split_idx, 'split_seed': 42 + split_idx,
                         'joint_codeword_length': length,
                         'joint_within_limit': within,

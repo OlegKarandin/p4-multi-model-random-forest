@@ -3,7 +3,7 @@
 `TrainConfig.n_trees` and `TrainConfig.max_depth` are *inclusive search
 bounds*, not fixed hyperparameters: `train_model.rf_params` suggests
 `n_estimators in [1, cfg.n_trees]` and `max_depth in [2, cfg.max_depth]`
-(train_model.py:200-217). Their values were placeholders, justified in the thesis
+(train_model.py:257-261). Their values were placeholders, justified in the thesis
 only as "chosen manually because larger values gave overly long codewords".
 This script replaces that sentence with a table: it measures, over a grid of
 bounds, where the 512-bit codeword limit (`MAX_CODEWORD_LENGTH`) starts to
@@ -39,7 +39,7 @@ when ANY configuration the search can actually reach there is feasible.
 Deciding on the large-tree corner would instead demand that the ENTIRE box
 compile -- and that guarantee is not real: at (15, 4), feasible under that
 reading, the pair still needs 257 TCAM blocks against a campaign M grid of
-25-100, so the box contains infeasible points either way. That reading pays for
+25-250, so the box contains infeasible points either way. That reading pays for
 frontier truncation and does not receive the guarantee it paid for. The search
 is built for boxes with infeasible regions in them: `train_model`'s objective
 records violation MAGNITUDES rather than booleans so the constrained sampler
@@ -149,7 +149,7 @@ MAX_DEPTH_GRID = (2, 4, 6, 8, 10, 12, 14)
 SPLIT_INDICES = (10, 11, 12)
 SPLIT_RANDOM_STATE = 42
 
-# The corners of rf_params' regularization ranges (train_model.py:200-217).
+# The corners of rf_params' regularization ranges (train_model.py:252-255).
 # min_samples_leaf is suggested as suggest_int(5, 60, step=10), whose reachable
 # set is {5,15,25,35,45,55} -- 60 is never selectable, so the pruned corner
 # uses 55, the true edge of the search space. min_samples_split is no longer a
@@ -302,6 +302,7 @@ def collect():
                         'corner': corner.name,
                         'min_samples_leaf': corner.min_samples_leaf,
                         'min_samples_split': corner.min_samples_split,
+                        'ccp_alpha': corner.ccp_alpha,
                         'split_idx': split_idx,
                         'split_seed': seed,
                         'joint_codeword_length': joint_len,
@@ -318,8 +319,9 @@ def collect():
                         # measured against the real 294-row campaign
                         # measurement and found LATENT, NOT LIVE -- 0 of 294
                         # rows are codeword-feasible-but-crossbar-rejected, so
-                        # this fix changes no adopted value (the (11, 14)
-                        # decision already on record is unaffected).
+                        # this fix changes no adopted value (whatever
+                        # (n_trees, max_depth) this script selects is
+                        # unaffected).
                         'joint_within_limit': joint_len <= MAX_CODEWORD_LENGTH
                                               and joint is not None,
                         'joint_stages': joint.stages if joint else None,
@@ -386,13 +388,14 @@ def per_cell(frame):
         # Carried through rather than read off the `Corner` constant: these
         # are what the ROWS were actually fit with, which is not
         # necessarily what the constant says today if it changed after this
-        # CSV was written. `min_samples_leaf`/`min_samples_split` are
-        # constant within one (corner, this CSV) by construction (`fit`
+        # CSV was written. `min_samples_leaf`/`min_samples_split`/`ccp_alpha`
+        # are constant within one (corner, this CSV) by construction (`fit`
         # always reads them off the same `Corner` namedtuple for every row
         # of a `collect()` run), so 'first' just recovers that constant --
         # it is not really an aggregation.
         min_samples_leaf=('min_samples_leaf', 'first'),
         min_samples_split=('min_samples_split', 'first'),
+        ccp_alpha=('ccp_alpha', 'first'),
         joint_cw_max=('joint_codeword_length', 'max'),
         joint_blocks_max=('joint_blocks', 'max'),
         joint_within_limit_all_splits=('joint_within_limit', 'all'),
@@ -417,11 +420,11 @@ def at_corner(cells, corner, n_trees=None, max_depth=None):
 
 
 def corner_params(cells, corner):
-    """The min_samples_leaf/min_samples_split a corner's rows in `cells`
-    were ACTUALLY fit with, read from the data -- never from the `Corner`
-    constant. If the constant changes after a CSV was measured, a printed
-    header built from the constant would disagree with the table beneath
-    it; reading the value off the rows being rendered makes that
+    """The min_samples_leaf/min_samples_split/ccp_alpha a corner's rows in
+    `cells` were ACTUALLY fit with, read from the data -- never from the
+    `Corner` constant. If the constant changes after a CSV was measured, a
+    printed header built from the constant would disagree with the table
+    beneath it; reading the value off the rows being rendered makes that
     impossible; whatever produced the file is what gets printed.
 
     Raises if a CSV somehow mixes two values for one corner name, since
@@ -435,20 +438,22 @@ def corner_params(cells, corner):
                 corner.name))
     leaf = rows['min_samples_leaf'].unique()
     split = rows['min_samples_split'].unique()
-    if len(leaf) > 1 or len(split) > 1:
+    ccp_alpha = rows['ccp_alpha'].unique()
+    if len(leaf) > 1 or len(split) > 1 or len(ccp_alpha) > 1:
         raise ValueError(
             'corner_params: corner {!r} has inconsistent min_samples_leaf '
-            '({}) or min_samples_split ({}) across its own rows -- this '
-            'file mixes measurements taken under different constants and '
-            'cannot be rendered under one header.'.format(
-                corner.name, sorted(leaf), sorted(split)))
-    return int(leaf[0]), int(split[0])
+            '({}), min_samples_split ({}) or ccp_alpha ({}) across its own '
+            'rows -- this file mixes measurements taken under different '
+            'constants and cannot be rendered under one header.'.format(
+                corner.name, sorted(leaf), sorted(split), sorted(ccp_alpha)))
+    return int(leaf[0]), int(split[0]), float(ccp_alpha[0])
 
 
 def print_grid(cells, corner, column, title, note):
-    leaf, split = corner_params(cells, corner)
-    print('\n### {} ({} corner: min_samples_leaf={}, min_samples_split={})\n'
-          .format(title, corner.name, leaf, split))
+    leaf, split, ccp_alpha = corner_params(cells, corner)
+    print('\n### {} ({} corner: min_samples_leaf={}, min_samples_split={}, '
+          'ccp_alpha={})\n'
+          .format(title, corner.name, leaf, split, ccp_alpha))
     print('{}\n'.format(note))
     header = ['n_trees \\ max_depth'] + [str(d) for d in MAX_DEPTH_GRID]
     print('| ' + ' | '.join(header) + ' |')
@@ -550,20 +555,21 @@ def select(cells):
     # a failure nonetheless, not "stays correct".
     old_placeholder_cw = int(at_corner(cells, LARGE_TREE, 7, 10).iloc[0].joint_cw_max)
 
-    deciding_leaf, deciding_split = corner_params(cells, DECIDING_CORNER)
+    deciding_leaf, deciding_split, deciding_ccp_alpha = corner_params(
+        cells, DECIDING_CORNER)
     print('\n### Adopted values\n')
     print('The {} corner decides (Ruling P4-2): a cell counts as feasible when '
           'ANY configuration the search can reach there compiles, and pruning '
           'is inside the search space -- min_samples_leaf up to {}, '
-          'min_samples_split up to {} (the values the rows below were '
-          'actually fit with, read from the measurement rather than from '
-          'the `Corner` constant in code, so this stays correct even if the '
-          'constant changes after a CSV is measured). Requiring the whole '
-          'box to compile (the {} corner) would truncate the reachable '
-          'frontier without buying a real guarantee, since the block budget '
-          'binds inside the box regardless.'.format(
+          'min_samples_split up to {}, ccp_alpha={} (the values the rows '
+          'below were actually fit with, read from the measurement rather '
+          'than from the `Corner` constant in code, so this stays correct '
+          'even if the constant changes after a CSV is measured). Requiring '
+          'the whole box to compile (the {} corner) would truncate the '
+          'reachable frontier without buying a real guarantee, since the '
+          'block budget binds inside the box regardless.'.format(
               DECIDING_CORNER.name, deciding_leaf, deciding_split,
-              LARGE_TREE.name))
+              deciding_ccp_alpha, LARGE_TREE.name))
     print('\n{} of {} grid cells keep the joint codeword within {} bits on all '
           '{} splits at that corner. The largest admissible search space among '
           'them has cardinality ceil(n_trees / 2) * (max_depth - 1) = {}, '
@@ -590,6 +596,16 @@ def select(cells):
               MAX_CODEWORD_LENGTH,
               '-' if pd.isna(chosen.joint_blocks_max) else int(chosen.joint_blocks_max),
               int(strict.joint_cw_max), old_placeholder_cw))
+    print('\nNote: the figure above is the raw grid argmax, not the value '
+          'the campaign actually trains with. `TrainConfig`\'s adopted '
+          'n_trees is 7, not {} -- overridden by a separate utilisation '
+          'argument (design 2026-09-03 spec 2.1(b)): the archive never '
+          'reaches 11 trees in practice and p75 is 3, so the headroom this '
+          'measurement permits goes unused regardless of what the grid '
+          'allows. max_depth = {} DOES match the value derived here; only '
+          'n_trees is overridden. See `src/training/config.py`\'s '
+          '`n_trees, max_depth` docstring for the full accounting.'.format(
+              int(chosen.n_trees), int(chosen.max_depth)))
     print('\nRuling P4-4: at the adopted n_trees, the pruned-corner codeword '
           'and block counts can look nearly identical across the top of the '
           'max_depth grid (e.g. the per-cell table above), because under '
@@ -628,7 +644,7 @@ def report(cells):
                    'Joint-encoding TCAM blocks, worst of {} splits'.format(splits),
                    '"-" is a cell whose codeword exceeds the limit, so no block '
                    'count exists. Compare against the campaign M grid of '
-                   '25-100: blocks bind well before codeword bits do at high '
+                   '25-250: blocks bind well before codeword bits do at high '
                    'tree counts.')
         print_grid(cells, corner, 'disjoint_blocks_max',
                    'Disjoint-encoding TCAM blocks, worst of {} splits'.format(splits),

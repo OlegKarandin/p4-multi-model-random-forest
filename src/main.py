@@ -112,9 +112,11 @@ def parse_args(argv=None):
              "today's checked-in new_results=False behavior)")
     parser.add_argument(
         "--arms", choices=["primary", "sensitivity", "all"], default="primary",
-        help="which arm grid to run in compute mode. 'primary' is the three "
+        help="which arm grid to run in compute mode. 'primary' is the five "
              "arms the headline comparison needs (independent, joint@off, "
-             "joint@delta=0); 'sensitivity' is the five swept tolerances")
+             "and joint@delta=0 at each of 3 overlap thresholds); "
+             "'sensitivity' is the fifteen swept arms (5 tolerances x 3 "
+             "overlap thresholds)")
     parser.add_argument(
         "--redo", action="store_true",
         help="recompute (arm, M) cells whose result file already exists. The "
@@ -373,7 +375,7 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
 
     arms : list of (arm, TrainConfig). Defaults to PRIMARY_ARMS.
     skip_existing : skip any cell whose output file already exists. The
-        campaign is ~40 h at a +/-2x estimate and the seven M values are
+        campaign is ~40 h at a +/-2x estimate and the five M values are
         independent runs, so it is meant to be resumed and chunked; the default
         makes re-invoking the same command continue rather than redo. Pass
         False (CLI: --redo) to force recomputation.

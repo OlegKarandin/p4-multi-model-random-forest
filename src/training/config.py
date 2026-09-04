@@ -70,10 +70,15 @@ class TrainConfig:
         by the pruned corner, min_samples_leaf=55 / min_samples_split=
         55*MIN_SAMPLES_SPLIT_MULT_MAX (3630) / ccp_alpha=0.05. All 49 cells
         of the measured grid (n_trees up to 15, max_depth up to 14) stayed
-        within the limit on all 3 splits -- the ceiling did not bind
-        anywhere the grid reached, and the largest admissible search space
-        in it, ceil(n_trees / 2) * (max_depth - 1) = 104, is attained at the
-        grid's own top corner (15, 14).
+        within the limit on all 3 splits -- not because a wider grid might
+        still turn up a binding ceiling, but because the deciding (pruned)
+        corner is depth-invariant here: MIN_SAMPLES_SPLIT_MULT_MAX=66 pushes
+        its min_samples_split to 3630, so under that much pruning the
+        forests stop growing well before ANY tested max_depth bound, at
+        every n_trees tested (`scripts/capacity_ceiling.py`'s Ruling P4-4).
+        The largest admissible search space in the grid, ceil(n_trees / 2) *
+        (max_depth - 1) = 104, is attained at the grid's own top corner
+        (15, 14).
 
         n_trees is NOT set from that ceiling: it is set by a utilisation
         argument instead (design 2026-09-03 spec 2.1(b)) -- the archive

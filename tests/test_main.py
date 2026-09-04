@@ -294,7 +294,7 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
     # them. Every C.3 claim is a paired test on (M, split, k).
     for call in mock_csv.call_args_list:
         assert call.kwargs.get('mode', 'w') == 'w'
-    # os.replace actually ran (not short-circuited): the three real files
+    # os.replace actually ran (not short-circuited): the five real files
     # exist under results/, with no leftover .partial temp files. Filtered to
     # the (arm, M) CSVs: this invocation also writes a manifests/ subdir
     # (write_run_manifest now sees X_app/X_ddos -- real numpy arrays from the

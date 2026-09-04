@@ -281,11 +281,12 @@ def _cross_check_identity(path, parsed, file_df):
     What is checked, and why: n_trees/max_depth/M are stamped onto every row
     of a file uniformly by compare_independent_joint_mapping, so they must
     match the filename exactly and be constant within the file. arm_slug is
-    not stored directly -- it is recomputed from the three columns that
-    together determine it (arm, alignment_enabled, delta_align), which are
-    exactly the columns TrainConfig.arm_slug itself was derived from, so a
-    mismatch here can only mean the file was mislabelled (wrong filename) or
-    corrupted (inconsistent columns), not a legitimate new arm shape.
+    not stored directly -- it is recomputed from the four columns that
+    together determine it (arm, alignment_enabled, delta_align,
+    overlap_threshold), which are exactly the columns TrainConfig.arm_slug
+    itself was derived from, so a mismatch here can only mean the file was
+    mislabelled (wrong filename) or corrupted (inconsistent columns), not a
+    legitimate new arm shape.
     """
     for field, col in (('n_trees', 'n_trees'), ('max_depth', 'max_depth'), ('M', 'M')):
         values = pd.unique(file_df[col])
