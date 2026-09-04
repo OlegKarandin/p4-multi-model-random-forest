@@ -168,6 +168,8 @@ import re
 
 import pandas as pd
 
+from src.training.config import DEFAULT_OVERLAP_THRESHOLD
+
 
 class MislabelledArtifactError(ValueError):
     """A result file's filename-encoded identity disagrees with the identity
@@ -224,11 +226,13 @@ def _parse_filename(path):
     }
 
 
-def _expected_arm_slug(arm, alignment_enabled, delta_align_label):
+def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
+                        overlap_threshold_label=''):
     """Recompute the arm slug from the in-file identity columns, mirroring
-    `TrainConfig.arm_slug` / `delta_align_label`'s own logic (src/training/
-    config.py) without needing a TrainConfig instance -- the row only carries
-    the already-labelled columns, not the config object that produced them."""
+    `TrainConfig.arm_slug` / `delta_align_label` / `overlap_threshold_label`'s
+    own logic (src/training/config.py) without needing a TrainConfig instance
+    -- the row only carries the already-labelled columns, not the config
+    object that produced them."""
     if arm == 'independent':
         return 'independent'
     if arm != 'joint':
@@ -238,14 +242,36 @@ def _expected_arm_slug(arm, alignment_enabled, delta_align_label):
     if not alignment_enabled:
         return 'joint-off'
     if delta_align_label == 'inf':
-        return 'joint-dinf'
-    try:
-        delta = float(delta_align_label)
-    except (TypeError, ValueError):
-        raise MislabelledArtifactError(
-            "arm='joint' with alignment_enabled=True must carry a numeric "
-            "or 'inf' delta_align, got {!r}".format(delta_align_label))
-    return 'joint-d{:03d}'.format(int(round(delta * 100)))
+        slug = 'joint-dinf'
+    else:
+        try:
+            delta = float(delta_align_label)
+        except (TypeError, ValueError):
+            raise MislabelledArtifactError(
+                "arm='joint' with alignment_enabled=True must carry a numeric "
+                "or 'inf' delta_align, got {!r}".format(delta_align_label))
+        slug = 'joint-d{:03d}'.format(int(round(delta * 100)))
+    return slug + _expected_overlap_suffix(overlap_threshold_label)
+
+
+def _expected_overlap_suffix(overlap_threshold_label):
+    """Mirrors `TrainConfig._overlap_suffix` without a TrainConfig instance:
+    '' at the historical 0.5 default, '-o{:03d}' anywhere else.
+
+    The suppressed-arm value -- '' (raw CSV text, what `overlap_threshold_label`
+    writes for `independent`/`joint-off`) or NaN (what the same value becomes
+    once `_FLOAT_COLUMNS` has coerced it through `pd.to_numeric`) -- means "no
+    suffix". The NaN check has to come first: NaN compares unequal to
+    everything, including itself, so a `== ''` check alone would not catch it
+    and a float comparison against DEFAULT_OVERLAP_THRESHOLD would silently be
+    False forever instead of matching.
+    """
+    if pd.isna(overlap_threshold_label) or overlap_threshold_label == '':
+        return ''
+    value = float(overlap_threshold_label)
+    if abs(value - DEFAULT_OVERLAP_THRESHOLD) < 1e-9:
+        return ''
+    return '-o{:03d}'.format(int(round(value * 100)))
 
 
 def _cross_check_identity(path, parsed, file_df):
@@ -271,20 +297,26 @@ def _cross_check_identity(path, parsed, file_df):
     arm_values = pd.unique(file_df['arm'])
     align_values = pd.unique(file_df['alignment_enabled'])
     delta_values = pd.unique(file_df['delta_align'])
-    if len(arm_values) != 1 or len(align_values) != 1 or len(delta_values) != 1:
+    overlap_values = pd.unique(file_df['overlap_threshold'])
+    if (len(arm_values) != 1 or len(align_values) != 1 or len(delta_values) != 1
+            or len(overlap_values) != 1):
         raise MislabelledArtifactError(
-            "{}: file mixes more than one (arm, alignment_enabled, delta_align) "
-            "combination -- expected exactly one per file (arm={}, "
-            "alignment_enabled={}, delta_align={})".format(
-                path, list(arm_values), list(align_values), list(delta_values)))
+            "{}: file mixes more than one (arm, alignment_enabled, delta_align, "
+            "overlap_threshold) combination -- expected exactly one per file "
+            "(arm={}, alignment_enabled={}, delta_align={}, "
+            "overlap_threshold={})".format(
+                path, list(arm_values), list(align_values), list(delta_values),
+                list(overlap_values)))
 
-    expected_slug = _expected_arm_slug(arm_values[0], bool(align_values[0]), delta_values[0])
+    expected_slug = _expected_arm_slug(
+        arm_values[0], bool(align_values[0]), delta_values[0], overlap_values[0])
     if expected_slug != parsed['arm_slug']:
         raise MislabelledArtifactError(
             "{}: filename says arm_slug={!r} but in-file columns "
-            "(arm={!r}, alignment_enabled={!r}, delta_align={!r}) recompute to "
-            "{!r}".format(path, parsed['arm_slug'], arm_values[0], align_values[0],
-                          delta_values[0], expected_slug))
+            "(arm={!r}, alignment_enabled={!r}, delta_align={!r}, "
+            "overlap_threshold={!r}) recompute to {!r}".format(
+                path, parsed['arm_slug'], arm_values[0], align_values[0],
+                delta_values[0], overlap_values[0], expected_slug))
 
 
 def load_campaign(results_dir='results'):

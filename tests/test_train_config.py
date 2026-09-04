@@ -173,3 +173,45 @@ def test_ccp_alpha_max_zero_accepted():
     """ccp_alpha_max == 0.0 is accepted (off-by-one guard)."""
     cfg = TrainConfig(ccp_alpha_max=0.0)
     assert cfg.ccp_alpha_max == 0.0
+
+
+def test_overlap_threshold_enters_the_slug_when_it_leaves_the_default():
+    """Design 2026-09-03 §3: a campaign sweeping overlap_threshold must
+    distinguish its arms in the filename. main.py's skip_existing treats an
+    existing path as 'cell done', so colliding arms are silently SKIPPED --
+    quieter than an overwrite and just as wrong."""
+    assert TrainConfig(delta_align=0.20).arm_slug('joint') == 'joint-d020'
+    assert TrainConfig(delta_align=0.20, overlap_threshold=0.25).arm_slug(
+        'joint') == 'joint-d020-o025'
+    assert TrainConfig(delta_align=0.20, overlap_threshold=0.1).arm_slug(
+        'joint') == 'joint-d020-o010'
+    assert TrainConfig(delta_align=None, overlap_threshold=0.1).arm_slug(
+        'joint') == 'joint-dinf-o010'
+
+
+def test_the_three_overlap_values_give_three_distinct_paths_per_delta():
+    """Spec §4's slug-uniqueness test, over the full swept grid."""
+    slugs = {TrainConfig(delta_align=d, overlap_threshold=o).arm_slug('joint')
+             for d in (0.0, 0.02, 0.05, 0.10, 0.20, None)
+             for o in (0.5, 0.25, 0.1)}
+
+    assert len(slugs) == 18
+
+
+def test_the_default_overlap_keeps_every_archived_slug_reproducible():
+    """campaign_backup_20260825's 40 files were all written at 0.5. Suffixing
+    unconditionally would rename their expected slugs and make
+    campaign_data._expected_arm_slug reject the whole archive."""
+    for delta, expected in [(0.0, 'joint-d000'), (0.02, 'joint-d002'),
+                            (0.05, 'joint-d005'), (0.10, 'joint-d010'),
+                            (0.20, 'joint-d020'), (None, 'joint-dinf')]:
+        assert TrainConfig(delta_align=delta).arm_slug('joint') == expected
+
+
+def test_arms_without_alignment_never_carry_an_overlap_suffix():
+    """overlap_threshold only governs which range pairs align_rf_thresholds
+    considers, so it is meaningless where that function is never called --
+    suppressed the same way overlap_threshold_label suppresses the column."""
+    assert TrainConfig(overlap_threshold=0.1).arm_slug('disjoint') == 'independent'
+    assert TrainConfig(alignment_enabled=False,
+                       overlap_threshold=0.1).arm_slug('joint') == 'joint-off'

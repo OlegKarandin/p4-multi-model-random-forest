@@ -11,6 +11,11 @@ from typing import Optional
 
 from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
+# The historical value: every row of campaign_backup_20260825 was written at
+# 0.5, and arm_slug suffixes only AWAY from it so those filenames stay
+# reproducible from their own columns.
+DEFAULT_OVERLAP_THRESHOLD = 0.5
+
 
 def _validate_encoding(encoding):
     """Shared guard for `TrainConfig.arm_slug` / `delta_align_label` /
@@ -43,6 +48,8 @@ class TrainConfig:
     overlap_threshold : minimum overlap ratio for a range pair to be an
         alignment CANDIDATE -- a separate concern from whether a candidate is
         ACCEPTED (that is delta_align). Was hardcoded at the call site.
+        Enters `arm_slug` (conditionally -- see `_overlap_suffix`), unlike
+        `align_objective`, which is deliberately absent from it.
     align_objective : what the shed bits are AIMED at -- 'blocks' (today's
         behaviour, the default), 'stages', or 'both'. A different axis from
         delta_align: that is how much accuracy may be spent, this is which
@@ -77,7 +84,7 @@ class TrainConfig:
     delta_align: Optional[float] = 0.0
     alignment_enabled: bool = True
     delta_select: float = 0.02
-    overlap_threshold: float = 0.5
+    overlap_threshold: float = DEFAULT_OVERLAP_THRESHOLD
     align_objective: str = 'blocks'
     n_trees: int = 11
     max_depth: int = 14
@@ -121,8 +128,28 @@ class TrainConfig:
         if not self.alignment_enabled:
             return 'joint-off'
         if self.delta_align is None:
-            return 'joint-dinf'
-        return 'joint-d{:03d}'.format(int(round(self.delta_align * 100)))
+            slug = 'joint-dinf'
+        else:
+            slug = 'joint-d{:03d}'.format(int(round(self.delta_align * 100)))
+        return slug + self._overlap_suffix()
+
+    def _overlap_suffix(self):
+        """'' at the historical 0.5, '-o{:03d}' anywhere else.
+
+        Design 2026-09-03 §3: a campaign sweeping overlap_threshold must add it
+        to the slug or three overlap arms map to one path -- and because
+        main.py's skip_existing treats an existing path as "cell done", the
+        second and third would be silently SKIPPED rather than overwritten.
+
+        Suffixing only away from the default keeps all 40 archived filenames
+        reproducible from their own columns. That leaves the default implicit,
+        which campaign_data._expected_arm_slug turns into a CHECKED invariant:
+        a file named `joint-d020` carrying overlap_threshold != 0.5 is
+        mislabelled and raises rather than being read.
+        """
+        if self.overlap_threshold == DEFAULT_OVERLAP_THRESHOLD:
+            return ''
+        return '-o{:03d}'.format(int(round(self.overlap_threshold * 100)))
 
     def delta_align_label(self, encoding='joint'):
         """What goes in the row's `delta_align` column (spec C.1): the float,

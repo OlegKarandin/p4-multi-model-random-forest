@@ -278,6 +278,30 @@ def test_delta_align_num_holds_the_true_parsed_float_for_each_row(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# overlap_threshold: arm_slug suffixes only away from the 0.5 default, so
+# _expected_arm_slug must check the column against the filename to keep that
+# implicit default safe rather than merely convenient.
+# ---------------------------------------------------------------------------
+
+def test_a_file_whose_overlap_column_contradicts_its_filename_is_rejected(tmp_path):
+    """arm_slug suffixes only away from 0.5, so the default is implicit in the
+    filename. This check is what makes that safe: an artifact named
+    joint-d020 that actually ran at overlap 0.25 is mislabelled, and reading
+    it would silently attribute one treatment's results to another."""
+    path = tmp_path / 'rf_t11_d14_M25_joint-d020.csv'
+    pd.DataFrame([{
+        'arm': 'joint', 'method': 'multi', 'split': 10, 'k': 3,
+        'alignment_enabled': True, 'delta_align': 0.2, 'delta_select': 0.02,
+        'M': 25, 'n_trees': 11, 'max_depth': 14,
+        'overlap_threshold': 0.25,          # contradicts the filename
+        'blocks': 10, 'stages': 3, 'stage_depth': 4, 'infeasible': '',
+    }]).to_csv(path, index=False)
+
+    with pytest.raises(MislabelledArtifactError):
+        load_campaign(results_dir=str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
 # Cross-check: a mislabelled artifact must fail loudly.
 # ---------------------------------------------------------------------------
 
