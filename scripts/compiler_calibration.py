@@ -270,6 +270,7 @@ def run_one_row(row_id, group, archived_row, data, output_root):
         return row
 
     compile_dir = os.path.join(output_root, 'compiles', row_id)
+    os.makedirs(os.path.dirname(compile_dir), exist_ok=True)
     if os.path.isdir(compile_dir):
         # p4c refuses to write into an already-existing dir (see
         # compile_p4's docstring) -- a stale dir here means a prior

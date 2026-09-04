@@ -235,6 +235,46 @@ def test_run_one_row_records_the_unavailable_reason_on_a_generate_p4_code_valuee
     assert row['compile_errors'] == "no FEATURE_REGISTER_CATALOG entry for 'f1'"
 
 
+def test_run_one_row_creates_compiles_dir_before_calling_compile_p4(tmp_path, monkeypatch):
+    """Regression test: compile_p4 requires its output_dir's immediate
+    parent to already exist (p4c creates only the final path segment).
+    Nothing else creates output_root/compiles, so run_one_row itself must,
+    before calling compile_p4 -- otherwise every real compile fails
+    forever, even on retry."""
+    archived_row = pd.Series({
+        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10,
+        'best_params': json.dumps({'n_estimators_A': 3, 'n_estimators_B': 3}),
+        'features_app': 'f1', 'features_ddos': 'f1',
+    })
+
+    class _FakeUsage:
+        stage_depth, blocks, stages = 5, 10, 3
+        range_entries = ternary_entries = register_depth = register_count = 0
+
+    class _FakeCompileResult:
+        stages = tcam = sram = map_ram = 0
+        errors = 0
+
+    monkeypatch.setattr(cc, 'refit_pair', lambda row, data: (
+        object(), object(), None, None, [0], [0]))
+    monkeypatch.setattr(cc, 'multi_model_memory_evaluation', lambda *a, **kw: _FakeUsage())
+    monkeypatch.setattr(cc, 'get_feature_intervals', lambda *a, **kw: {})
+    monkeypatch.setattr(cc, 'generate_P4_code',
+                         lambda *a, **kw: str(tmp_path / 'p4_src' / 'fake.p4'))
+
+    def _fake_compile_p4(written_path, output_dir_arg):
+        assert os.path.isdir(os.path.dirname(output_dir_arg))
+        return _FakeCompileResult()
+    monkeypatch.setattr(cc, 'compile_p4', _fake_compile_p4)
+
+    output_root = str(tmp_path)
+    row = run_one_row('independent_low_sd5', 'independent', archived_row, None, output_root)
+
+    assert os.path.isdir(os.path.join(output_root, 'compiles'))
+    assert row['stages_real'] == 0
+    assert row['compile_errors'] == 0
+
+
 from scripts.compiler_calibration import collect
 
 
