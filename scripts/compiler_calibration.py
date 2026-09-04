@@ -206,8 +206,12 @@ def run_one_row(row_id, group, archived_row, data, output_root):
     p4c compile -> parse -> one result dict. Raises on a genuine toolchain
     failure (compile_p4's RuntimeError, e.g. a timeout or a crash with no
     parseable error/warning line) -- the caller (collect()) is responsible
-    for catching and recording that as a void row, mirroring
-    feasibility_frontier.collect's per-point exception isolation.
+    for catching this. It does NOT write such a row to the output CSV (a
+    CSV-recorded row is treated as "done" and permanently skipped on
+    resume, which would be wrong for a row that should be retried);
+    instead it records the row_id and a one-line exception summary for
+    report()'s V6, mirroring feasibility_frontier.collect's per-point
+    exception isolation.
 
     group is 'independent' (P4-gen encoding 'disjoint') or 'joint'
     (P4-gen encoding 'joint') -- see the module docstring for why the two
@@ -227,12 +231,20 @@ def run_one_row(row_id, group, archived_row, data, output_root):
         model_app, model_ddos, names_app, names_ddos, p4_encoding)
 
     params = json.loads(archived_row['best_params'])
+    stage_depth_archived = int(archived_row['stage_depth'])
+    if stage_depth_archived != usage.stage_depth:
+        print('WARNING: {} -- archived stage_depth={} (used to select this '
+              'stratum) disagrees with the recomputed stage_depth={} on the '
+              'refit pair; refit determinism may not hold for this '
+              'row'.format(row_id, stage_depth_archived, usage.stage_depth))
     row = {
         'row_id': row_id, 'group': group,
         'source_arm_slug': archived_row['arm_slug'],
         'M': int(archived_row['M']), 'k': int(archived_row['k']),
         'split': int(archived_row['split']),
-        'stage_depth': usage.stage_depth, 'blocks': usage.blocks,
+        'stage_depth': usage.stage_depth,
+        'stage_depth_archived': stage_depth_archived,
+        'blocks': usage.blocks,
         'stages': usage.stages, 'range_entries': usage.range_entries,
         'ternary_entries': usage.ternary_entries,
         'register_depth': usage.register_depth,
@@ -308,10 +320,14 @@ def collect(campaign_dir, out, output_root, strata=STRATA_STAGE_DEPTHS,
     invocation compiles -- the mechanism the plan's Task 4 gate uses
     (--limit 3) before committing to the rest.
 
-    Returns (frame, missing): frame is read back from `out` after writing
-    (the full accumulated file across every resume); missing is
+    Returns (frame, missing, failed): frame is read back from `out` after
+    writing (the full accumulated file across every resume); missing is
     build_sample's list of (group, k_band, stage_depth) cells with no
-    archived row at all (reported by report(), not silently dropped).
+    archived row at all (reported by report(), not silently dropped);
+    failed is a list of (row_id, summary) pairs for rows whose
+    run_one_row raised a toolchain exception this invocation -- NOT
+    written to `out` (so they remain retryable on the next invocation)
+    but reported by report()'s V6 by name.
     """
     backup = load_backup(campaign_dir)
     if 'infeasible' in backup.columns:
@@ -337,19 +353,20 @@ def collect(campaign_dir, out, output_root, strata=STRATA_STAGE_DEPTHS,
     if not remaining:
         print('nothing to do -- every sampled row already recorded at {}'.format(out))
         frame_out = pd.read_csv(out) if os.path.exists(out) else pd.DataFrame()
-        return frame_out, missing
+        return frame_out, missing, []
 
     data = load_campaign_data()
     os.makedirs(output_root, exist_ok=True)
     file_exists = os.path.exists(out) and os.path.getsize(out) > 0
-    n_failed = 0
+    failed = []
     for row_id, group, band, stage_depth, archived_row in remaining:
         print('compiling {} ...'.format(row_id))
         started = time.time()
         try:
             result_row = run_one_row(row_id, group, archived_row, data, output_root)
-        except Exception:
-            n_failed += 1
+        except Exception as e:
+            summary = '{}: {}'.format(type(e).__name__, str(e))[:200]
+            failed.append((row_id, summary))
             print('  {} raised an exception:\n{}'.format(row_id, traceback.format_exc()))
             continue
         pd.DataFrame([result_row]).to_csv(out, mode='a', header=not file_exists, index=False)
@@ -358,18 +375,26 @@ def collect(campaign_dir, out, output_root, strata=STRATA_STAGE_DEPTHS,
             row_id, time.time() - started, result_row['stage_depth'],
             result_row.get('stages_real')))
 
-    if n_failed:
+    if failed:
         print('{} row(s) raised a toolchain exception and were not recorded '
-              '-- they will be retried on the next invocation'.format(n_failed))
+              '-- they will be retried on the next invocation'.format(len(failed)))
 
     frame_out = pd.read_csv(out) if os.path.exists(out) else pd.DataFrame()
-    return frame_out, missing
+    return frame_out, missing, failed
 
 
-def report(frame, missing):
+def report(frame, missing, failed=()):
     """V1-V6 against the accumulated frame (spec §5). Split from main() so
     a caller could replay this report from results/compiler_calibration.csv
-    alone, mirroring scripts/feasibility_frontier.py's report()."""
+    alone, mirroring scripts/feasibility_frontier.py's report().
+
+    void rows (is_void()==True) and unmeasured rows (is_void()==False but
+    with no real stages_real/tcam_real -- e.g. a row whose compile_errors
+    is missing/NaN) are BOTH excluded from every V1-V5 aggregate: only
+    `measured` rows (gap_stages not null) feed V1-V5. void and unmeasured
+    are reported separately, by name, under V6, alongside `failed`
+    (toolchain-exception row_ids from collect() that never made it into
+    `frame` at all)."""
     if frame.empty:
         print('\nno rows to report -- nothing has been compiled yet.')
         return
@@ -380,53 +405,74 @@ def report(frame, missing):
     live['gap_stages'] = live.apply(gap_stages, axis=1)
     live['gap_blocks'] = live.apply(gap_blocks, axis=1)
 
+    measured_mask = live['gap_stages'].notna()
+    measured = live[measured_mask].copy()
+    unmeasured = live[~measured_mask]
+
     print('\n### V1 -- gap_stages >= 0 on every row (headline)\n')
-    negative = live[live['gap_stages'] < 0]
-    if len(negative):
-        print('FALSIFIED -- {} row(s) with a negative gap_stages:'.format(len(negative)))
-        print(negative[['row_id', 'stage_depth', 'stages_real', 'gap_stages']].to_string(index=False))
+    if len(measured):
+        negative = measured[measured['gap_stages'] < 0]
+        if len(negative):
+            print('FALSIFIED -- {} row(s) with a negative gap_stages:'.format(len(negative)))
+            print(negative[['row_id', 'stage_depth', 'stages_real', 'gap_stages']].to_string(index=False))
+        else:
+            print('OK -- gap_stages >= 0 on all {} compiled, non-void, measured rows'.format(len(measured)))
     else:
-        print('OK -- gap_stages >= 0 on all {} compiled, non-void rows'.format(len(live)))
+        print('NOT ESTABLISHED -- no compiled, non-void rows to check (0 measured)')
 
     print('\n### V2 -- gap_stages distribution\n')
-    if len(live):
-        g = live['gap_stages']
+    if len(measured):
+        g = measured['gap_stages']
         constant = (g.max() - g.min()) <= 1
         print('mean={:.2f} min={} max={} n={} -- {}'.format(
             g.mean(), g.min(), g.max(), len(g),
             'CONSTANT (max-min<=1)' if constant else 'SCALES (max-min>1)'))
 
     print('\n### V3 -- gap_stages by group (independent vs joint)\n')
-    if len(live):
-        by_group = live.groupby('group')['gap_stages'].agg(['mean', 'count'])
+    if len(measured):
+        by_group = measured.groupby('group')['gap_stages'].agg(['mean', 'count'])
         print(by_group.to_string())
         if {'independent', 'joint'}.issubset(set(by_group.index)):
             diff = by_group.loc['joint', 'mean'] - by_group.loc['independent', 'mean']
             print('joint - independent mean gap_stages = {:.2f}'.format(diff))
 
     print('\n### V4 -- gap_stages correlation with k and T\n')
-    if len(live) > 2:
-        t = live[['n_estimators_A', 'n_estimators_B']].mean(axis=1)
+    if len(measured) > 2:
+        t = measured[['n_estimators_A', 'n_estimators_B']].mean(axis=1)
         print('corr(gap_stages, k) = {:.3f}  (n={})'.format(
-            live['gap_stages'].corr(live['k']), len(live)))
+            measured['gap_stages'].corr(measured['k']), len(measured)))
         print('corr(gap_stages, T) = {:.3f}  (n={})'.format(
-            live['gap_stages'].corr(t), len(live)))
+            measured['gap_stages'].corr(t), len(measured)))
 
     print('\n### V5 -- gap_blocks == 0 on every row (confirmatory)\n')
-    if len(live):
-        nonzero = live[live['gap_blocks'] != 0]
+    if len(measured):
+        nonzero = measured[measured['gap_blocks'] != 0]
         if len(nonzero):
             print('{} row(s) with gap_blocks != 0 (reopens a question '
                   'treated as closed):'.format(len(nonzero)))
             print(nonzero[['row_id', 'blocks', 'tcam_real', 'gap_blocks']].to_string(index=False))
         else:
-            print('OK -- gap_blocks == 0 on all {} rows'.format(len(live)))
+            print('OK -- gap_blocks == 0 on all {} rows'.format(len(measured)))
 
-    print('\n### V6 -- void rows and missing strata (diagnostic)\n')
+    print('\n### V6 -- void rows, unmeasured rows, failed rows, and missing strata (diagnostic)\n')
     if len(void):
         print(void[['row_id', 'compile_errors']].to_string(index=False))
     else:
         print('no void rows')
+    if len(unmeasured):
+        print('{} row(s) with is_void()==False but no real measurement '
+              '(missing stages_real/tcam_real despite a non-void '
+              'compile_errors):'.format(len(unmeasured)))
+        print(unmeasured[['row_id']].to_string(index=False))
+    else:
+        print('no unmeasured rows')
+    if failed:
+        print('{} row(s) raised a toolchain exception during collect() and '
+              'were not recorded (retryable):'.format(len(failed)))
+        for row_id, summary in failed:
+            print('  {}: {}'.format(row_id, summary))
+    else:
+        print('no failed rows')
     if missing:
         for group, band, stage_depth in missing:
             print('  missing stratum: group={} k_band={} stage_depth={}'.format(
@@ -459,11 +505,11 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
-    frame, missing = collect(args.campaign_dir, args.out, args.output_root,
-                             strata=args.strata, groups=args.groups,
-                             k_bands=args.k_bands, limit=args.limit)
+    frame, missing, failed = collect(args.campaign_dir, args.out, args.output_root,
+                                     strata=args.strata, groups=args.groups,
+                                     k_bands=args.k_bands, limit=args.limit)
     print('{} total rows on disk at {}'.format(len(frame), args.out))
-    report(frame, missing)
+    report(frame, missing, failed)
 
 
 if __name__ == '__main__':

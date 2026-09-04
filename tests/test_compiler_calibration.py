@@ -212,7 +212,7 @@ def test_already_done_reads_recorded_row_ids(tmp_path):
 
 def test_run_one_row_records_the_unavailable_reason_on_a_generate_p4_code_valueerror(tmp_path, monkeypatch):
     archived_row = pd.Series({
-        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10,
+        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10, 'stage_depth': 5,
         'best_params': json.dumps({'n_estimators_A': 3, 'n_estimators_B': 3}),
         'features_app': 'f1', 'features_ddos': 'f1',
     })
@@ -242,7 +242,7 @@ def test_run_one_row_creates_compiles_dir_before_calling_compile_p4(tmp_path, mo
     before calling compile_p4 -- otherwise every real compile fails
     forever, even on retry."""
     archived_row = pd.Series({
-        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10,
+        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10, 'stage_depth': 5,
         'best_params': json.dumps({'n_estimators_A': 3, 'n_estimators_B': 3}),
         'features_app': 'f1', 'features_ddos': 'f1',
     })
@@ -288,7 +288,7 @@ def test_run_one_row_passes_generate_p4_code_a_p4_dir_with_a_trailing_separator(
     This fake mimics the real concatenation exactly, so it fails against the
     old code (no trailing separator) and passes once p4_dir carries one."""
     archived_row = pd.Series({
-        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10,
+        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10, 'stage_depth': 5,
         'best_params': json.dumps({'n_estimators_A': 3, 'n_estimators_B': 3}),
         'features_app': 'f1', 'features_ddos': 'f1',
     })
@@ -363,7 +363,178 @@ def test_collect_skips_rows_already_recorded_at_out(tmp_path, monkeypatch):
                    'stages_real': 6, 'blocks': 1, 'tcam_real': 1,
                    'compile_errors': 0, 'group': 'independent'}]).to_csv(out, index=False)
 
-    result_frame, missing = collect('unused', out, root, strata=(5, 6),
-                                    groups=('independent',), k_bands=('low',))
+    result_frame, missing, failed = collect('unused', out, root, strata=(5, 6),
+                                            groups=('independent',), k_bands=('low',))
     assert calls == ['independent_low_sd6']
     assert set(result_frame['row_id']) == {'independent_low_sd5', 'independent_low_sd6'}
+    assert failed == []
+
+
+def test_collect_isolates_a_row_whose_run_one_row_raises(tmp_path, monkeypatch):
+    """A row whose run_one_row raises must NOT land in the output CSV (it
+    would be permanently skipped via already_done on the next call), must
+    be reported back in `failed`, and must not block the other rows in the
+    same batch from being recorded normally."""
+    frame = add_group_and_band(_synthetic_frame([
+        {'arm_slug': 'independent', 'k': 2, 'stage_depth': 5},
+        {'arm_slug': 'independent', 'k': 2, 'stage_depth': 6},
+    ]))
+    monkeypatch.setattr(cc, 'load_backup', lambda campaign_dir: frame)
+    monkeypatch.setattr(cc, 'load_campaign_data', lambda: None)
+
+    def _fake_run_one_row(row_id, group, archived_row, data, output_root):
+        if row_id == 'independent_low_sd5':
+            raise RuntimeError('simulated p4c timeout')
+        return {'row_id': row_id, 'group': group, 'stage_depth': 6,
+                'stages_real': 6, 'blocks': 1, 'tcam_real': 1,
+                'compile_errors': 0}
+    monkeypatch.setattr(cc, 'run_one_row', _fake_run_one_row)
+
+    out = str(tmp_path / 'out.csv')
+    root = str(tmp_path / 'root')
+
+    result_frame, missing, failed = collect(
+        'unused', out, root, strata=(5, 6),
+        groups=('independent',), k_bands=('low',))
+
+    # (c) the failing row is reported back
+    assert failed == [('independent_low_sd5', 'RuntimeError: simulated p4c timeout')]
+    # (a) NOT written to the output CSV
+    assert 'independent_low_sd5' not in set(result_frame['row_id'])
+    # (d) the other row in the same batch is still recorded normally
+    assert 'independent_low_sd6' in set(result_frame['row_id'])
+    # (b) NOT in already_done on the next call, so it's retried
+    assert 'independent_low_sd5' not in already_done(out)
+    assert 'independent_low_sd6' in already_done(out)
+
+
+def test_run_one_row_records_stage_depth_archived_and_warns_on_mismatch(tmp_path, monkeypatch, capsys):
+    archived_row = pd.Series({
+        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10, 'stage_depth': 12,
+        'best_params': json.dumps({'n_estimators_A': 3, 'n_estimators_B': 3}),
+        'features_app': 'f1', 'features_ddos': 'f1',
+    })
+
+    class _FakeUsage:
+        stage_depth, blocks, stages = 6, 10, 3  # deliberately != archived (12)
+        range_entries = ternary_entries = register_depth = register_count = 0
+
+    class _FakeCompileResult:
+        stages = tcam = sram = map_ram = 0
+        errors = 0
+
+    monkeypatch.setattr(cc, 'refit_pair', lambda row, data: (
+        object(), object(), None, None, [0], [0]))
+    monkeypatch.setattr(cc, 'multi_model_memory_evaluation', lambda *a, **kw: _FakeUsage())
+    monkeypatch.setattr(cc, 'get_feature_intervals', lambda *a, **kw: {})
+    monkeypatch.setattr(cc, 'generate_P4_code',
+                         lambda *a, **kw: str(tmp_path / 'p4_src' / 'fake.p4'))
+    monkeypatch.setattr(cc, 'compile_p4', lambda *a, **kw: _FakeCompileResult())
+
+    row = run_one_row('independent_low_sd12', 'independent', archived_row, None, str(tmp_path))
+
+    assert row['stage_depth_archived'] == 12
+    assert row['stage_depth'] == 6
+    captured = capsys.readouterr()
+    assert 'independent_low_sd12' in captured.out
+    assert '12' in captured.out and '6' in captured.out
+    assert 'WARNING' in captured.out
+
+
+def test_run_one_row_no_warning_when_archived_matches_recomputed(tmp_path, monkeypatch, capsys):
+    archived_row = pd.Series({
+        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10, 'stage_depth': 5,
+        'best_params': json.dumps({'n_estimators_A': 3, 'n_estimators_B': 3}),
+        'features_app': 'f1', 'features_ddos': 'f1',
+    })
+
+    class _FakeUsage:
+        stage_depth, blocks, stages = 5, 10, 3
+        range_entries = ternary_entries = register_depth = register_count = 0
+
+    class _FakeCompileResult:
+        stages = tcam = sram = map_ram = 0
+        errors = 0
+
+    monkeypatch.setattr(cc, 'refit_pair', lambda row, data: (
+        object(), object(), None, None, [0], [0]))
+    monkeypatch.setattr(cc, 'multi_model_memory_evaluation', lambda *a, **kw: _FakeUsage())
+    monkeypatch.setattr(cc, 'get_feature_intervals', lambda *a, **kw: {})
+    monkeypatch.setattr(cc, 'generate_P4_code',
+                         lambda *a, **kw: str(tmp_path / 'p4_src' / 'fake.p4'))
+    monkeypatch.setattr(cc, 'compile_p4', lambda *a, **kw: _FakeCompileResult())
+
+    row = run_one_row('independent_low_sd5', 'independent', archived_row, None, str(tmp_path))
+
+    assert row['stage_depth_archived'] == 5
+    captured = capsys.readouterr()
+    assert 'WARNING' not in captured.out
+
+
+from scripts.compiler_calibration import report
+
+
+def _report_frame(rows):
+    return pd.DataFrame(rows)
+
+
+def test_report_v1_not_established_when_zero_measured_rows(capsys):
+    # Two rows, both void (compile_errors is a positive error count) -- so
+    # `measured` (Finding 1's fix) is empty even though `frame` is not.
+    frame = _report_frame([
+        {'row_id': 'r1', 'compile_errors': 2, 'stage_depth': 5, 'stages_real': None,
+         'blocks': 1, 'tcam_real': None, 'group': 'independent', 'k': 2,
+         'n_estimators_A': 3, 'n_estimators_B': 3},
+        {'row_id': 'r2', 'compile_errors': 3, 'stage_depth': 6, 'stages_real': None,
+         'blocks': 1, 'tcam_real': None, 'group': 'independent', 'k': 2,
+         'n_estimators_A': 3, 'n_estimators_B': 3},
+    ])
+    report(frame, [])
+    out = capsys.readouterr().out
+    assert 'NOT ESTABLISHED' in out
+    assert 'OK -- gap_stages' not in out
+
+
+def test_report_unmeasured_row_excluded_from_v1_v2_v5_counts(capsys):
+    # r1 is a real measured row (gap_stages=0, gap_blocks=0). r2 has
+    # is_void()==False (compile_errors is missing/NaN) but no real
+    # stages_real/tcam_real -- Finding 1's "unmeasured" case. It must not
+    # inflate V1/V2/V5's n, and must not be mistaken for a gap_blocks!=0
+    # violation (None != 0 bug).
+    frame = _report_frame([
+        {'row_id': 'r1', 'compile_errors': 0, 'stage_depth': 6, 'stages_real': 6,
+         'blocks': 4, 'tcam_real': 4, 'group': 'independent', 'k': 2,
+         'n_estimators_A': 3, 'n_estimators_B': 3},
+        {'row_id': 'r2', 'compile_errors': None, 'stage_depth': 5, 'stages_real': None,
+         'blocks': 3, 'tcam_real': None, 'group': 'independent', 'k': 2,
+         'n_estimators_A': 3, 'n_estimators_B': 3},
+    ])
+    report(frame, [])
+    out = capsys.readouterr().out
+    assert 'OK -- gap_stages >= 0 on all 1 compiled, non-void, measured rows' in out
+    assert 'OK -- gap_blocks == 0 on all 1 rows' in out
+    assert 'r2' in out  # reported under V6 as unmeasured, not silently dropped
+    assert 'gap_blocks != 0' not in out
+
+
+def test_report_accepts_two_positional_args_for_backward_compatibility():
+    """report(frame, missing) with no `failed` arg must still work --
+    existing callers (and this suite's earlier tests) don't pass it."""
+    frame = _report_frame([
+        {'row_id': 'r1', 'compile_errors': 0, 'stage_depth': 6, 'stages_real': 6,
+         'blocks': 4, 'tcam_real': 4, 'group': 'independent', 'k': 2,
+         'n_estimators_A': 3, 'n_estimators_B': 3},
+    ])
+    report(frame, [])  # should not raise
+
+
+def test_report_prints_failed_rows_under_v6(capsys):
+    frame = _report_frame([
+        {'row_id': 'r1', 'compile_errors': 0, 'stage_depth': 6, 'stages_real': 6,
+         'blocks': 4, 'tcam_real': 4, 'group': 'independent', 'k': 2,
+         'n_estimators_A': 3, 'n_estimators_B': 3},
+    ])
+    report(frame, [], [('independent_low_sd5', 'RuntimeError: simulated p4c timeout')])
+    out = capsys.readouterr().out
+    assert 'independent_low_sd5' in out
+    assert 'simulated p4c timeout' in out
