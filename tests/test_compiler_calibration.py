@@ -193,3 +193,74 @@ def test_is_void_true_int_string_survives_csv_round_trip_with_a_void_row(tmp_pat
     assert is_void(success_row) is False
     # The non-numeric reason string should be void
     assert is_void(void_row) is True
+
+
+import scripts.compiler_calibration as cc
+from scripts.compiler_calibration import already_done, run_one_row
+
+
+def test_already_done_empty_when_out_path_missing(tmp_path):
+    assert already_done(str(tmp_path / 'nope.csv')) == set()
+
+
+def test_already_done_reads_recorded_row_ids(tmp_path):
+    out = tmp_path / 'out.csv'
+    pd.DataFrame([{'row_id': 'independent_low_sd5', 'stage_depth': 5},
+                 {'row_id': 'joint_high_sd6', 'stage_depth': 6}]).to_csv(out, index=False)
+    assert already_done(str(out)) == {'independent_low_sd5', 'joint_high_sd6'}
+
+
+def test_run_one_row_records_the_unavailable_reason_on_a_generate_p4_code_valueerror(tmp_path, monkeypatch):
+    archived_row = pd.Series({
+        'arm_slug': 'independent', 'M': 100, 'k': 2, 'split': 10,
+        'best_params': json.dumps({'n_estimators_A': 3, 'n_estimators_B': 3}),
+        'features_app': 'f1', 'features_ddos': 'f1',
+    })
+
+    class _FakeUsage:
+        stage_depth, blocks, stages = 5, 10, 3
+        range_entries = ternary_entries = register_depth = register_count = 0
+
+    monkeypatch.setattr(cc, 'refit_pair', lambda row, data: (
+        object(), object(), None, None, [0], [0]))
+    monkeypatch.setattr(cc, 'multi_model_memory_evaluation', lambda *a, **kw: _FakeUsage())
+    monkeypatch.setattr(cc, 'get_feature_intervals', lambda *a, **kw: {})
+
+    def _raise(*a, **kw):
+        raise ValueError("no FEATURE_REGISTER_CATALOG entry for 'f1'")
+    monkeypatch.setattr(cc, 'generate_P4_code', _raise)
+
+    row = run_one_row('independent_low_sd5', 'independent', archived_row, None, str(tmp_path))
+    assert row['stages_real'] is None
+    assert row['compile_errors'] == "no FEATURE_REGISTER_CATALOG entry for 'f1'"
+
+
+from scripts.compiler_calibration import collect
+
+
+def test_collect_skips_rows_already_recorded_at_out(tmp_path, monkeypatch):
+    frame = add_group_and_band(_synthetic_frame([
+        {'arm_slug': 'independent', 'k': 2, 'stage_depth': 5},
+        {'arm_slug': 'independent', 'k': 2, 'stage_depth': 6},
+    ]))
+    monkeypatch.setattr(cc, 'load_backup', lambda campaign_dir: frame)
+    monkeypatch.setattr(cc, 'load_campaign_data', lambda: None)
+
+    calls = []
+    def _fake_run_one_row(row_id, group, archived_row, data, output_root):
+        calls.append(row_id)
+        return {'row_id': row_id, 'group': group, 'stage_depth': 5,
+                'stages_real': 6, 'blocks': 1, 'tcam_real': 1,
+                'compile_errors': 0}
+    monkeypatch.setattr(cc, 'run_one_row', _fake_run_one_row)
+
+    out = str(tmp_path / 'out.csv')
+    root = str(tmp_path / 'root')
+    pd.DataFrame([{'row_id': 'independent_low_sd5', 'stage_depth': 5,
+                   'stages_real': 6, 'blocks': 1, 'tcam_real': 1,
+                   'compile_errors': 0, 'group': 'independent'}]).to_csv(out, index=False)
+
+    result_frame, missing = collect('unused', out, root, strata=(5, 6),
+                                    groups=('independent',), k_bands=('low',))
+    assert calls == ['independent_low_sd6']
+    assert set(result_frame['row_id']) == {'independent_low_sd5', 'independent_low_sd6'}
