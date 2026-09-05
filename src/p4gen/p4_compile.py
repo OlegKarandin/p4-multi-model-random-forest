@@ -268,7 +268,7 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     """Blocking: runs the real Tofino compiler over WSL2 and parses its
     resource report.
 
-    Invokes `wsl bash -lc '<full command>'` rather than `["wsl", p4c_path,
+    Invokes `wsl -e bash -lc '<full command>'` rather than `["wsl", p4c_path,
     ...]` -- WSL2 only expands `~` in p4c_path and sources PATH/profile when
     explicitly run as a login shell (bash -lc), confirmed by a real compile
     in reviews/t11_tofino_port_and_env.md Part K; the naive form silently
@@ -279,6 +279,20 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     bash expands the `~` once inside the login shell, which is exactly the
     fix.
 
+    The leading `-e` is load-bearing, not decoration: without it, `wsl
+    bash -lc '<script>'` re-joins its own argv into a single string and
+    re-parses THAT through an extra implicit shell layer, which silently
+    drops the boundary protecting the `-lc` argument -- any `$VAR`
+    reference or `;`-separated statement in `<script>` (both used by the
+    scratch-dir workaround below) then gets corrupted or executed by the
+    wrong shell (confirmed directly: `wsl bash -lc 'X=$(echo hi); echo
+    "X=[$X]"'` prints `X=[]`; `wsl -e bash -lc` of the same string prints
+    `X=[hi]`). A single flat command with no `$`/`;` (this function's
+    previous, pre-scratch-dir shape) happened to survive that mangling by
+    luck; a multi-statement script does not. `-e` makes wsl exec bash
+    directly, so bash receives the exact argv string with no extra
+    reparse.
+
     `target` selects the `-b` flag (default "tofino", matching every prior
     compile in this project's history). Passing target="tofino2" alongside
     architecture="t2na" targets Tofino-2 -- confirmed accepted by this
@@ -288,6 +302,20 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
 
     Raises RuntimeError if the compiler times out or fails to run (no output line
     containing error/warning count despite nonzero exit code).
+
+    Works around a confirmed p4c bug (reviews/p4_tofino_reference.md §1.6):
+    a non-ASCII path segment (this repo's own checkout has one, the
+    'Документы' component) crashes p4c's own internal preprocessor
+    sub-invocation with a mojibake `cc1: fatal error` once the compiled
+    program is large enough -- small spike programs compiled fine from the
+    same path, but a full generate_P4_code-sized program did not. Rather
+    than compile directly from the (possibly non-ASCII) repo checkout path,
+    the .p4 file and the include path's *.p4 files are first copied into a
+    fresh ASCII-only WSL-native scratch directory (`mktemp -d` defaults to
+    /tmp, which is ASCII regardless of the WSL username), p4c compiles
+    there, and the resulting output tree is copied back out to the
+    caller-requested output_dir. This also sidesteps the unrelated 9P
+    filesystem slowdown of compiling directly from /mnt/c/... .
     """
     # Deliberately NOT pre-creating output_dir here (neither via os.makedirs
     # nor a WSL-side `mkdir -p`): p4c behaves differently -- and fails its
@@ -295,18 +323,32 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     # already exists (even empty) versus being allowed to create it itself.
     # Confirmed by direct experiment (reviews/t11_tofino_port_and_env.md);
     # every real compile in this project's history (including Task 1's)
-    # left output_dir's creation entirely to p4c. output_dir's immediate
-    # parent must already exist (p4c creates only the final path segment,
-    # not the full tree -- same as plain `mkdir`, not `mkdir -p`).
+    # left output_dir's creation entirely to p4c. That constraint now
+    # applies to the SCRATCH output dir ($SCRATCH/output) instead, which is
+    # always fresh under a freshly `mktemp -d`'d parent; the final `cp -rT`
+    # back to the caller's output_dir tolerates output_dir already existing
+    # (it fills output_dir's contents rather than nesting under it), but
+    # output_dir's immediate parent must still already exist for that `cp`
+    # to succeed.
     wsl_p4_path = _to_wsl_path(p4_path)
     wsl_output_dir = _to_wsl_path(output_dir)
     wsl_include_path = _to_wsl_path(_resolve_repo_relative(include_path))
 
-    full_command = (
-        f"{p4c_path} -b {target} -a {architecture} -I {shlex.quote(wsl_include_path)} "
-        f"-g --verbose 2 -o {shlex.quote(wsl_output_dir)} {shlex.quote(wsl_p4_path)}"
+    setup = (
+        "SCRATCH=$(mktemp -d) && mkdir -p \"$SCRATCH/include\" && "
+        f"cp {shlex.quote(wsl_p4_path)} \"$SCRATCH/prog.p4\" && "
+        f"cp {shlex.quote(wsl_include_path)}/*.p4 \"$SCRATCH/include/\""
     )
-    cmd = ["wsl", "bash", "-lc", full_command]
+    p4c_invocation = (
+        f"{p4c_path} -b {target} -a {architecture} -I \"$SCRATCH/include\" "
+        "-g --verbose 2 -o \"$SCRATCH/output\" \"$SCRATCH/prog.p4\""
+    )
+    full_command = (
+        f"{setup} && {p4c_invocation}; P4C_STATUS=$?; "
+        f"[ -d \"$SCRATCH/output\" ] && cp -rT \"$SCRATCH/output\" {shlex.quote(wsl_output_dir)}; "
+        "rm -rf \"$SCRATCH\"; exit $P4C_STATUS"
+    )
+    cmd = ["wsl", "-e", "bash", "-lc", full_command]
     # stdin explicitly closed rather than inherited from the caller: standard
     # practice for a non-interactive subprocess invocation (avoids ever
     # blocking on unexpected input). Note this was NOT the fix for the

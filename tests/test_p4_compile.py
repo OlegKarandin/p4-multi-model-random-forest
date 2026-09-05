@@ -236,25 +236,29 @@ def _fake_completed_process(stdout="", stderr="", returncode=0):
 
 
 def test_compile_p4_builds_login_shell_command_with_correct_quoting(tmp_path):
-    """Guards Correction 2 (the `wsl bash -lc '...'` login-shell fix) without
-    requiring a real WSL2 + Tofino toolchain: mocks subprocess.run so
-    compile_p4 never actually shells out, then inspects the constructed
+    """Guards Correction 2 (the `wsl -e bash -lc '...'` login-shell fix)
+    without requiring a real WSL2 + Tofino toolchain: mocks subprocess.run
+    so compile_p4 never actually shells out, then inspects the constructed
     command itself.
 
     Specifically proves:
-    - the command is `["wsl", "bash", "-lc", <single string>]`, a login
-      shell -- NOT the naive `["wsl", p4c_path, ...]` form, which silently
-      fails to expand `~` or source PATH (the bug this module's docstring
-      says was found and fixed once already).
+    - the command is `["wsl", "-e", "bash", "-lc", <single string>]`, a
+      login shell run via wsl's `-e`/exec mode -- NOT the naive `["wsl",
+      p4c_path, ...]` form, which silently fails to expand `~` or source
+      PATH (the bug this module's docstring says was found and fixed once
+      already), and NOT `["wsl", "bash", "-lc", ...]` without `-e` either
+      -- see test_compile_p4_uses_exec_flag_to_avoid_wsl_reparse_mangling
+      for why that form corrupts this function's `$VAR`/`;`-bearing
+      scratch-dir script specifically.
     - p4c_path appears UNQUOTED in the command string, so bash's own `~`
       expansion still applies (shlex.quote() would wrap a `~`-containing
       string in quotes, since `~` is not in shlex's "safe" character set --
       quoting it would silently break expansion again).
     - output_dir/p4_path/include_path are each individually shell-quoted so
-      a path containing a space and non-ASCII characters survives intact --
-      proven by round-tripping the built command string through
-      shlex.split() and confirming the exact converted path segments come
-      back out unmangled.
+      a path containing a space and non-ASCII characters survives intact
+      wherever they appear in the script (the `cp` setup/teardown steps --
+      see test_compile_p4_copies_into_ascii_scratch_dir_before_invoking_p4c
+      for why they must NOT appear as p4c's own arguments any more).
     """
     fake_proc = _fake_completed_process(stdout="0 errors, 10 warnings generated.\n")
 
@@ -270,33 +274,89 @@ def test_compile_p4_builds_login_shell_command_with_correct_quoting(tmp_path):
 
     assert mock_run.call_count == 1
     cmd = mock_run.call_args[0][0]
-    assert cmd[:3] == ["wsl", "bash", "-lc"]
-    assert len(cmd) == 4
-    full_command = cmd[3]
+    assert cmd[:4] == ["wsl", "-e", "bash", "-lc"]
+    assert len(cmd) == 5
+    full_command = cmd[4]
     assert isinstance(full_command, str)
 
     default_p4c_path = "~/open-p4studio/install/bin/p4c"
     # Unquoted: appears as a bare token, not wrapped by shlex.quote (which
     # would produce "'~/open-p4studio/install/bin/p4c'" since `~` is not a
     # shlex-safe character).
-    assert full_command.startswith(default_p4c_path + " ")
+    assert (default_p4c_path + " -b ") in full_command
     assert shlex.quote(default_p4c_path) not in full_command
 
-    # Quoted path arguments must round-trip intact through shlex.split(),
-    # proving the space/non-ASCII path components survive shell parsing.
-    tokens = shlex.split(full_command)
+    # Path arguments are individually shell-quoted wherever they appear
+    # (the cp setup/teardown steps), proving the space/non-ASCII path
+    # components would survive shell parsing.
     expected_wsl_output_dir = pc._to_wsl_path(output_dir)
     expected_wsl_p4_path = pc._to_wsl_path(p4_path)
     expected_wsl_include_path = pc._to_wsl_path(pc._resolve_repo_relative("resources"))
 
-    assert expected_wsl_output_dir in tokens
-    assert expected_wsl_p4_path in tokens
-    assert expected_wsl_include_path in tokens
+    assert shlex.quote(expected_wsl_output_dir) in full_command
+    assert shlex.quote(expected_wsl_p4_path) in full_command
+    assert shlex.quote(expected_wsl_include_path) in full_command
 
     # Sanity: the mocked compile still completes and parses the summary line
     # (proves the mock's fake stdout is realistic enough not to crash parsing).
     assert result.errors == 0
     assert result.warnings == 10
+
+
+def test_compile_p4_copies_into_ascii_scratch_dir_before_invoking_p4c(tmp_path):
+    """p4c has a confirmed bug (reviews/p4_tofino_reference.md §1.6): a
+    non-ASCII path segment (this repo's own checkout has one, 'Документы')
+    crashes p4c's own internal preprocessor sub-invocation with a mojibake
+    'cc1: fatal error' once the compiled program is large enough -- small
+    spike programs compiled fine from the same path, but a full generated
+    program (generate_P4_code's output) did not. The documented workaround
+    is to copy the .p4 file and its include tree to a plain-ASCII WSL-native
+    path before compiling anything non-trivial; this test guards that
+    compile_p4 now does that itself rather than leaving every caller to
+    remember the workaround.
+
+    Proves p4c is invoked against a scratch ($SCRATCH-relative) file/include
+    path/output dir -- never the original (possibly non-ASCII) wsl paths
+    directly -- while those original paths still appear as the `cp`
+    source/destination arguments that populate/drain the scratch dir.
+    """
+    fake_proc = _fake_completed_process(stdout="0 errors, 10 warnings generated.\n")
+
+    p4_path = str(tmp_path / "probe.p4")
+    output_dir = str(tmp_path / "some path" / "Документы")
+
+    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+        pc.compile_p4(p4_path, output_dir)
+
+    full_command = mock_run.call_args[0][0][4]
+
+    expected_wsl_output_dir = pc._to_wsl_path(output_dir)
+    expected_wsl_p4_path = pc._to_wsl_path(p4_path)
+    expected_wsl_include_path = pc._to_wsl_path(pc._resolve_repo_relative("resources"))
+
+    # A fresh ASCII-only scratch dir is created (mktemp -d defaults to /tmp,
+    # guaranteed ASCII regardless of the WSL username) and cleaned up after.
+    assert "SCRATCH=$(mktemp -d)" in full_command
+    assert 'rm -rf "$SCRATCH"' in full_command
+
+    # The original .p4 file and the include path's *.p4 files are copied
+    # INTO the scratch dir under fixed ASCII names.
+    assert "cp {} \"$SCRATCH/prog.p4\"".format(
+        shlex.quote(expected_wsl_p4_path)) in full_command
+    assert "cp {}/*.p4 \"$SCRATCH/include/\"".format(
+        shlex.quote(expected_wsl_include_path)) in full_command
+
+    # p4c itself is invoked entirely against scratch-dir-relative paths.
+    expected_p4c_invocation = (
+        '~/open-p4studio/install/bin/p4c -b tofino -a tna -I "$SCRATCH/include" '
+        '-g --verbose 2 -o "$SCRATCH/output" "$SCRATCH/prog.p4"'
+    )
+    assert expected_p4c_invocation in full_command
+
+    # The scratch dir's output is copied back out to the caller-requested
+    # (possibly non-ASCII) output_dir once compilation finishes.
+    assert 'cp -rT "$SCRATCH/output" {}'.format(
+        shlex.quote(expected_wsl_output_dir)) in full_command
 
 
 def test_compile_p4_target_parameter_selects_the_b_flag(tmp_path):
@@ -312,14 +372,39 @@ def test_compile_p4_target_parameter_selects_the_b_flag(tmp_path):
 
     with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
-    default_command = mock_run.call_args[0][0][3]
+    default_command = mock_run.call_args[0][0][4]
     assert "-b tofino -a tna" in default_command
 
     with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"),
                        architecture="t2na", target="tofino2")
-    tofino2_command = mock_run.call_args[0][0][3]
+    tofino2_command = mock_run.call_args[0][0][4]
     assert "-b tofino2 -a t2na" in tofino2_command
+
+
+def test_compile_p4_uses_exec_flag_to_avoid_wsl_reparse_mangling(tmp_path):
+    """Regression test for a real WSL2 behavior confirmed by direct
+    experiment (2026-09-05): `wsl bash -lc '<script>'` WITHOUT `-e`
+    re-joins its own argv into one string and re-parses it through an
+    extra implicit shell layer, which drops the boundary protecting the
+    `-lc` argument. Any `$VAR`/`;`-bearing script -- exactly what
+    compile_p4's scratch-dir workaround now builds -- gets corrupted by
+    that reparse: `wsl bash -lc 'X=$(echo hi); echo "X=[$X]"'` prints
+    `X=[]`; `wsl -e bash -lc` of the identical string prints `X=[hi]`. A
+    single flat command with no `$`/`;` (this function's shape before the
+    scratch-dir workaround) happened to survive the mangling by luck,
+    which is why this bug was latent until now. compile_p4 must invoke
+    `wsl` with `-e` (exec mode, bypassing wsl's own default-shell
+    wrapping) to avoid it.
+    """
+    fake_proc = _fake_completed_process(stdout="0 errors, 10 warnings generated.\n")
+
+    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+        pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
+
+    cmd = mock_run.call_args[0][0]
+    assert cmd[0] == "wsl"
+    assert cmd[1] == "-e"
 
 
 def test_errors_warnings_regex_matches_real_captured_summary_line():

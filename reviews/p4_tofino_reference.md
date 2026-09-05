@@ -137,11 +137,25 @@ program's tables/default-actions and read them back, and confirm control-plane i
   run of 3-digit octal byte values with no separators — a mojibake bug in one of `p4c`'s own
   sub-invocations (likely the C-preprocessor front-end) that only surfaces once the compiled program
   is large enough. Small spike programs compiled fine from the same path; a full multi-tree combined
-  program did not. **Workaround: copy the `.p4` file plus its `resources/` include tree to a
-  plain-ASCII WSL-native path (e.g. `~/some_dir`) before compiling anything non-trivial.**
+  program did not. **Fixed at the source (2026-09-05): `p4_compile.compile_p4` now copies the `.p4`
+  file plus the include path's `*.p4` files into a fresh ASCII-only WSL-native scratch directory
+  (`mktemp -d`, defaults to `/tmp`) and compiles there itself, then copies the result back out to the
+  caller's requested `output_dir`** — every caller gets this for free; nothing to remember by hand
+  any more. Confirmed against the real toolchain end to end with `test_full_eighteen_feature_pool_compiles`
+  (the exact "full multi-tree combined program" shape that used to crash).
 - **Compiling directly from a Windows path under `/mnt/c/...` is slow** — dominated by 9P filesystem
-  overhead crossing the WSL2/Windows boundary, not compiler CPU time (§1.4). Copying to a WSL-native
-  path before compiling avoids this too.
+  overhead crossing the WSL2/Windows boundary, not compiler CPU time (§1.4). The scratch-dir copy
+  above (added for the Cyrillic-path fix) incidentally avoids this too, since p4c now always compiles
+  from the WSL-native scratch dir, never `/mnt/c/...` directly.
+- **`wsl <command>` without `-e` mangles any script containing `$VAR`/`;`.** Confirmed by direct
+  experiment (2026-09-05): `wsl bash -lc 'X=$(echo hi); echo "X=[$X]"'` prints `X=[]`, while
+  `wsl -e bash -lc` of the identical string prints `X=[hi]` — without `-e`, `wsl` re-joins its argv
+  into one string and re-parses it through an extra implicit shell layer, silently dropping the
+  boundary protecting the `-lc` argument. A single flat command with no `$`/`;` (this project's
+  compile invocation before the scratch-dir fix above) survives that mangling by luck; a
+  multi-statement script does not. `p4_compile.compile_p4` now always invokes `wsl -e bash -lc '...'`
+  for this reason — any future direct `wsl bash -lc` invocation with a nontrivial script should do
+  the same.
 - Regenerating a `.p4` file and then compiling it needs explicit re-verification that the file on
   disk is actually the freshly generated one — an unrelated process silently clobbering a
   just-generated file back to a stale version (from a leftover earlier run) has been observed. Always
