@@ -33,11 +33,11 @@ def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300):
         max_blocks, encoding, cfg)
 
 
-def test_the_contract_returns_a_frozen_train_result_with_all_twenty_fields():
+def test_the_contract_returns_a_frozen_train_result_with_all_nineteen_fields():
     out = _call()
 
     assert isinstance(out, TrainResult)
-    assert len(dataclasses.fields(out)) == 20
+    assert len(dataclasses.fields(out)) == 19
     assert hasattr(out.model_A, 'predict') and hasattr(out.model_B, 'predict')
     assert isinstance(out.stages, (int, np.integer))
     assert isinstance(out.blocks, (int, np.integer))
@@ -261,7 +261,7 @@ def test_stage_depth_over_the_tofino_ceiling_records_stages_violation_not_the_ot
         lambda *a, **k: ev.ResourceUsage(
             stages=1, blocks=1, stage_depth=over_ceiling_depth,
             range_entries=1, ternary_entries=1, codeword_length=40,
-            register_depth=1, register_count=0, register_sram_bits=0,
+            register_depth=1, register_count=0,
             range_depth=1, ternary_depth=over_ceiling_depth,
             range_tables=1, ternary_tables=1))
 
@@ -463,7 +463,7 @@ def test_a_feasible_trial_records_stage_depth_separately_from_stages(monkeypatch
         lambda *a, **k: ev.ResourceUsage(
             stages=3, blocks=8, stage_depth=7,
             range_entries=1, ternary_entries=1, codeword_length=40,
-            register_depth=1, register_count=0, register_sram_bits=0,
+            register_depth=1, register_count=0,
             range_depth=4, ternary_depth=7,
             range_tables=1, ternary_tables=1))
 

@@ -41,7 +41,7 @@ def _tiny_pair():
 _RESOURCE_USAGE_FIELDS = (
     'stages', 'blocks', 'stage_depth', 'range_entries', 'ternary_entries',
     'codeword_length', 'register_depth', 'register_count',
-    'register_sram_bits', 'range_depth', 'ternary_depth', 'range_tables',
+    'range_depth', 'ternary_depth', 'range_tables',
     'ternary_tables')
 
 

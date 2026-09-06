@@ -47,7 +47,7 @@ def _feasible_row(arm='joint', method='multi', split=10, k=17, M=25,
         'acc_sel_app': 0.89, 'acc_sel_ddos': 0.84,
         'stages': stages, 'blocks': blocks,
         'range_entries': 15, 'ternary_entries': 8,
-        'register_depth': 2, 'register_count': 3, 'register_sram_bits': 64,
+        'register_depth': 2, 'register_count': 3,
         'infeasible': '',
         'stages_real': '', 'tcam_real': '', 'sram_real': '', 'map_ram_real': '',
         'compile_errors': '',
@@ -69,7 +69,7 @@ def _infeasible_row(arm='joint', method='multi', split=10, k=1,
         'acc_sel_app': '', 'acc_sel_ddos': '',
         'stages': '', 'blocks': '',
         'range_entries': '', 'ternary_entries': '',
-        'register_depth': '', 'register_count': '', 'register_sram_bits': '',
+        'register_depth': '', 'register_count': '',
         'infeasible': 'NoFeasibleSolution: no trial met the block budget',
         'stages_real': '', 'tcam_real': '', 'sram_real': '', 'map_ram_real': '',
         'compile_errors': '',
@@ -149,7 +149,7 @@ def test_load_campaign_gives_nan_stage_depth_when_the_column_is_absent_from_ever
 def test_load_campaign_parses_a_real_on_disk_csv_missing_the_stage_depth_column(tmp_path):
     """`tests/fixtures/rf_t11_d14_M25_historical.csv` is a frozen copy of one
     of the pilot campaign's real result files, taken before `stage_depth`
-    (F5/F6) or the seven Task-8 columns existed -- its header has none of
+    (F5/F6) or the six Task-8 columns existed -- its header has none of
     them. Unlike the files under results/, which Phase 7 will eventually
     overwrite with a rerun that DOES carry these columns, this fixture is
     checked in and never regenerated, so the column-absent path it exercises
@@ -164,7 +164,7 @@ def test_load_campaign_parses_a_real_on_disk_csv_missing_the_stage_depth_column(
 
     new_columns = [
         'stage_depth', 'range_entries', 'ternary_entries', 'register_depth',
-        'register_count', 'register_sram_bits', 'sram_real', 'map_ram_real',
+        'register_count', 'sram_real', 'map_ram_real',
     ]
     with open(fixture_path, encoding='utf-8') as f:
         header = f.readline()

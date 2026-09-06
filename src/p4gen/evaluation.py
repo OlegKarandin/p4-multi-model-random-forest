@@ -91,9 +91,9 @@ class ResourceUsage:
                   block counts from it -- each model's own factor is applied
                   to its own trees (see the disjoint branch below).
 
-  register_depth, register_count and register_sram_bits (Task 6, Spec
-  4.1/4.2/4.3) report the Tofino `Register<>` state this design needs, on
-  top of the match-table quantities above:
+  register_depth and register_count (Task 6, Spec 4.1/4.2/4.3) report the
+  Tofino `Register<>` state this design needs, on top of the match-table
+  quantities above:
 
     register_depth     : max readiness level (feature_readiness_level) over
                           the selected feature(s) -- how many pipeline
@@ -118,31 +118,12 @@ class ResourceUsage:
                           generation -- see build_p4_script.py's
                           raw_feature_intervals, keyed on the union of both
                           models' raw feature names).
-    register_sram_bits  : sum(register_width_bits(name) for each of the
-                          register_count registers) * MAX_NUM_FLOWS -- the
-                          total per-flow SRAM the catalog's registers
-                          occupy (every register is a MAX_NUM_FLOWS-deep
-                          array, one slot per tracked flow).
-                          CATALOG-ONLY and a KNOWN UNDER-COUNT: the P4
-                          generator always emits one more register,
-                          flow_forward_srcaddr_reg (bit<32>,
-                          build_p4_script.py:2018), unconditionally and
-                          OUTSIDE FEATURE_REGISTER_CATALOG by design --
-                          "neither is catalog-driven or routed through the
-                          register_order/_note_touch dedup machinery"
-                          (generate_P4_registers_and_apply's own docstring,
-                          build_p4_script.py:1801-1808; feature_registers.py's
-                          module docstring notes the same fact for the
-                          "flows" bookkeeping register it wires) -- this
-                          field misses that register's
-                          32 * MAX_NUM_FLOWS bits every time.
-
-  CAVEAT (Spec 4.3, applies to all three fields above): this reports
-  register DEPTH and COUNT (how many stages, how many registers), NOT
-  register CAPACITY. Tofino has a limited number of stateful ALUs per
-  stage, and whether these registers actually FIT has never been measured
-  in this repo -- do not read register_depth/register_count/
-  register_sram_bits as a feasibility guarantee.
+  CAVEAT (Spec 4.3, applies to both fields above): this reports register
+  DEPTH and COUNT (how many stages, how many registers), NOT register
+  CAPACITY. Tofino has a limited number of stateful ALUs per stage, and
+  whether these registers actually FIT has never been measured in this
+  repo -- do not read register_depth/register_count as a feasibility
+  guarantee.
 
   range_depth  : StagePlan.depth for the range-matching pool ALONE (Task 6
                 extended by the stage-depth-attribution design's Phase 1).
@@ -172,7 +153,6 @@ class ResourceUsage:
   codeword_length: int  # pooled split-threshold count under 'joint'; see docstring
   register_depth: int   # max readiness level over the selected feature(s); see class docstring
   register_count: int   # distinct Register<> instances, deduplicated by name across both models
-  register_sram_bits: int  # catalog-only per-flow SRAM bits; under-counts flow_forward_srcaddr_reg
   range_depth: int       # StagePlan.depth, range pool alone; see class docstring
   ternary_depth: int     # StagePlan.depth, ternary pool alone; see class docstring
   range_tables: int      # len(range_table_specs); see class docstring
@@ -1310,7 +1290,7 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
 def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                                   use_default_action_discount=False):
   """Returns ResourceUsage(stages, blocks, stage_depth, range_entries, ternary_entries,
-  register_depth, register_count, register_sram_bits) -- FOUR related but DISTINCT
+  register_depth, register_count) -- FOUR related but DISTINCT
   stage-index quantities (F6, extended by Task 6) are in play below: this
   function is the source of truth for THREE of them (stages, stage_depth,
   register_depth) -- the fourth, stages_real, comes from the real compiler,
@@ -1345,8 +1325,8 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
                   same number: stage_depth also accounts for crossbar
                   packing/spill of the match tables themselves, which
                   register_depth does not. See ResourceUsage's own
-                  docstring for register_depth/register_count/
-                  register_sram_bits and their capacity caveat (Spec 4.3).
+                  docstring for register_depth/register_count and their
+                  capacity caveat (Spec 4.3).
     range_entries  : count of physical rows across all range tables
     ternary_entries: count of ternary codewords across all classification trees
     (a fourth quantity, `stages_real` -- the REAL compiler's whole-program
@@ -1538,14 +1518,11 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
 
   # register_depth reuses range_levels (already computed above on both
   # branches, positionally aligned with feature_intervals) rather than
-  # re-traversing anything; register_count/register_sram_bits reuse
-  # register_names, likewise already computed above on both branches. See
-  # ResourceUsage's docstring for the Spec 4.3 capacity caveat these three
-  # fields carry.
+  # re-traversing anything; register_count reuses register_names, likewise
+  # already computed above on both branches. See ResourceUsage's docstring
+  # for the Spec 4.3 capacity caveat these two fields carry.
   register_depth = max(range_levels, default=0)
   register_count = len(register_names)
-  register_sram_bits = sum(
-      register_width_bits(name) for name in register_names) * MAX_NUM_FLOWS
 
   # ternary_plan.blocks, not ternary_blocks: the latter is the naive
   # per-table sum computed above, before the ragged-key group-offset charge
@@ -1562,7 +1539,6 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
       codeword_length=codeword_length,
       register_depth=register_depth,
       register_count=register_count,
-      register_sram_bits=register_sram_bits,
       range_depth=range_plan.depth,
       ternary_depth=ternary_plan.depth,
       range_tables=len(range_table_specs),

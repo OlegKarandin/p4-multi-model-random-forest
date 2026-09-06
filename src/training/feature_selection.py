@@ -280,12 +280,11 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
                        stages=None, blocks=None, stage_depth=None,
                        range_entries=None, ternary_entries=None,
                        register_depth=None, register_count=None,
-                       register_sram_bits=None,
                        best_params=None, rel_shortfall=None,
                        n_trials_run=None, n_feasible=None,
                        align_attempted=None, align_accepted=None,
                        intervals_before=None, intervals_after=None):
-    """Builds one elimination-loop result row (29 keys). Shared by both the
+    """Builds one elimination-loop result row (28 keys). Shared by both the
     infeasible branch (`NoFeasibleSolution`) and the feasible branch of
     `_run_elimination`'s loop, which used to write this dict as two
     hand-duplicated literals that had drifted to use different "not
@@ -294,24 +293,23 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
     so any new column belongs in exactly ONE place: this signature and the
     dict below.
 
-    The 29 keys split into three groups:
+    The 28 keys split into three groups:
     - `arm`/`method`/`split`/`k`/`features_app`/`features_ddos`: always
       present with a real value, never a sentinel.
-    - 14 metrics (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `acc_sel_app`,
+    - 13 metrics (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `acc_sel_app`,
       `acc_sel_ddos`, `stages`, `blocks`, `stage_depth`, `range_entries`,
-      `ternary_entries`, `register_depth`, `register_count`,
-      `register_sram_bits`): default None, which stays literal None when
-      not overridden -- the infeasible branch's contract (a completed test
-      asserts `row['acc_app'] is None`, not `== ''`). `stages` is the
-      occupied match-table stage COUNT; `stage_depth` is the pipeline DEPTH
-      the 12-stage ceiling reads (StagePlan.depth, F5/F6) -- a different
-      quantity, not to be confused with each other or with `stages_real`
-      below (see evaluation.multi_model_memory_evaluation's ResourceUsage
-      docstring for the full three-quantity (stages, stage_depth,
-      stages_real) disambiguation). `range_entries`/`ternary_entries`/
-      `register_depth`/`register_count`/`register_sram_bits` are the
-      same-named `TrainResult` fields (see its docstring) off the refit's
-      final `ResourceUsage`.
+      `ternary_entries`, `register_depth`, `register_count`): default None,
+      which stays literal None when not overridden -- the infeasible
+      branch's contract (a completed test asserts `row['acc_app'] is None`,
+      not `== ''`). `stages` is the occupied match-table stage COUNT;
+      `stage_depth` is the pipeline DEPTH the 12-stage ceiling reads
+      (StagePlan.depth, F5/F6) -- a different quantity, not to be confused
+      with each other or with `stages_real` below (see
+      evaluation.multi_model_memory_evaluation's ResourceUsage docstring
+      for the full three-quantity (stages, stage_depth, stages_real)
+      disambiguation). `range_entries`/`ternary_entries`/`register_depth`/
+      `register_count` are the same-named `TrainResult` fields (see its
+      docstring) off the refit's final `ResourceUsage`.
     - 9 "'' means not computed" fields (`infeasible`, `best_params`,
       `rel_shortfall`, `n_trials_run`, `n_feasible`, `align_attempted`,
       `align_accepted`, `intervals_before`, `intervals_after`): each passed
@@ -337,7 +335,6 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
         'stages': stages, 'blocks': blocks, 'stage_depth': stage_depth,
         'range_entries': range_entries, 'ternary_entries': ternary_entries,
         'register_depth': register_depth, 'register_count': register_count,
-        'register_sram_bits': register_sram_bits,
         'infeasible': _empty_if_none(infeasible_reason),
         'features_app': ';'.join(names_app), 'features_ddos': ';'.join(names_ddos),
         'best_params': _empty_if_none(best_params),
@@ -493,7 +490,6 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             ternary_entries=train_result.ternary_entries,
             register_depth=train_result.register_depth,
             register_count=train_result.register_count,
-            register_sram_bits=train_result.register_sram_bits,
             best_params=json.dumps(best_params),
             rel_shortfall=train_result.rel_shortfall,
             n_trials_run=train_result.n_trials_run,

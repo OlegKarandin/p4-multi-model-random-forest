@@ -1276,7 +1276,7 @@ def test_register_depth_is_identical_under_joint_and_disjoint_encoding():
 
 
 # ---------------------------------------------------------------------------
-# register_depth / register_count / register_sram_bits (Task 6).
+# register_depth / register_count (Task 6).
 # ---------------------------------------------------------------------------
 
 
@@ -1314,15 +1314,31 @@ def test_register_depth_and_count_over_the_selected_features():
     # fwd_iat_max: FLOW_HASH_LEVEL(3) + gated(1) + 2 registers
     assert usage.register_depth == 6
     assert usage.register_count == 4          # 2 chains x (dependency + value)
-    assert usage.register_sram_bits == 4 * 16 * bps.MAX_NUM_FLOWS
 
 
 def test_max_num_flows_matches_the_p4_template_it_claims_to_mirror():
     """build_p4_script.MAX_NUM_FLOWS is never read as a Python value today --
-    it only appears as literal text inside emitted P4. register_sram_bits is
-    its first live use, so pin it against the authoritative source."""
+    it only appears as literal text inside emitted P4, so pin it against the
+    authoritative source."""
     template = pathlib.Path('resources/p4_template.p4').read_text()
     assert 'const bit<32> MAX_NUM_FLOWS = {};'.format(bps.MAX_NUM_FLOWS) in template
+
+
+def test_resource_usage_does_not_report_register_sram_bits():
+    # Dropped 2026-09-06. It was reported to the campaign CSV and read by
+    # nothing: no figure, no claim, no statistical test, no premise check, no
+    # constraint, no tie-break. register_depth stays (stage_attribution.py:50-64
+    # uses it as a Sec 5.2 premise check) and register_count stays (it is what
+    # makes the 4-stateful-ALUs-per-stage argument legible), but total register
+    # bits across all flows answers no question this project asks -- and SRAM
+    # block prediction, the one thing it might have grown into, is a permanent
+    # non-goal.
+    import dataclasses
+
+    fields = {f.name for f in dataclasses.fields(ev.ResourceUsage)}
+    assert "register_sram_bits" not in fields
+    assert "register_depth" in fields
+    assert "register_count" in fields
 
 
 def _joint_pair_fixture():

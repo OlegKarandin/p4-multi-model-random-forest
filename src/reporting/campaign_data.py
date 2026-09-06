@@ -122,11 +122,18 @@ load_campaign returns:
                   tolerance as `stage_depth` above). The model-side entry
                   counts off the refit's final ResourceUsage (see
                   TrainResult's docstring, src/training/train_model.py).
-    register_depth, register_count, register_sram_bits   float64, same
-                  missing-column tolerance. `register_depth` is a STAGE
-                  count (register-side pipeline depth), NOT to be confused
-                  with `stage_depth` above, which is the match-table side's
-                  depth.
+    register_depth, register_count   float64, same missing-column
+                  tolerance. `register_depth` is a STAGE count (register-
+                  side pipeline depth), NOT to be confused with
+                  `stage_depth` above, which is the match-table side's
+                  depth. `register_sram_bits` was dropped 2026-09-06 (Task
+                  1, no downstream consumer read it) and is no longer part
+                  of this contract; archived campaign CSVs written before
+                  that date still carry a `register_sram_bits` column, but
+                  it is simply ignored on load -- the missing-column
+                  tolerance handles the reverse direction (newer files
+                  loaded by older code), and an unrecognised extra column
+                  needs no special handling at all.
 
 Feasibility
     infeasible     str   always '' after load_campaign's filter. Kept
@@ -199,7 +206,6 @@ _FLOAT_COLUMNS = [
     'acc_app', 'f1_app', 'acc_ddos', 'f1_ddos', 'acc_sel_app', 'acc_sel_ddos',
     'stages', 'blocks', 'stage_depth',
     'range_entries', 'ternary_entries', 'register_depth', 'register_count',
-    'register_sram_bits',
     'rel_shortfall', 'n_trials_run', 'n_feasible',
     'align_attempted', 'align_accepted', 'intervals_before', 'intervals_after',
     'stages_real', 'tcam_real', 'sram_real', 'map_ram_real',

@@ -71,7 +71,7 @@ def _stub_train_result(model_A, model_B, **overrides):
         align_attempted=None, align_accepted=None,
         intervals_before=None, intervals_after=None,
         range_entries=1, ternary_entries=1,
-        register_depth=1, register_count=1, register_sram_bits=1)
+        register_depth=1, register_count=1)
     fields.update(overrides)
     return TrainResult(**fields)
 
@@ -624,7 +624,7 @@ def test_the_result_row_has_exactly_the_documented_key_set():
     column would have reached every campaign CSV silently."""
     row = fs._build_result_row('joint', 'multi', 0, 5, [], [])
     assert set(row) == set(fs._RESULT_ROW_KEYS)
-    assert len(row) == 29
+    assert len(row) == 28
 
 
 def test_the_new_derived_columns_default_to_literal_None_not_empty_string():
@@ -632,5 +632,5 @@ def test_the_new_derived_columns_default_to_literal_None_not_empty_string():
     depends on (test_run_elimination.py:187 asserts `is None`)."""
     row = fs._build_result_row('joint', 'multi', 0, 5, [], [])
     for column in ('range_entries', 'ternary_entries', 'register_depth',
-                   'register_count', 'register_sram_bits'):
+                   'register_count'):
         assert row[column] is None

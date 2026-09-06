@@ -142,9 +142,9 @@ class TrainResult:
         rows pack into) and from `stages`/`stage_depth` (pipeline stage
         quantities, not row counts) -- see ResourceUsage's own docstring for
         the full disambiguation.
-    register_depth, register_count, register_sram_bits : the same-named
-        fields off that same `ResourceUsage`, reporting the Tofino
-        `Register<>` state the design needs (Task 6, Spec 4.1/4.2/4.3).
+    register_depth, register_count : the same-named fields off that same
+        `ResourceUsage`, reporting the Tofino `Register<>` state the design
+        needs (Task 6, Spec 4.1/4.2/4.3).
         register_depth is a STAGE count (readiness-level depth of the
         register dependency chain) and must not be confused with
         `stage_depth` above, which is the whole pipeline's depth including
@@ -176,7 +176,6 @@ class TrainResult:
     ternary_entries: int
     register_depth: int
     register_count: int
-    register_sram_bits: int
 
 
 def rf_params_from_params(params, suffix):
@@ -513,5 +512,4 @@ def train_multi_RF_Optuna_multi_constrained(
         ternary_entries=int(usage.ternary_entries),
         register_depth=int(usage.register_depth),
         register_count=int(usage.register_count),
-        register_sram_bits=int(usage.register_sram_bits),
     )
