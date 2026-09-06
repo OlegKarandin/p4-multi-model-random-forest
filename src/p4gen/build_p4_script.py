@@ -16,6 +16,17 @@ from src.p4gen import switch_semantics
 
 INFINITE = (2**16)-1
 TCAM_BLOCKS_PER_STAGE = 24
+# ...and those 24 blocks are not one undifferentiated pool. mau_spec.h:88-90 gives
+# Tofino_tcam_rows=12, Tofino_tcam_columns=2, with an explicit source comment that the
+# figure is correct for Tofino 1, 2 and 3. A table needing several blocks chains them
+# down ONE column, so which tables can share a stage depends on their widths and not
+# only on their total -- three 8-block tables total exactly 24 and still need two
+# stages, while four 6-block tables (also 24) fit in one. Measured directly against
+# real p4c over synthetic tables of 5..12 blocks: scripts/tcam_column_sweep.py, and
+# reviews/p4_tofino_reference.md Sec 7 "Mechanism C". evaluation.fits_two_columns is
+# the packing test; TCAM_BLOCKS_PER_STAGE remains the (implied) total.
+TCAM_ROWS_PER_STAGE = 12
+TCAM_COLUMNS_PER_STAGE = 2
 TCAM_BLOCK_KEY_LENGTH = 44
 TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
@@ -1400,11 +1411,34 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   resolved_plan = _resolve_disjoint_feature_plan(feature_intervals_app, feature_intervals_ddos)
 
   metadata_code = ""
+  # Accumulated by three separate loops below (per-tree result fields, raw
+  # value fields, codeword fields), so it is opened here rather than beside
+  # the first @pa_container_size that used to be its only writer.
+  phv_pragmas = ""
   for task, n_trees, bits in (("app",  num_trees_app,  bit_per_classes_app),
                               ("ddos", num_trees_ddos, bit_per_classes_ddos)):
     if n_trees > 0:
       for i in range(n_trees):
         metadata_code += "\tbit<"+str(bits)+"> class_tree_"+task+"_"+str(i)+";\n"
+        # Each tree's classification table writes exactly this field, and a
+        # Tofino stage has ONE action ALU per PHV CONTAINER -- not per field.
+        # These are bit<1> (binary DDoS) or bit<2> (3-class App), so the
+        # allocator packs several into one container to save space, and every
+        # tree table sharing a container is then forced into its own stage.
+        # Measured (reviews/p4_tofino_reference.md Sec 7, Mechanism A):
+        # independent_low_sd8 put class_tree_ddos_1..5 in H0[15:11] and its
+        # classification pool spanned 5 stages instead of 2; @pa_solitary took
+        # the whole program from 12 stages to 9 -- exactly what
+        # evaluation.stage_depth predicts -- with TCAM and SRAM totals
+        # unchanged and 5 more PHV containers used.
+        #
+        # classification_<task> below deliberately gets NO pragma: the vote
+        # tables write it but nothing downstream reads it, so p4c eliminates
+        # it before PHV allocation (it appears in no phv_allocation_summary of
+        # the 19 calibration compiles) and a pragma naming a field that does
+        # not exist is silently ignored.
+        phv_pragmas += ('@pa_solitary("ingress", "ig_md.class_tree_'
+                        + task + "_" + str(i) + '")\n')
       # generate_voting_code (below) writes to meta.classification_<task>; the
       # TNA template no longer declares this field itself (it doesn't know
       # bit_per_classes_<task> ahead of time), so it must be declared here.
@@ -1430,7 +1464,6 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   # The pragma names the field the way the PHV logs do -- `ig_md.<raw>_val`,
   # after SwitchIngressParser's `out metadata_t ig_md` parameter, NOT the
   # `meta` name SwitchIngress binds the same struct to.
-  phv_pragmas = ""
   raw_feature_intervals = {}  # raw_feature_name -> intervals (first-seen; only the KEYS feed generate_P4_registers_and_apply, which ignores values)
   for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
     if raw_feature_name not in raw_feature_intervals:
@@ -1450,9 +1483,22 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
       metadata_code += "\tbit<16> "+value_field+";\n"
       phv_pragmas += '@pa_container_size("ingress", "ig_md.'+value_field+'", 16)\n'
 
+  # Each codeword field is written by exactly one range table's action, and is
+  # made solitary for the same reason as class_tree_* above: one action ALU
+  # per PHV container. These fields are wide and ragged (their width is an
+  # interval count, not a multiple of 32), so the allocator lays the full
+  # 32-bit chunks into whole W containers and then CO-PACKS the leftovers of
+  # two different codewords into one container. Measured: joint_low_sd7 put
+  # code_fwd_packet_length_max[135:128] and code_bwd_packet_length_max[87:64]
+  # both in W8, so its two range tables -- both ready in the same stage, 1
+  # TCAM block each, nothing else competing -- took two stages instead of one
+  # (10 -> 9 stages once pinned). One pragma per RESOLVED name, matching the
+  # declaration exactly: under disjoint namespacing app_/ddos_ entries have
+  # separate codeword fields even when they share one raw value field.
   for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
     codeword_width = len(intervals) - 1
     metadata_code += "\tbit<"+str(codeword_width)+"> code_"+resolved_name+";\n"
+    phv_pragmas += '@pa_solitary("ingress", "ig_md.code_'+resolved_name+'")\n'
 
   # Task 3, point 3: registers must be resolved against the DEDUPLICATED set
   # of RAW feature names, never the (possibly namespaced) resolved names --

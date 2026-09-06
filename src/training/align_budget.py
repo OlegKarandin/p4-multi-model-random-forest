@@ -140,12 +140,27 @@ def ternary_stages(key_bytes, n_tables):
     """Stages the classification pool occupies: ceil(T / tables_per_stage(B)).
 
     The byte-domain counterpart of band_factor -- the step function alignment
-    is stepping down. Agrees with evaluation.crossbar_stages_needed on the
-    uniform-width table lists this design produces (every classification table
-    keys on the same set of per-feature fields and therefore shares one width,
-    evaluation.py:324-326) PROVIDED the per-stage BLOCK cap is not the binding
-    one; this function models the crossbar caps only, so where blocks bind it
-    is a lower bound rather than an equality. Pinned both ways by
+    is stepping down.
+
+    STALE AS OF 2026-09-05, DELIBERATELY NOT CHANGED HERE. This function no
+    longer agrees with evaluation.crossbar_stages_needed, and the reason is
+    the sentence it used to rely on: every classification table keys on the
+    SAME set of per-feature fields. That was read as "they all share one
+    width" (so w tables cost w * B bytes); the real Ternary Match Input
+    crossbar charges per distinct FIELD, so they all share the same BYTES and
+    w tables cost B, not w * B. Measured over 19 real compiles -- e.g.
+    joint_low_sd7's stage 7 holds four 32-byte tables and the compiler
+    reports 32 crossbar bytes, not 128. evaluation.crossbar_stages_needed now
+    takes key_fields and models this; this function still divides by
+    key_bytes, so it over-counts classification stages, by a lot at wide
+    codewords (B = 41 gives 1 table/stage here where the hardware fits at
+    least 2 and the crossbar allows 8).
+
+    The consequence is not local: stage_step_target and everything built on
+    it aim threshold alignment at a `64 // key_bytes` step boundary that the
+    hardware does not have. Correcting it would change what alignment spends
+    accuracy on and therefore the campaign's own results, so it is a call for
+    the thesis, not a drive-by fix. Pinned as-is by
     tests/test_threshold_alignment.py's E1b tests.
     """
     return -(-n_tables // tables_per_stage(key_bytes))

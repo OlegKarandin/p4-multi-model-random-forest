@@ -4,6 +4,7 @@ Pure-function tests only (sample construction, gap arithmetic, resume
 logic, and run_one_row's F2 degrade path via monkeypatching) -- the real
 compile is exercised by the plan's Task 4 gate, not by this suite (spec
 §4)."""
+import collections
 import json
 import os
 
@@ -11,6 +12,7 @@ import pandas as pd
 import pytest
 
 import scripts.compiler_calibration as cc
+from src.p4gen import evaluation as ev
 from scripts.compiler_calibration import (
     GROUPS,
     K_BANDS,
@@ -517,6 +519,32 @@ def test_report_unmeasured_row_excluded_from_v1_v2_v5_counts(capsys):
     assert 'gap_blocks != 0' not in out
 
 
+def test_report_stages_only_degrade_row_excluded_from_v5_nonzero_list(capsys):
+    # r2 is the real degrade shape seen on compiler_calibration_v6.csv
+    # (independent_high_sd12, joint_high_sd8): the compiler reports a real
+    # stages_real (table_summary.log gets written even when the backend
+    # never allocates resources), but tcam_real is NaN (no mau.resources.log
+    # "Allocated Resource Usage" section) -- unlike test_report_unmeasured_
+    # row_excluded_from_v1_v2_v5_counts's r2, which has NEITHER. gap_stages
+    # is real (0) so r2 correctly counts in V1/V2; gap_blocks must stay None
+    # (no tcam_real to compare against), not get compared as `None != 0`
+    # (pandas: NaN != 0 is True), which mis-flagged both rows as block
+    # divergences in the fresh compiler_calibration_v6 run.
+    frame = _report_frame([
+        {'row_id': 'r1', 'compile_errors': 0, 'stage_depth': 6, 'stages_real': 6,
+         'blocks': 4, 'tcam_real': 4, 'group': 'independent', 'k': 2,
+         'n_estimators_A': 3, 'n_estimators_B': 3},
+        {'row_id': 'r2', 'compile_errors': 0, 'stage_depth': 13, 'stages_real': 13,
+         'blocks': 55, 'tcam_real': None, 'group': 'joint', 'k': 13,
+         'n_estimators_A': 3, 'n_estimators_B': 3},
+    ])
+    report(frame, [])
+    out = capsys.readouterr().out
+    assert 'OK -- gap_stages >= 0 on all 2 compiled, non-void, measured rows' in out
+    assert 'OK -- gap_blocks == 0 on all 1 rows' in out
+    assert 'gap_blocks != 0' not in out
+
+
 def test_report_accepts_two_positional_args_for_backward_compatibility():
     """report(frame, missing) with no `failed` arg must still work --
     existing callers (and this suite's earlier tests) don't pass it."""
@@ -538,3 +566,302 @@ def test_report_prints_failed_rows_under_v6(capsys):
     out = capsys.readouterr().out
     assert 'independent_low_sd5' in out
     assert 'simulated p4c timeout' in out
+
+
+# ---------------------------------------------------------------------------
+# Stage-depth replay against the real compiles (2026-09-05).
+#
+# replay_stage_depth feeds the estimator's packer the REAL per-table facts
+# read out of a row's generated P4 and its committed compile logs -- which
+# crossbar fields each table keys on, each field's width, each table's
+# physical block count, each range table's readiness level -- so the only
+# thing under test is stage placement, not the block model or the refit.
+# The artifacts are gitignored, so these skip unless the study has been run.
+# ---------------------------------------------------------------------------
+
+_ARTIFACTS = os.path.join('results', 'compiler_calibration')
+
+# (predicted stage_depth, committed compiler stage count) per row, measured
+# with the corrected crossbar-sharing + readiness-origin model. Hardcoded per
+# row rather than checked as an aggregate so a packer change that moves any
+# single row is caught instead of averaged away.
+_REPLAY_EXPECTED = {
+    'independent_high_sd10': (12, 12),
+    'independent_high_sd6': (11, 11),
+    'independent_high_sd7': (11, 11),
+    'independent_high_sd8': (11, 12),
+    'independent_low_sd10': (11, 11),
+    'independent_low_sd12': (12, 12),
+    'independent_low_sd5': (8, 8),
+    'independent_low_sd6': (8, 11),
+    'independent_low_sd7': (9, 10),
+    'independent_low_sd8': (9, 12),
+    'joint_high_sd6': (11, 11),
+    'joint_high_sd7': (11, 12),
+    'joint_high_sd8': (12, 12),
+    'joint_low_sd10': (10, 12),
+    'joint_low_sd12': (11, 12),
+    'joint_low_sd5': (8, 8),
+    'joint_low_sd6': (8, 9),
+    'joint_low_sd7': (9, 10),
+}
+
+def _row_features(row_id):
+    """The row's real selected features, read back off its generated P4: the
+    raw feature behind each range table's meta.<f>_val key, deduplicated
+    (under 'independent' both models' tables can name the same feature, and
+    the register behind it is still emitted once)."""
+    tables, _, _ = cc._p4_table_keys(
+        os.path.join(_ARTIFACTS, 'p4_src', row_id + '.p4'))
+    features = []
+    for name, keys in tables.items():
+        if name.startswith('table_') and keys:
+            feature = keys[0][:-len('_val')]
+            if feature not in features:
+                features.append(feature)
+    return features
+
+
+_no_artifacts = pytest.mark.skipif(
+    not os.path.isdir(os.path.join(_ARTIFACTS, 'compiles')),
+    reason='needs results/compiler_calibration/ (gitignored; run collect() first)')
+
+
+@_no_artifacts
+@pytest.mark.parametrize('row_id', sorted(_REPLAY_EXPECTED))
+def test_replayed_stage_depth_matches_the_pinned_calibration_value(row_id):
+    assert cc.replay_stage_depth(row_id, _ARTIFACTS) == _REPLAY_EXPECTED[row_id]
+
+
+@_no_artifacts
+def test_replayed_stage_depth_still_under_predicts_by_at_most_three():
+    # Successive corrections against this sample: mean 2.84 (original) ->
+    # 1.56 (crossbar field sharing + readiness origin + vote epilogue) ->
+    # 1.00 (the stateful-ALU register schedule) -> 0.94 (Mechanism B, the
+    # gated register sub-block) -> 0.78 (Mechanism C, the 2x12 TCAM column
+    # geometry). The error is NOT closed and what remains is in the UNSAFE
+    # direction: 9 of 18 rows still predict fewer stages than the compiler
+    # uses. Every one of those nine is Mechanism A -- PHV container conflicts,
+    # worth up to 3 stages on these archived compiles, which predate the
+    # @pa_solitary fix that removes it from the generated P4. Pinned so the
+    # residual cannot silently grow back.
+    residuals = [real - predicted
+                 for predicted, real in (cc.replay_stage_depth(row_id, _ARTIFACTS)
+                                          for row_id in _REPLAY_EXPECTED)]
+    assert max(residuals) <= 3
+    assert min(residuals) >= 0
+    assert sum(residuals) / len(residuals) <= 0.79
+    assert sum(r == 0 for r in residuals) >= 9
+
+
+@_no_artifacts
+@pytest.mark.parametrize('row_id', sorted(_REPLAY_EXPECTED))
+def test_the_column_geometry_violates_no_committed_placement(row_id):
+    # Mechanism C is a TIGHTENING of the packer, so the thing that could go
+    # wrong is over-counting: a rule that forbids a stage the compiler
+    # actually built would turn a real design infeasible. Checked directly --
+    # every stage of every pool of every row packs into 2 columns of 12 with
+    # each table's blocks inside one column. No exceptions in 18 rows.
+    #
+    # This is also where the old "refutation" of the column rule died. It read
+    # independent_low_sd10 as fitting 3 tables where 2*floor(12/w) allows 2,
+    # but that shortcut needs one uniform w and the stage in question holds
+    # three 2-BLOCK tables. Judged as a packing rather than a quotient,
+    # nothing here refutes anything.
+    logs = os.path.join(_ARTIFACTS, 'compiles', row_id, 'pipe', 'logs')
+    blocks = cc._committed_blocks(logs)
+    stages = cc.committed_table_stages(logs)
+
+    per_stage = collections.defaultdict(list)
+    for name, count in blocks.items():
+        if name.startswith('table_') or name.startswith('get_classification_tree'):
+            per_stage[(stages[name], name.startswith('table_'))].append(count)
+
+    assert per_stage
+    for (stage, _is_range), widths in sorted(per_stage.items()):
+        assert ev.fits_two_columns(widths), (row_id, stage, sorted(widths))
+
+
+@_no_artifacts
+@pytest.mark.parametrize('row_id', sorted(_REPLAY_EXPECTED))
+def test_register_schedule_reproduces_the_compilers_own_register_depth(row_id):
+    # The direct evidence for evaluation.METER_ALUS_PER_STAGE, independent of
+    # anything the packer then does with the levels: schedule the row's real
+    # feature set and compare the last register's stage against the one the
+    # compiler committed to. Exact on every row. Chain depth alone reports 5
+    # on each of the six k>=13 rows where the compiler needs 7.
+    logs = os.path.join(_ARTIFACTS, 'compiles', row_id, 'pipe', 'logs')
+    real = cc.committed_register_stages(logs)
+    features = _row_features(row_id)
+
+    placed = ev.register_stage_schedule(features)
+
+    assert set(placed) == set(real)
+    assert max(placed.values()) == max(real.values())
+    # ...and the reason it lands there: no stage ever runs more than four.
+    by_stage = collections.Counter(real.values())
+    assert max(by_stage.values()) <= ev.METER_ALUS_PER_STAGE
+
+
+@_no_artifacts
+@pytest.mark.parametrize('row_id', sorted(_REPLAY_EXPECTED))
+def test_predicted_interior_stages_match_the_range_pools_real_holes(row_id):
+    # Mechanism B's whole content, checked directly against the compiler
+    # rather than through the stage count it produces. A stage the placer
+    # spends fully INSIDE a gated register block can hold no table from the
+    # outer sequence, so it shows up as a hole in the range pool's committed
+    # occupancy. Measured across all 18 rows: 5 have such a hole, 13 have
+    # none, and the schedule's interior stages agree on every one -- so the
+    # model reproduces both which rows lose a stage and which index it is,
+    # with no per-row constant anywhere.
+    logs = os.path.join(_ARTIFACTS, 'compiles', row_id, 'pipe', 'logs')
+    tables, _, _ = cc._p4_table_keys(
+        os.path.join(_ARTIFACTS, 'p4_src', row_id + '.p4'))
+    committed = cc.committed_table_stages(logs)
+
+    occupied = sorted({committed[name] for name in tables
+                       if name.startswith('table_') and name in committed})
+    holes = frozenset(stage for stage in range(min(occupied), max(occupied))
+                      if stage not in occupied)
+
+    assert ev.gated_block_interior_stages(_row_features(row_id)) == holes
+
+
+# ---------------------------------------------------------------------------
+# Item 16 (reviews/open_issues.md), resolved 2026-09-05: the +1 residual on
+# independent_high_sd8 and joint_high_sd7 is Mechanism A -- PHV container write
+# conflicts in the RANGE pool -- not readiness-level accuracy and not a new
+# mechanism. Pinned here because the attribution was wrong once already.
+# ---------------------------------------------------------------------------
+
+_ITEM_16_ROWS = ('independent_high_sd8', 'joint_high_sd7')
+
+
+@_no_artifacts
+@pytest.mark.parametrize('row_id', _ITEM_16_ROWS)
+def test_these_rows_never_ran_the_nocc_try_counterfactual(row_id):
+    # The premise that ruled Mechanism A out on these two rows was "their
+    # NOCC_TRY delta is 0". It is 0 because p4c only ever ran ONE placement
+    # round on them, so there is no container-conflicts-disabled placement to
+    # difference against -- absence of the round, not absence of the effect.
+    # Rows where the delta IS evidence (independent_low_sd6 and friends) have
+    # a NOCC_TRY round; these do not.
+    logs = os.path.join(_ARTIFACTS, 'compiles', row_id, 'pipe', 'logs')
+    assert cc.placement_round_states(logs) == ['INITIAL']
+
+
+@_no_artifacts
+@pytest.mark.parametrize('row_id', _ITEM_16_ROWS)
+def test_the_extra_range_stage_holds_only_phv_advanced_tables(row_id):
+    # The whole +1: the model's range pool ends one stage before the
+    # compiler's, and every table in the compiler's extra stage is one p4c
+    # logged verbatim as advanced there by an action dependency "due to PHV
+    # allocation". independent_high_sd8's stage 9 holds exactly
+    # table_13_ddos_bwd_iat_min and table_0_app_bwd_iat_max; joint_high_sd7's
+    # holds exactly table_2_bwd_packet_length_max. Nothing else lands there,
+    # so nothing else has to be explained.
+    logs = os.path.join(_ARTIFACTS, 'compiles', row_id, 'pipe', 'logs')
+    committed = cc.committed_table_stages(logs)
+    range_stages = {name: stage for name, stage in committed.items()
+                    if name.startswith('table_')}
+    last = max(range_stages.values())
+    on_last = {name for name, stage in range_stages.items() if stage == last}
+
+    advanced = cc.phv_advanced_tables(logs)
+
+    assert on_last
+    assert on_last <= set(advanced)
+    assert all(advanced[name] == last for name in on_last)
+
+
+@_no_artifacts
+@pytest.mark.parametrize('row_id', _ITEM_16_ROWS)
+def test_readiness_levels_are_not_what_costs_these_rows_their_stage(row_id):
+    # The hypothesis item 16 filed and this kills: that readiness_levels_for
+    # calls a range table ready a stage before the compiler does, letting the
+    # eager packer fill a stage the compiler could not. Substituting a perfect
+    # oracle -- levels read off the compiler's OWN committed register
+    # placement, one stage past each feature's last register -- moves the
+    # predicted depth on neither row (and on none of the other 16 either).
+    # Per-table the model is already right: over all 18 rows the committed
+    # stage equals the predicted level 96 times, exceeds it 67, and is BELOW
+    # it 11 times, so the error is symmetric tie-break noise inside a level,
+    # not a systematic offset.
+    logs = os.path.join(_ARTIFACTS, 'compiles', row_id, 'pipe', 'logs')
+    features = _row_features(row_id)
+    real = cc.committed_register_stages(logs)
+
+    oracle = {}
+    for feature in features:
+        entry = ev.FEATURE_REGISTER_CATALOG.get(ev.normalise_feature_name(feature))
+        if entry is None or not entry['registers']:
+            oracle[feature] = ev.feature_readiness_level(feature)
+        else:
+            oracle[feature] = max(real[r['name']] for r in entry['registers']) + 1
+
+    modelled = dict(zip(features, ev.readiness_levels_for(features)))
+    assert oracle != modelled          # the oracle really is a different input
+    assert (cc.replay_stage_depth(row_id, _ARTIFACTS, readiness_levels=oracle)
+            == _REPLAY_EXPECTED[row_id])
+
+
+@_no_artifacts
+def test_replay_rejects_a_row_the_backend_never_allocated():
+    # independent_high_sd12's placement needs 13 stages against Tofino's 12,
+    # so p4c's assembler refused it ("tofino supports up to 12 stages, using
+    # 13") and mau.resources.log has no allocation at all. There is nothing
+    # to replay, and silently treating it as a zero-resource program would
+    # turn an infeasible design into a cheap-looking one.
+    with pytest.raises(ValueError):
+        cc.replay_stage_depth('independent_high_sd12', _ARTIFACTS)
+
+
+# ---------------------------------------------------------------------------
+# Mechanism G (2026-09-06): the current-generator rows.
+#
+# The 18 rows above predate the @pa_solitary generator fix and still pay
+# Mechanism A's 1-3 stage PHV tax, so they can only ever pin the residual.
+# These 11 were produced by TODAY's generator, which is what the model is
+# supposed to predict, and on them it is exact everywhere -- including
+# independent_low_sd9, the last divergence the study had open, closed by the
+# group-offset penalty (evaluation.crossbar_stages_needed's ragged_keys).
+# ---------------------------------------------------------------------------
+
+_CURRENT_ARTIFACTS = {
+    'independent_low_sd9': os.path.join('results', 'compiler_calibration_extra'),
+    'independent_low_sd11': os.path.join('results', 'compiler_calibration_extra'),
+    'joint_low_sd9': os.path.join('results', 'compiler_calibration_extra'),
+    'joint_low_sd11': os.path.join('results', 'compiler_calibration_extra'),
+    'joint_high_sd9': os.path.join('results', 'compiler_calibration_extra'),
+    'independent_high_sd6': os.path.join('results', 'compiler_calibration_v5'),
+    'independent_high_sd7': os.path.join('results', 'compiler_calibration_v5'),
+    'independent_high_sd8': os.path.join('results', 'compiler_calibration_v5'),
+    'independent_high_sd10': os.path.join('results', 'compiler_calibration_v5'),
+    'joint_high_sd6': os.path.join('results', 'compiler_calibration_v5'),
+    'joint_high_sd7': os.path.join('results', 'compiler_calibration_v5'),
+}
+
+
+@pytest.mark.parametrize('row_id', sorted(_CURRENT_ARTIFACTS))
+def test_the_model_is_exact_on_every_current_generator_row(row_id):
+    root = _CURRENT_ARTIFACTS[row_id]
+    if not os.path.isdir(os.path.join(root, 'compiles', row_id)):
+        pytest.skip('needs %s (gitignored; run collect() first)' % root)
+    predicted, real = cc.replay_stage_depth(row_id, root)
+    # Exact, not merely safe. An inequality here would let the group-offset
+    # penalty drift into over-prediction unnoticed, and never over-predicting
+    # is the property the 12-stage feasibility gate is built on.
+    assert predicted == real
+
+
+def test_independent_low_sd9_costs_the_stage_the_group_offset_penalty_buys():
+    # The row the penalty exists for. Its app trees key 179 + 204 bits (49
+    # crossbar bytes, 9 blocks) and its ddos trees 37 + 49 bits (12 bytes, 3
+    # blocks); both keys are ragged, so whichever of them the crossbar puts
+    # second starts on an odd group and every table on it costs one extra
+    # TCAM. 2 app + 2 ddos is then 26 blocks either way round, not 24, and the
+    # compiler's four classification stages are correct.
+    root = _CURRENT_ARTIFACTS['independent_low_sd9']
+    if not os.path.isdir(os.path.join(root, 'compiles', 'independent_low_sd9')):
+        pytest.skip('needs %s (gitignored; run collect() first)' % root)
+    assert cc.replay_stage_depth('independent_low_sd9', root) == (11, 11)

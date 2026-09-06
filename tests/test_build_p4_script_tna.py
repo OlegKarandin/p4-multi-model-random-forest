@@ -1995,3 +1995,105 @@ def test_generate_P4_code_pins_a_shared_raw_field_only_once(tmp_path):
 
   assert text.count("bit<16> flow_iat_max_val;") == 1
   assert [name for name, _ in _PA_PRAGMA_RE.findall(text)] == ["flow_iat_max_val"]
+
+
+# ---------------------------------------------------------------------------
+# @pa_solitary on every field a MATCH TABLE's action writes.
+#
+# A Tofino stage has one action ALU per PHV CONTAINER, not per field. Two
+# tables whose actions write fields the PHV allocator packed into the same
+# container therefore cannot share a stage -- p4c reports it as "action
+# dependency between <A> and table <B> due to PHV allocation advances stage",
+# not as any resource being full, which is why no capacity-based cost model
+# can see it (reviews/p4_tofino_reference.md Sec 7, Mechanism A).
+#
+# It bites both generated pools, because both write fields the allocator
+# likes to co-pack:
+#   * class_tree_<task>_<i> is bit<1>/bit<2>, so several fit one container --
+#     measured, independent_low_sd8 put class_tree_ddos_1..5 in H0[15:11],
+#     forcing those five tree tables into five separate stages.
+#   * code_<resolved> is wide and ragged, so its leftover past the last full
+#     32-bit chunk co-packs with another codeword's -- measured, joint_low_sd7
+#     put code_fwd_packet_length_max[135:128] and
+#     code_bwd_packet_length_max[87:64] both in W8, costing its two range
+#     tables a stage.
+#
+# @pa_solitary forbids the sharing. Measured over 8 recompiled calibration
+# rows: 1-3 stages recovered, TCAM/SRAM totals unchanged, PHV container count
+# +5 on independent_low_sd8 (12 stages -> 9, which is exactly what
+# evaluation.stage_depth predicts, with the placement matching table for
+# table). Same argument as the @pa_container_size block above, one layer up.
+# ---------------------------------------------------------------------------
+
+_PA_SOLITARY_RE = re.compile(
+    r'@pa_solitary\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)')
+
+
+def test_generate_P4_code_makes_every_codeword_field_solitary(tmp_path):
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)],
+                    "fwd_packet_length_max": [(0, 8), (9, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="solitary_code.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  declared = set(re.findall(r"bit<\d+> (code_[A-Za-z0-9_]+);", text))
+  solitary = set(_PA_SOLITARY_RE.findall(text))
+
+  assert declared, "fixture produced no codeword fields at all"
+  assert declared <= solitary
+
+
+def test_generate_P4_code_makes_every_per_tree_result_field_solitary(tmp_path):
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="solitary_trees.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  declared = set(re.findall(r"bit<\d+> (class_tree_[A-Za-z0-9_]+);", text))
+  solitary = set(_PA_SOLITARY_RE.findall(text))
+
+  assert declared, "fixture produced no per-tree result fields at all"
+  assert declared <= solitary
+
+
+def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
+  # Same regression the @pa_container_size pair above guards: p4c silently
+  # ignores a pragma naming a field that does not exist, so a stale or
+  # mis-spelled name would stop pinning with no error anywhere. Assert the
+  # solitary set is exactly the code_*/class_tree_* fields declared -- and in
+  # particular that classification_<task> is NOT pinned: it is written by the
+  # vote tables but read by nothing downstream, so the compiler eliminates it
+  # and it never reaches PHV allocation at all (checked against all 19
+  # calibration compiles: it appears in no phv_allocation_summary).
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)],
+                    "fwd_packet_length_max": [(0, 8), (9, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="solitary_exact.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  declared = (set(re.findall(r"bit<\d+> (code_[A-Za-z0-9_]+);", text)) |
+              set(re.findall(r"bit<\d+> (class_tree_[A-Za-z0-9_]+);", text)))
+  solitary = _PA_SOLITARY_RE.findall(text)
+
+  assert set(solitary) == declared
+  assert len(solitary) == len(set(solitary)), "duplicate @pa_solitary is a p4c error"
+  assert "classification_app" not in set(solitary)
+  assert "classification_ddos" not in set(solitary)

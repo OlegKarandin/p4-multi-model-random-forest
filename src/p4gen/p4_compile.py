@@ -43,8 +43,11 @@ class CompileResult:
     # match-table stage count) and `stage_depth` (pipeline depth, what the
     # 12-stage TOFINO_PIPELINE_STAGES ceiling reads); see
     # evaluation.multi_model_memory_evaluation's ResourceUsage docstring for the full
-    # three-quantity (stages, stage_depth, stages_real) disambiguation. M2 example: this field is 9, where the
-    # model predicts stage_depth 6.
+    # three-quantity (stages, stage_depth, stages_real) disambiguation. M2 example: this field is 9, and
+    # since the 2026-09-05 calibration the model predicts stage_depth 9 too
+    # (it predicted 6 before: the readiness origin was 2 stages early and the
+    # vote tables' stage was uncounted). They agree on M2; on the 19-row
+    # calibration sample stage_depth still under-predicts this field by 0-3.
     stages: Optional[int] = None
     tables: Optional[int] = None
     gateway: Optional[int] = None
@@ -83,8 +86,11 @@ def parse_compile_logs(log_dir: str) -> CompileResult:
     count) or `stage_depth` (pipeline depth, what the hard 12-stage
     TOFINO_PIPELINE_STAGES ceiling reads) -- see
     evaluation.multi_model_memory_evaluation's ResourceUsage docstring for the full
-    three-quantity (stages, stage_depth, stages_real) disambiguation. M2 example: this returns 9 where the estimator predicts
-    stage_depth 6.
+    three-quantity (stages, stage_depth, stages_real) disambiguation. M2 example: this returns 9, which the
+    estimator's corrected stage_depth now also predicts (it said 6 before the
+    2026-09-05 calibration). The two are still not the same quantity -- this
+    one is measured, that one modelled, and the model still under-predicts by
+    0-3 stages across the 19-row calibration sample.
     """
     result = CompileResult()
     logs_path = os.path.join(log_dir, "pipe", "logs")
@@ -95,9 +101,16 @@ def parse_compile_logs(log_dir: str) -> CompileResult:
     if os.path.isfile(summary_path):
         with open(summary_path) as f:
             text = f.read()
-        m = re.search(r"Number of stages in table allocation:\s*(\d+)", text)
-        if m:
-            result.stages = int(m.group(1))
+        # LAST match, not the first: table_summary.log records one
+        # "Number of stages in table allocation" line per placement ROUND
+        # (INITIAL, then NOCC_TRY/REDO_PHV retries once the compiler re-runs
+        # PHV allocation), and only the final round is the allocation it
+        # commits to -- confirmed against mau.resources.log, which only ever
+        # reflects the committed one. Taking the first match over-reported 4
+        # of the 19 compiler-calibration rows by 1-2 stages.
+        rounds = re.findall(r"Number of stages in table allocation:\s*(\d+)", text)
+        if rounds:
+            result.stages = int(rounds[-1])
         m = re.search(r"Number of tables allocated:\s*(\d+)", text)
         if m:
             result.tables = int(m.group(1))

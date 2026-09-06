@@ -1,3 +1,4 @@
+import collections
 import math
 import dataclasses
 import pathlib
@@ -45,19 +46,23 @@ def test_range_matching_resource_usage_uses_exact_real_interval_costs():
     assert specs == [(1, 2)]
 
 
-def test_range_matching_resource_usage_crosses_block_boundary():
-    # 129 non-overlapping copies of the (10,300)-shaped pattern, shifted
-    # by 300 each time. Nibble alignment depends on absolute bit
-    # position, not relative offset, so per-copy cost isn't perfectly
-    # constant (verified computationally: mostly 4 rows, a few cost 5) --
-    # total is 518 rows, comfortably over the 512-row block capacity,
-    # which must force a 2nd block rather than silently rounding down.
+def test_expanded_rows_no_longer_drive_the_range_block_count():
+    # SEMANTICS CHANGED 2026-09-06 (Sec 7 "Mechanism E"): this fixture used
+    # to assert blocks == 2, on the theory that 518 expanded rows overflow a
+    # 512-row block. That conflated two quantities. p4c allocates blocks at
+    # COMPILE time from the declared entry count -- 129 intervals price at
+    # 321 rows, so it commits 1 block -- and never sees the expansion at all.
+    # The 518 rows are real, but they are an INSERTION-time fact, and this is
+    # precisely the case where the two disagree: see
+    # test_range_deployment_overflow_flags_expansion_beyond_the_allocation,
+    # which keeps this fixture honest by catching the same 518-vs-512 problem
+    # in the constraint that actually owns it.
     intervals = [(300 * i + 10, 300 * i + 300) for i in range(129)]
     feature_intervals = {"F": intervals}
     entries, blocks, specs = ev.range_matching_resource_usage(feature_intervals)
-    assert entries == 518  # A1 (Task 4): expanded rows, not 129 intervals
-    assert blocks == 2
-    assert specs == [(2, 2)]
+    assert entries == 518   # still the exact expanded row count
+    assert blocks == 1      # what the compiler commits
+    assert specs == [(1, 2)]
 
 
 def test_range_matching_resource_usage_sums_across_features():
@@ -162,6 +167,67 @@ def test_ternary_matching_resource_usage_exposes_per_tree_table_specs():
     assert blocks == sum(spec[0] for spec in specs)
 
 
+def test_crossbar_block_width_charges_44_bits_per_5_and_a_half_bytes():
+    # Ref 4.1 / Sec 7 "Mechanism D": one TCAM block is fed by ONE ternary
+    # crossbar group, and a group delivers 5 private bytes + 1 midbyte
+    # nibble = 44 bits = 5.5 bytes. Measured ladder from 144 real compiled
+    # tables -- 33 bytes is the largest key that still fits 6 blocks, 34
+    # needs 7.
+    assert ev.crossbar_block_width(5) == 1
+    assert ev.crossbar_block_width(6) == 2
+    assert ev.crossbar_block_width(33) == 6
+    assert ev.crossbar_block_width(34) == 7
+
+
+def test_ternary_blocks_charge_byte_rounded_key_fields_not_raw_bits():
+    # Sec 7 "Mechanism D". Six features of 5 codeword bits each: 30 bits
+    # total, so band_factor says ceil((30+4)/44) = 1 block. But the crossbar
+    # allocates per FIELD, byte-rounded, so the key really costs 6 bytes =
+    # 48 bits and needs 2 blocks. Mirrors the real independent_high_sd7
+    # (10 fields, 29 bits, 6 crossbar bytes, 2 committed blocks).
+    feature_intervals = {f: [(i, i) for i in range(6)] for f in "ABCDEF"}
+    codewords = {0: {"0" * 30: 0}}
+    _, blocks, codeword_length, specs = ev.ternary_matching_resource_usage(
+        codewords, feature_intervals)
+    assert codeword_length == 30
+    assert ev.band_factor(codeword_length) == 1     # what the old model charged
+    assert blocks == 2
+    assert specs == [(2, 6)]
+
+
+def test_range_blocks_come_from_the_compilers_compile_time_sizing():
+    # Sec 4.2 / Sec 7 "Mechanism E". p4c sizes a range table at COMPILE time
+    # from the declared `size` (= the interval count, build_p4_script.py:1611),
+    # pricing a quarter of the entries at the worst case min(8, 2*nibbles-1)
+    # = 7 rows for a 16-bit key and the rest at 1. That puts the per-block
+    # capacity at exactly 206 declared intervals, the figure Sec 4.2 measured
+    # independently. Point intervals cost 1 physical row each, so the old
+    # rows/512 model would say 1 block for both of these.
+    fits = {"F": [(i, i) for i in range(206)]}
+    over = {"F": [(i, i) for i in range(207)]}
+    assert ev.range_matching_resource_usage(fits)[1] == 1
+    assert ev.range_matching_resource_usage(over)[1] == 2
+
+
+def test_range_deployment_overflow_flags_expansion_beyond_the_allocation():
+    # The second, independent constraint: the compiler's block allocation is
+    # fixed in the binary, so real control-plane insertion must fit INSIDE it
+    # (Sec 4.2 -- the control plane gets "[Not enough space]", it never grows
+    # the table). 129 intervals of this shape are priced at 1 block by the
+    # compiler, but expand to 518 physical rows at insertion time, 6 over the
+    # 512 that block holds.
+    intervals = [(300 * i + 10, 300 * i + 300) for i in range(129)]
+    entries, blocks, _ = ev.range_matching_resource_usage({"F": intervals})
+    assert (entries, blocks) == (518, 1)
+    assert ev.range_deployment_overflow({"F": intervals}) == {"F": (518, 512)}
+
+
+def test_range_deployment_overflow_is_empty_when_the_real_rows_fit():
+    # The normal case, and why this is a guard rather than a cost term.
+    feature_intervals = {"F1": [(10, 300)], "F2": [(0, 255), (5, 5)]}
+    assert ev.range_deployment_overflow(feature_intervals) == {}
+
+
 def test_stage_shards_rejects_a_key_wider_than_one_stage_crossbar():
     # F3: splitting a table's ROWS across stages is real; splitting its KEY
     # is not -- a stage's crossbar cannot deliver more than
@@ -249,6 +315,84 @@ def test_crossbar_stages_needed_single_oversized_table_spans_stages():
     # stage and under-count.
     assert ev.crossbar_stages_needed([(50, 2)]).occupied == 3
     assert ev.crossbar_stages_needed([]).occupied == 0
+
+
+# ---------------------------------------------------------------------------
+# Mechanism C: a stage's 24 TCAM blocks are 2 columns of 12 rows, and a table
+# needing several blocks chains them down ONE column. Measured against real
+# p4c over synthetic tables of 5..12 blocks -- scripts/tcam_column_sweep.py,
+# reviews/p4_tofino_reference.md Sec 7.
+# ---------------------------------------------------------------------------
+
+def test_fits_two_columns_packs_by_width_not_by_total():
+    # The whole content of Mechanism C, in the two measurements that decide
+    # it. Three 8-block tables total exactly TCAM_BLOCKS_PER_STAGE and still
+    # need two stages (8+8 = 16 overflows a 12-row column); four 6-block
+    # tables total the same 24 and fit one stage (6+6 | 6+6). A flat block cap
+    # cannot tell these apart, which is why it under-counted.
+    assert not ev.fits_two_columns([8, 8, 8])
+    assert ev.fits_two_columns([6, 6, 6, 6])
+    assert sum([8, 8, 8]) == sum([6, 6, 6, 6]) == bps.TCAM_BLOCKS_PER_STAGE
+
+
+def test_fits_two_columns_at_the_discriminating_width():
+    # w=7 is where the two rules disagree most cleanly: 3 tables are 21 of 24
+    # blocks, comfortably inside a flat cap, and the compiler still needs two
+    # stages. joint_low_sd10's real placement is exactly this -- 2 tables of 7
+    # per stage, 14 of 24 blocks used.
+    assert ev.fits_two_columns([7, 7])
+    assert not ev.fits_two_columns([7, 7, 7])
+
+
+def test_fits_two_columns_is_exact_not_greedy():
+    # First-fit-decreasing puts 7 then 5 in one column and 6 in the other,
+    # then fails on the last 6; the true packing is (7+5 | 6+6). A greedy test
+    # would invent violations, and inventing one is how the column rule got
+    # written off as refuted the first time.
+    assert ev.fits_two_columns([7, 6, 6, 5])
+
+
+def test_a_single_table_may_span_both_columns():
+    # Measured, and it is the reason _stage_shards splits at the column height
+    # rather than treating an over-wide table as unplaceable: single tables of
+    # 14, 16 and even 24 blocks each compile into ONE stage. Chaining within a
+    # column constrains which tables SHARE a stage; it does not confine a
+    # table that needs more than a column to begin with.
+    assert ev.crossbar_stages_needed([(14, 4)]).occupied == 1
+    assert ev.crossbar_stages_needed([(16, 4)]).occupied == 1
+    assert ev.crossbar_stages_needed([(24, 4)]).occupied == 1
+
+
+def test_stage_shards_splits_at_the_column_height():
+    # Not cosmetic: a 24-block table is one shard the column packing can never
+    # place, so without this the eager packer would advance its stage index
+    # forever looking for room. Splitting at TCAM_ROWS_PER_STAGE makes every
+    # shard column-sized by construction.
+    assert all(blocks <= bps.TCAM_ROWS_PER_STAGE
+               for blocks, _ in ev._stage_shards(24, 4))
+    assert ev._stage_shards(11, 4) == [(11, 4)]      # unchanged below a column
+
+
+def test_crossbar_stages_needed_enforces_the_column_geometry():
+    # The packer, not just the predicate: three 8-block tables that a flat
+    # 24-block cap would have put in one stage now correctly take two.
+    assert ev.crossbar_stages_needed([(8, 4)] * 3).occupied == 2
+    assert ev.crossbar_stages_needed([(6, 4)] * 4).occupied == 1
+    assert ev.crossbar_stages_needed([(7, 4)] * 3).occupied == 2
+
+
+def test_column_geometry_never_reports_fewer_stages_than_the_flat_cap_did():
+    # The direction that matters for a cost model that must not under-count:
+    # the column constraint is strictly tighter than the flat block cap, so it
+    # can only ever move a design's stage count UP.
+    import random
+    rnd = random.Random(99)
+    for _ in range(200):
+        specs = [(rnd.randint(1, 24), rnd.randint(1, 8))
+                 for _ in range(rnd.randint(1, 12))]
+        stages = ev.crossbar_stages_needed(specs).occupied
+        assert stages >= math.ceil(sum(b for b, _ in specs)
+                                   / bps.TCAM_BLOCKS_PER_STAGE)
 
 
 def test_crossbar_stages_needed_output_respects_all_three_limits():
@@ -658,8 +802,24 @@ def test_exact_match_resource_usage_sums_across_multiple_trees():
 _PRE_TASK_SINGLE_APP = (52, 4, 11, 2, 9)          # range_entries, range_blocks, ternary_entries, ternary_blocks, codeword_length
 _PRE_TASK_SINGLE_APP_RANGE_SPECS = [(1, 2)] * 4
 _PRE_TASK_SINGLE_APP_TERNARY_SPECS = [(1, 4), (1, 4)]
-_PRE_TASK_MULTI_JOINT = (2, 8, 3)                  # stages, blocks, stage_depth
-_PRE_TASK_MULTI_DISJOINT = (2, 11, 3)
+# stage_depth moved 3 -> 6 on both when the readiness origin was corrected to
+# FLOW_HASH_LEVEL = 3 and stage_depth started counting VOTE_EPILOGUE_STAGES
+# (2026-09-05, calibrated against 19 real compiles). `stages` and `blocks` are
+# unchanged, which is the point of keeping this pin: the crossbar key-sharing
+# fix landed in the same change and must not have moved either of them on a
+# fixture whose tables all key on their own fields.
+_PRE_TASK_MULTI_JOINT = (2, 8, 6)                  # stages, blocks, stage_depth
+# disjoint's blocks moved 11 -> 13 (2026-09-06, StagePlan.blocks / Mechanism
+# G): this fixture's app and ddos trees both have ragged keys
+# (ternary_key_is_ragged is True on both feature_intervals) and land in the
+# same ternary stage, so the group-offset extra block that crossbar_stages_
+# needed already charged during PLACEMENT (it moved `stages`/`stage_depth`
+# nowhere here -- the stage still fits) now also shows up in the total,
+# exactly as independent_low_sd5's real p4c compile did
+# (results/compiler_calibration_v6.csv: 13 predicted, 16 real, before this
+# fix). `stages` and `stage_depth` are unaffected, confirming the fix only
+# touches the total block count, not placement.
+_PRE_TASK_MULTI_DISJOINT = (2, 13, 6)
 
 
 def test_single_model_memory_evaluation_default_is_unchanged_by_discount_wiring():
@@ -827,15 +987,19 @@ def test_range_matching_resource_usage_default_width_is_the_project_16_bit():
 
 
 def test_feature_readiness_level_counts_hash_gating_and_chain_depth():
-    # ungated, 2-deep chain (last_arrival_time -> max): 1 + 0 + 2
-    assert ev.feature_readiness_level("flow_iat_max") == 3
-    # ungated, 2-deep chain (shared last_arrival_time -> mean): 1 + 0 + 2
-    assert ev.feature_readiness_level("flow_iat_mean") == 3
-    # fwd-gated, 1-deep chain: 1 + 1 + 1
-    assert ev.feature_readiness_level("fwd_packet_length_max") == 3
-    # fwd-gated, 2-deep chain: 1 + 1 + 2 -- the deepest, and the one the real
+    # FLOW_HASH_LEVEL is 3, not 1: p4c spends three real stages before any
+    # register can run (metadata init, hash $precompute, hash). These four
+    # levels are M2's, and 5/5/5/6 is now literally where the compiler put
+    # M2's four range tables -- see the section comment above.
+    # ungated, 2-deep chain (last_arrival_time -> max): 3 + 0 + 2
+    assert ev.feature_readiness_level("flow_iat_max") == 5
+    # ungated, 2-deep chain (shared last_arrival_time -> mean): 3 + 0 + 2
+    assert ev.feature_readiness_level("flow_iat_mean") == 5
+    # fwd-gated, 1-deep chain: 3 + 1 + 1
+    assert ev.feature_readiness_level("fwd_packet_length_max") == 5
+    # fwd-gated, 2-deep chain: 3 + 1 + 2 -- the deepest, and the one the real
     # compiler pushed into a stage of its own
-    assert ev.feature_readiness_level("fwd_iat_max") == 4
+    assert ev.feature_readiness_level("fwd_iat_max") == 6
 
 
 def test_feature_readiness_level_bwd_gated_costs_same_as_fwd_gated():
@@ -853,14 +1017,15 @@ def test_feature_readiness_level_bwd_gated_costs_same_as_fwd_gated():
             "gated_by": "bwd",
         },
     }
-    # ungated hash + 1 gate + 1-deep chain: 1 + 1 + 1
-    assert ev.feature_readiness_level("bwd_synthetic_feature", catalog=synthetic_catalog) == 3
+    # hash + 1 gate + 1-deep chain: 3 + 1 + 1
+    assert ev.feature_readiness_level("bwd_synthetic_feature", catalog=synthetic_catalog) == 5
 
 
 def test_feature_readiness_level_unknown_feature_is_ready_after_the_hash():
     # A feature with no catalog entry gets no registers emitted at all, so
-    # nothing gates its table beyond the flow hash itself.
-    assert ev.feature_readiness_level("Not_A_Catalog_Feature") == 1
+    # nothing gates its table beyond the flow hash itself -- which is three
+    # real stages (FLOW_HASH_LEVEL), not one.
+    assert ev.feature_readiness_level("Not_A_Catalog_Feature") == 3
 
 
 def test_readiness_levels_follow_feature_intervals_order():
@@ -872,7 +1037,7 @@ def test_readiness_levels_follow_feature_intervals_order():
         "Not_A_Catalog_Feature": [(0, 5)],
     }
 
-    assert ev.readiness_levels_for(feature_intervals) == [4, 3, 1]
+    assert ev.readiness_levels_for(feature_intervals) == [6, 5, 3]
 
 
 def test_feature_readiness_level_resolves_dotted_dataset_names():
@@ -881,10 +1046,10 @@ def test_feature_readiness_level_resolves_dotted_dataset_names():
     every real feature name missed the catalog and fell back to
     FLOW_HASH_LEVEL -- which left the register-dependency model in
     crossbar_stages_needed inert while `stages` was still being reported."""
-    assert ev.feature_readiness_level("Flow.IAT.Max") == 3
-    assert ev.feature_readiness_level("Flow.IAT.Mean") == 3
-    assert ev.feature_readiness_level("Fwd.Packet.Length.Max") == 3
-    assert ev.feature_readiness_level("Fwd.IAT.Max") == 4
+    assert ev.feature_readiness_level("Flow.IAT.Max") == 5
+    assert ev.feature_readiness_level("Flow.IAT.Mean") == 5
+    assert ev.feature_readiness_level("Fwd.Packet.Length.Max") == 5
+    assert ev.feature_readiness_level("Fwd.IAT.Max") == 6
 
 
 def test_feature_readiness_level_unknown_dotted_feature_still_falls_back():
@@ -903,13 +1068,20 @@ def test_readiness_levels_for_real_dataset_feature_names():
     """readiness_levels_for is positionally aligned with feature_intervals, so
     the levels must follow the dict's key order exactly. Bwd.IAT.Min now has
     a real catalog entry too (Task 9): bwd-gated (+1) with a dependency
-    register (bwd_last_arrival_time) plus its own value register (+2)."""
+    register (bwd_last_arrival_time) plus its own value register (+2).
+
+    Bwd.IAT.Min is a level LATER than the symmetric Fwd.IAT.Max, and the
+    asymmetry is real: generate_P4_registers_and_apply emits
+    `if (meta.fwd == 1) { ... }` before `if (meta.fwd == 0) { ... }`, and
+    p4c's placer cannot reach the second block until the first is fully
+    placed (see register_stage_schedule's per-block floor). Chain depth alone
+    would report 6 for both."""
     feature_intervals = {
         "Fwd.IAT.Max": [(0, 10), (11, 65535)],
         "Flow.IAT.Max": [(0, 20), (21, 65535)],
         "Bwd.IAT.Min": [(0, 30), (31, 65535)],
     }
-    assert ev.readiness_levels_for(feature_intervals) == [4, 3, 4]
+    assert ev.readiness_levels_for(feature_intervals) == [6, 5, 7]
 
 
 def test_crossbar_stages_needed_separates_tables_by_readiness_level():
@@ -969,8 +1141,12 @@ def test_range_and_ternary_pools_reproduce_the_measured_m2_stage_count():
     ternary_plan = ev.crossbar_stages_needed([(2, 11)] * 4,
                                              readiness_levels=[ternary_level] * 4)
 
-    assert range_plan.indices == frozenset({3, 4})
-    assert ternary_plan.indices == frozenset({5})
+    # With FLOW_HASH_LEVEL corrected to 3 these are no longer just internally
+    # consistent indices -- they are the stage numbers the compiler really
+    # used for M2: range tables at 5/5/5/6, classification at 7 (see
+    # reviews/p4_tofino_reference.md Sec 4.6's measured table).
+    assert range_plan.indices == frozenset({5, 6})
+    assert ternary_plan.indices == frozenset({7})
     assert not (range_plan.indices & ternary_plan.indices)
     assert range_plan.occupied == 2
     assert ternary_plan.occupied == 1
@@ -1022,9 +1198,11 @@ def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
         clf_app, clf_ddos, _M2_CATALOG_FEATURES, _M2_CATALOG_FEATURES, "joint")
 
     assert usage.stages == 3
-    # This IS the M2 fixture the brief's own worked example cites: depth 6,
-    # where the real compiler needs 9 (stages_real, not measured here).
-    assert usage.stage_depth == 6
+    # This IS the M2 fixture the brief's own worked example cites. It used to
+    # report depth 6 against the real compiler's 9; with the readiness origin
+    # and the vote epilogue corrected it reports 9 -- the same number, on the
+    # same program, that p4_compile.parse_compile_logs measured.
+    assert usage.stage_depth == 9
 
 
 def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth():
@@ -1037,14 +1215,16 @@ def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth
         clf_app, clf_ddos, ["g0", "g1", "g2", "g3"], ["g0", "g1", "g2", "g3"], "joint")
 
     assert usage.stages == 2
-    assert usage.stage_depth == 3
+    # 3 hash stages + 1 range + 1 classification + 1 vote.
+    assert usage.stage_depth == 6
 
 
 @pytest.mark.parametrize("encoding", ["joint", "disjoint"])
 def test_stage_depth_equals_max_of_range_and_ternary_depth(encoding):
     clf_app, clf_ddos, names = _joint_pair_fixture()
     usage = ev.multi_model_memory_evaluation(clf_app, clf_ddos, names, names, encoding)
-    assert usage.stage_depth == max(usage.range_depth, usage.ternary_depth)
+    assert usage.stage_depth == (max(usage.range_depth, usage.ternary_depth)
+                                 + ev.VOTE_EPILOGUE_STAGES)
 
 
 def test_ternary_tables_equals_total_tree_count_regardless_of_encoding():
@@ -1131,7 +1311,8 @@ def test_register_depth_and_count_over_the_selected_features():
     whether the registers FIT in those stages has never been measured here."""
     usage = ev.multi_model_memory_evaluation(
         _app_forest(), _ddos_forest(), ['flow_iat_max'], ['fwd_iat_max'], 'disjoint')
-    assert usage.register_depth == 4          # fwd_iat_max: gated + 2 registers
+    # fwd_iat_max: FLOW_HASH_LEVEL(3) + gated(1) + 2 registers
+    assert usage.register_depth == 6
     assert usage.register_count == 4          # 2 chains x (dependency + value)
     assert usage.register_sram_bits == 4 * 16 * bps.MAX_NUM_FLOWS
 
@@ -1191,3 +1372,448 @@ def test_resource_usage_carries_the_codeword_length_on_both_encodings():
         usage = ev.multi_model_memory_evaluation(clf_app, clf_ddos, names, names, encoding)
         assert usage.codeword_length > 0
         assert usage.codeword_length <= bps.MAX_CODEWORD_LENGTH
+
+
+# ---------------------------------------------------------------------------
+# Compiler-calibration corrections (2026-09-05).
+#
+# scripts/compiler_calibration.py compiled 19 real campaign-scale programs
+# through p4c and their committed placements (results/compiler_calibration/
+# compiles/*/pipe/logs/) contradict two things this estimator assumed:
+#
+#   * the Ternary Match Input crossbar charges the UNION of the distinct key
+#     FIELDS present in a stage, not the sum of each table's key width -- and
+#     every tree of one task keys on the identical meta.code_<feature> field;
+#   * feature_readiness_level's origin was 2 stages early, and stage_depth
+#     never counted the vote tables' trailing stage.
+#
+# See reviews/p4_tofino_reference.md Sec 7 for the full measurement.
+# ---------------------------------------------------------------------------
+
+
+def test_crossbar_charges_one_shared_key_field_once_not_once_per_table():
+    # Measured, joint_low_sd7 stage 7 (mau.resources.log): four classification
+    # tables all keyed on the SAME bit<256> codeword field report 32 crossbar
+    # bytes for that stage, not 4 x 32 = 128. The field occupies its byte
+    # slots once and all four tables read from those same slots.
+    shared = frozenset({("code_fwd_packet_length_max", 32)})
+    assert ev.crossbar_stages_needed([(1, 32)] * 4,
+                                     key_fields=[shared] * 4).occupied == 1
+
+
+def test_crossbar_charges_distinct_key_fields_separately():
+    # Measured, independent_low_sd6 stage 7: two 19-byte app tables plus two
+    # 4-byte ddos tables report 23 bytes -- 19 + 4, each distinct field once.
+    # Scaled to 3 + 3 here so the naive per-table sum (3*19 + 3*4 = 69) would
+    # exceed the 64-byte budget and force a second stage, while the real
+    # union (23) does not: the two accountings give different answers.
+    app = frozenset({("code_app", 19)})
+    ddos = frozenset({("code_ddos", 4)})
+    assert ev.crossbar_stages_needed(
+        [(1, 19)] * 3 + [(1, 4)] * 3,
+        key_fields=[app] * 3 + [ddos] * 3).occupied == 1
+
+
+def test_crossbar_key_fields_must_account_for_the_declared_byte_width():
+    # key_fields and the spec's byte_width describe the same table. A caller
+    # that lets the two drift would silently mis-price every stage the table
+    # appears in, so the mismatch is rejected at the boundary.
+    with pytest.raises(ValueError):
+        ev.crossbar_stages_needed([(1, 32)],
+                                  key_fields=[frozenset({("code", 8)})])
+
+
+def test_crossbar_without_key_fields_charges_every_table_its_own_width():
+    # Backwards compatibility: callers that pass no key_fields keep the
+    # conservative "every table has its own private key" accounting, so four
+    # 32-byte tables still need two stages under the 64-byte budget.
+    assert ev.crossbar_stages_needed([(1, 32)] * 4).occupied == 2
+
+
+def test_feature_readiness_level_lands_on_the_stage_the_compiler_uses():
+    # FLOW_HASH_LEVEL has to cover THREE real stages, not one: p4c emits a
+    # metadata-init table (stage 0) and splits the hash into
+    # tbl_calc_flow_hash$precompute (stage 1) and tbl_calc_flow_hash (stage
+    # 2), so the first register in any chain can only run at stage 3.
+    # Measured against the committed placements:
+    #   independent_low_sd6  table_1_bwd_packet_length_max   -> real stage 5
+    #   independent_high_sd6 table_6_app_packet_length_mean  -> real stage 4
+    assert ev.feature_readiness_level("bwd_packet_length_max") == 5
+    assert ev.feature_readiness_level("packet_length_mean") == 4
+
+
+# ---------------------------------------------------------------------------
+# Stateful-ALU width (2026-09-05, second calibration pass).
+#
+# feature_readiness_level models a feature's register chain DEPTH. It does not
+# model the pipeline's register WIDTH: a Tofino stage has only 4 stateful
+# ("meter") ALUs, and every RegisterAction this generator emits burns one. At
+# k >= 13 features the design needs 16-20 registers, so they cannot all issue
+# in the two or three stages their dependency chains allow -- the compiler
+# serialises them and every downstream range table slides with them.
+#
+# Confirmed against all 18 committed calibration placements: the list schedule
+# below reproduces the compiler's own last-register stage EXACTLY on every row
+# (7,7,7,7,4,5,4,4,4,4,7,7,7,4,4,4,4,4), where chain depth alone gives 5 on
+# each of the six high-k rows. See reviews/p4_tofino_reference.md Sec 7.
+# ---------------------------------------------------------------------------
+
+
+def test_meter_alus_per_stage_matches_the_compilers_own_saturation():
+    # mau.resources.log's percentage table reports "Meter ALU 4" as 100.00%
+    # in joint_high_sd7 stages 3-6 -- the ceiling read off the compiler's own
+    # arithmetic, not fitted. Sweeping the constant over 2/3/4/5/6/8 against
+    # the 18 committed placements, only 4 reproduces every row (18 vs 13, 11,
+    # 10, 8 for its neighbours).
+    assert ev.METER_ALUS_PER_STAGE == 4
+
+
+def test_register_schedule_serialises_registers_past_the_alu_cap():
+    # Six independent, ungated one-register features. Their chains are all
+    # depth 1, so chain depth alone would run every register at FLOW_HASH_LEVEL.
+    # With flow_forward_srcaddr (emitted unconditionally -- the apply block
+    # always calls flow_orientation_action.execute, build_p4_script.py:2092)
+    # that is 7 RegisterActions competing for 4 ALUs, so they need two stages.
+    catalog = {
+        "f%d" % i: {"registers": [{"name": "f%d" % i, "role": "value",
+                                   "width": 16, "body": "running_max_iat"}],
+                    "gated_by": None}
+        for i in range(6)
+    }
+    placed = ev.register_stage_schedule(list(catalog), catalog=catalog)
+
+    by_stage = collections.Counter(placed.values())
+    assert by_stage[ev.FLOW_HASH_LEVEL] == ev.METER_ALUS_PER_STAGE
+    assert by_stage[ev.FLOW_HASH_LEVEL + 1] == 3
+    assert max(placed.values()) == ev.FLOW_HASH_LEVEL + 1
+
+
+def test_register_schedule_never_delays_the_orientation_register():
+    # flow_forward_srcaddr resolves meta.fwd, so EVERY gated feature's chain
+    # hangs off it. Filling the first register stage with leaf registers and
+    # spilling it forward would push that whole subtree back a stage. Real
+    # placements agree: it sits in the first register stage on all 18 rows.
+    # Four ungated leaves would take the entire ALU budget of stage 3 on a
+    # naive earliest-first schedule; critical-path priority takes the
+    # orientation register first instead.
+    catalog = {
+        "leaf%d" % i: {"registers": [{"name": "leaf%d" % i, "role": "value",
+                                      "width": 16, "body": "running_max_iat"}],
+                       "gated_by": None}
+        for i in range(4)
+    }
+    catalog["gated"] = {"registers": [
+        {"name": "gated_dep", "role": "dependency", "width": 16, "body": "iat"},
+        {"name": "gated_val", "role": "value", "width": 16, "body": "running_max_iat"},
+    ], "gated_by": "fwd"}
+
+    placed = ev.register_stage_schedule(list(catalog), catalog=catalog)
+    assert placed[ev.ORIENTATION_REGISTER] == ev.FLOW_HASH_LEVEL
+    assert placed["gated_dep"] == ev.FLOW_HASH_LEVEL + 1
+    assert placed["gated_val"] == ev.FLOW_HASH_LEVEL + 2
+
+
+def test_register_schedule_keeps_a_chain_sequential_even_with_alus_free():
+    # The ALU cap is an extra constraint, never a relaxation: a dependency
+    # register still has to run a whole stage before the value register that
+    # consumes its meta.current_iat, however idle the stage's other ALUs are.
+    catalog = {
+        "chained": {"registers": [
+            {"name": "dep", "role": "dependency", "width": 16, "body": "iat"},
+            {"name": "val", "role": "value", "width": 16, "body": "running_max_iat"},
+        ], "gated_by": None},
+    }
+    placed = ev.register_stage_schedule(["chained"], catalog=catalog)
+    assert placed["val"] == placed["dep"] + 1
+
+
+def test_readiness_levels_push_past_the_chain_depth_at_campaign_feature_counts():
+    # independent_high_sd10's real 16-feature set. Its 20 registers schedule
+    # 4,4,4,4,4 across stages 3-7 -- exactly where the compiler put them --
+    # so its latest feature is ready at stage 8, not the 6 that chain depth
+    # alone reports. Two whole stages of pipeline depth the model never saw.
+    features = [
+        "bwd_iat_max", "bwd_iat_mean", "bwd_iat_min", "bwd_packet_length_max",
+        "bwd_packet_length_mean", "bwd_packet_length_min", "flow_iat_max",
+        "flow_iat_mean", "flow_iat_min", "fwd_iat_mean", "fwd_iat_min",
+        "fwd_packet_length_max", "fwd_packet_length_mean", "min_packet_length",
+        "packet_length_mean", "fwd_iat_max",
+    ]
+    feature_intervals = {name: [(0, 5)] for name in features}
+
+    placed = ev.register_stage_schedule(features)
+    assert len(placed) == 20
+    assert collections.Counter(placed.values()) == {3: 4, 4: 4, 5: 4, 6: 4, 7: 4}
+
+    levels = ev.readiness_levels_for(feature_intervals)
+    assert max(levels) == 8
+    assert max(ev.feature_readiness_level(f) for f in features) == 6
+
+
+def test_readiness_levels_are_independent_of_feature_order():
+    # The schedule's makespan must be a property of the design, not of dict
+    # iteration order. Verified over 300 shuffles of every calibration row's
+    # feature list: the last-register stage never moved.
+    features = ["fwd_iat_max", "fwd_iat_min", "fwd_iat_mean", "bwd_iat_max",
+                "bwd_iat_min", "bwd_iat_mean", "flow_iat_max", "flow_iat_min"]
+    forward = ev.register_stage_schedule(features)
+    backward = ev.register_stage_schedule(list(reversed(features)))
+    assert max(forward.values()) == max(backward.values())
+
+
+def test_readiness_levels_schedule_both_models_registers_on_one_pipeline():
+    # Under 'disjoint' each model keeps its own intervals, but there is only
+    # ONE register block and one set of stateful ALUs: a register a feature
+    # needs is emitted once however many models select that feature
+    # (register_names_for dedupes by name). So the levels for one model's
+    # features have to be read off a schedule built from the UNION -- pricing
+    # each model's registers against a private pipeline would understate the
+    # pressure whenever the two models select different features.
+    #
+    # The app features here are bwd-gated and the ddos ones fwd-gated on
+    # purpose: `if (meta.fwd == 0)` is emitted after `if (meta.fwd == 1)`, so
+    # the other model's registers push this one's whole block later, which is
+    # ALU pressure and control-flow order compounding rather than either
+    # alone.
+    app = {"bwd_iat_max": [(0, 5)], "bwd_iat_mean": [(0, 5)]}
+    ddos = {"fwd_iat_max": [(0, 5)], "fwd_iat_min": [(0, 5)],
+            "fwd_iat_mean": [(0, 5)], "fwd_packet_length_max": [(0, 5)],
+            "fwd_packet_length_min": [(0, 5)], "fwd_packet_length_mean": [(0, 5)]}
+    union = list(app) + list(ddos)
+
+    alone = ev.readiness_levels_for(app)
+    together = ev.readiness_levels_for(app, emitted_features=union)
+
+    assert len(together) == len(app)
+    assert max(together) > max(alone)
+
+
+# ---------------------------------------------------------------------------
+# Mechanism B: a gated register sub-block starves the table pools that follow
+# it. Tofino has no program counter -- each table hands the next stage a
+# next-table pointer -- so p4c's placer walks the control block with a work-
+# list CURSOR, and a table is a placement candidate only once the cursor
+# reaches it. generate_P4_registers_and_apply emits the unconditional
+# registers, then `if (meta.fwd == 1) {...}`, then `if (meta.fwd == 0) {...}`,
+# and every match table AFTER both blocks. While the cursor is inside a gated
+# block, those tables are out of reach. See reviews/p4_tofino_reference.md
+# Sec 7, "Residual root-caused -- Mechanisms A/B/C".
+# ---------------------------------------------------------------------------
+
+_BLOCK_ORDER_CATALOG = {
+    # One fwd-gated feature whose three-register chain necessarily spans three
+    # stages, and one bwd-gated leaf that could run in the very first of them
+    # if the placer were free to reorder across the two `if` blocks.
+    "fwd_chain": {"registers": [
+        {"name": "fwd_a", "role": "dependency", "width": 16, "body": "iat"},
+        {"name": "fwd_b", "role": "dependency", "width": 16, "body": "iat"},
+        {"name": "fwd_c", "role": "value", "width": 16, "body": "running_max_iat"},
+    ], "gated_by": "fwd"},
+    "bwd_leaf": {"registers": [
+        {"name": "bwd_a", "role": "value", "width": 16, "body": "running_max_iat"},
+    ], "gated_by": "bwd"},
+}
+
+
+def test_register_schedule_orders_the_gated_blocks_against_each_other():
+    # The cursor is a SEQUENCE position: it only reaches `if (meta.fwd == 0)`
+    # once the preceding `if (meta.fwd == 1)` block is fully placed. bwd_a's
+    # own dependency chain is one register deep and stages 4 and 5 have three
+    # free ALUs each, so nothing but that ordering keeps it out of them.
+    placed = ev.register_stage_schedule(list(_BLOCK_ORDER_CATALOG),
+                                        catalog=_BLOCK_ORDER_CATALOG)
+
+    assert [placed["fwd_a"], placed["fwd_b"], placed["fwd_c"]] == [4, 5, 6]
+    assert placed["bwd_a"] == 6
+
+
+def test_gated_block_spanning_three_stages_has_one_interior_stage():
+    # fwd_a/fwd_b/fwd_c occupy stages 4, 5 and 6. Stage 4 is where the placer
+    # DESCENDS into the block (outer tables can still be back-filled there)
+    # and stage 6 is where it POPS OUT (free again). Only stage 5 is fully
+    # interior, and nothing after the block can enter it.
+    interior = ev.gated_block_interior_stages(list(_BLOCK_ORDER_CATALOG),
+                                               catalog=_BLOCK_ORDER_CATALOG)
+
+    assert interior == frozenset({5})
+
+
+def test_gated_block_spanning_two_stages_costs_nothing():
+    # Descend and pop out with no stage in between. This is what keeps the
+    # penalty from being a flat per-gated-block constant: on the calibration
+    # sample the `if (meta.fwd == 0)` block usually spans exactly two stages.
+    catalog = {"fwd_pair": {"registers": [
+        {"name": "fwd_a", "role": "dependency", "width": 16, "body": "iat"},
+        {"name": "fwd_b", "role": "value", "width": 16, "body": "running_max_iat"},
+    ], "gated_by": "fwd"}}
+
+    placed = ev.register_stage_schedule(list(catalog), catalog=catalog)
+    assert [placed["fwd_a"], placed["fwd_b"]] == [4, 5]
+    assert ev.gated_block_interior_stages(list(catalog), catalog=catalog) == frozenset()
+
+
+def test_ungated_registers_never_make_a_stage_interior():
+    # The unconditional registers sit in the OUTER sequence, so the cursor is
+    # never "inside" anything while placing them and a following table can
+    # share their stage. Only a gated `if` block hides the rest of the program.
+    catalog = {
+        "chain": {"registers": [
+            {"name": "a", "role": "dependency", "width": 16, "body": "iat"},
+            {"name": "b", "role": "dependency", "width": 16, "body": "iat"},
+            {"name": "c", "role": "value", "width": 16, "body": "running_max_iat"},
+        ], "gated_by": None},
+    }
+    assert ev.gated_block_interior_stages(list(catalog), catalog=catalog) == frozenset()
+
+
+def test_packer_refuses_to_place_a_table_in_an_interior_stage():
+    # The stage is not full -- it is unreachable. In independent_high_sd10's
+    # empty stage 5 the TCAM is 0/24, the ternary crossbar 0/66 and the
+    # logical table IDs 4/16; the table simply is not a candidate yet.
+    specs, levels = [(1, 4)], [3]
+
+    assert ev.crossbar_stages_needed(specs, readiness_levels=levels).indices == frozenset({3})
+    pushed = ev.crossbar_stages_needed(specs, readiness_levels=levels,
+                                        unavailable_stages=frozenset({3}))
+    assert pushed.indices == frozenset({4})
+    assert pushed.depth == 5
+
+
+def test_interior_stage_below_a_tables_readiness_level_costs_nothing():
+    # A gated block that finishes before the pool's first table could have
+    # been placed anyway changes nothing -- which is why two of the five
+    # calibration rows carrying an interior stage show a gap of +0. The
+    # mechanism has to produce that for free; a flat penalty cannot.
+    specs, levels = [(1, 4)], [7]
+
+    blocked = ev.crossbar_stages_needed(specs, readiness_levels=levels,
+                                         unavailable_stages=frozenset({5}))
+    assert blocked.indices == frozenset({7})
+
+
+def test_stage_depth_counts_the_vote_epilogue_stage():
+    # Measured on all 19 compiles: SwitchIngress.vote_app/vote_ddos always
+    # occupy exactly one stage after the last classification table, and
+    # stage_depth -- the quantity checked against TOFINO_PIPELINE_STAGES --
+    # never counted it.
+    features = ["f0", "f1", "f2", "f3"]
+    usage = ev.multi_model_memory_evaluation(
+        _tiny_forest([0, 1, 2], seed=0), _tiny_forest([-1, 1], seed=7),
+        features, features, 'joint')
+    assert ev.VOTE_EPILOGUE_STAGES == 1
+    assert usage.stage_depth == (max(usage.range_depth, usage.ternary_depth)
+                                 + ev.VOTE_EPILOGUE_STAGES)
+
+
+# --- Mechanism G: a ragged key at an odd crossbar group offset costs +1 block
+
+def test_a_ragged_key_is_one_whose_fields_do_not_fill_whole_bytes():
+    # A field of len(intervals) - 1 bits presents ceil(bits/8) crossbar bytes
+    # and the last of them is only part used unless the width is a multiple
+    # of 8. Those part-used bytes are the ones that must ride a midbyte
+    # nibble, which is what the group offset can make unreachable.
+    assert ev.ternary_key_is_ragged({'f': list(range(180))})       # 179 bits
+    assert not ev.ternary_key_is_ragged({'f': list(range(193))})   # 192 bits
+    assert ev.ternary_key_is_ragged({'a': list(range(180)),
+                                     'b': list(range(193))})
+    assert not ev.ternary_key_is_ragged({})
+
+
+def test_a_ragged_key_starting_on_an_odd_group_costs_an_extra_block():
+    # Measured, scripts/tcam_stretch_sweep.py: a table keying 179+204 bits
+    # (49 crossbar bytes, 9 groups) costs 9 TCAMs alone and 10 when a second
+    # 12-byte key holds groups 0..2 ahead of it, because at group 3 the
+    # midbyte at its low end is half owned by that other key, so no nibble is
+    # left for the mandatory version field and p4c gives it a TCAM block of
+    # its own (the waste reviews/github_issue_tcam_version_bit_packing.md
+    # documents, reached by a new trigger). The same geometry with SOLID
+    # single-field keys costs 9 either way.
+    solid = ev.crossbar_stages_needed(
+        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12), (3, 12)],
+        key_fields=[frozenset({(('a',), 49)})] +
+                   [frozenset({(('b',), 12)})] * 5,
+        ragged_keys=[False] + [False] * 5)
+    assert solid.occupied == 1
+
+    ragged = ev.crossbar_stages_needed(
+        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12), (3, 12)],
+        key_fields=[frozenset({(('a',), 49)})] +
+                   [frozenset({(('b',), 12)})] * 5,
+        ragged_keys=[True] + [True] * 5)
+    assert ragged.occupied == 2
+
+
+def test_a_ragged_key_at_group_zero_pays_nothing():
+    # 21 blocks, same two keys: measured to fit one stage (probe point
+    # ragged_ax1_bx4), with the wide table charged 10 and the four narrow
+    # ones 3 each -- 10 | 12 across the two columns.
+    plan = ev.crossbar_stages_needed(
+        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12)],
+        key_fields=[frozenset({(('a',), 49)})] +
+                   [frozenset({(('b',), 12)})] * 4,
+        ragged_keys=[True] * 5)
+    assert plan.occupied == 1
+
+
+def test_stage_plan_blocks_reflects_the_ragged_charge_not_the_naive_sum():
+    # Same ragged_ax1_bx4 ground truth as the test above -- real p4c charges
+    # the wide table 10 blocks (9 declared + 1 for landing on the narrow
+    # key's odd group offset) and each narrow table its declared 3, for 22
+    # total. compiler_calibration_v6's fresh compile of independent_low_sd5
+    # is the same mechanism at production scale: multi_model_memory_
+    # evaluation reported 13 blocks (the naive per-table sum) where p4c
+    # used 16, because this +1 was only ever wired into stage PLACEMENT
+    # (crossbar_stages_needed's internal `charged()`), never into a total a
+    # caller could read. StagePlan.blocks is that total.
+    plan = ev.crossbar_stages_needed(
+        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12)],
+        key_fields=[frozenset({(('a',), 49)})] +
+                   [frozenset({(('b',), 12)})] * 4,
+        ragged_keys=[True] * 5)
+    assert plan.blocks == 22            # not 21, the naive sum
+
+
+def test_stage_plan_blocks_matches_the_naive_sum_when_nothing_is_ragged():
+    plan = ev.crossbar_stages_needed(
+        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12)],
+        key_fields=[frozenset({(('a',), 49)})] +
+                   [frozenset({(('b',), 12)})] * 4,
+        ragged_keys=[False] * 5)
+    assert plan.blocks == 9 + 4 * 3
+
+
+def test_stage_plan_blocks_is_inert_on_a_single_key_stage():
+    # Every joint-encoding stage and most independent stages key one shared
+    # field -- the commonest case in this generator -- and the group-offset
+    # penalty must stay a no-op there (test_the_group_offset_penalty_never_
+    # fires_on_a_single_key_stage's own invariant, extended to the total).
+    fields = [frozenset({(('shared',), 12)})] * 4
+    specs = [(3, 12)] * 4
+    plan = ev.crossbar_stages_needed(specs, key_fields=fields,
+                                     ragged_keys=[True] * 4)
+    assert plan.blocks == sum(blocks for blocks, _ in specs)
+
+
+def test_the_group_offset_penalty_never_fires_on_a_single_key_stage():
+    # Every tree of one task keys the identical code_<feature> set, so the
+    # commonest stage in this generator holds ONE key set at offset 0. The
+    # penalty must be inert there or it would re-price every design.
+    fields = [frozenset({(('shared',), 12)})] * 4
+    specs = [(3, 12)] * 4
+    assert (ev.crossbar_stages_needed(specs, key_fields=fields,
+                                      ragged_keys=[True] * 4).occupied ==
+            ev.crossbar_stages_needed(specs, key_fields=fields,
+                                      ragged_keys=[False] * 4).occupied)
+
+
+def test_ragged_keys_defaults_to_the_pre_existing_pricing():
+    specs = [(9, 49)] + [(3, 12)] * 5
+    fields = [frozenset({(('a',), 49)})] + [frozenset({(('b',), 12)})] * 5
+    assert (ev.crossbar_stages_needed(specs, key_fields=fields).occupied ==
+            ev.crossbar_stages_needed(specs, key_fields=fields,
+                                      ragged_keys=[False] * 6).occupied)
+
+
+def test_ragged_keys_must_be_positionally_aligned_with_table_specs():
+    with pytest.raises(ValueError, match="ragged_keys"):
+        ev.crossbar_stages_needed([(1, 4), (1, 4)], ragged_keys=[True])

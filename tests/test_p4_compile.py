@@ -583,3 +583,29 @@ def test_resolve_repo_relative_leaves_absolute_paths_alone(tmp_path):
     absolute = str(tmp_path)
 
     assert pc._resolve_repo_relative(absolute) == absolute
+
+
+def test_parse_compile_logs_reads_the_committed_allocation_not_the_first(tmp_path):
+    # table_summary.log holds one "Number of stages in table allocation" line
+    # per placement ROUND: an INITIAL pass, then NOCC_TRY/REDO_PHV retries
+    # after the compiler re-runs PHV allocation. Only the LAST is the
+    # allocation it commits to -- cross-checked against mau.resources.log,
+    # which only ever reflects the committed one.
+    #
+    # A bare re.search takes the FIRST match, which over-reported 4 of the 19
+    # compiler-calibration rows by 1-2 stages (independent_low_sd10 recorded
+    # 13 where the compiler committed 11). This fixture is that row's shape.
+    log_dir = _write_fixture_logs(
+        tmp_path,
+        table_summary_text=(
+            "Table allocation done 1 time(s), state = INITIAL\n"
+            "Number of stages in table allocation: 13\n"
+            "Table allocation done 2 time(s), state = NOCC_TRY1\n"
+            "Number of stages in table allocation: 11\n"
+            "Table allocation done 3 time(s), state = REDO_PHV1\n"
+            "Number of stages in table allocation: 11\n"
+            "Number of tables allocated: 20\n"),
+        mau_resources_text=REAL_MAU_RESOURCES_TEXT,
+        table_placement_text="Placement error(s):0 stages required:11\n",
+    )
+    assert pc.parse_compile_logs(log_dir).stages == 11
