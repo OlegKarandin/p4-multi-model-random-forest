@@ -20,7 +20,11 @@ from src.p4model.catalog import (
     register_width_bits,
 )
 from src.p4model.names import normalise_feature_name
-from p4.range_expansion import range_entry_count
+from src.p4model.ranges import (
+    compiler_range_rows,
+    nibble_widths_for,
+    range_entry_count,
+)
 from src.p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from src.p4model.program import (
     FEATURE_VALUE_BIT_WIDTH,
@@ -188,51 +192,10 @@ def accuracy_metrics(y_true, y_pred, task):
     return accuracy, f1score
 
 
-# range_entry_count now lives in p4/range_expansion.py (imported above) so
-# bfshell's embedded Python (no sklearn, hence no import of this module) can
-# share the exact same implementation instead of carrying its own copy.
-
-
-def nibble_widths_for(bits):
-  """Nibble geometry expand_range() walks for a key of `bits` bits.
-
-  Above MAX_RANGE_KEY_BITS the SDE refuses the table outright, so this raises
-  rather than returning a geometry -- the case the old width_factor was
-  insuring against does not need pricing, it needs rejecting."""
-  if bits > MAX_RANGE_KEY_BITS:
-    raise ValueError(
-        "range key of %d bits does not compile (SDE ceiling is %d bits)"
-        % (bits, MAX_RANGE_KEY_BITS))
-  full, rem = divmod(bits, 4)
-  return tuple([4] * full + ([rem] if rem else []))
-
-
-def compiler_range_rows(entry_count, key_bit_width=FEATURE_VALUE_BIT_WIDTH):
-  """Physical TCAM rows p4c reserves for a range table of `entry_count`
-  declared entries -- the COMPILE-TIME sizing, which is what decides how many
-  blocks end up in the binary.
-
-  The compiler never sees the interval bounds (this project's range tables are
-  populated at runtime via the control plane, never `const entries` -- Ref
-  4.4), so it cannot cost them exactly. It applies a fixed distributional
-  guess instead: a quarter of the declared entries are priced at the
-  worst-case row count for the key's nibble geometry, the rest at one row
-  each.
-
-  This is NOT interchangeable with range_entry_count. That one models
-  expand_range(), the driver's exact per-value decomposition at INSERTION
-  time; this one models the compiler's pessimistic pre-allocation. Blocks are
-  the compiler's question -- using the driver's number to answer it
-  under-counts (measured: a 478-entry table priced at 1 block against p4c's
-  committed 3). Ref 4.2 and Ref 7 "Mechanism E".
-
-  Reproduces all five of Ref 4.2's independently measured per-block
-  capacities as the largest entry_count whose rows still fit 512: 512 (4-bit
-  key), 342 (8-bit), 256 (12-bit), 206 (16-bit), 187 (19-bit)."""
-  worst = min(RANGE_WORST_CASE_ROWS_CAP,
-              2 * len(nibble_widths_for(key_bit_width)) - 1)
-  quarter = entry_count // RANGE_WORST_CASE_ENTRY_FRACTION
-  return quarter * worst + (entry_count - quarter)
+# range_entry_count, nibble_widths_for and compiler_range_rows now live in
+# src/p4model/ranges.py (imported above) so bfshell's embedded Python (no
+# sklearn, hence no import of this module) can share the exact same
+# implementations instead of carrying its own copies.
 
 
 def range_deployment_overflow(feature_intervals,

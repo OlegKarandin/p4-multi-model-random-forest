@@ -5,7 +5,7 @@ import pathlib
 
 from src.p4gen import evaluation as ev
 from src.p4gen import build_p4_script as bps
-from p4.range_expansion import range_entry_count
+from src.p4model.ranges import range_entry_count
 import pytest
 
 
@@ -29,7 +29,7 @@ def test_accuracy_metrics_app_and_ddos_still_work():
 
 # range_entry_count's own worked-example tests, and the identity check
 # proving evaluation.py shares (not duplicates) the implementation, now
-# live in tests/test_range_expansion.py alongside p4/range_expansion.py.
+# live in tests/test_ranges.py alongside src/p4model/ranges.py.
 
 
 def test_range_matching_resource_usage_uses_exact_real_interval_costs():
