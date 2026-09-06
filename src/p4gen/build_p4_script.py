@@ -14,32 +14,22 @@ from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 from src.p4gen import p4_gen_config
 from src.p4gen import switch_semantics
 
+# Geometry this module no longer owns -- it lives in src/p4model/target.py.
+# Re-exported here so src/training/, scripts/ and tests keep importing it from
+# the path they always have. Explicit names, not `import *`, so the mapping
+# stays greppable.
+from src.p4model.target import (
+    MAX_CODEWORD_LENGTH,
+    TCAM_BLOCK_KEY_LENGTH,
+    TCAM_BLOCKS_PER_STAGE,
+    TCAM_COLUMNS_PER_STAGE,
+    TCAM_ROWS_PER_STAGE,
+    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
+    TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
+    TERNARY_MATCHING_ENTRIES_PER_BLOCK,
+)
+
 INFINITE = (2**16)-1
-TCAM_BLOCKS_PER_STAGE = 24
-# ...and those 24 blocks are not one undifferentiated pool. mau_spec.h:88-90 gives
-# Tofino_tcam_rows=12, Tofino_tcam_columns=2, with an explicit source comment that the
-# figure is correct for Tofino 1, 2 and 3. A table needing several blocks chains them
-# down ONE column, so which tables can share a stage depends on their widths and not
-# only on their total -- three 8-block tables total exactly 24 and still need two
-# stages, while four 6-block tables (also 24) fit in one. Measured directly against
-# real p4c over synthetic tables of 5..12 blocks: scripts/tcam_column_sweep.py, and
-# reviews/p4_tofino_reference.md Sec 7 "Mechanism C". evaluation.fits_two_columns is
-# the packing test; TCAM_BLOCKS_PER_STAGE remains the (implied) total.
-TCAM_ROWS_PER_STAGE = 12
-TCAM_COLUMNS_PER_STAGE = 2
-TCAM_BLOCK_KEY_LENGTH = 44
-TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
-TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
-TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
-# MAX_CODEWORD_LENGTH is a CONSEQUENCE of TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE, not an
-# independent limit: a single-stage ternary table can occupy at most the 64-byte-per-stage
-# crossbar budget above, so a codeword wider than 64 bytes (512 bits) could never fit in one
-# stage's crossbar regardless of TCAM row/block capacity. That 64-byte figure is a measured
-# hardware constant -- validated by a sweep of key widths from 8 to 512 bits with two exact
-# saturations observed (including one table at exactly 64 bytes); see
-# reviews/p4_tofino_reference.md Sec 4.3. (No repo history was found recording an earlier,
-# independent provenance for the 512-bit figure beyond this derivation.)
-MAX_CODEWORD_LENGTH = TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE * 8
 MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
                       # p4/tofino_spike/tna_m1_flows_iat_spike.p4
 

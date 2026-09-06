@@ -4,15 +4,7 @@ import math
 from dataclasses import dataclass
 import sklearn.metrics as mt
 from src.p4gen.build_p4_script import (
-    MAX_CODEWORD_LENGTH,
     MAX_NUM_FLOWS,
-    TCAM_BLOCK_KEY_LENGTH,
-    TCAM_BLOCKS_PER_STAGE,
-    TCAM_COLUMNS_PER_STAGE,
-    TCAM_ROWS_PER_STAGE,
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
-    TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
-    TERNARY_MATCHING_ENTRIES_PER_BLOCK,
     _reject_colliding_feature_names,
     feature_intervals_from_nodes,
     generate_codewords,
@@ -29,18 +21,31 @@ from src.p4gen.feature_registers import (
     register_width_bits,
 )
 from p4.range_expansion import range_entry_count
-
-TOFINO_PIPELINE_STAGES = 12   # Ref 5; hard, per Ref 7's tofino2h failure
-
-
-class CodewordTooLong(RuntimeError):
-  """Codeword exceeds MAX_CODEWORD_LENGTH. args = (message, codeword_length)."""
-
-
-class CrossbarKeyTooWide(RuntimeError):
-  """One table's match key exceeds the per-stage ternary crossbar byte budget;
-  the compiler rejects such a table outright rather than splitting it.
-  args = (message, byte_width)."""
+from src.p4model.errors import CodewordTooLong, CrossbarKeyTooWide
+from src.p4model.program import (
+    FEATURE_VALUE_BIT_WIDTH,
+    FLOW_HASH_LEVEL,
+    ORIENTATION_REGISTER,
+    RANGE_TABLE_KEY_BYTES,
+    REGISTER_BLOCK_ORDER,
+    VOTE_EPILOGUE_STAGES,
+)
+from src.p4model.target import (
+    CODEWORD_KEY_OVERHEAD_BITS,
+    MAX_CODEWORD_LENGTH,
+    MAX_RANGE_KEY_BITS,
+    METER_ALUS_PER_STAGE,
+    RANGE_WORST_CASE_ENTRY_FRACTION,
+    RANGE_WORST_CASE_ROWS_CAP,
+    TCAM_BLOCK_KEY_LENGTH,
+    TCAM_BLOCKS_PER_STAGE,
+    TCAM_COLUMNS_PER_STAGE,
+    TCAM_ROWS_PER_STAGE,
+    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
+    TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
+    TERNARY_MATCHING_ENTRIES_PER_BLOCK,
+    TOFINO_PIPELINE_STAGES,
+)
 
 
 @dataclass(frozen=True)
@@ -186,25 +191,6 @@ def accuracy_metrics(y_true, y_pred, task):
 # range_entry_count now lives in p4/range_expansion.py (imported above) so
 # bfshell's embedded Python (no sklearn, hence no import of this module) can
 # share the exact same implementation instead of carrying its own copy.
-
-
-# Width of every per-feature value field the range-matching tables key on
-# (build_p4_script.py:775 emits "bit<16> <feature>_val" for each selected
-# feature). 16 bits is the project's decided feature precision; one range
-# table keys on exactly one such field, hence 2 crossbar bytes per table.
-FEATURE_VALUE_BIT_WIDTH = 16
-RANGE_TABLE_KEY_BYTES = math.ceil(FEATURE_VALUE_BIT_WIDTH / 8)
-
-# p4c's compile-time sizing rule for a range table (Ref 4.2, Ref 7 "Mechanism
-# E"): one entry in every RANGE_WORST_CASE_ENTRY_FRACTION is assumed to need
-# the worst-case row count for the key's nibble geometry, capped at
-# RANGE_WORST_CASE_ROWS_CAP; the rest are priced at one row. See
-# compiler_range_rows.
-RANGE_WORST_CASE_ENTRY_FRACTION = 4
-RANGE_WORST_CASE_ROWS_CAP = 8
-
-
-MAX_RANGE_KEY_BITS = 19   # Ref 4.2: a 20-bit range key does not compile at all
 
 
 def nibble_widths_for(bits):
@@ -358,15 +344,6 @@ def ternary_table_key_bytes(feature_intervals):
   fact, and is deliberately NOT applied here."""
   return sum(math.ceil(max(len(intervals) - 1, 0) / 8)
              for intervals in feature_intervals.values())
-
-
-# The non-codeword key bits every classification-table row carries alongside
-# the codeword itself. Factored out of the inline `codeword_length + 4` this
-# replaces so the band arithmetic lives in exactly one place -- src/training/
-# align_budget.py gates C1's accuracy spending on it and must not re-declare
-# it. Its physical origin is not documented in this repo; the value is
-# pre-existing behaviour and is NOT changed here.
-CODEWORD_KEY_OVERHEAD_BITS = 4
 
 
 def band_factor(codeword_length):
@@ -536,28 +513,6 @@ def exact_match_resource_usage(codewords, feature_intervals):
   return sram_entries, sram_blocks
 
 
-# Every per-flow register in this design is indexed by meta.flow_hash, so the
-# hash occupies whole stages ahead of any register touch -- THREE of them, not
-# the one this constant used to claim. Measured over all 121 range tables in
-# the 19 real compiles of results/compiler_calibration/ (see
-# reviews/p4_tofino_reference.md Sec 7): every committed placement opens with
-# a metadata-init table at stage 0, tbl_calc_flow_hash$precompute at stage 1
-# and tbl_calc_flow_hash at stage 2, so the first RegisterAction in any
-# feature's chain lands at stage 3. `real_stage - level` had a floor of
-# exactly +2 in every one of the 19 rows under the old value of 1; at 3 the
-# floor is 0, i.e. levels now name the earliest stage the compiler really
-# uses. (Values above the floor are tables the packer legitimately pushed
-# later, which is placement, not origin.)
-FLOW_HASH_LEVEL = 3
-
-# The vote_app/vote_ddos tables read every tree's class and so always sit one
-# stage past the last classification table. Measured: exactly 1 in all 19
-# compiles, with no exceptions and no scaling. stage_depth is the quantity
-# checked against TOFINO_PIPELINE_STAGES, so leaving this out understated the
-# depth of every design by one whole stage.
-VOTE_EPILOGUE_STAGES = 1
-
-
 def feature_readiness_level(feature_name, catalog=None):
   """Earliest pipeline stage at which this feature's `_val` field -- and so
   its range-matching table -- can possibly be placed.
@@ -638,36 +593,8 @@ def ternary_key_fields(feature_intervals):
       for feature, intervals in feature_intervals.items())
 
 
-# A Tofino stage has four stateful ("meter") ALUs, and every RegisterAction
-# this generator emits occupies one for a whole stage. Read straight off the
-# compiler's own arithmetic rather than fitted: mau.resources.log's percentage
-# table reports a Meter ALU count of 4 as 100.00% (joint_high_sd7 stages 3-6,
-# among others). Swept over 2/3/4/5/6/8 against the 18 committed calibration
-# placements, only 4 reproduces the compiler's last-register stage on every
-# row -- its neighbours manage 13, 11, 10 and 8 of 18.
-METER_ALUS_PER_STAGE = 4
-
-# flow_forward_srcaddr_reg backs flow_orientation_action, which resolves
-# meta.fwd. generate_P4_registers_and_apply emits its .execute() call
-# UNCONDITIONALLY into the apply block (build_p4_script.py:2092), not just
-# when a gated feature is selected, so it always claims one stateful ALU in
-# the first register stage and every fwd-/bwd-gated register waits a stage on
-# it. It lives outside FEATURE_REGISTER_CATALOG (no feature owns it), so the
-# schedule has to add it by hand.
-ORIENTATION_REGISTER = "flow_forward_srcaddr"
-
-# The order generate_P4_registers_and_apply lays the RegisterAction .execute()
-# call sites down in: the unconditional ones straight into the apply block,
-# then `if (meta.fwd == 1) { ... }`, then `if (meta.fwd == 0) { ... }`
-# (build_p4_script.py's three _execute_lines calls, in exactly this order).
-# It is a real ordering, not a presentation choice: p4c's table placer walks
-# the control block with a work-list CURSOR, so it cannot begin the second
-# gated block before the first one is fully placed.
-_REGISTER_BLOCK_ORDER = (None, "fwd", "bwd")
-
-
 def _register_blocks(features, catalog):
-  """(register name -> which of _REGISTER_BLOCK_ORDER's blocks emits it,
+  """(register name -> which of REGISTER_BLOCK_ORDER's blocks emits it,
   register name -> the register it waits on).
 
   Walks the features once per block, which is what
@@ -680,7 +607,7 @@ def _register_blocks(features, catalog):
   so every register has exactly one well-defined block."""
   gate = {ORIENTATION_REGISTER: None}
   predecessor = {ORIENTATION_REGISTER: None}
-  for block in _REGISTER_BLOCK_ORDER:
+  for block in REGISTER_BLOCK_ORDER:
     for feature in features:
       entry = catalog.get(normalise_feature_name(feature))
       if entry is None:
@@ -789,7 +716,7 @@ def register_stage_schedule(features, catalog=None,
   # used. ALU load is shared across blocks -- there is one set of four
   # stateful ALUs per stage, whichever block's register claims it.
   placed, load, floor = {}, collections.Counter(), 0
-  for block in _REGISTER_BLOCK_ORDER:
+  for block in REGISTER_BLOCK_ORDER:
     names = [name for name, owner in gate.items() if owner == block]
     if not names:
       continue
@@ -844,7 +771,7 @@ def gated_block_interior_stages(features, catalog=None,
   placed = register_stage_schedule(features, catalog, alus_per_stage)
 
   interior = set()
-  for block in _REGISTER_BLOCK_ORDER:
+  for block in REGISTER_BLOCK_ORDER:
     # The unconditional registers sit in the OUTER sequence; the cursor is
     # never "inside" anything while placing them, so they hide nothing.
     if block is None:

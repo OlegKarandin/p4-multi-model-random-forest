@@ -8,4 +8,4 @@ version = "0.1.0"
 requires-python = ">=3.9"
 
 [tool.setuptools]
-packages = ["src", "src.p4gen", "src.training", "src.reporting"]
+packages = ["src", "src.p4gen", "src.p4model", "src.training", "src.reporting"]
