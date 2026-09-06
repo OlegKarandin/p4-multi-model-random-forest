@@ -12,14 +12,14 @@ from src.p4gen.build_p4_script import (
     get_root_to_leaf_paths,
     merge_tree_nodes,
     most_common_class_and_dropped_codewords,
-    normalise_feature_name,
     tree_nodes_for,
 )
-from src.p4gen.feature_registers import (
+from src.p4model.catalog import (
     FEATURE_REGISTER_CATALOG,
     register_names_for,
     register_width_bits,
 )
+from src.p4model.names import normalise_feature_name
 from p4.range_expansion import range_entry_count
 from src.p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from src.p4model.program import (

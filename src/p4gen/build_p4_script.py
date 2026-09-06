@@ -1,6 +1,5 @@
 import os
 import math
-import re
 from pathlib import Path
 import numpy as np
 from sklearn.tree import export_text
@@ -28,6 +27,7 @@ from src.p4model.target import (
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
+from src.p4model.names import normalise_feature_name
 
 INFINITE = (2**16)-1
 MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
@@ -85,21 +85,7 @@ _ACTION_TEMPLATE = Path(PATH_ACTION_TEMPLATE_P4).read_text()
 _TABLE_CLASSIFICATION_EXACT_TEMPLATE = Path(PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4).read_text()
 
 
-_IDENT_RE = re.compile(r'[^0-9a-z]+')
 _TREE_LEAF = _sklearn_tree.TREE_LEAF
-
-
-def normalise_feature_name(name):
-  """Canonical form for both FEATURE_REGISTER_CATALOG keys and P4 identifiers.
-
-  Dataset columns arrive dot-separated ('Flow.IAT.Max' -- dataset.py renames
-  every column with .replace(' ', '.')), older fixtures arrive space- or
-  underscore-separated. Every run of non-alphanumeric characters collapses to a
-  single '_' so all three spellings land on one key, and that key is a legal P4
-  identifier. Leading/trailing separators are stripped so 'Flow.IAT.Max.' cannot
-  become a distinct key."""
-  return _IDENT_RE.sub('_', name.lower()).strip('_')
-
 
 
 def ensure_directory_exists(path):

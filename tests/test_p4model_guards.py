@@ -91,3 +91,27 @@ def test_register_block_order_lost_its_underscore():
     # Spec 4.1's one deliberate rename: it stops being a private detail of one
     # module and becomes a documented program.py constant.
     assert program.REGISTER_BLOCK_ORDER == (None, "fwd", "bwd")
+
+
+def test_names_and_catalog_reexports_are_the_same_object():
+    from src.p4gen import feature_registers as fr
+    from src.p4model import catalog, names
+
+    assert bps.normalise_feature_name is names.normalise_feature_name
+    assert ev.normalise_feature_name is names.normalise_feature_name
+    assert fr.FEATURE_REGISTER_CATALOG is catalog.FEATURE_REGISTER_CATALOG
+    assert ev.FEATURE_REGISTER_CATALOG is catalog.FEATURE_REGISTER_CATALOG
+    assert fr.register_names_for is catalog.register_names_for
+    assert fr.register_width_bits is catalog.register_width_bits
+
+
+def test_catalog_imports_normalise_at_module_level_not_inside_a_function():
+    # feature_registers.py:449 used a function-local import to dodge the
+    # build_p4_script <-> feature_registers cycle. names.py imports nothing but
+    # `re`, so the cycle cannot exist -- if the dodge is still there, something
+    # reintroduced it.
+    import inspect
+
+    from src.p4model import catalog
+
+    assert "import" not in inspect.getsource(catalog.register_names_for)
