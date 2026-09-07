@@ -115,3 +115,22 @@ def test_catalog_imports_normalise_at_module_level_not_inside_a_function():
     from src.p4model import catalog
 
     assert "import" not in inspect.getsource(catalog.register_names_for)
+
+
+PACKING_REEXPORTS = ("StagePlan", "fits_two_columns", "_stage_shards",
+                     "crossbar_stages_needed")
+
+
+@pytest.mark.parametrize("name", PACKING_REEXPORTS)
+def test_packing_reexports_are_the_same_object(name):
+    from src.p4model import packing
+
+    assert getattr(ev, name) is getattr(packing, name)
+
+
+def test_stage_shards_stays_reachable_as_a_private_name():
+    # tests/test_evaluation.py reaches ev._stage_shards directly, and
+    # scripts/tcam_column_sweep.py:70 imports fits_two_columns from evaluation.
+    # Both are in the shim contract (spec 4.3): re-exporting one underscore name
+    # beats rewriting a passing test during a verbatim move.
+    assert callable(ev._stage_shards)
