@@ -134,3 +134,46 @@ def test_stage_shards_stays_reachable_as_a_private_name():
     # Both are in the shim contract (spec 4.3): re-exporting one underscore name
     # beats rewriting a passing test during a verbatim move.
     assert callable(ev._stage_shards)
+
+
+TABLES_REEXPORTS = (
+    "range_matching_resource_usage", "range_deployment_overflow",
+    "ternary_table_key_bytes", "band_factor", "ternary_key_is_ragged",
+    "crossbar_block_width", "exact_match_resource_usage",
+    "range_key_fields_for", "ternary_key_fields",
+)
+
+
+@pytest.mark.parametrize("name", TABLES_REEXPORTS)
+def test_tables_reexports_are_the_same_object(name):
+    from src.p4model import tables
+
+    assert getattr(ev, name) is getattr(tables, name)
+
+
+def test_the_planter_discount_policy_did_not_move_into_the_model():
+    # The majority-class rule is this generator's encoding convention, not chip
+    # physics -- reviews/p4_tofino_reference.md 4.5 records that it does not
+    # even reduce physical TCAM at tested scales. p4model asks "how many entries
+    # does this table have"; build_p4_script answers "my encoding sheds K".
+    # Keeping the policy out is also what keeps p4model free of build_p4_script,
+    # which imports numpy and sklearn.tree at module scope.
+    import inspect
+
+    from src.p4model import tables
+
+    assert not hasattr(tables, "most_common_class_and_dropped_codewords")
+    assert hasattr(bps, "most_common_class_and_dropped_codewords")
+
+    params = inspect.signature(tables.ternary_matching_resource_usage).parameters
+    assert "dropped_per_tree" in params
+    assert "use_default_action_discount" not in params
+
+
+def test_the_evaluation_wrapper_still_accepts_the_boolean_flag():
+    # src/main.py:234 and p4_gen_config.py:17 thread the bool through the real
+    # pipeline, so the old signature has to keep working.
+    import inspect
+
+    params = inspect.signature(ev.ternary_matching_resource_usage).parameters
+    assert "use_default_action_discount" in params

@@ -882,7 +882,13 @@ def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encod
     # The 'disjoint' case is the load-bearing one: its ternary accounting
     # happens entirely inside the two NESTED single_model_memory_evaluation
     # calls, so it only shrinks if the flag is threaded into those too.
-    monkeypatch.setattr(ev, "TERNARY_MATCHING_ENTRIES_PER_BLOCK", 2)
+    # TERNARY_MATCHING_ENTRIES_PER_BLOCK is read by range_/ternary_matching_
+    # resource_usage, which now live in src/p4model/tables.py -- so the patch
+    # has to land in THAT module's namespace. Patching evaluation's re-export
+    # would be a silent no-op: the functions never look there.
+    from src.p4model import tables
+
+    monkeypatch.setattr(tables, "TERNARY_MATCHING_ENTRIES_PER_BLOCK", 2)
 
     features = ["f0", "f1", "f2", "f3"]
     clf_app = _tiny_forest([0, 1, 2], seed=0)
