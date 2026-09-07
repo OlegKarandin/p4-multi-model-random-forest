@@ -333,3 +333,100 @@ def test_factor_of_an_empty_width_dict_is_the_empty_key_factor():
     Optuna sample."""
     from src.p4model.tables import ternary_block_factor
     assert ab._factor({}) == ternary_block_factor(())
+
+
+# ---------------------------------------------------------------------------
+# BlockBudget (design 2026-09-07 §4.1). Widths chosen so the crossbar arm
+# binds: 5 fields of 9 bits are 10 crossbar bytes (2 blocks) against a
+# 45-bit band (band_factor 2) -- shedding one field to 8 bits drops it to
+# 9 bytes and the factor to 2... so the fixtures below state their own
+# arithmetic rather than relying on intuition about where a step lands.
+
+def _block_widths(*widths):
+    return {i: w for i, w in enumerate(widths)}
+
+
+def test_a_block_budget_spends_while_a_cheaper_factor_is_reachable():
+    """spending() is factor(current) > factor(floor) -- an EXACT reachability
+    test with no inverse of the step function required, because the floor
+    width vector IS the best attainable case (alignment can relocate a
+    threshold but never delete one)."""
+    current = _block_widths(40, 40, 40)          # 15 bytes
+    floor = _block_widths(8, 8, 8)               #  3 bytes
+    budget = ab.BlockBudget(current, floor, 0.05)
+    assert ab._factor(current) > ab._factor(floor)
+    assert budget.spending() is True
+    assert budget.delta_for_candidate() == 0.05
+    assert budget.spent_budget is True
+
+
+def test_a_block_budget_declines_when_the_floor_is_already_the_factor():
+    """§8's risk as a unit test: a pair whose floor costs what it already
+    costs can never authorise spending, however generous delta is. The run
+    collapses to free moves, which is CORRECT behaviour."""
+    widths = _block_widths(40, 40, 40)
+    budget = ab.BlockBudget(widths, dict(widths), 0.05)
+    assert budget.spending() is False
+    assert budget.delta_for_candidate() == 0.0
+    assert budget.spent_budget is False
+
+
+def test_a_zero_delta_is_not_recorded_as_spending_block_budget():
+    """Carried over verbatim from BandBudget: a delta of exactly 0.0 gives
+    nothing away, so recording it would make the wasted-bit share
+    uninterpretable."""
+    budget = ab.BlockBudget(_block_widths(40, 40, 40), _block_widths(8, 8, 8), 0.0)
+    assert budget.spending() is True
+    assert budget.delta_for_candidate() == 0.0
+    assert budget.spent_budget is False
+
+
+def test_an_unbounded_delta_is_recorded_as_spending_block_budget():
+    """delta_rel=None is the accept-everything anchor and gives away the most
+    of all, so it must count as spending."""
+    budget = ab.BlockBudget(_block_widths(40, 40, 40), _block_widths(8, 8, 8), None)
+    assert budget.delta_for_candidate() is None
+    assert budget.spent_budget is True
+
+
+def test_note_shed_narrows_one_features_width_and_moves_the_factor():
+    """note_shed gains a feature argument because the factor needs the width
+    MULTISET; the VALUE passed is unchanged from BandBudget's, since
+    width = intervals - 1 makes dwidth == dintervals."""
+    budget = ab.BlockBudget(_block_widths(40, 40, 40), _block_widths(8, 8, 8), 0.05)
+    before = budget.factor()
+    budget.note_shed(0, 32)
+    assert budget.widths[0] == 8
+    assert budget.factor() <= before
+
+
+def test_crossed_compares_against_the_entry_factor():
+    """crossed() is the rollback's question: did this run buy a block? The
+    baseline is the factor at ENTRY, captured once, never the floor."""
+    budget = ab.BlockBudget(_block_widths(40, 40, 40), _block_widths(8, 8, 8), 0.05)
+    assert budget.crossed() is False
+    budget.note_shed(0, 32)
+    budget.note_shed(1, 32)
+    budget.note_shed(2, 32)
+    assert budget.factor() < ab._factor(_block_widths(40, 40, 40))
+    assert budget.crossed() is True
+
+
+def test_the_floor_factor_is_immutable_across_shedding():
+    """Invariant 4: nothing alignment does can lower blocks_floor. The floor
+    widths are copied at entry and never touched by note_shed."""
+    floor = _block_widths(8, 8, 8)
+    budget = ab.BlockBudget(_block_widths(40, 40, 40), floor, 0.05)
+    frozen = budget._floor_factor
+    budget.note_shed(0, 32)
+    budget.note_shed(1, 32)
+    assert budget._floor_factor == frozen
+
+
+def test_the_budget_does_not_alias_the_callers_width_dict():
+    """align_rf_thresholds reuses pooled_widths for feature_order and for
+    stats; a budget mutating it in place would silently rewrite both."""
+    caller = _block_widths(40, 40, 40)
+    budget = ab.BlockBudget(caller, _block_widths(8, 8, 8), 0.05)
+    budget.note_shed(0, 32)
+    assert caller[0] == 40
