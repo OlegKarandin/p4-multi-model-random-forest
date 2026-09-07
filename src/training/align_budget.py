@@ -1,31 +1,40 @@
-"""Block-band and ternary-stage arithmetic for cost-aware threshold alignment (C1).
+"""Block-factor arithmetic for cost-aware threshold alignment (C1).
 
 The joint block cost is
 
-    blocks = range_blocks + n_trees * band_factor(L)
+    blocks = range_blocks + sum over trees of ceil(entries_t / 512) * factor
+    factor = tables.ternary_block_factor(sorted per-feature field widths)
 
-where L is the pooled split-threshold count -- which IS the classification
-table's codeword length, since generate_codewords emits exactly
-len(intervals_f) - 1 bits per feature (build_p4_script.py:514/520). Pinned by
-tests/test_evaluation.py::test_codeword_length_is_the_pooled_threshold_count.
+Alignment changes neither entries_t nor the tree count, and range blocks are
+alignment-invariant (a range table is sized by p4c at COMPILE time from the
+declared interval count, giving 206 intervals per block at this project's
+16-bit keys, against real per-feature interval counts of 25-50). So
+minimising `factor` is exactly minimising blocks, and the whole objective
+collapses to one small integer -- see _factor.
 
-band_factor only steps every TCAM_BLOCK_KEY_LENGTH bits, so a bit shed
-mid-band buys nothing while still costing whatever accuracy the acceptance
-tolerance gave away for it. 57.8% of the campaign's shed bits were of that
-kind. This module holds the three quantities that decide whether the next band
-is worth spending for, and deliberately nothing else: it imports from p4gen
-only, so both threshold_alignment and the replay harness can use it without
-importing the mutation loop.
+SUPERSEDED, 2026-09-07. This module used to state the cost as
+`range_blocks + n_trees * band_factor(L)` over the pooled split-threshold
+count L, and gate spending on `band_target(L) >= floor`. That identity is
+wrong wherever the ternary input crossbar binds, which is every many-feature
+design measured: the crossbar allocates per key FIELD and byte-rounds each
+one, so a 13-field 84-bit key really presents 16 bytes = 3 blocks where
+band_factor says 2. It looked right for years only because on few wide fields
+byte-rounding is nearly a no-op. band_factor survives here as one ARM of
+ternary_block_factor and in src/reporting/replay_scoring.py's legacy columns;
+it no longer gates anything.
 
-The byte-domain functions below are the twin quantities for the ternary crossbar
-budget, stepping on the 64-byte per-stage cap instead of the 44-bit block. The
-key distinction from block-domain arithmetic is that key width is per-feature
-and byte-quantised: a bit is worth 0 or a whole byte depending only on where
-that feature's width sits modulo 8, not a constant value across the payload.
+The byte-domain helpers below (byte_width, bits_to_next_byte, bits_to_reach,
+key_bytes_floor, pooled_key_bytes) are MORE central after the repair, not
+less: blocks now live in the byte domain too. The stage-domain twins that
+once sat beside them -- tables_per_stage, ternary_stages, stage_step_target,
+StageBudget -- are gone, because classification-pool stages are derivable
+from the block factor and step only when it steps (design 2026-09-07 §4.3,
+pinned by tests/test_resource_model_golden.py).
+
+Imports from p4gen only, so both threshold_alignment and the replay harness
+can use it without importing the mutation loop.
 """
-from src.p4gen.build_p4_script import (INFINITE, TCAM_BLOCK_KEY_LENGTH,
-                                       TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
-                                       TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
+from src.p4gen.build_p4_script import INFINITE, TCAM_BLOCK_KEY_LENGTH
 from src.p4gen.evaluation import (CODEWORD_KEY_OVERHEAD_BITS, band_factor,
                                   ternary_block_factor)
 
@@ -112,83 +121,6 @@ def bits_to_next_byte(width):
     return ((width - 1) % 8) + 1
 
 
-def tables_per_stage(key_bytes):
-    """Classification tables sharing one stage at this key width.
-
-    Both per-stage caps: the 64-byte crossbar budget, and the 8-table hard cap
-    that binds at 8 bytes and narrower. Never returns 0 -- a key wider than a
-    whole stage is rejected outright by evaluation.CrossbarKeyTooWide, not
-    packed zero-per-stage, and callers divide by it.
-
-    key_bytes <= 0 -- every classification table's key is genuinely empty,
-    which happens whenever neither forest split on any feature at all (a
-    real, reachable Optuna sample: e.g. min_samples_leaf close to n_samples
-    yields single-leaf trees) -- costs nothing on the byte budget, so only
-    the table-count cap binds. This is not a guess: crossbar_stages_needed's
-    own load() (evaluation.py) computes width / TERNARY_CROSSBAR_MAX_BYTES_
-    PER_STAGE, which is exactly 0 at width 0, leaving the
-    1 / TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE term as the only bound -- so
-    this is the real packer's own treatment of a 0-byte key, not a policy
-    invented here.
-    """
-    if key_bytes <= 0:
-        return TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
-    return min(TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
-               max(1, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE // key_bytes))
-
-
-def ternary_stages(key_bytes, n_tables):
-    """Stages the classification pool occupies: ceil(T / tables_per_stage(B)).
-
-    The byte-domain counterpart of band_factor -- the step function alignment
-    is stepping down.
-
-    STALE AS OF 2026-09-05, DELIBERATELY NOT CHANGED HERE. This function no
-    longer agrees with evaluation.crossbar_stages_needed, and the reason is
-    the sentence it used to rely on: every classification table keys on the
-    SAME set of per-feature fields. That was read as "they all share one
-    width" (so w tables cost w * B bytes); the real Ternary Match Input
-    crossbar charges per distinct FIELD, so they all share the same BYTES and
-    w tables cost B, not w * B. Measured over 19 real compiles -- e.g.
-    joint_low_sd7's stage 7 holds four 32-byte tables and the compiler
-    reports 32 crossbar bytes, not 128. evaluation.crossbar_stages_needed now
-    takes key_fields and models this; this function still divides by
-    key_bytes, so it over-counts classification stages, by a lot at wide
-    codewords (B = 41 gives 1 table/stage here where the hardware fits at
-    least 2 and the crossbar allows 8).
-
-    The consequence is not local: stage_step_target and everything built on
-    it aim threshold alignment at a `64 // key_bytes` step boundary that the
-    hardware does not have. Correcting it would change what alignment spends
-    accuracy on and therefore the campaign's own results, so it is a call for
-    the thesis, not a drive-by fix. Pinned as-is by
-    tests/test_threshold_alignment.py's E1b tests.
-    """
-    return -(-n_tables // tables_per_stage(key_bytes))
-
-
-def stage_step_target(key_bytes, n_tables):
-    """Largest key width that strictly reduces ternary_stages, or None.
-
-    Walks forward to the first fit that genuinely PAYS rather than aiming at
-    the next packing step: at T=4, B=30 it returns 16 (fit 4), because the
-    2->3 crossing leaves ceil(4/2) == ceil(4/3) == 2; at T=6, B=30 it returns
-    21, because there the same crossing IS worth a stage. A T-blind
-    64 // (tables_per_stage(B) + 1) returns 21 in both, authorising accuracy
-    spending for a target that provably cannot change depth.
-
-    None has one meaning everywhere: nothing this objective can buy. It covers
-    the already-at-one-stage case (an absolute floor no byte shedding can
-    breach) and the cap-exhausted case. Callers treat None as 'do not spend'.
-    """
-    now = ternary_stages(key_bytes, n_tables)
-    if now <= 1:
-        return None
-    for fit in range(tables_per_stage(key_bytes) + 1,
-                     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE + 1):
-        if -(-n_tables // fit) < now:
-            return TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE // fit
-    return None
 
 
 def _pooled_widths(intervals1, intervals2):
@@ -303,45 +235,6 @@ def bits_to_reach(pooled_widths, own_floors, target_bytes):
     return sum(costs[:need]) if need <= len(costs) else None
 
 
-class BandBudget:
-    """Decides, per candidate, whether alignment may spend accuracy.
-
-    The C1 rule: spend the configured tolerance only while the next-cheaper
-    band is still reachable (`band_target(L) >= floor`), otherwise judge
-    candidates at delta = 0.0 and keep collecting the free moves. Reachability
-    is NECESSARY, not sufficient -- the candidate generator can still run dry
-    before the band is crossed, which is what threshold_alignment's
-    align_with_policy rollback exists to undo.
-    """
-
-    def __init__(self, codeword_length, floor, delta_rel):
-        self.length = codeword_length
-        self.floor = floor
-        self.delta_rel = delta_rel
-        self.spent_budget = False
-        self._start_factor = band_factor(codeword_length)
-
-    def spending(self):
-        return band_target(self.length) >= self.floor
-
-    def delta_for_candidate(self):
-        """The delta the NEXT candidate is judged by. Records that real budget
-        was offered -- a delta of exactly 0.0 gives nothing away and does not
-        count, or S3's wasted-bit share would be uninterpretable."""
-        if not self.spending():
-            return 0.0
-        if self.delta_rel is None or self.delta_rel > 0.0:
-            self.spent_budget = True
-        return self.delta_rel
-
-    def note_shed(self, bits):
-        """Record an accepted move's realised shed, so the next reachability
-        test sees the current length."""
-        self.length -= bits
-
-    def crossed_band(self):
-        return band_factor(self.length) < self._start_factor
-
 
 class BlockBudget:
     """Decides, per candidate, whether alignment may spend accuracy.
@@ -415,49 +308,3 @@ class BlockBudget:
         """Did this run buy a block? Compared against the factor at ENTRY --
         never against the floor, which is what could still be reached."""
         return self.factor() < self._start_factor
-
-
-class StageBudget:
-    """Decides, per candidate, whether alignment may spend accuracy for a
-    STAGE step -- the byte-domain twin of BandBudget.
-
-    A separate object rather than a mode on BandBudget, because a pair can be
-    one bit from a cheaper block band and twelve bytes from a cheaper stage
-    step, or the reverse. It has no `gated` flag: BandBudget carried one only
-    for the deleted 'legacy' policy, and this class never had that history.
-
-    n_tables is constant for the whole run -- alignment relocates thresholds
-    and never changes the forests -- so it is passed once and never updated,
-    unlike key_bytes, which note_shed_bytes decrements so spending() can
-    change state mid-run.
-    """
-
-    def __init__(self, key_bytes, floor, delta_rel, n_tables):
-        self.key_bytes = key_bytes
-        self.floor = floor
-        self.delta_rel = delta_rel
-        self.n_tables = n_tables
-        self.spent_budget = False
-        self._start_stages = ternary_stages(key_bytes, n_tables)
-
-    def spending(self):
-        target = stage_step_target(self.key_bytes, self.n_tables)
-        return target is not None and target >= self.floor
-
-    def delta_for_candidate(self):
-        """The delta the NEXT candidate is judged by. Records that real budget
-        was offered -- a delta of exactly 0.0 gives nothing away and does not
-        count, on identical terms to BandBudget."""
-        if not self.spending():
-            return 0.0
-        if self.delta_rel is None or self.delta_rel > 0.0:
-            self.spent_budget = True
-        return self.delta_rel
-
-    def note_shed_bytes(self, n_bytes):
-        """Record an accepted move's realised byte shed, so the next
-        reachability test sees the current width."""
-        self.key_bytes -= n_bytes
-
-    def crossed_step(self):
-        return ternary_stages(self.key_bytes, self.n_tables) < self._start_stages
