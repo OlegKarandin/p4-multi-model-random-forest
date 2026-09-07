@@ -122,8 +122,11 @@ def test_overlap_is_swept_on_the_aligned_joint_arms_only():
 
 
 def test_align_objective_stays_at_blocks_on_every_arm():
-    """Design §2.3: 'both' is real but narrow (11 of 50 replay cells, ~1.82x
-    cost) and adds a third factor to a design already gaining one."""
+    """Trivially true since design 2026-09-07 §4.3 retired 'stages' and
+    'both' -- 'blocks' is now the only value ALIGN_OBJECTIVES has. Kept as a
+    guard against the campaign grid ever passing an explicit align_objective
+    that would then need its own arm-slug handling (see
+    test_align_objective_does_not_enter_the_arm_slug)."""
     from src.main import select_arms
 
     assert {cfg.align_objective for _, cfg in select_arms('all')} == {'blocks'}

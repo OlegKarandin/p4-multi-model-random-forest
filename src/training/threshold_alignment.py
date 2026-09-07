@@ -1,19 +1,16 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
-from src.p4gen.evaluation import band_factor
-from src.training.align_budget import (BlockBudget, StageBudget, _factor,
+from src.training.align_budget import (BlockBudget, _factor,
                                        _own_floor_widths,
                                        _pooled_widths,
                                        bits_to_next_byte, bits_to_reach,
-                                       byte_width, codeword_floor,
+                                       codeword_floor,
                                        key_bytes_floor, pooled_interval_count,
-                                       pooled_key_bytes, stage_step_target,
-                                       ternary_stages)
+                                       pooled_key_bytes)
 from src.training.align_targets import (boundary_moves, candidate_targets,
                                         hypothetical_ranges, neighbour_writes)
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
-import collections
 import copy
 import sklearn
 import numpy as np
@@ -57,19 +54,18 @@ import numpy as np
 MAX_RECOMPUTE_ROUNDS = 32
 
 
-# What the shed bits are AIMED at -- an objective axis, not another policy
-# name. The two concerns were always independent: 'blocks' is today's
-# behaviour and the default everywhere, 'stages' aims at the step that
-# reduces ceil(T / floor(64/B)), and 'both' runs BOTH orderings, rolls each
-# back independently, and keeps whichever ranks better (_rank_key). Only
-# align_with_policy understands 'both'; align_rf_thresholds validates against
-# _SINGLE_PASS_OBJECTIVES.
-ALIGN_OBJECTIVES = ('blocks', 'stages', 'both')
-
-# The objectives a SINGLE alignment pass can run. 'both' is not one of them:
-# one pass uses one feature order, so 'both' only ever made sense one layer
-# up, in align_with_policy, which expands it into these two.
-_SINGLE_PASS_OBJECTIVES = ('blocks', 'stages')
+# The alignment objective. Single-valued since the 2026-09-07 cost-model
+# repair: 'stages' and 'both' are retired because classification-pool stages
+# are DERIVABLE from the block factor (design §4.3, pinned by
+# tests/test_resource_model_golden.py::
+# test_classification_stages_are_derivable_from_the_block_factor). The two
+# objectives existed because blocks stepped on a plain bit sum while stages
+# stepped on byte-quantised key width; the crossbar finding moved blocks into
+# the byte domain too, the domains merged, and with them the justification.
+#
+# Kept as a tuple, and TrainConfig.align_objective kept as a field, so every
+# config and manifest that recorded 'blocks' still loads unchanged.
+ALIGN_OBJECTIVES = ('blocks',)
 
 
 def feature_order(intervals1, intervals2, objective, *, widths=None, floors=None):
@@ -231,10 +227,9 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
     old_range, new_range) whenever nothing has mutated `ranges1`/`ranges2` in
     between (true here: only an ACCEPTED move mutates them, and the caller's
     loop over `ranked` stops at the first accept). Handing both numbers back
-    lets the caller's post-acceptance shed bookkeeping (BlockBudget.note_shed,
-    StageBudget.note_shed_bytes) read counts already paid for while ranking,
-    instead of recomputing pooled_interval_count a second time around the
-    mutation it predicted.
+    lets the caller's post-acceptance shed bookkeeping (BlockBudget.note_shed)
+    read counts already paid for while ranking, instead of recomputing
+    pooled_interval_count a second time around the mutation it predicted.
     """
     before = pooled_interval_count(ranges1, ranges2)
     scored = []
@@ -266,69 +261,9 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
     return before, [(target, after) for _, _, _, target, after in scored]
 
 
-# §2.2: the read-heavy setup align_rf_thresholds does before its first
-# candidate. It depends only on the ORIGINAL, unaligned forests and the
-# validation data -- never on feature order or delta_rel -- so two runs over
-# the same pair can share it instead of each paying for it.
-#
-# Safe to build from the caller's forests and use inside a deep copy of them:
-# build_threshold_index returns (feature_idx, threshold) -> [(tree_idx,
-# node_idx)] and build_prediction_cache returns an array plus (tree_idx,
-# node_idx) -> sample indices. Every one of those is pure index/value data
-# holding NO reference to an estimator object, so it stays valid for any
-# structurally-identical copy. Had any of them held estimator references this
-# sharing would be unsound.
-_SharedSetup = collections.namedtuple('_SharedSetup', [
-    'X_val1', 'X_val2', 'sorted_cols1', 'sorted_cols2',
-    'threshold_index1', 'threshold_index2', 'intervals1', 'intervals2',
-    'tree_predictions1', 'tree_predictions2',
-    'node_to_samples1', 'node_to_samples2'])
-
-
-def _build_shared_setup(rf1, rf2, X_val1, X_val2):
-    """The objective-independent half of align_rf_thresholds' setup.
-
-    Read-only with respect to rf1/rf2 -- it never mutates the caller's
-    forests, so C8's guarantee is unaffected.
-    """
-    X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
-    X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
-    with sklearn.config_context(assume_finite=True):
-        tree_predictions1, node_to_samples1 = build_prediction_cache(rf1, X_val1)
-        tree_predictions2, node_to_samples2 = build_prediction_cache(rf2, X_val2)
-    return _SharedSetup(
-        X_val1=X_val1, X_val2=X_val2,
-        sorted_cols1=np.sort(X_val1, axis=0), sorted_cols2=np.sort(X_val2, axis=0),
-        threshold_index1=build_threshold_index(rf1),
-        threshold_index2=build_threshold_index(rf2),
-        intervals1=extract_feature_intervals(rf1),
-        intervals2=extract_feature_intervals(rf2),
-        tree_predictions1=tree_predictions1, tree_predictions2=tree_predictions2,
-        node_to_samples1=node_to_samples1, node_to_samples2=node_to_samples2)
-
-
-def _thaw(state):
-    """Per-arm mutable copies of `state`'s mutable members.
-
-    tree_predictions is mutated IN PLACE by update_cache_for_modifications, so
-    it needs a real array copy. node_to_samples' values are REPLACED rather
-    than mutated (see update_cache_for_modifications and undo_cache_update),
-    so a shallow dict copy isolates an arm correctly. threshold_index's and
-    intervals' list values are both mutated, so each list is copied. X_val and
-    sorted_cols are read-only and are shared as they are.
-    """
-    copy_of_lists = lambda d: {k: list(v) for k, v in d.items()}
-    return (copy_of_lists(state.threshold_index1),
-            copy_of_lists(state.threshold_index2),
-            copy_of_lists(state.intervals1), copy_of_lists(state.intervals2),
-            state.tree_predictions1.copy(), state.tree_predictions2.copy(),
-            dict(state.node_to_samples1), dict(state.node_to_samples2))
-
-
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
-                        candidate_log=None, *, align_objective='blocks',
-                        _state=None):
+                        candidate_log=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -341,21 +276,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
-    align_objective : one of _SINGLE_PASS_OBJECTIVES, default 'blocks'
-        What the shed bits are aimed at. 'blocks' is the pre-existing
-        behaviour exactly. 'stages' orders features so that bits complete
-        whole crossbar bytes, and spends the tolerance while a paying stage
-        step is still reachable. 'both' is not accepted here -- only
-        align_with_policy understands it, expanding it into one run of each
-        single-pass objective and keeping whichever ranks better.
-    _state : INTERNAL. A _SharedSetup from _build_shared_setup, or None.
-        None -- the default and what every public caller passes -- builds the
-        setup from scratch, exactly as before. Given, the objective-independent
-        setup is taken from it (cheap per-arm copies) instead of rebuilt. Exists
-        only so align_with_policy can share one build across the two arms of
-        align_objective='both'; it is a performance parameter and must never be
-        observable in the result (pinned by
-        test_the_shared_state_path_is_observationally_identical).
 
     Returns:
     --------
@@ -364,9 +284,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         only way to get the aligned models; discarding it discards the
         alignment.
     """
-    if align_objective not in _SINGLE_PASS_OBJECTIVES:
-        raise ValueError('align_objective must be one of {}, got {!r}'.format(
-            _SINGLE_PASS_OBJECTIVES, align_objective))
     # C8: deepcopy before anything below reads or mutates rf1/rf2, and
     # specifically before build_prediction_cache -- its tree_predictions feed
     # IncrementalMetrics' vote matrix, so if the copy happened after that
@@ -377,48 +294,39 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     rf1 = copy.deepcopy(rf1)
     rf2 = copy.deepcopy(rf2)
 
-    if _state is None:
-        # Cast ONCE. estimator.predict / decision_path each run
-        # check_array(X, dtype=np.float32) internally, and the arrays arriving from
-        # feature_selection are float64 -- so without this every one of the
-        # thousands of calls below re-casts and re-copies.
-        #
-        # Exactly value-preserving for this project's data: after
-        # dt_thresholds_float_to_int every threshold is an integer, and every
-        # feature value is an integer clipped at INFINITE = 65535 -- both far below
-        # float32's 2**24 exact-integer limit. Local copies, so the caller's arrays
-        # are untouched.
-        X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
-        X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
+    # Cast ONCE. estimator.predict / decision_path each run
+    # check_array(X, dtype=np.float32) internally, and the arrays arriving from
+    # feature_selection are float64 -- so without this every one of the
+    # thousands of calls below re-casts and re-copies.
+    #
+    # Exactly value-preserving for this project's data: after
+    # dt_thresholds_float_to_int every threshold is an integer, and every
+    # feature value is an integer clipped at INFINITE = 65535 -- both far below
+    # float32's 2**24 exact-integer limit. Local copies, so the caller's arrays
+    # are untouched.
+    X_val1 = np.ascontiguousarray(X_val1, dtype=np.float32)
+    X_val2 = np.ascontiguousarray(X_val2, dtype=np.float32)
 
-        # One sort per model, for shift_mass. Under C2 this is no longer
-        # diagnostic: it is how a candidate's predicted damage is priced, so it
-        # must be available whenever the policy ranks targets. One np.sort per
-        # model against a ~550 ms fit -- negligible. Per-model is correct: damage
-        # to rf1 depends on X_val1's distribution, not X_val2's. Feature indices
-        # line up -- trees are fit on X_*_train[:, remaining] and validated on
-        # X_*_val[:, remaining], the same column space.
-        sorted_cols1 = np.sort(X_val1, axis=0)
-        sorted_cols2 = np.sort(X_val2, axis=0)
+    # One sort per model, for shift_mass. Under C2 this is no longer
+    # diagnostic: it is how a candidate's predicted damage is priced, so it
+    # must be available whenever the policy ranks targets. One np.sort per
+    # model against a ~550 ms fit -- negligible. Per-model is correct: damage
+    # to rf1 depends on X_val1's distribution, not X_val2's. Feature indices
+    # line up -- trees are fit on X_*_train[:, remaining] and validated on
+    # X_*_val[:, remaining], the same column space.
+    sorted_cols1 = np.sort(X_val1, axis=0)
+    sorted_cols2 = np.sort(X_val2, axis=0)
 
-        threshold_index1 = build_threshold_index(rf1)
+    threshold_index1 = build_threshold_index(rf1)
 
-        threshold_index2 = build_threshold_index(rf2)
+    threshold_index2 = build_threshold_index(rf2)
 
-        intervals1 = extract_feature_intervals(rf1)
-        intervals2 = extract_feature_intervals(rf2)
+    intervals1 = extract_feature_intervals(rf1)
+    intervals2 = extract_feature_intervals(rf2)
 
-        with sklearn.config_context(assume_finite=True):
-            tree_predictions1, node_to_samples1 = build_prediction_cache(rf1, X_val1)
-            tree_predictions2, node_to_samples2 = build_prediction_cache(rf2, X_val2)
-    else:
-        # Shared with the other arm: read-only members are used as they are,
-        # mutable ones are copied so this pass cannot corrupt the other's.
-        X_val1, X_val2 = _state.X_val1, _state.X_val2
-        sorted_cols1, sorted_cols2 = _state.sorted_cols1, _state.sorted_cols2
-        (threshold_index1, threshold_index2, intervals1, intervals2,
-         tree_predictions1, tree_predictions2,
-         node_to_samples1, node_to_samples2) = _thaw(_state)
+    with sklearn.config_context(assume_finite=True):
+        tree_predictions1, node_to_samples1 = build_prediction_cache(rf1, X_val1)
+        tree_predictions2, node_to_samples2 = build_prediction_cache(rf2, X_val2)
 
     # The per-model metric state -- vote matrix, per-sample winner, confusion
     # matrix -- seeded from the initial predictions. Only needed for the
@@ -465,54 +373,40 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['codeword_floor'] = codeword_floor(intervals1, intervals2)
     stats['rolled_back'] = False
 
-    # The byte domain, recorded unconditionally. T is the number of
-    # classification tables -- one per tree, both models
-    # (build_p4_script.py:636-659) -- and is constant for the run, since
-    # alignment relocates thresholds and never changes the forests.
-    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
+    # The byte domain, recorded unconditionally.
     stats['key_bytes_before'] = pooled_key_bytes(intervals1, intervals2)
     stats['key_bytes_floor'] = key_bytes_floor(intervals1, intervals2)
-    stats['ternary_stages_before'] = ternary_stages(stats['key_bytes_before'],
-                                                    n_tables)
-    stats['stage_target'] = stage_step_target(stats['key_bytes_before'], n_tables)
-    # §4.1: computed unconditionally at entry. They were already built on the
-    # stage_target path; the BLOCK factor needs them on every path, because the
-    # version-block charge is a function of the width MULTISET and cannot be
-    # recovered from any scalar (design §1.3). Cheap either way -- one pass over
-    # at most ~15 features.
+    # §4.1: computed unconditionally at entry. The BLOCK factor needs them on
+    # every path, because the version-block charge is a function of the width
+    # MULTISET and cannot be recovered from any scalar (design §1.3). Cheap
+    # either way -- one pass over at most ~15 features.
     pooled_widths = _pooled_widths(intervals1, intervals2)
     own_floor_widths = _own_floor_widths(intervals1, intervals2)
 
     # §4.6. The per-table block factor at entry, at exit (below), and at the
     # floor -- the best any alignment of this pair could reach, since a common
-    # feature's pooled width can never drop below max(own1, own2). Nothing
-    # reads these yet; the gate starts consuming them in the gate-repair task.
+    # feature's pooled width can never drop below max(own1, own2).
     stats['blocks_before'] = _factor(pooled_widths)
     stats['blocks_floor'] = _factor(own_floor_widths)
 
+    # §4.6. bits_to_reach survives, aimed at the next cheaper BLOCK factor
+    # instead of the retired stage step. A factor of f - 1 is fed by f - 1
+    # crossbar groups of 5.5 bytes each, so it needs key_bytes <=
+    # (11 * (f - 1)) // 2. Still a documented LOWER BOUND, and now doubly so:
+    # version_block_penalty can hold the factor up past that width, and the
+    # cheapest bits are not necessarily the least damaging ones. Reported,
+    # never enforced -- no run is skipped on it.
+    block_target = (11 * (stats['blocks_before'] - 1)) // 2
     stats['bits_to_reach'] = (
-        bits_to_reach(pooled_widths, own_floor_widths, stats['stage_target'])
-        if stats['stage_target'] is not None else None)
+        bits_to_reach(pooled_widths, own_floor_widths, block_target)
+        if stats['blocks_before'] > 1 else None)
 
     # §4.1. The budget prices what ResourceUsage charges: the per-table block
     # factor over the pooled width dict, gated against the floor width vector
     # -- the best case any alignment of this pair could reach.
     budget = BlockBudget(pooled_widths, own_floor_widths, delta_rel)
 
-    stage_budget = None
-    if align_objective != 'blocks':
-        stage_budget = StageBudget(stats['key_bytes_before'],
-                                   stats['key_bytes_floor'], delta_rel, n_tables)
-
-    # 'stages' with no target has nothing to chase, so it falls back to the
-    # block order rather than reordering for a step that cannot be bought.
-    # 'both' is not reachable here -- align_with_policy expands it into two
-    # runs of this function, one per single-pass objective (§2.1).
-    order_objective = align_objective
-    if align_objective == 'stages' and stats['stage_target'] is None:
-        order_objective = 'blocks'
-
-    sorted_features = feature_order(intervals1, intervals2, order_objective,
+    sorted_features = feature_order(intervals1, intervals2, 'blocks',
                                     widths=pooled_widths, floors=own_floor_widths)
 
     for feature_idx in sorted_features:
@@ -614,19 +508,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
                     stats['attempted'] += 1
 
-                    # Spending is the OR of the two budgets. BandBudget closes
-                    # EXACTLY when a band is crossed -- i.e. just after
-                    # shedding ~44 bits, which is when a byte is most likely
-                    # to be one or two bits away. Measured on real runs: the
-                    # band gate is closed while a byte is still reachable in
-                    # 1 of 24 cells at entry but 6 of 24 at exit, and one of
-                    # those six carries ~19% of the whole grid's stage
-                    # opportunity. Evaluating this at entry would have cut the
-                    # gate as dead weight.
                     effective_delta = budget.delta_for_candidate()
-                    if (stage_budget is not None and effective_delta == 0.0
-                            and delta_rel != 0.0):
-                        effective_delta = stage_budget.delta_for_candidate()
 
                     # IncrementalMetrics' ordering contract: apply reads the NEW
                     # per-tree predictions out of tree_predictions and the OLD
@@ -708,14 +590,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         feature_idx, threshold_index2)
 
                     budget.note_shed(feature_idx, pooled_before - pooled_after)
-                    if stage_budget is not None:
-                        # An interval list holds one more entry than it has
-                        # thresholds, so the width is the count minus one.
-                        # Only this feature moved, so only its byte-rounded
-                        # width can have changed.
-                        stage_budget.note_shed_bytes(
-                            byte_width(pooled_before - 1)
-                            - byte_width(pooled_after - 1))
 
                     # First acceptance wins: the ranking already put the
                     # cheapest admissible corner first, and the tuples this
@@ -746,10 +620,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['key_bytes_after'] = pooled_key_bytes(intervals1_after, intervals2_after)
     stats['blocks_after'] = _factor(_pooled_widths(intervals1_after,
                                                    intervals2_after))
-    stats['ternary_stages_after'] = ternary_stages(stats['key_bytes_after'],
-                                                   n_tables)
-    stats['spent_budget'] = budget.spent_budget or (
-        stage_budget is not None and stage_budget.spent_budget)
+    stats['spent_budget'] = budget.spent_budget
 
     # §2.4: what this run gave away, in the same units accept_alignment uses,
     # priced as a MAX across the four metrics rather than a sum or a mean --
@@ -1251,8 +1122,8 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
         threshold_index[(feature_idx, new_threshold)] = nodes
 
 
-def crossed_a_boundary(stats, objective, n_tables):
-    """Did this run buy anything the objective was aiming at?
+def crossed_a_boundary(stats):
+    """Did this run buy a cheaper block factor?
 
     Compares the per-table BLOCK FACTOR, not the codeword band. The band was
     the wrong step function wherever the crossbar arm binds -- which is every
@@ -1260,79 +1131,45 @@ def crossed_a_boundary(stats, objective, n_tables):
     both directions: a band crossing that bought no block kept a run that spent
     accuracy for nothing, and a real block saving that crossed no band got the
     whole run discarded.
-
-    The stage arm below is retired with the 'stages' objective; until then it
-    is unchanged.
     """
-    if stats['blocks_after'] < stats['blocks_before']:
-        return True
-    if objective == 'blocks':
-        return False
-    return (ternary_stages(stats['key_bytes_after'], n_tables)
-            < ternary_stages(stats['key_bytes_before'], n_tables))
+    return stats['blocks_after'] < stats['blocks_before']
 
 
-def _rank_key(stats, objective):
-    """§2.4: how 'both' picks between two rollback-corrected arms.
+def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
+                      overlap_threshold=0.5, delta_rel=0.0,
+                      align_stats=None, candidate_log=None):
+    """align_rf_thresholds with C1's commit-or-rollback guarantee.
 
-    Stages, then blocks, then accuracy, then a fixed tiebreak. That priority
-    follows the recorded cost model rather than taste: block headroom is
-    large and rarely binds, while the 64-byte ternary crossbar cap typically
-    does, so a stage saved is worth preferring over a block saved where the
-    two trade off. accuracy_spent lands last because it separates two arms
-    that reached the SAME place -- which is exactly the gap measured at
-    (M=25, k=9), where both objectives crossed the identical block boundary
-    and one paid 1.64pp more app accuracy for it.
+    `factor(current) > factor(floor)` proves a cheaper block factor is
+    REACHABLE, not that it will be REACHED: the candidate generator can run dry
+    mid-flight, leaving a run that paid accuracy and bought nothing -- exactly
+    the waste C1 exists to remove. So: run at the configured delta; if budget
+    was genuinely spent and the run bought no block (`crossed_a_boundary`),
+    discard that result and re-run the same pair at delta = 0, keeping only the
+    free moves.
 
-    The blocks tier compares band_factor(codeword_after), never raw
-    codeword_after -- band_factor is the step function blocks actually costs
-    against (crossed_a_boundary, one function above, already compares it this
-    way). Two arms can differ in raw codeword_after while sitting in the
-    identical band, in which case neither spent bits on anything a real
-    joint_blocks count would ever see; ranking on the raw value there would
-    let 'both' spend real accuracy_spent to win a purely cosmetic codeword
-    difference. Measured directly in the 2026-08-31 replay validation: all 9
-    of its codeword-differing cells shared one band_factor on both sides, so
-    joint_blocks never moved in any of them.
+    A whole-function retry rather than in-loop state surgery, because
+    align_rf_thresholds is already a pure function of (models, validation data,
+    params) and already deep-copies its inputs (C8) -- so re-running it from
+    the caller's untouched forests IS the rollback. Cost is 2x alignment
+    runtime on exactly the runs where the speculation failed, 1x everywhere
+    else.
 
-    The trailing constant is not decoration: on an exact tie the run must
-    still be deterministic, because train_model.py:373-377 refits the winning
-    trial rather than caching it. Same reason feature_order carries a trailing
-    feature index and _rank_targets carries generation order.
+    Keeping a "best intermediate state" instead was considered and rejected
+    (design §4.5): a run that bought no block bought nothing by definition, so
+    there is nothing to keep, and the accuracy is better returned.
     """
-    return (stats['ternary_stages_after'],
-            band_factor(stats['codeword_after']),
-            stats['accuracy_spent'],
-            0 if objective == 'blocks' else 1)
-
-
-def _run_one_arm(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *, objective,
-                 overlap_threshold, delta_rel, state, candidate_log):
-    """One objective's complete commit-or-rollback cycle, on a fresh stats dict.
-
-    This is align_with_policy's original body verbatim, parameterised by which
-    single-pass objective to run and which shared setup to run it against.
-    Extracted so align_objective='both' can invoke it twice and get two
-    independently rollback-corrected results -- §2.3's ordering constraint:
-    correct each arm FIRST, rank SECOND. Ranking speculative results would let
-    an arm that spent accuracy and crossed nothing win on paper, which is
-    precisely the failure C1's rollback exists to prevent, moved one level up.
-    """
-    stats = {}
+    stats = align_stats if align_stats is not None else {}
+    stats.clear()
     speculative = align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         overlap_threshold=overlap_threshold, delta_rel=delta_rel,
-        align_stats=stats, candidate_log=candidate_log,
-        align_objective=objective, _state=state)
+        align_stats=stats, candidate_log=candidate_log)
 
-    if not stats['spent_budget']:
-        return speculative, stats
+    if not stats['spent_budget'] or crossed_a_boundary(stats):
+        return speculative
 
-    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
-    if crossed_a_boundary(stats, objective, n_tables):
-        return speculative, stats
-
-    # Spent and crossed nothing. Redo at delta = 0 and keep THAT.
+    # Spent and bought nothing. Redo at delta = 0 and keep THAT.
     if candidate_log is not None:
         # The speculative run's candidates never happened as far as the
         # returned models are concerned, so its log must not be reported
@@ -1342,144 +1179,6 @@ def _run_one_arm(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *, objective,
     result = align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         overlap_threshold=overlap_threshold, delta_rel=0.0,
-        align_stats=stats, candidate_log=candidate_log,
-        align_objective=objective, _state=state)
+        align_stats=stats, candidate_log=candidate_log)
     stats['rolled_back'] = True
-    return result, stats
-
-
-def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
-                      overlap_threshold=0.5, delta_rel=0.0,
-                      align_stats=None, candidate_log=None,
-                      align_objective='blocks'):
-    """align_rf_thresholds with C1's commit-or-rollback guarantee.
-
-    `band_target(L) >= floor` (and its stage-domain counterpart) proves the
-    next boundary is REACHABLE, not that it will be REACHED: the candidate
-    generator can run dry mid-flight, leaving a run that paid accuracy and
-    bought nothing -- exactly the waste C1 exists to remove, just narrower.
-    So: run at the configured delta; if budget was genuinely spent and the
-    run crossed no boundary the objective was aiming at
-    (`crossed_a_boundary`), discard that result and re-run the same pair at
-    delta = 0, keeping only the free moves.
-
-    align_objective : one of ALIGN_OBJECTIVES, default 'blocks'. For 'blocks'
-        and 'stages' it is forwarded unchanged to align_rf_thresholds (via
-        _run_one_arm) on both the speculative and (if needed) the delta=0
-        rerun, and it also decides what "crossed a boundary" means here:
-        under 'blocks' only a block-band drop keeps the speculative run;
-        under 'stages' a stage step ALSO keeps it, even without a band drop
-        (crossed_a_boundary does the check). For 'both', align_with_policy
-        never forwards 'both' itself down to align_rf_thresholds -- it
-        expands it into two single-pass runs, one 'blocks' and one 'stages',
-        each independently taken through the same commit-or-rollback cycle
-        described below; see the dual-run paragraph.
-
-    This is a whole-function retry rather than in-loop state surgery because
-    align_rf_thresholds is already a pure function of (models, validation data,
-    params) and already deep-copies its inputs (C8), so re-running it from the
-    caller's untouched forests IS the rollback. For a single-pass objective
-    ('blocks' or 'stages') cost is 2x alignment runtime on exactly the runs
-    where the speculation failed, and 1x everywhere else. For 'both', cost is
-    roughly 2x baseline -- one shared setup, then two arms each run once --
-    and can climb higher still if either arm also needs its own delta=0
-    retry; the shared setup is what keeps this near 2x rather than 3-4x, and
-    a Task 8 validation replay measured it at ~1.82-1.84x in practice.
-
-    Under 'both', align_with_policy builds one shared setup
-    (_build_shared_setup) from the caller's untouched forests and runs BOTH
-    'blocks' and 'stages' against it as independently rollback-corrected arms
-    via _run_one_arm -- each arm gets its own commit-or-rollback cycle, so
-    neither can win by comparison alone against a speculative result that
-    spent accuracy and crossed nothing (see _run_one_arm's docstring). The two
-    corrected arms are then ranked by _rank_key (stages, then block cost,
-    then accuracy spent, then a fixed tiebreak) and the winner is returned.
-
-    Makes "accuracy is never spent for nothing" a property of the code rather
-    than a measured hope: a run that paid the configured tolerance but crossed
-    none of the boundaries its objective was aiming at is discarded and
-    replaced by the free-moves-only result, regardless of which policy,
-    objective, or criterion is doing the measuring. The winning stats also
-    always carry 'objective_used' (which single-pass objective produced the
-    returned result -- for 'blocks'/'stages' this is just align_objective
-    itself; for 'both' it is whichever arm won) and 'arms_differed' (whether
-    the two arms actually reached different end states, or a 'both' run just
-    paid twice to re-derive the answer a single objective would have given
-    for free) -- set on every objective, not just 'both', so a campaign
-    comparing runs across objectives always has something to read.
-    """
-    stats = align_stats if align_stats is not None else {}
-
-    if align_objective != 'both':
-        result, arm_stats = _run_one_arm(
-            rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-            objective=align_objective, overlap_threshold=overlap_threshold,
-            delta_rel=delta_rel, state=None, candidate_log=candidate_log)
-        stats.clear()
-        stats.update(arm_stats)
-        stats['objective_used'] = align_objective
-        stats['arms_differed'] = False
-        return result
-
-    # §2.2: one setup build, shared by both arms. Built from the caller's
-    # ORIGINAL, untouched forests -- each arm still deep-copies them itself.
-    state = _build_shared_setup(rf1, rf2, X_val1, X_val2)
-
-    # 'stages' cannot buy anything a 'blocks' run wouldn't already reach when
-    # stage_step_target is already None for the UNTOUCHED pair -- and when it
-    # is, running that arm is not merely wasted spend, it is a guaranteed
-    # bit-for-bit duplicate of 'blocks': align_rf_thresholds' own fallback
-    # sets order_objective = 'blocks' whenever stage_target is None at entry
-    # (same feature order both arms would use), and None is ABSORBING for the
-    # whole run after that -- shedding bytes only narrows the key further,
-    # and stage_step_target(B, T) is None only because ternary_stages(B, T)
-    # is already at its floor of 1 (shedding bytes cannot lower a stage count
-    # that low) or because no fit up to the 8-table cap improves on it
-    # (narrower B only ever raises fit, never lowers it), so StageBudget stays
-    # closed for every candidate. Verified on a narrow-key fixture: thresholds,
-    # stats and candidate_log came back identical between the two arms
-    # whenever this precondition held. Checked once, here, against the
-    # ORIGINAL forests -- not re-checked mid-run, since nothing about which
-    # arm runs may depend on an arm's own progress.
-    n_tables = len(rf1.estimators_) + len(rf2.estimators_)
-    objectives_to_run = _SINGLE_PASS_OBJECTIVES
-    if stage_step_target(pooled_key_bytes(state.intervals1, state.intervals2),
-                         n_tables) is None:
-        objectives_to_run = ('blocks',)
-
-    arms = {}
-    for objective in objectives_to_run:
-        # Each arm needs its own log: only the winner's candidates actually
-        # happened as far as the returned models are concerned.
-        arm_log = [] if candidate_log is not None else None
-        models, arm_stats = _run_one_arm(
-            rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-            objective=objective, overlap_threshold=overlap_threshold,
-            delta_rel=delta_rel, state=state, candidate_log=arm_log)
-        arms[objective] = (models, arm_stats, arm_log)
-    if 'stages' not in arms:
-        # Provably identical to 'blocks' (see above) -- alias rather than
-        # rerun, so the ranking and 'arms_differed' logic below need no
-        # special case for the skipped arm.
-        arms['stages'] = arms['blocks']
-
-    # Recorded before ranking, and it is the measurement §5 turns on: if the
-    # two arms never reach different end states, the dual run is paying twice
-    # to re-derive one answer and 'both' should not enter a campaign at all.
-    compared = ('codeword_after', 'key_bytes_after', 'ternary_stages_after',
-                'accuracy_spent')
-    blocks_stats, stages_stats = arms['blocks'][1], arms['stages'][1]
-    differed = any(blocks_stats[k] != stages_stats[k] for k in compared)
-
-    winner = min(_SINGLE_PASS_OBJECTIVES,
-                 key=lambda o: _rank_key(arms[o][1], o))
-    models, winning_stats, winning_log = arms[winner]
-
-    stats.clear()
-    stats.update(winning_stats)
-    stats['objective_used'] = winner
-    stats['arms_differed'] = differed
-    if candidate_log is not None:
-        del candidate_log[:]
-        candidate_log.extend(winning_log)
-    return models
+    return result

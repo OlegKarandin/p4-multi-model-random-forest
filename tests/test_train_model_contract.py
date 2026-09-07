@@ -120,33 +120,6 @@ def test_alignment_enabled_false_never_calls_align_with_policy(monkeypatch):
     assert calls == []
 
 
-def test_the_joint_arm_aligns_through_the_rollback_wrapper(monkeypatch):
-    """Design 2026-08-30 §2.7: the campaign called align_rf_thresholds
-    directly, so no campaign ever had C1's commit-or-rollback. Routing through
-    align_with_policy is what makes align_objective expressible at campaign
-    quality at all -- without it a rerun bakes 'blocks' into the new archive
-    and needs a second rerun to compare objectives."""
-    import src.training.train_model as tm
-
-    calls = []
-
-    def spy(rf1, rf2, *args, **kwargs):
-        calls.append(kwargs)
-        return rf1, rf2
-
-    monkeypatch.setattr(tm, 'align_with_policy', spy)
-
-    _call(encoding='joint',
-          cfg=TrainConfig(delta_align=0.05, overlap_threshold=0.4,
-                          align_objective='stages', n_trials=6,
-                          min_feasible_before_stop=2, lookback=2))
-
-    assert calls, 'alignment should have run in the joint arm'
-    assert all(c['align_objective'] == 'stages' for c in calls)
-    assert all(c['delta_rel'] == 0.05 for c in calls)
-    assert all(c['overlap_threshold'] == 0.4 for c in calls)
-
-
 def test_the_independent_arm_never_aligns(monkeypatch):
     """Alignment is a joint-arm treatment. Under disjoint encoding each model
     keeps its own intervals, so there is nothing to share."""

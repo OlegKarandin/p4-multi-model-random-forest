@@ -120,29 +120,27 @@ def test_unknown_encoding_is_rejected_by_overlap_threshold_label():
 
 
 def test_align_objective_defaults_to_blocks():
-    """Behaviour-preserving relative to the post-deletion code -- NOT relative
-    to the archive, which ran the since-deleted legacy path."""
     assert TrainConfig().align_objective == 'blocks'
 
 
-def test_an_unknown_align_objective_is_rejected_at_construction():
+@pytest.mark.parametrize('retired', ['stages', 'both', 'stage'])
+def test_the_retired_align_objectives_are_rejected(retired):
+    """Design 2026-09-07 §4.3: 'stages' and 'both' are gone. The FIELD stays,
+    so a config or manifest that recorded 'blocks' still loads unchanged, but
+    the validator now refuses the retired values rather than silently running
+    an objective that no longer exists."""
     with pytest.raises(ValueError, match='align_objective'):
-        TrainConfig(align_objective='stage')
-
-
-@pytest.mark.parametrize('objective', ['blocks', 'stages', 'both'])
-def test_every_declared_objective_constructs(objective):
-    assert TrainConfig(align_objective=objective).align_objective == objective
+        TrainConfig(align_objective=retired)
 
 
 def test_align_objective_does_not_enter_the_arm_slug():
     """Deliberate: the slug format is what load_backup's filename parsing and
-    every existing analysis read. Distinguishing objectives in the filename is
-    a campaign-design decision (design 2026-08-30 §6), not part of this
-    wiring -- a campaign sweeping two objectives would overwrite its own
-    output and must change the slug first."""
-    a = TrainConfig(delta_align=0.20, align_objective='blocks')
-    b = TrainConfig(delta_align=0.20, align_objective='stages')
+    every existing analysis read. ccp_alpha_max is a convenient stand-in field
+    that (like align_objective) plays no part in the slug -- a campaign
+    sweeping it would overwrite its own output and must change the slug
+    first."""
+    a = TrainConfig(delta_align=0.20, ccp_alpha_max=0.0)
+    b = TrainConfig(delta_align=0.20, ccp_alpha_max=0.01)
     assert a.arm_slug('joint') == b.arm_slug('joint') == 'joint-d020'
 
 

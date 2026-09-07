@@ -299,7 +299,7 @@
     "accepted": 18,
     "accuracy_spent": 0.0,
     "attempted": 30,
-    "bits_to_reach": 1,
+    "bits_to_reach": 4,
     "blocks_after": 2,
     "blocks_before": 3,
     "blocks_floor": 2,
@@ -312,10 +312,7 @@
     "key_bytes_before": 13,
     "key_bytes_floor": 8,
     "rolled_back": false,
-    "spent_budget": false,
-    "stage_target": 12,
-    "ternary_stages_after": 3,
-    "ternary_stages_before": 4
+    "spent_budget": false
    },
    "thresholds": [
     [
@@ -757,7 +754,7 @@
     "accepted": 13,
     "accuracy_spent": 0.02200942355889691,
     "attempted": 31,
-    "bits_to_reach": 1,
+    "bits_to_reach": 4,
     "blocks_after": 2,
     "blocks_before": 3,
     "blocks_floor": 2,
@@ -770,10 +767,7 @@
     "key_bytes_before": 13,
     "key_bytes_floor": 8,
     "rolled_back": false,
-    "spent_budget": true,
-    "stage_target": 12,
-    "ternary_stages_after": 3,
-    "ternary_stages_before": 4
+    "spent_budget": true
    },
    "thresholds": [
     [
@@ -1215,7 +1209,7 @@
     "accepted": 13,
     "accuracy_spent": 0.02200942355889691,
     "attempted": 31,
-    "bits_to_reach": 1,
+    "bits_to_reach": 4,
     "blocks_after": 2,
     "blocks_before": 3,
     "blocks_floor": 2,
@@ -1228,10 +1222,7 @@
     "key_bytes_before": 13,
     "key_bytes_floor": 8,
     "rolled_back": false,
-    "spent_budget": true,
-    "stage_target": 12,
-    "ternary_stages_after": 3,
-    "ternary_stages_before": 4
+    "spent_budget": true
    },
    "thresholds": [
     [
@@ -1849,7 +1840,7 @@
     "accepted": 24,
     "accuracy_spent": 0.0,
     "attempted": 33,
-    "bits_to_reach": 1,
+    "bits_to_reach": 4,
     "blocks_after": 2,
     "blocks_before": 3,
     "blocks_floor": 2,
@@ -1862,10 +1853,7 @@
     "key_bytes_before": 13,
     "key_bytes_floor": 8,
     "rolled_back": false,
-    "spent_budget": false,
-    "stage_target": 12,
-    "ternary_stages_after": 2,
-    "ternary_stages_before": 4
+    "spent_budget": false
    },
    "thresholds": [
     [
@@ -2419,7 +2407,7 @@
     "accepted": 20,
     "accuracy_spent": 0.0,
     "attempted": 43,
-    "bits_to_reach": 1,
+    "bits_to_reach": 4,
     "blocks_after": 2,
     "blocks_before": 3,
     "blocks_floor": 2,
@@ -2432,10 +2420,7 @@
     "key_bytes_before": 13,
     "key_bytes_floor": 8,
     "rolled_back": false,
-    "spent_budget": true,
-    "stage_target": 12,
-    "ternary_stages_after": 2,
-    "ternary_stages_before": 4
+    "spent_budget": true
    },
    "thresholds": [
     [
@@ -2989,7 +2974,7 @@
     "accepted": 20,
     "accuracy_spent": 0.0,
     "attempted": 43,
-    "bits_to_reach": 1,
+    "bits_to_reach": 4,
     "blocks_after": 2,
     "blocks_before": 3,
     "blocks_floor": 2,
@@ -3002,10 +2987,7 @@
     "key_bytes_before": 13,
     "key_bytes_floor": 8,
     "rolled_back": false,
-    "spent_budget": true,
-    "stage_target": 12,
-    "ternary_stages_after": 2,
-    "ternary_stages_before": 4
+    "spent_budget": true
    },
    "thresholds": [
     [

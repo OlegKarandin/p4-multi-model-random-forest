@@ -16,6 +16,12 @@ E1/E1b/E1c are NOT scored here. They are premises about arithmetic, pinned as
 unit tests (tests/test_align_budget.py, tests/test_threshold_alignment.py);
 a replay cannot fail them without the test suite failing first.
 
+FROZEN as a historical scorer (design 2026-09-07 §4.3/§4.4): the 'stages' and
+'both' alignment objectives this module scores are retired from live
+alignment, and align_budget shed the functions their arithmetic depends on.
+This module keeps that arithmetic inlined below so it can still rescore an
+archived objective-replay CSV under the rule that actually produced it.
+
 Run: PYTHONPATH=. python scripts/score_objective_replay.py results/replay_objective_20260830.csv
 """
 import argparse
@@ -39,6 +45,52 @@ ACCURACY_TOLERANCE = -0.001
 # must be recomputed before it can score anything on new ones.
 CEILING_STAGES_PER_CELL = 0.64
 
+# Inlined from src.training.align_budget, which shed them with the 'stages'
+# objective (design 2026-09-07 §4.3/§4.4). This module is FROZEN as a
+# historical scorer: it reads archived objective-replay CSVs, whose columns
+# were produced by the code these functions describe. It must therefore keep
+# that arithmetic verbatim even though live alignment no longer has it --
+# re-pointing it at the current cost model would silently rescore an old
+# experiment under a rule it never ran.
+TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64
+TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8
+
+
+def tables_per_stage(key_bytes):
+    """Classification tables sharing one stage at this key width, under the
+    SUPERSEDED per-table crossbar accounting. Both per-stage caps: the 64-byte
+    budget and the 8-table hard cap. Never returns 0 -- callers divide by it."""
+    if key_bytes <= 0:
+        return TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
+    return min(TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
+               max(1, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE // key_bytes))
+
+
+def ternary_stages(key_bytes, n_tables):
+    """ceil(T / tables_per_stage(B)), the step function the archived 'stages'
+    runs were aimed at. Superseded -- the crossbar charges the UNION of
+    distinct key fields, so tables of one task share their bytes rather than
+    summing them."""
+    return -(-n_tables // tables_per_stage(key_bytes))
+
+
+def stage_step_target(key_bytes, n_tables):
+    """Largest key width that strictly reduces ternary_stages, or None.
+
+    Walks forward to the first fit that genuinely PAYS rather than aiming at
+    the next packing step: at T=4, B=30 it returns 16, because the 2->3
+    crossing leaves ceil(4/2) == ceil(4/3) == 2; at T=6, B=30 it returns 21,
+    because there the same crossing IS worth a stage.
+    """
+    now = ternary_stages(key_bytes, n_tables)
+    if now <= 1:
+        return None
+    for fit in range(tables_per_stage(key_bytes) + 1,
+                     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE + 1):
+        if -(-n_tables // fit) < now:
+            return TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE // fit
+    return None
+
 
 def _paired(frame, objective_a, objective_b):
     """Rows of two objectives merged on PAIR_KEYS, suffixed _a / _b."""
@@ -60,9 +112,6 @@ def score_objectives(frame, n_tables=None):
     recorded align_ternary_stages_before, which is enough to identify the
     zero-payoff cells (stages already 1) but not the general case.
     """
-    from src.training.align_budget import (stage_step_target, tables_per_stage,
-                                           TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
-
     aligned = frame[frame['policy'] == 'aligned'].copy()
     out = {}
 

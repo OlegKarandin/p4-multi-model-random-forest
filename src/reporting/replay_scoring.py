@@ -80,13 +80,16 @@ def score(frame):
     scripts/score_objective_replay.py.
 
     Being objective-blind is a claim about what this function READS, not
-    about what a caller may hand it: a frame carrying rows from more than one
-    align_objective (Task 6 made 'objective' part of a replay row's identity,
-    and Task 7's committed replay CSV has three) would have S3 sum bits_shed
-    across all of them and S5's self-merge fan out per cell -- the exact
-    cross-pair pooling this module's own docstring says PAIR_KEYS exists to
-    prevent, just along an axis PAIR_KEYS doesn't name. Refused outright
-    rather than silently mis-scored.
+    about what a caller may hand it. The 2026-09-07 cost-model repair retired
+    the objective axis itself -- fresh replays no longer have a 'stages' or
+    'both' to confound with -- but an ARCHIVED replay CSV from before the
+    retirement can still carry more than one align_objective in its
+    'objective' column, and handing one of those to this function unfiltered
+    would have S3 sum bits_shed across all of them and S5's self-merge fan out
+    per cell -- the exact cross-pair pooling this module's own docstring says
+    PAIR_KEYS exists to prevent, just along an axis PAIR_KEYS doesn't name.
+    The guard below stays for exactly that archived-input case, and is
+    refused outright rather than silently mis-scored.
     """
     if 'objective' in frame.columns and frame['objective'].nunique() > 1:
         raise ValueError(
