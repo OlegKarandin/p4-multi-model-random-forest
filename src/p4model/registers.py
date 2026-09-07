@@ -148,7 +148,7 @@ def register_stage_schedule(features, catalog=None,
   each of the six k>=13 rows. Adding the per-block floor left all 18 of those
   intact while raising per-register agreement from 88 to 148 of 170, and it
   is what makes gated_block_interior_stages exact -- see
-  reviews/p4_tofino_reference.md Sec 7.
+  reviews/p4_tofino_reference.md Appendix B.
   """
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
@@ -240,7 +240,7 @@ def gated_block_interior_stages(features, catalog=None,
   five (independent_high_sd6, joint_high_sd8) still cost +0 stages overall
   because their range tables were not going to occupy that stage anyway,
   which is why the caller must apply this as a placement constraint and never
-  as a per-row penalty. See reviews/p4_tofino_reference.md Sec 7,
+  as a per-row penalty. See reviews/p4_tofino_reference.md Appendix B,
   "Mechanism B"."""
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG

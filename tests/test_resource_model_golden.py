@@ -68,6 +68,14 @@ def test_golden_resource_usage_is_unchanged(row_id, row):
     usage, range_plan, ternary_plan = assemble_usage(rebuild_pool(row))
 
     expected = row["outputs"]
+    # Guards against a truncated fixture passing vacuously: without this, a
+    # fixture missing fields would just skip them in the loop below instead
+    # of failing. Mirrors test_resource_usage_field_order_is_pinned's list.
+    assert set(expected["usage"]) == {
+        "stages", "blocks", "stage_depth", "range_entries", "ternary_entries",
+        "codeword_length", "register_depth", "register_count", "range_depth",
+        "ternary_depth", "range_tables", "ternary_tables",
+    }, row_id
     for field, value in expected["usage"].items():
         assert getattr(usage, field) == value, (row_id, field)
 

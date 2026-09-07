@@ -50,7 +50,7 @@ def fits_two_columns(block_widths, rows=TCAM_ROWS_PER_STAGE,
   12-row column) while four 6-block tables, also 24, fit in one (6+6 | 6+6).
   Measured against real p4c over synthetic tables of 5..12 blocks all keyed on
   one shared field, so TCAM blocks rather than the crossbar bound the result:
-  scripts/tcam_column_sweep.py, reviews/p4_tofino_reference.md Sec 7
+  scripts/tcam_column_sweep.py, reviews/p4_tofino_reference.md Appendix B
   "Mechanism C". Consistent with every one of the 18 calibration rows'
   committed placements, in both pools, with no exceptions.
 
@@ -141,7 +141,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   select the feature with identical intervals).
 
   Measured against 19 real p4c compiles (results/compiler_calibration/, and
-  reviews/p4_tofino_reference.md Sec 7): joint_low_sd7's stage 7 holds four
+  reviews/p4_tofino_reference.md Appendix B): joint_low_sd7's stage 7 holds four
   tables on one 32-byte codeword and the compiler reports 32 crossbar bytes,
   not 128; independent_low_sd6's stage 7 holds two 19-byte and two 4-byte
   tables and reports 23, not 46. Summing per table over-counted stages by up
@@ -181,7 +181,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   the same block-and-byte geometry built from SOLID single fields costs 9
   either way. That +1 is the whole of independent_low_sd9's stage divergence
   (10 blocks + 5 x 3 = 25 > TCAM_BLOCKS_PER_STAGE), the last one the
-  compiler-calibration study had open. Ref 7 "Mechanism G".
+  compiler-calibration study had open. Appendix B "Mechanism G".
 
   Passing ragged_keys=None -- the default -- charges every table its declared
   block count at every offset, i.e. exactly the pre-existing pricing.

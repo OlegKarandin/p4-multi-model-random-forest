@@ -12,7 +12,7 @@ TCAM_BLOCKS_PER_STAGE = 24
 # only on their total -- three 8-block tables total exactly 24 and still need two
 # stages, while four 6-block tables (also 24) fit in one. Measured directly against
 # real p4c over synthetic tables of 5..12 blocks: scripts/tcam_column_sweep.py, and
-# reviews/p4_tofino_reference.md Sec 7 "Mechanism C". evaluation.fits_two_columns is
+# reviews/p4_tofino_reference.md Appendix B "Mechanism C". packing.fits_two_columns is
 # the packing test; TCAM_BLOCKS_PER_STAGE remains the (implied) total.
 TCAM_ROWS_PER_STAGE = 12
 TCAM_COLUMNS_PER_STAGE = 2
@@ -26,13 +26,13 @@ TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
 # stage's crossbar regardless of TCAM row/block capacity. That 64-byte figure is a measured
 # hardware constant -- validated by a sweep of key widths from 8 to 512 bits with two exact
 # saturations observed (including one table at exactly 64 bytes); see
-# reviews/p4_tofino_reference.md Sec 4.3. (No repo history was found recording an earlier,
+# reviews/p4_tofino_reference.md §2.3. (No repo history was found recording an earlier,
 # independent provenance for the 512-bit figure beyond this derivation.)
 MAX_CODEWORD_LENGTH = TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE * 8
 
-TOFINO_PIPELINE_STAGES = 12   # Ref 5; hard, per Ref 7's tofino2h failure
+TOFINO_PIPELINE_STAGES = 12   # §3; hard, per Appendix B's tofino2h failure
 
-# p4c's compile-time sizing rule for a range table (Ref 4.2, Ref 7 "Mechanism
+# p4c's compile-time sizing rule for a range table (§2.2, Appendix B "Mechanism
 # E"): one entry in every RANGE_WORST_CASE_ENTRY_FRACTION is assumed to need
 # the worst-case row count for the key's nibble geometry, capped at
 # RANGE_WORST_CASE_ROWS_CAP; the rest are priced at one row. See
@@ -41,7 +41,7 @@ RANGE_WORST_CASE_ENTRY_FRACTION = 4
 RANGE_WORST_CASE_ROWS_CAP = 8
 
 
-MAX_RANGE_KEY_BITS = 19   # Ref 4.2: a 20-bit range key does not compile at all
+MAX_RANGE_KEY_BITS = 19   # §2.2: a 20-bit range key does not compile at all
 
 # The non-codeword key bits every classification-table row carries alongside
 # the codeword itself. Factored out of the inline `codeword_length + 4` this

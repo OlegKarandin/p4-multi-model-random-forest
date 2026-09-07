@@ -168,7 +168,7 @@ def serialize_pool(pool):
     set_index = {}
     key_field_sets = []
 
-    def intern_field(raw_id, bits):
+    def intern_field(raw_id):
         if raw_id not in field_ids:
             new_id = len(field_ids)
             field_ids[raw_id] = new_id
@@ -187,7 +187,7 @@ def serialize_pool(pool):
                 'serialize_pool: field %r recorded as %d bytes but its bit '
                 'width %d implies %d bytes' % (
                     raw_id, byte_width, bits, math.ceil(bits / 8)))
-            pairs.append([intern_field(raw_id, bits), bits])
+            pairs.append([intern_field(raw_id), bits])
         pairs.sort()
         key = tuple(tuple(pair) for pair in pairs)
         if key not in set_index:

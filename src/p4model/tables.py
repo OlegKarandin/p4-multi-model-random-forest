@@ -30,7 +30,7 @@ def range_deployment_overflow(feature_intervals,
   The second of two independent constraints, and the one blocks does not
   subsume. A committed block count is fixed in the binary -- the control
   plane cannot grow a table, it just gets "[Not enough space]" partway
-  through insertion (Ref 4.2; that failure is literally how range_entry_count
+  through insertion (§2.2; that failure is literally how range_entry_count
   was validated, since bf_rt exposes no per-entry row visibility). So a design
   can be perfectly feasible on blocks and still be undeployable.
 
@@ -82,7 +82,7 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   computation -- nibble_widths_for() raises first, since the SDE would
   refuse such a table outright and pricing it is meaningless.
 
-  IMPORTANT (measured, reviews/p4_tofino_reference.md Sec 4.2): this
+  IMPORTANT (measured, reviews/p4_tofino_reference.md §2.2): this
   correctness depends on the @pa_container_size pragma. A bit<16> range key
   that the compiler parks in a 32-bit W container really costs TWO TCAM
   words per entry ("1 in 2 (88)"), not one; without those pragmas this
@@ -148,7 +148,7 @@ def ternary_key_is_ragged(feature_intervals):
   (build_p4_script.py:773-776) and the crossbar byte-rounds every field
   separately, so a field whose width is not a multiple of 8 hands the
   crossbar one byte that is only partly used. Such a byte can ride a MIDBYTE
-  -- half a crossbar byte, shared between two neighbouring groups (Ref 4.1.1)
+  -- half a crossbar byte, shared between two neighbouring groups (§2.1.2)
   -- and that is what makes the table's cost depend on WHICH group it starts
   at: see crossbar_stages_needed's group-offset penalty.
 
@@ -165,7 +165,7 @@ def crossbar_block_width(key_bytes):
 
   One block is fed by exactly one crossbar group, and a group delivers 5
   private bytes + 1 midbyte nibble = TCAM_BLOCK_KEY_LENGTH bits = 5.5 BYTES
-  (Ref 4.1.1). The crossbar allocates per FIELD and byte-rounds each one, so
+  (§2.1.2). The crossbar allocates per FIELD and byte-rounds each one, so
   what it charges is key_bytes (ternary_table_key_bytes), not the raw codeword
   length -- a table keying 15 separate code_<feature> fields totalling 205
   bits really presents 33 bytes = 264 bits and needs 6 blocks, not 5.
@@ -178,7 +178,7 @@ def crossbar_block_width(key_bytes):
   Measured exact on 144 real compiled classification tables spanning three
   compile eras -- the whole observed key_bytes -> blocks ladder (4 -> 1,
   11 -> 2, 16 -> 3, 20 -> 4, 26 -> 5, 33 -> 6, 37 -> 7, 41 -> 8, 49 -> 9,
-  52 -> 10, 60 -> 11) is single-valued and lands on this function. Ref 7
+  52 -> 10, 60 -> 11) is single-valued and lands on this function. Appendix B
   "Mechanism D"."""
   return math.ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH)
 
@@ -201,7 +201,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   The COUNT is taken, not the rule that produced it. Which leaves get folded is
   an encoding convention -- this project uses Planter RF_EB's majority-class
   rule (build_p4_script.most_common_class_and_dropped_codewords, and see
-  reviews/p4_tofino_reference.md 4.5, which also records that at the scales
+  reviews/p4_tofino_reference.md §2.5, which also records that at the scales
   tested this reduces control-plane load without crossing a physical
   block-packing boundary). Keeping the rule on the caller's side is what lets
   this module model a table's cost without knowing anything about decision
@@ -238,7 +238,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   # Two independent lower bounds on how many blocks one row spans: its bit
   # width (band_factor, which carries the +4 version/valid nibble) and its
   # crossbar byte width. The byte arm is the one that binds on every table
-  # this generator emits; the bit arm is kept because Ref 4.1's
+  # this generator emits; the bit arm is kept because §2.1's
   # single-field 41-bit and 88-bit measurements need it.
   factor = max(band_factor(codeword_length), crossbar_block_width(table_bytes))
   for index, tree in enumerate(codewords):

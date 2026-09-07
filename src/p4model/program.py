@@ -13,7 +13,7 @@ RANGE_TABLE_KEY_BYTES = math.ceil(FEATURE_VALUE_BIT_WIDTH / 8)
 # hash occupies whole stages ahead of any register touch -- THREE of them, not
 # the one this constant used to claim. Measured over all 121 range tables in
 # the 19 real compiles of results/compiler_calibration/ (see
-# reviews/p4_tofino_reference.md Sec 7): every committed placement opens with
+# reviews/p4_tofino_reference.md Appendix B): every committed placement opens with
 # a metadata-init table at stage 0, tbl_calc_flow_hash$precompute at stage 1
 # and tbl_calc_flow_hash at stage 2, so the first RegisterAction in any
 # feature's chain lands at stage 3. `real_stage - level` had a floor of
