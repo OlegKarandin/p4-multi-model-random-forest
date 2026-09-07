@@ -68,45 +68,51 @@ MAX_RECOMPUTE_ROUNDS = 32
 ALIGN_OBJECTIVES = ('blocks',)
 
 
-def feature_order(intervals1, intervals2, objective, *, widths=None, floors=None):
+def _legacy_combined_order(intervals1, intervals2):
+    """The pre-2026-09-07 order: combined interval count descending.
+
+    Retained for the characterisation tests ONLY, so the behavioural delta of
+    the switch to byte-completion ordering is measurable rather than silent.
+    Not used by alignment. Do not reintroduce it as a live option -- it orders
+    for a cost model the hardware does not have (design §4.2).
+    """
+    common = set(intervals1) & set(intervals2)
+    return sorted(common,
+                  key=lambda f: (-(len(intervals1.get(f, []))
+                                   + len(intervals2.get(f, []))), f))
+
+
+def feature_order(intervals1, intervals2, *, widths=None, floors=None):
     """The order features are offered to the alignment loop.
 
-    objective='blocks' reproduces the pre-existing order exactly: combined
-    interval count descending, over the set of common features.
+    Byte completion, cheapest first: features that can actually complete a
+    crossbar byte come first, the rest follow by combined interval count
+    descending. This is the BLOCK-CORRECT order and, since 2026-09-07, the
+    only one -- crossbar_block_width depends on sum(ceil(w_f / 8)), so a shed
+    bit can only change the factor by completing a byte on some feature.
+    Shedding bits that complete no byte is the waste the repair exists to stop.
 
-    Otherwise: features that can actually complete a byte come first,
-    cheapest first; the rest follow in the pre-existing order. A feature that
-    cannot complete a byte is NOT dropped -- its bits still shrink L and buy
-    blocks -- it only loses priority. Byte distance participates in the key
-    only for reachable features, so among unreachable ones the pre-existing
-    key still decides.
+    A feature that cannot complete a byte is NOT dropped: it only loses
+    priority. Byte distance participates in the key only for reachable
+    features, so among unreachable ones the combined-count key still decides.
 
     Key: (0 if reachable else 1, to_next_byte if reachable else 0, -combined, f)
     reachable := bits_to_next_byte(w_f) <= w_f - max(own1_f, own2_f)
 
-    The trailing feature index makes it a total order, keeping the run
-    deterministic -- which train_model.py:373-377's refit assertion depends on.
+    The trailing feature index makes it a TOTAL order, keeping the run
+    deterministic -- which train_model.py:373-377's refit assertion depends on
+    (invariant 5).
 
     Computed ONCE at entry, which is correct rather than a shortcut: features
     are structurally independent in the loop below -- each owns its interval
     lists, `seen` resets per feature, and no accepted move on one feature
     changes another's widths.
 
-    widths, floors : optional precomputed _pooled_widths(intervals1,
-        intervals2) / _own_floor_widths(intervals1, intervals2), used only
-        when objective != 'blocks'. Omitted (the default), each is computed
-        from scratch here, exactly as before -- every existing call site,
-        including this function's own direct unit tests, is unaffected.
-        align_rf_thresholds passes its own copies, already built for
-        stats['bits_to_reach'], instead of paying for the identical
-        O(n_features) pass twice.
+    widths, floors : optional precomputed _pooled_widths / _own_floor_widths.
+        align_rf_thresholds passes its own copies, already built for the block
+        factor, instead of paying for the identical O(n_features) pass twice.
     """
     common = set(intervals1) & set(intervals2)
-    if objective == 'blocks':
-        return sorted(common,
-                      key=lambda f: len(intervals1.get(f, [])) + len(intervals2.get(f, [])),
-                      reverse=True)
-
     if widths is None:
         widths = _pooled_widths(intervals1, intervals2)
     if floors is None:
@@ -406,7 +412,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # -- the best case any alignment of this pair could reach.
     budget = BlockBudget(pooled_widths, own_floor_widths, delta_rel)
 
-    sorted_features = feature_order(intervals1, intervals2, 'blocks',
+    sorted_features = feature_order(intervals1, intervals2,
                                     widths=pooled_widths, floors=own_floor_widths)
 
     for feature_idx in sorted_features:

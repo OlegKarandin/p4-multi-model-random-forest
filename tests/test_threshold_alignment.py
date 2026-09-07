@@ -807,37 +807,46 @@ _ALIGNMENT_GOLDEN_C1C2 = {
     # which budget is asked, so it is unaffected by which budget gates
     # spending, and this test's own pass at delta_rel=0.0 (unchanged) is what
     # proves that.
+    #
+    # Regenerated AGAIN 2026-09-07 by the byte-completion feature-order task
+    # (§9): `feature_order` now visits features in a different sequence, so
+    # sweep order at delta_rel=0.05 -- which the docstring above already notes
+    # is sensitive to gate state -- legitimately changes which candidates are
+    # tried and accepted first. attempted 30->29, accepted 12->10,
+    # intervals_after 77->81. Still 0.0-exempt for the same reason as before:
+    # delta_rel == 0.0 forces effective_delta == 0.0 regardless of order or
+    # budget, and this test's own delta_rel=0.0 pass is unchanged, proving it.
     0.05: {
-        'stats': {'attempted': 30, 'accepted': 12,
-                  'intervals_before': 91, 'intervals_after': 77},
+        'stats': {'attempted': 29, 'accepted': 10,
+                  'intervals_before': 91, 'intervals_after': 81},
         't1': [
-            [49965, 37970, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33384, -2,
+            [50148, 37970, -2, 60939, 30850, -2, -2, -2, 29400, -2, 36261, -2,
              -2],
-            [25153, 17906, 42582, -2, -2, -2, 21985, -2, 65407, 47461, -2, -2,
+            [25153, 17906, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
              -2],
-            [9867, -2, 41694, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
+            [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
              -2],
-            [11493, -2, 16559, -2, 26336, -2, 43169, 33744, -2, -2, 26063, -2,
+            [11493, -2, 15571, -2, 27458, -2, 43169, 33254, -2, -2, 26063, -2,
              -2],
-            [45724, 8902, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
+            [45724, 17518, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
              49629, -2, -2],
-            [40514, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
-             50610, -2, -2, -2],
-            [40996, 17244, -2, 39702, -2, 58798, -2, -2, 52649, 65407, -2, -2,
+            [39753, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
+             48048, -2, -2, -2],
+            [40996, 17244, -2, 35130, -2, 58798, -2, -2, 52649, 65407, -2, -2,
              -2],
         ],
         't2': [
-            [8902, -2, 58514, 50135, 29400, -2, -2, 30850, -2, -2, 33384, -2,
+            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
              -2],
-            [14536, -2, 26063, -2, 40996, -2, 61298, 38258, -2, -2, -2],
-            [27458, 47461, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
+            [14536, -2, 27856, -2, 40514, -2, 61298, 38258, -2, -2, -2],
+            [27458, 48468, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
              -2],
-            [61422, 45058, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
+            [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
              53373, -2, -2],
             [27321, 53909, 39702, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
              60939, -2, -2],
-            [49629, 44768, 33254, -2, -2, 62045, -2, -2, 17244, -2, 41360, -2,
-             48048, -2, -2],
+            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 18076, -2, 41360, -2,
+             52649, -2, -2],
             [54766, 44845, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
              -2],
         ],
@@ -1317,6 +1326,17 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     holds on this fixture for all three arms, and is asserted for all three;
     if a future change breaks it on a guarded arm only, that is the mechanism
     to check before assuming a bug.
+
+    Whether C3's extra rounds surface anything NEW on this fixture is a
+    measured fact of the current feature order, not a theorem, and it moved
+    with the 2026-09-07 byte-completion order (§9): under the old
+    combined-count order every arm reached round 2; under byte-completion
+    order only delta_rel=0.0 does -- the round-1 candidate set for None/0.05
+    is already the recompute fixpoint (`progressed` is false, so C3 exits
+    without a second round; see MAX_RECOMPUTE_ROUNDS's docstring). The
+    append-only shape asserted above still holds trivially when round 1 and
+    C3 coincide, so `finds_new_work` below gates only the "did C3 do
+    anything" assertions, not the ones proving it did nothing WRONG.
     """
     stats_r1, log_r1 = _align_golden_pair(delta_rel, 1, monkeypatch)
     stats_c3, log_c3 = _align_golden_pair(delta_rel, ta.MAX_RECOMPUTE_ROUNDS, monkeypatch)
@@ -1345,10 +1365,15 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     # filter or the now-mandatory C1 accuracy gate then rejects, so on this
     # fixture ACCEPTED count no longer strictly grows on every delta arm
     # (measured: flat at 2 accepted for None and 0.05, still 17->18 for
-    # 0.0). attempted is the honest "C3 found something new" signal here --
-    # it strictly grows on every arm regardless of whether the extra
-    # candidate is accepted.
-    assert stats_c3['attempted'] > stats_r1['attempted'], 'C3 must find something new here'
+    # 0.0). attempted is the honest "C3 found something new" signal -- but,
+    # per the docstring's byte-completion-order note, only where round 1 is
+    # NOT already the fixpoint (delta_rel=0.0 on this fixture).
+    finds_new_work = delta_rel == 0.0
+    if finds_new_work:
+        assert stats_c3['attempted'] > stats_r1['attempted'], 'C3 must find something new here'
+    else:
+        assert stats_c3['attempted'] == stats_r1['attempted'], \
+            'round 1 was expected to already be the fixpoint on this arm'
     assert len(moves_c3) >= len(moves_r1)
 
     features_r1 = list(dict.fromkeys(f for f, _, _ in moves_r1))
@@ -1364,7 +1389,10 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     # Every round-1 candidate is round 1 in the C3 run too -- the rounds above
     # 1 are the appended work and nothing else.
     assert [e['round'] for e in log_r1] == [1] * len(log_r1)
-    assert max(e['round'] for e in log_c3) > 1
+    if finds_new_work:
+        assert max(e['round'] for e in log_c3) > 1
+    else:
+        assert max(e['round'] for e in log_c3) == 1
 
 
 def test_align_stats_records_the_codeword_length_it_optimises():
@@ -1690,41 +1718,41 @@ def _ordering_fixture():
     return iv1, iv2
 
 
-def test_feature_order_under_blocks_is_the_pre_existing_order():
-    """objective='blocks' must reproduce today's order EXACTLY -- combined
-    interval count descending -- or commit 3 is not additive."""
+def test_legacy_combined_order_reproduces_the_pre_2026_09_07_order():
+    """§9: `_legacy_combined_order` is the objective='blocks' branch this
+    module used to run, kept private and used only by the characterisation
+    tests so the switch to byte-completion ordering (below) has a measurable
+    delta rather than a silent one. Repointed from the old
+    test_feature_order_under_blocks_is_the_pre_existing_order, which asserted
+    the same order through the now-removed `objective` parameter."""
     iv1, iv2 = _ordering_fixture()
     common = set(iv1) & set(iv2)
     expected = sorted(common,
                       key=lambda f: len(iv1.get(f, [])) + len(iv2.get(f, [])),
                       reverse=True)
-    assert ta.feature_order(iv1, iv2, 'blocks') == expected
+    assert ta._legacy_combined_order(iv1, iv2) == expected
 
 
-def test_feature_order_under_stages_puts_the_cheapest_reachable_byte_first():
+def test_feature_order_puts_the_cheapest_reachable_byte_first():
     """A feature that cannot complete a byte is NOT dropped -- its bits still
-    shrink L and buy blocks -- it only loses priority."""
+    shrink L and buy blocks -- it only loses priority. Repointed from
+    test_feature_order_under_stages_puts_the_cheapest_reachable_byte_first:
+    the 'stages' behaviour it exercised is now feature_order's only
+    behaviour, so the `objective` argument is simply dropped."""
     iv1, iv2 = _ordering_fixture()
-    assert ta.feature_order(iv1, iv2, 'stages') == [0, 2, 1]
+    assert ta.feature_order(iv1, iv2) == [0, 2, 1]
 
 
-def test_feature_order_keeps_the_pre_existing_key_among_unreachable_features():
+def test_feature_order_keeps_the_combined_count_key_among_unreachable_features():
     """Byte distance decides only among features that can actually complete a
-    byte; the rest follow in the pre-existing order."""
+    byte; the rest follow by combined interval count descending. Repointed
+    from test_feature_order_keeps_the_pre_existing_key_among_unreachable_features
+    with the removed `objective` argument dropped."""
     def tiling(width):
         return [(0, 0)] + [(i, i) for i in range(1, width + 1)]
     # both unreachable (floor == pooled width), widths 20 and 28
     iv = {0: tiling(20), 1: tiling(28)}
-    assert ta.feature_order(iv, iv, 'stages') == [1, 0]
-
-
-def test_feature_order_is_a_total_order():
-    """train_model.py:373-377's refit assertion depends on the run being
-    deterministic, so ties must be broken, not left to set iteration."""
-    def tiling(width):
-        return [(0, 0)] + [(i, i) for i in range(1, width + 1)]
-    iv = {0: tiling(20), 1: tiling(20), 2: tiling(20)}
-    assert ta.feature_order(iv, iv, 'stages') == [0, 1, 2]
+    assert ta.feature_order(iv, iv) == [1, 0]
 
 
 def test_align_rf_thresholds_no_longer_accepts_an_objective():
@@ -1892,3 +1920,71 @@ def test_a_block_saving_without_a_band_crossing_now_counts_as_crossing():
     stats = _crossing_stats(88, 86, 6, 5)
     assert band_factor(stats['codeword_after']) == band_factor(stats['codeword_before'])
     assert ta.crossed_a_boundary(stats) is True
+
+
+def _order_fixture_pair():
+    """Three features whose byte-completion order is the exact REVERSE of the
+    legacy combined-count order, so the two are unambiguously distinguishable.
+
+    Verified against the real helpers, not asserted from intuition -- an
+    interval list's width is the POOLED bound count minus one, while its floor
+    is max(len(list1), len(list2)) minus one, and the two move independently:
+
+      f0  width 10  floor  5  step 2  room 5  reachable   combined 12
+      f1  width 16  floor  8  step 8  room 8  reachable   combined 18
+      f2  width 10  floor 10  step 2  room 0  UNreachable combined 22
+    """
+    def lst(bounds):
+        # A gap-free tiling terminated by INFINITE, which is not a threshold.
+        return [(0, b) for b in bounds] + [(0, INFINITE)]
+
+    intervals1 = {0: lst([10, 20, 30, 40, 50]),
+                  1: lst([1, 2, 3, 4, 5, 6, 7, 8]),
+                  2: lst(range(10, 110, 10))}
+    intervals2 = {0: lst([11, 21, 31, 41, 51]),
+                  1: lst([11, 12, 13, 14, 15, 16, 17, 18]),
+                  2: lst(range(10, 110, 10))}
+    return intervals1, intervals2
+
+
+def test_feature_order_puts_byte_completing_features_first():
+    """§4.2: crossbar_block_width depends on sum(ceil(w_f / 8)), so a bit can
+    only change the factor by completing a byte on SOME feature. Byte
+    completion is therefore the block-correct order, and it is now the only
+    one.
+
+    f0 is 2 bits from a byte and can afford them; f1 is 8 bits away and can
+    afford them; f2 is at its floor and can shed nothing. A feature that
+    cannot complete a byte is NOT dropped -- its bits still shrink the pooled
+    key -- it only loses priority, which is why f2 is last rather than absent.
+    """
+    intervals1, intervals2 = _order_fixture_pair()
+    assert ta.feature_order(intervals1, intervals2) == [0, 1, 2]
+
+
+def test_the_byte_order_and_the_legacy_order_genuinely_differ():
+    """The whole point of landing this as its own step. On this fixture the
+    two orders are exact reverses, so a regression to combined-count ordering
+    cannot pass by coincidence."""
+    intervals1, intervals2 = _order_fixture_pair()
+    assert ta.feature_order(intervals1, intervals2) == [0, 1, 2]
+    assert ta._legacy_combined_order(intervals1, intervals2) == [2, 1, 0]
+
+
+def test_feature_order_is_a_total_order():
+    """Invariant 5. train_model.py:373-377 refits the winning trial rather
+    than caching it, so a tie the sort resolves arbitrarily would break a live
+    assertion. The trailing feature index is what makes it total: these three
+    features are identical in every other component of the key."""
+    same = {0: [(0, 5), (0, INFINITE)],
+            1: [(0, 5), (0, INFINITE)],
+            2: [(0, 5), (0, INFINITE)]}
+    assert ta.feature_order(same, dict(same)) == [0, 1, 2]
+
+
+def test_feature_order_no_longer_takes_an_objective():
+    """The axis is gone, not defaulted -- a caller still passing it must fail
+    loudly rather than have the argument silently ignored."""
+    intervals1, intervals2 = _order_fixture_pair()
+    with pytest.raises(TypeError):
+        ta.feature_order(intervals1, intervals2, 'blocks')
