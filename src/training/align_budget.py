@@ -26,7 +26,8 @@ that feature's width sits modulo 8, not a constant value across the payload.
 from src.p4gen.build_p4_script import (INFINITE, TCAM_BLOCK_KEY_LENGTH,
                                        TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
                                        TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
-from src.p4gen.evaluation import CODEWORD_KEY_OVERHEAD_BITS, band_factor
+from src.p4gen.evaluation import (CODEWORD_KEY_OVERHEAD_BITS, band_factor,
+                                  ternary_block_factor)
 
 
 def pooled_interval_count(ranges1, ranges2):
@@ -220,6 +221,29 @@ def _own_floor_widths(intervals1, intervals2):
         floors.update({f: len(v) - 1 for f, v in source.items()
                        if f not in common})
     return floors
+
+
+def _factor(widths):
+    """The per-table TCAM block factor of a pooled per-feature width dict.
+
+    THE quantity alignment optimises after the 2026-09-07 repair, and the
+    reason the objective collapses to one integer (design §3): under 'joint'
+    encoding every classification table keys the same field set, so every table
+    shares this factor, while alignment changes neither a tree's entry count
+    nor the tree count. Minimising this IS minimising blocks.
+
+    Delegates to p4model rather than restating the rule, which is the point of
+    the repair -- the superseded `blocks = range_blocks + n_trees *
+    band_factor(L)` identity this module was built around drifted precisely
+    because it was a restatement. Pinned by E1-blocks
+    (tests/test_threshold_alignment.py).
+
+    Sorted because ternary_block_factor prices a MULTISET of field widths and
+    documents its input as sorted (ternary_key_field_bits returns it that way).
+    The dict's own key order is the generator's feature-emission order, and the
+    crossbar allocator does not honour it.
+    """
+    return ternary_block_factor(tuple(sorted(widths.values())))
 
 
 def pooled_key_bytes(intervals1, intervals2):

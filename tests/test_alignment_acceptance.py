@@ -141,7 +141,8 @@ def test_alignment_reports_its_acceptance_rate_and_interval_counts():
             'spent_budget', 'rolled_back',
             'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
             'ternary_stages_before', 'ternary_stages_after', 'stage_target',
-            'bits_to_reach', 'accuracy_spent'}
+            'bits_to_reach', 'accuracy_spent',
+            'blocks_before', 'blocks_after', 'blocks_floor'}
         assert stats['accepted'] <= stats['attempted']
         # #27: under the OLD union-of-interval-tuples joint_interval_count this
         # read like a theorem but was not one (a single accepted move could

@@ -1312,13 +1312,15 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     # instead. The seven byte-domain keys below are Task 5's addition,
     # recorded unconditionally regardless of C3 round depth.
     # Task 2 adds 'accuracy_spent', recorded on every objective.
+    # Task 1 adds three block-domain keys: blocks_before/after/floor.
     assert set(stats_c3) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
         'codeword_before', 'codeword_after', 'codeword_floor',
         'spent_budget', 'rolled_back', 'accuracy_spent',
         'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
         'ternary_stages_before', 'ternary_stages_after', 'stage_target',
-        'bits_to_reach'}
+        'bits_to_reach',
+        'blocks_before', 'blocks_after', 'blocks_floor'}
     assert stats_c3['intervals_before'] == stats_r1['intervals_before']
     assert stats_c3['attempted'] >= stats_r1['attempted']
     assert stats_c3['accepted'] >= stats_r1['accepted']
@@ -1367,7 +1369,8 @@ def test_align_stats_records_the_codeword_length_it_optimises():
         'spent_budget', 'rolled_back', 'accuracy_spent',
         'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
         'ternary_stages_before', 'ternary_stages_after', 'stage_target',
-        'bits_to_reach'}
+        'bits_to_reach',
+        'blocks_before', 'blocks_after', 'blocks_floor'}
 
     n_features = len(set(ta.extract_feature_intervals(rf1))
                      | set(ta.extract_feature_intervals(rf2)))
@@ -1841,6 +1844,65 @@ def test_pooled_key_bytes_equals_the_evaluators_ternary_key_bytes():
         assert ab.pooled_key_bytes(ta.extract_feature_intervals(m1),
                                    ta.extract_feature_intervals(m2)) == \
             ternary_table_key_bytes(joint)
+
+
+def test_the_block_factor_equals_the_evaluators_block_factor():
+    """E1-blocks (design §5.2) -- the anchor that stops the cost model drifting
+    again. Alignment's factor must equal what the generator's own merged
+    intervals price, before AND after a run. If the generator's key layout or
+    the block rule changes, this fails loudly rather than alignment silently
+    going stale, which is exactly how the superseded band model survived for
+    years."""
+    from src.p4gen.build_p4_script import get_joint_feature_intervals
+    from src.p4gen.evaluation import ternary_block_factor, ternary_key_field_bits
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    names = ['f0', 'f1', 'f2', 'f3']
+    for models in ((rf1, rf2),
+                   ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                          overlap_threshold=0.5, delta_rel=0.05)):
+        m1, m2 = models
+        joint = get_joint_feature_intervals(m1, names, m2, names)
+        widths = ab._pooled_widths(ta.extract_feature_intervals(m1),
+                                   ta.extract_feature_intervals(m2))
+        assert ab._factor(widths) == ternary_block_factor(
+            ternary_key_field_bits(joint))
+
+
+@pytest.mark.parametrize('seed', range(50))
+def test_the_block_factor_matches_p4model_on_random_width_vectors(seed):
+    """The property half of E1-blocks. The fixture above pins four features on
+    one pair; version_block_penalty's saturation clause only fires on a key
+    whose bytes consume every midbyte its groups reach, which one pair will
+    almost never produce. 1-15 fields of 1-60 bits is the design's own probe
+    range (§1.3). Guards against anyone reimplementing _factor's arithmetic
+    locally instead of delegating."""
+    from src.p4model.tables import ternary_block_factor
+    rng = np.random.default_rng(seed)
+    widths = {i: int(w) for i, w in
+              enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}
+    assert ab._factor(widths) == ternary_block_factor(
+        tuple(sorted(widths.values())))
+
+
+@pytest.mark.parametrize('seed', range(200))
+def test_shedding_a_bit_never_raises_the_block_factor(seed):
+    """Invariant 7 (design §5.7). Alignment's only move sheds bits from one
+    feature, so a non-monotone objective would create a perverse incentive: a
+    run could be punished for a free saving, and the rollback would then be
+    reasoning about a cost that moved the wrong way. Verified by the design
+    over 200 000 random shapes; pinned here over a smaller sample so a future
+    change to version_block_penalty that breaks monotonicity fails in this
+    suite rather than in a campaign."""
+    rng = np.random.default_rng(1000 + seed)
+    widths = {i: int(w) for i, w in
+              enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}
+    victim = int(rng.integers(0, len(widths)))
+    if widths[victim] <= 1:
+        return                          # nothing to shed; not a counterexample
+    before = ab._factor(widths)
+    widths[victim] -= 1
+    assert ab._factor(widths) <= before
 
 
 @pytest.mark.parametrize('key_bytes,n_tables', [(30, 6), (21, 6), (35, 6),
@@ -2834,3 +2896,18 @@ def test_align_with_policy_still_accepts_all_three_objectives():
         rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
         ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
                              delta_rel=0.0, align_objective=objective)
+
+
+@pytest.mark.parametrize('delta_rel', [0.0, 0.05, None])
+def test_align_stats_records_the_block_factor_at_entry_exit_and_floor(delta_rel):
+    """§4.6's three added keys. blocks_floor is what NO alignment of this pair
+    could beat, blocks_before what it starts at, blocks_after what it reached
+    -- so a run is sandwiched between them. A violation means either the floor
+    is not a floor (invariant 4) or shedding raised the factor (invariant 7)."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=delta_rel, align_stats=stats)
+    for key in ('blocks_before', 'blocks_after', 'blocks_floor'):
+        assert isinstance(stats[key], int), key
+    assert stats['blocks_floor'] <= stats['blocks_after'] <= stats['blocks_before']

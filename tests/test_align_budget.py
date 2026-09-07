@@ -306,3 +306,30 @@ def test_shedding_bytes_retargets_and_flips_crossed_step():
     assert budget.key_bytes == 32
     assert budget.crossed_step()
     assert budget.spending()              # next target is 21, still >= floor 1
+
+
+def test_factor_prices_a_width_dict_exactly_as_p4model_does():
+    """The anchor for the whole repair: alignment's block arithmetic must BE
+    the generator's, not a copy of it. A dict is what _pooled_widths produces;
+    ternary_block_factor takes a sorted tuple, so the sort belongs here rather
+    than at every call site."""
+    from src.p4model.tables import ternary_block_factor
+    widths = {'a': 11, 'b': 3, 'c': 84}
+    assert ab._factor(widths) == ternary_block_factor((3, 11, 84))
+
+
+def test_factor_ignores_the_dicts_own_key_order():
+    """The dict's order is the generator's feature-emission order. The crossbar
+    allocator is free to place fields where it likes and measurably does, so
+    ternary_block_factor prices a MULTISET -- emission order must never reach
+    the cost model."""
+    assert ab._factor({'a': 11, 'b': 3}) == ab._factor({'b': 3, 'a': 11})
+
+
+def test_factor_of_an_empty_width_dict_is_the_empty_key_factor():
+    """Reachable, not hypothetical: neither forest split on any feature, which
+    happens whenever min_samples_leaf approaches n_samples and every tree is a
+    single leaf. tables_per_stage's docstring already records it as a real
+    Optuna sample."""
+    from src.p4model.tables import ternary_block_factor
+    assert ab._factor({}) == ternary_block_factor(())

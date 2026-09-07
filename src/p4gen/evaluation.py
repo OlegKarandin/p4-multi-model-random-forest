@@ -82,6 +82,7 @@ from src.p4model.tables import (
     range_deployment_overflow,
     range_key_fields_for,
     range_matching_resource_usage,
+    ternary_block_factor,
     ternary_key_fields,
     ternary_key_field_bits,
     version_block_penalty,

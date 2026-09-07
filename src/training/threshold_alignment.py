@@ -1,6 +1,7 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.p4gen.evaluation import band_factor
-from src.training.align_budget import (BandBudget, StageBudget, _own_floor_widths,
+from src.training.align_budget import (BandBudget, StageBudget, _factor,
+                                       _own_floor_widths,
                                        _pooled_widths,
                                        bits_to_next_byte, bits_to_reach,
                                        byte_width, codeword_floor,
@@ -474,14 +475,21 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['ternary_stages_before'] = ternary_stages(stats['key_bytes_before'],
                                                     n_tables)
     stats['stage_target'] = stage_step_target(stats['key_bytes_before'], n_tables)
-    # Computed once, shared with feature_order below: order_objective can
-    # only differ from 'blocks' (where feature_order needs these at all) when
-    # stage_target is not None (see order_objective's fallback just below),
-    # so this is never built for nothing.
-    pooled_widths = own_floor_widths = None
-    if stats['stage_target'] is not None:
-        pooled_widths = _pooled_widths(intervals1, intervals2)
-        own_floor_widths = _own_floor_widths(intervals1, intervals2)
+    # §4.1: computed unconditionally at entry. They were already built on the
+    # stage_target path; the BLOCK factor needs them on every path, because the
+    # version-block charge is a function of the width MULTISET and cannot be
+    # recovered from any scalar (design §1.3). Cheap either way -- one pass over
+    # at most ~15 features.
+    pooled_widths = _pooled_widths(intervals1, intervals2)
+    own_floor_widths = _own_floor_widths(intervals1, intervals2)
+
+    # §4.6. The per-table block factor at entry, at exit (below), and at the
+    # floor -- the best any alignment of this pair could reach, since a common
+    # feature's pooled width can never drop below max(own1, own2). Nothing
+    # reads these yet; the gate starts consuming them in the gate-repair task.
+    stats['blocks_before'] = _factor(pooled_widths)
+    stats['blocks_floor'] = _factor(own_floor_widths)
+
     stats['bits_to_reach'] = (
         bits_to_reach(pooled_widths, own_floor_widths, stats['stage_target'])
         if stats['stage_target'] is not None else None)
@@ -734,6 +742,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                                                     intervals2_after)
     stats['codeword_after'] = stats['intervals_after'] - n_features
     stats['key_bytes_after'] = pooled_key_bytes(intervals1_after, intervals2_after)
+    stats['blocks_after'] = _factor(_pooled_widths(intervals1_after,
+                                                   intervals2_after))
     stats['ternary_stages_after'] = ternary_stages(stats['key_bytes_after'],
                                                    n_tables)
     stats['spent_budget'] = budget.spent_budget or (
