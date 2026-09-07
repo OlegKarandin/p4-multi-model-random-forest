@@ -1,6 +1,6 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.p4gen.evaluation import band_factor
-from src.training.align_budget import (BandBudget, StageBudget, _factor,
+from src.training.align_budget import (BlockBudget, StageBudget, _factor,
                                        _own_floor_widths,
                                        _pooled_widths,
                                        bits_to_next_byte, bits_to_reach,
@@ -231,7 +231,7 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
     old_range, new_range) whenever nothing has mutated `ranges1`/`ranges2` in
     between (true here: only an ACCEPTED move mutates them, and the caller's
     loop over `ranked` stops at the first accept). Handing both numbers back
-    lets the caller's post-acceptance shed bookkeeping (BandBudget.note_shed,
+    lets the caller's post-acceptance shed bookkeeping (BlockBudget.note_shed,
     StageBudget.note_shed_bytes) read counts already paid for while ranking,
     instead of recomputing pooled_interval_count a second time around the
     mutation it predicted.
@@ -494,8 +494,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         bits_to_reach(pooled_widths, own_floor_widths, stats['stage_target'])
         if stats['stage_target'] is not None else None)
 
-    budget = BandBudget(stats['codeword_before'], stats['codeword_floor'],
-                        delta_rel)
+    # §4.1. The budget prices what ResourceUsage charges: the per-table block
+    # factor over the pooled width dict, gated against the floor width vector
+    # -- the best case any alignment of this pair could reach.
+    budget = BlockBudget(pooled_widths, own_floor_widths, delta_rel)
 
     stage_budget = None
     if align_objective != 'blocks':
@@ -705,7 +707,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         current_ranges2, idx2, range2, target,
                         feature_idx, threshold_index2)
 
-                    budget.note_shed(pooled_before - pooled_after)
+                    budget.note_shed(feature_idx, pooled_before - pooled_after)
                     if stage_budget is not None:
                         # An interval list holds one more entry than it has
                         # thresholds, so the width is the count minus one.
@@ -1252,13 +1254,17 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
 def crossed_a_boundary(stats, objective, n_tables):
     """Did this run buy anything the objective was aiming at?
 
-    Under 'blocks' this is the pre-existing test exactly. Under the 'stages'
-    objective it also accepts a stage step -- compared on STAGES, never on
-    tables-per-stage: fit rising from 2 to 3 at T=4 leaves stage_depth
-    unchanged, and keeping such a run would reproduce in the byte domain
-    precisely the failure this rollback exists to prevent.
+    Compares the per-table BLOCK FACTOR, not the codeword band. The band was
+    the wrong step function wherever the crossbar arm binds -- which is every
+    many-feature design measured (design 2026-09-07 §1.3) -- and it failed in
+    both directions: a band crossing that bought no block kept a run that spent
+    accuracy for nothing, and a real block saving that crossed no band got the
+    whole run discarded.
+
+    The stage arm below is retired with the 'stages' objective; until then it
+    is unchanged.
     """
-    if band_factor(stats['codeword_after']) < band_factor(stats['codeword_before']):
+    if stats['blocks_after'] < stats['blocks_before']:
         return True
     if objective == 'blocks':
         return False
