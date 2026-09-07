@@ -177,3 +177,22 @@ def test_the_evaluation_wrapper_still_accepts_the_boolean_flag():
 
     params = inspect.signature(ev.ternary_matching_resource_usage).parameters
     assert "use_default_action_discount" in params
+
+
+REGISTERS_REEXPORTS = ("feature_readiness_level", "register_stage_schedule",
+                       "gated_block_interior_stages", "readiness_levels_for")
+
+
+@pytest.mark.parametrize("name", REGISTERS_REEXPORTS)
+def test_registers_reexports_are_the_same_object(name):
+    from src.p4model import registers
+
+    assert getattr(ev, name) is getattr(registers, name)
+
+
+def test_registers_reports_schedule_and_depth_but_not_sram():
+    # Task 1: total register bits answered no question. What survives is the
+    # schedule (which drives stage placement) and the depth/count read off it.
+    from src.p4model import registers
+
+    assert not hasattr(registers, "register_sram_bits")
