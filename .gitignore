@@ -193,6 +193,7 @@ temp/validate/
 .claude/
 .superpowers/
 scratchpad/
+.worktrees/
 
 # Spike experiment scratch data
 p4/tofino_spike/t12_experiments/
