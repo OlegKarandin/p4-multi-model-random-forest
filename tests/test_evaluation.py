@@ -1839,3 +1839,51 @@ def test_ragged_keys_defaults_to_the_pre_existing_pricing():
 def test_ragged_keys_must_be_positionally_aligned_with_table_specs():
     with pytest.raises(ValueError, match="ragged_keys"):
         ev.crossbar_stages_needed([(1, 4), (1, 4)], ragged_keys=[True])
+
+
+# --- Task 9: the _pool_inputs / assemble_usage seam
+
+POOL_KEYS = {
+    "range_table_specs", "ternary_table_specs", "range_levels", "range_fields",
+    "ternary_fields", "ternary_ragged", "interior_stages", "emitted_features",
+    "register_names", "range_entries", "range_blocks", "ternary_entries",
+    "codeword_length",
+}
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint"])
+def test_pool_inputs_then_assemble_reproduces_multi_model_exactly(encoding):
+    # The seam is only worth having if it is transparent: whatever
+    # multi_model_memory_evaluation returns, _pool_inputs -> assemble_usage must
+    # return the identical ResourceUsage. This is the property the golden
+    # fixture relies on -- it is dumped at the seam and replayed through
+    # assemble_usage, so a seam that drifted would silently invalidate it.
+    from src.p4model.usage import assemble_usage
+
+    features = ["f0", "f1", "f2", "f3"]
+    clf_app = _tiny_forest([0, 1, 2], seed=0)
+    clf_ddos = _tiny_forest([-1, 1], seed=7)
+
+    direct = ev.multi_model_memory_evaluation(
+        clf_app, clf_ddos, features, features, encoding)
+
+    pool = ev._pool_inputs(clf_app, clf_ddos, features, features, encoding)
+    assert set(pool) == POOL_KEYS
+    replayed, _range_plan, _ternary_plan = assemble_usage(pool)
+
+    assert replayed == direct
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint"])
+def test_pool_inputs_key_field_widths_agree_with_table_spec_byte_widths(encoding):
+    # The invariant crossbar_stages_needed checks internally, asserted at the
+    # seam so the fixture can record BITS and reconstruct bytes safely: a
+    # ternary table's byte width IS the byte-rounded sum of its key fields.
+    features = ["f0", "f1", "f2", "f3"]
+    pool = ev._pool_inputs(
+        _tiny_forest([0, 1, 2], seed=0), _tiny_forest([-1, 1], seed=7),
+        features, features, encoding)
+
+    for (_, byte_width), fields in zip(pool["ternary_table_specs"],
+                                       pool["ternary_fields"]):
+        assert sum(width for _, width in fields) == byte_width

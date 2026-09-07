@@ -32,12 +32,21 @@ from src.p4gen.build_p4_script import (
 #
 # What did NOT move, and why:
 #   accuracy_metrics                      -- the only sklearn.metrics caller
-#   single_/multi_model_memory_evaluation -- the fitted-forest frontend
+#   single_model_memory_evaluation, _pool_inputs -- the fitted-forest frontend
+#                                            (Task 9 split multi_model_memory_
+#                                            evaluation at the point its two
+#                                            encoding branches converge:
+#                                            _pool_inputs stayed here,
+#                                            assemble_usage -- imported below
+#                                            -- moved to src/p4model/usage.py;
+#                                            multi_model_memory_evaluation
+#                                            itself is now a thin composition
+#                                            of the two)
 #   INFINITE, MAX_NUM_FLOWS (build_p4_script) -- codegen constants with no
 #                                            reader inside the model
 #   most_common_class_and_dropped_codewords   -- codegen policy, not physics
 # ---------------------------------------------------------------------------
-from src.p4model.usage import ResourceUsage
+from src.p4model.usage import ResourceUsage, assemble_usage
 from src.p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from src.p4model.target import (
     CODEWORD_KEY_OVERHEAD_BITS,
@@ -170,59 +179,32 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
           range_table_specs, ternary_table_specs)
 
 
-def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
-                                  use_default_action_discount=False):
-  """Returns ResourceUsage(stages, blocks, stage_depth, range_entries, ternary_entries,
-  register_depth, register_count) -- FOUR related but DISTINCT
-  stage-index quantities (F6, extended by Task 6) are in play below: this
-  function is the source of truth for THREE of them (stages, stage_depth,
-  register_depth) -- the fourth, stages_real, comes from the real compiler,
-  not from this function (see its own paragraph below):
+def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
+                 use_default_action_discount=False):
+  """Fitted-forest frontend for multi_model_memory_evaluation: runs the
+  'joint'/'disjoint' encoding branches on both RandomForestClassifiers and
+  pools everything they produce, once converged, into a plain dict under the
+  same 13 names regardless of which branch ran.
 
-    stages      : OCCUPIED match-table stage count -- how many distinct
-                  stage indices actually hold a table from either pool
-                  (range_plan.occupied + ternary_plan.occupied). M2 example: 3.
-                  This is what gets written to the campaign CSV's `stages`
-                  column and plotted -- it is NOT a pipeline-depth quantity
-                  and must never be compared against TOFINO_PIPELINE_STAGES.
-    blocks      : total blocks used by both range and ternary tables
-    stage_depth : pipeline DEPTH, max(occupied stage index) + 1 -- the
-                  quantity a hard stage ceiling actually reads (F5). Read
-                  from ternary_plan.depth (the classification pool is placed
-                  LAST, after the range pool, so its depth is the overall
-                  pipeline depth), defensively widened to
-                  max(range_plan.depth, ternary_plan.depth) so an
-                  (unrealistic) model with no ternary tables at all still
-                  reports a sane depth, plus VOTE_EPILOGUE_STAGES for the
-                  vote tables' own trailing stage. M2 example: 9 -- which is
-                  what the real compiler needs for M2 as well. It read 6
-                  before the 2026-09-05 calibration corrected FLOW_HASH_LEVEL
-                  and added the epilogue; anything comparing stage_depth
-                  against pre-2026-09-05 archived campaign numbers is
-                  comparing two different definitions.
-    register_depth : max readiness level (feature_readiness_level) over the
-                  selected feature(s) -- how many stages elapse before the
-                  LAST register a classification table depends on has run.
-                  Related to stage_depth (both are stage-index quantities
-                  gated by the same register-dependency model) but NOT the
-                  same number: stage_depth also accounts for crossbar
-                  packing/spill of the match tables themselves, which
-                  register_depth does not. See ResourceUsage's own
-                  docstring for register_depth/register_count and their
-                  capacity caveat (Spec 4.3).
-    range_entries  : count of physical rows across all range tables
-    ternary_entries: count of ternary codewords across all classification trees
-    (a fourth quantity, `stages_real` -- the REAL compiler's whole-program
-    stage count including parsing/bookkeeping overhead this function does
-    not model at all -- is NOT returned here; see p4_compile.parse_compile_logs,
-    which stores it. M2 example: 9. `stages` and `stages_real` sit side by
-    side in the same campaign dataframe row and are NOT the same quantity --
-    plotting them together as if they were reads as the model being "67%
-    wrong" when they are not even measuring the same thing. `stage_depth` and
-    `stages_real` ARE comparable, and since 2026-09-05 they agree on M2; the
-    residual on the 19-row calibration sample is 0-3 stages, always with
-    stages_real the larger -- unmodelled PHV container conflicts and TCAM
-    column geometry, see scripts/compiler_calibration.replay_stage_depth.)
+  This is the Tier 2 ProgramSpec seam (Spec S4.5, finding F6): downstream of
+  this function, src.p4model.usage.assemble_usage takes only this dict and is
+  import-light -- no sklearn, no fitted forest, no CWD dependence -- which is
+  what lets a golden fixture and scripts/validation_table.py replay a real
+  prediction with no models and no campaign data.
+
+  range_fields and ternary_fields carry (field_id, field_BYTES) pairs here --
+  ternary_key_fields' and range_key_fields_for's native unit. A later fixture
+  that serializes this pool to disk records the same fields as (field_id,
+  field_BITS) instead, since bits round-trip exactly to bytes but not the
+  reverse.
+
+  ternary_blocks (the naive per-table block sum each branch computes below)
+  is deliberately NOT one of the 13 keys: it is already dead after the branch
+  converges -- assemble_usage's ResourceUsage.blocks uses ternary_plan.blocks,
+  the ragged-key-charged StagePlan total from src.p4model.packing, never this
+  naive sum. Carrying it into the pool would invite exactly the confusion the
+  StagePlan.blocks fix (see CLAUDE.md's compiler-calibration note) was
+  created to resolve.
 
   use_default_action_discount: opt-in, threaded down to
   ternary_matching_resource_usage under BOTH encodings -- directly for
@@ -332,97 +314,96 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
         "multi_model_memory_evaluation: unknown encoding {!r}; "
         "expected 'joint' or 'disjoint'".format(encoding))
 
-  # Range-matching tables and ternary classification tables are physically
-  # distinct table pools (build_p4_script.py generates them separately), so
-  # each pool is packed on its own and the two stage counts are summed. Both
-  # pools are packed by the SAME solver: one stage count per pool that
-  # respects the block, table-count and byte limits simultaneously, rather
-  # than a max() of two independently-relaxed bounds (which can under-count,
-  # see crossbar_stages_needed).
-  # Both pools are placed dependency-aware (see crossbar_stages_needed and
-  # feature_readiness_level): a feature's range table cannot precede the
-  # register chain producing its key, and every classification table reads
-  # every feature's codeword, so it cannot precede the last range table.
-  # Validated against a real compile of the M2 program: 2 range stages + 1
-  # classification stage = 3, exactly the compiler's own placement. The pure
-  # packer predicted 2.
-  #
-  # F10: the classification boundary must be derived from where the range
-  # pool's tables actually LANDED (StagePlan.depth), not from one past the
-  # earliest stage a range table was merely ALLOWED to start
-  # (max(range_levels) + 1) -- the 8-table crossbar cap can spill a range
-  # table forward past its level, and reusing max(range_levels) + 1 would
-  # then schedule a classification table into a stage a range table still
-  # occupies.
-  #
-  # Mechanism B on top of that: both pools are emitted AFTER the gated
-  # register blocks, so neither can occupy a stage the placer spends wholly
-  # inside one -- a control-flow constraint, not a capacity one, and the
-  # reason a stage can sit at 0/24 TCAM blocks and still take no table. It is
-  # a placement constraint rather than a penalty precisely so that it costs
-  # nothing on the rows whose tables were not going to land there anyway.
+  # interior_stages depends on gated_block_interior_stages
+  # (src.p4model.registers), so it is computed here rather than in
+  # assemble_usage: assemble_usage is deliberately import-light (no
+  # registers, no catalog, no sklearn -- see its own docstring), and pooling
+  # this value is what lets it stay that way while still packing both pools
+  # dependency-aware. See assemble_usage's Mechanism B comment for why the
+  # value itself matters.
   interior_stages = gated_block_interior_stages(emitted_features)
-  range_plan = crossbar_stages_needed(range_table_specs,
-                                      readiness_levels=range_levels,
-                                      key_fields=range_fields,
-                                      unavailable_stages=interior_stages)
-  ternary_level = range_plan.depth if range_table_specs else FLOW_HASH_LEVEL + 1
-  # Only the classification pool gets ragged_keys. A range table keys one
-  # meta.<feature>_val field of FEATURE_VALUE_BIT_WIDTH bits, a whole number
-  # of bytes, so it presents no part-used crossbar byte and the group-offset
-  # penalty is inert there by construction -- passing it would be noise.
-  ternary_plan = crossbar_stages_needed(
-      ternary_table_specs,
-      readiness_levels=[ternary_level] * len(ternary_table_specs),
-      key_fields=ternary_fields,
-      unavailable_stages=interior_stages,
-      ragged_keys=ternary_ragged)
 
-  # The property that makes summing occupancies below meaningful: the two
-  # pools must never claim the same stage index.
-  assert not (range_plan.indices & ternary_plan.indices), (
-      "range and classification pools overlap at stages {}; summing their "
-      "occupancies is only meaningful while they are disjoint".format(
-          sorted(range_plan.indices & ternary_plan.indices)))
+  # ternary_blocks (the naive per-table sum each branch computed above) is
+  # deliberately NOT one of the 13 keys below -- see this function's own
+  # docstring.
+  return {
+      "range_table_specs": range_table_specs,
+      "ternary_table_specs": ternary_table_specs,
+      "range_levels": range_levels,
+      "range_fields": range_fields,
+      "ternary_fields": ternary_fields,
+      "ternary_ragged": ternary_ragged,
+      "interior_stages": interior_stages,
+      "emitted_features": emitted_features,
+      "register_names": register_names,
+      "range_entries": range_entries,
+      "range_blocks": range_blocks,
+      "ternary_entries": ternary_entries,
+      "codeword_length": codeword_length,
+  }
 
-  # F5/F6: stage_depth is ternary_plan.depth -- the classification pool is
-  # placed LAST (it starts at ternary_level, which is itself derived from
-  # range_plan.depth), so its depth is the overall pipeline depth. Verified
-  # against the M2 fixture: ternary_plan.indices == {5} there, so depth == 6,
-  # exactly the brief's own worked example. max() with range_plan.depth is a
-  # defensive widening for the degenerate case of zero ternary tables (where
-  # crossbar_stages_needed's dependency-aware branch would otherwise report
-  # depth 0), not something the real M2-shaped models ever hit.
-  # ...plus VOTE_EPILOGUE_STAGES: the vote tables read every tree's class, so
-  # they always occupy one further stage past the classification pool, and
-  # stage_depth is the quantity TOFINO_PIPELINE_STAGES is checked against.
-  # Measured as exactly 1 on all 19 calibration compiles.
-  stage_depth = max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES
 
-  # register_depth reuses range_levels (already computed above on both
-  # branches, positionally aligned with feature_intervals) rather than
-  # re-traversing anything; register_count reuses register_names, likewise
-  # already computed above on both branches. See ResourceUsage's docstring
-  # for the Spec 4.3 capacity caveat these two fields carry.
-  register_depth = max(range_levels, default=0)
-  register_count = len(register_names)
+def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
+                                  use_default_action_discount=False):
+  """Returns ResourceUsage(stages, blocks, stage_depth, range_entries, ternary_entries,
+  register_depth, register_count) -- FOUR related but DISTINCT
+  stage-index quantities (F6, extended by Task 6) are in play below: this
+  function is the source of truth for THREE of them (stages, stage_depth,
+  register_depth) -- the fourth, stages_real, comes from the real compiler,
+  not from this function (see its own paragraph below):
 
-  # ternary_plan.blocks, not ternary_blocks: the latter is the naive
-  # per-table sum computed above, before the ragged-key group-offset charge
-  # (Mechanism G) that only crossbar_stages_needed's stage packing knows
-  # about -- see StagePlan.blocks. range_blocks needs no such substitution:
-  # a range table's key is always a whole number of bytes (never ragged),
-  # so range_plan.blocks is provably identical to range_blocks.
-  return ResourceUsage(
-      stages=range_plan.occupied + ternary_plan.occupied,
-      blocks=range_blocks + ternary_plan.blocks,
-      stage_depth=stage_depth,
-      range_entries=range_entries,
-      ternary_entries=ternary_entries,
-      codeword_length=codeword_length,
-      register_depth=register_depth,
-      register_count=register_count,
-      range_depth=range_plan.depth,
-      ternary_depth=ternary_plan.depth,
-      range_tables=len(range_table_specs),
-      ternary_tables=len(ternary_table_specs))
+    stages      : OCCUPIED match-table stage count -- how many distinct
+                  stage indices actually hold a table from either pool
+                  (range_plan.occupied + ternary_plan.occupied). M2 example: 3.
+                  This is what gets written to the campaign CSV's `stages`
+                  column and plotted -- it is NOT a pipeline-depth quantity
+                  and must never be compared against TOFINO_PIPELINE_STAGES.
+    blocks      : total blocks used by both range and ternary tables
+    stage_depth : pipeline DEPTH, max(occupied stage index) + 1 -- the
+                  quantity a hard stage ceiling actually reads (F5). Read
+                  from ternary_plan.depth (the classification pool is placed
+                  LAST, after the range pool, so its depth is the overall
+                  pipeline depth), defensively widened to
+                  max(range_plan.depth, ternary_plan.depth) so an
+                  (unrealistic) model with no ternary tables at all still
+                  reports a sane depth, plus VOTE_EPILOGUE_STAGES for the
+                  vote tables' own trailing stage. M2 example: 9 -- which is
+                  what the real compiler needs for M2 as well. It read 6
+                  before the 2026-09-05 calibration corrected FLOW_HASH_LEVEL
+                  and added the epilogue; anything comparing stage_depth
+                  against pre-2026-09-05 archived campaign numbers is
+                  comparing two different definitions.
+    register_depth : max readiness level (feature_readiness_level) over the
+                  selected feature(s) -- how many stages elapse before the
+                  LAST register a classification table depends on has run.
+                  Related to stage_depth (both are stage-index quantities
+                  gated by the same register-dependency model) but NOT the
+                  same number: stage_depth also accounts for crossbar
+                  packing/spill of the match tables themselves, which
+                  register_depth does not. See ResourceUsage's own
+                  docstring for register_depth/register_count and their
+                  capacity caveat (Spec 4.3).
+    range_entries  : count of physical rows across all range tables
+    ternary_entries: count of ternary codewords across all classification trees
+    (a fourth quantity, `stages_real` -- the REAL compiler's whole-program
+    stage count including parsing/bookkeeping overhead this function does
+    not model at all -- is NOT returned here; see p4_compile.parse_compile_logs,
+    which stores it. M2 example: 9. `stages` and `stages_real` sit side by
+    side in the same campaign dataframe row and are NOT the same quantity --
+    plotting them together as if they were reads as the model being "67%
+    wrong" when they are not even measuring the same thing. `stage_depth` and
+    `stages_real` ARE comparable, and since 2026-09-05 they agree on M2; the
+    residual on the 19-row calibration sample is 0-3 stages, always with
+    stages_real the larger -- unmodelled PHV container conflicts and TCAM
+    column geometry, see scripts/compiler_calibration.replay_stage_depth.)
+
+  use_default_action_discount: opt-in, threaded down to
+  ternary_matching_resource_usage under BOTH encodings -- directly for
+  'joint' (which does its own ternary accounting on the merged tree set),
+  and via both nested single_model_memory_evaluation calls for 'disjoint'.
+  False -- the default -- reproduces every pre-existing caller's numbers
+  exactly."""
+  usage, _range_plan, _ternary_plan = assemble_usage(_pool_inputs(
+      clf_app, clf_ddos, selected_features_app, selected_features_ddos,
+      encoding, use_default_action_discount=use_default_action_discount))
+  return usage
