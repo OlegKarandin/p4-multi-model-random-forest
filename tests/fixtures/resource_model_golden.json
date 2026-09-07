@@ -1,0 +1,5603 @@
+{
+ "metadata": {
+  "campaign_dir": "results/campaign_backup_20260825",
+  "generated": "2026-09-07",
+  "known_findings": [
+   {
+    "id": "mechanism_g_over_application_2026_09_07",
+    "row_deltas": {
+     "independent_high_sd6": 1,
+     "independent_high_sd7": 1,
+     "independent_high_sd8": 1,
+     "independent_low_sd6": 3,
+     "independent_low_sd7": 1
+    },
+    "rows": [
+     "independent_low_sd6",
+     "independent_low_sd7",
+     "independent_high_sd6",
+     "independent_high_sd7",
+     "independent_high_sd8"
+    ],
+    "summary": "This fixture's usage.blocks is higher than results/compiler_calibration_v6.csv's blocks column on these 5 rows -- by +1 (independent_low_sd7, independent_high_sd6, independent_high_sd7, independent_high_sd8) or +3 (independent_low_sd6); see row_deltas above. All 5 are group='independent'/encoding='disjoint' with every ternary table's ternary_ragged=True; every 'joint' row agrees with the CSV exactly. Diagnosed mechanistically: range_blocks + the naive per-table sum of ternary_table_specs' block counts (the PRE-Mechanism-G formula) reproduces the CSV's stale blocks value exactly on all 5 rows, and that CSV value is independently confirmed to equal tcam_real (real p4c ground truth) on all 5. So here -- unlike independent_low_sd5, where the naive sum was the one wrong and Mechanism G's ragged-key group-offset charge (crossbar_stages_needed's ragged_keys/charged/stage_charged_blocks logic, src/p4model/packing.py) corrected it to match ground truth (13 -> 16) -- Mechanism G's charge is what disagrees with ground truth here, appearing to over-fire on these 5 rows' stages. The larger independent_low_sd6 delta (+3 on a single occupied ternary stage, vs +1 on the other rows' 1-2 occupied stages) was not further isolated -- out of scope for this Tier 1 task. This is a pre-existing property of the already-landed Mechanism G rule, not a regression introduced by the p4model extraction (Tasks 1-10 are verbatim relocations, independently reviewed byte-for-byte faithful). Recalibrating the rule is out of scope for this Tier 1 extraction, whose premise is 'move verbatim, prove nothing changed' -- tracked here as a known model-calibration finding for a Tier 2 validation-table comparison (scripts/validation_table.py) to surface against tcam_real, not reconciled away in this fixture. independent_low_sd5's own +3 (13 -> 16) is NOT part of this finding: it is the already-documented, already-corrected exception (results/compiler_calibration_verify.csv)."
+   }
+  ],
+  "note": "Inputs captured at evaluation._pool_inputs; outputs from usage.assemble_usage.",
+  "numpy": "1.26.4",
+  "sklearn": "1.6.1",
+  "use_default_action_discount": false
+ },
+ "rows": [
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "fwd_packet_length_max",
+    "1": "packet_length_mean",
+    "2": "bwd_packet_length_max",
+    "3": "packet_length_mean",
+    "4": "fwd_packet_length_max",
+    "5": "packet_length_mean",
+    "6": "bwd_packet_length_max"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 110,
+    "emitted_features": [
+     "fwd_packet_length_max",
+     "packet_length_mean",
+     "bwd_packet_length_max",
+     "packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 4,
+    "range_entries": 404,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     1
+    ],
+    "range_levels": [
+     5,
+     4,
+     5,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "fwd_packet_length_max",
+     "packet_length_mean",
+     "bwd_packet_length_max"
+    ],
+    "ternary_entries": 238,
+    "ternary_key_field_set_ids": [
+     3,
+     4,
+     4,
+     4
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      3,
+      14
+     ],
+     [
+      2,
+      11
+     ],
+     [
+      2,
+      11
+     ],
+     [
+      2,
+      11
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      56
+     ],
+     [
+      4,
+      54
+     ]
+    ],
+    [
+     [
+      5,
+      52
+     ],
+     [
+      6,
+      27
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 4,
+     "depth": 6,
+     "indices": [
+      4,
+      5
+     ],
+     "occupied": 2
+    },
+    "ternary_plan": {
+     "blocks": 12,
+     "depth": 7,
+     "indices": [
+      6
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 16,
+     "codeword_length": 110,
+     "range_depth": 6,
+     "range_entries": 404,
+     "range_tables": 4,
+     "register_count": 3,
+     "register_depth": 5,
+     "stage_depth": 8,
+     "stages": 3,
+     "ternary_depth": 7,
+     "ternary_entries": 238,
+     "ternary_tables": 4
+    }
+   },
+   "row_id": "independent_low_sd5"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "fwd_packet_length_max",
+    "1": "bwd_packet_length_max",
+    "2": "fwd_packet_length_max",
+    "3": "bwd_packet_length_max"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 146,
+    "emitted_features": [
+     "fwd_packet_length_max",
+     "bwd_packet_length_max"
+    ],
+    "interior_stages": [],
+    "range_blocks": 2,
+    "range_entries": 337,
+    "range_key_field_set_ids": [
+     0,
+     1
+    ],
+    "range_levels": [
+     5,
+     5
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "fwd_packet_length_max",
+     "bwd_packet_length_max"
+    ],
+    "ternary_entries": 318,
+    "ternary_key_field_set_ids": [
+     2,
+     2,
+     2,
+     3,
+     3,
+     3,
+     3,
+     3
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      4,
+      19
+     ],
+     [
+      4,
+      19
+     ],
+     [
+      4,
+      19
+     ],
+     [
+      1,
+      4
+     ],
+     [
+      1,
+      4
+     ],
+     [
+      1,
+      4
+     ],
+     [
+      1,
+      4
+     ],
+     [
+      1,
+      4
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      146
+     ]
+    ],
+    [
+     [
+      3,
+      29
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 2,
+     "depth": 6,
+     "indices": [
+      5
+     ],
+     "occupied": 1
+    },
+    "ternary_plan": {
+     "blocks": 20,
+     "depth": 7,
+     "indices": [
+      6
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 22,
+     "codeword_length": 146,
+     "range_depth": 6,
+     "range_entries": 337,
+     "range_tables": 2,
+     "register_count": 2,
+     "register_depth": 5,
+     "stage_depth": 8,
+     "stages": 2,
+     "ternary_depth": 7,
+     "ternary_entries": 318,
+     "ternary_tables": 8
+    }
+   },
+   "row_id": "independent_low_sd6"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "bwd_packet_length_mean",
+    "1": "fwd_packet_length_max",
+    "10": "packet_length_mean",
+    "11": "flow_iat_mean",
+    "12": "bwd_packet_length_mean",
+    "2": "fwd_packet_length_mean",
+    "3": "packet_length_mean",
+    "4": "flow_iat_mean",
+    "5": "packet_length_mean",
+    "6": "bwd_packet_length_mean",
+    "7": "fwd_packet_length_max",
+    "8": "fwd_packet_length_mean",
+    "9": "fwd_packet_length_max"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 204,
+    "emitted_features": [
+     "bwd_packet_length_mean",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean",
+     "bwd_packet_length_mean",
+     "flow_iat_mean",
+     "fwd_packet_length_max",
+     "packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 8,
+    "range_entries": 858,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     0,
+     4,
+     1,
+     3
+    ],
+    "range_levels": [
+     5,
+     5,
+     5,
+     4,
+     5,
+     5,
+     5,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_packet_length_mean",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean",
+     "flow_last_arrival_time",
+     "flow_iat_mean"
+    ],
+    "ternary_entries": 483,
+    "ternary_key_field_set_ids": [
+     5,
+     6,
+     6,
+     6,
+     6,
+     6
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      5,
+      25
+     ],
+     [
+      5,
+      26
+     ],
+     [
+      5,
+      26
+     ],
+     [
+      5,
+      26
+     ],
+     [
+      5,
+      26
+     ],
+     [
+      5,
+      26
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      42
+     ],
+     [
+      6,
+      41
+     ],
+     [
+      7,
+      52
+     ],
+     [
+      8,
+      42
+     ]
+    ],
+    [
+     [
+      9,
+      48
+     ],
+     [
+      10,
+      46
+     ],
+     [
+      11,
+      64
+     ],
+     [
+      12,
+      46
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 8,
+     "depth": 6,
+     "indices": [
+      4,
+      5
+     ],
+     "occupied": 2
+    },
+    "ternary_plan": {
+     "blocks": 31,
+     "depth": 8,
+     "indices": [
+      6,
+      7
+     ],
+     "occupied": 2
+    },
+    "usage": {
+     "blocks": 39,
+     "codeword_length": 204,
+     "range_depth": 6,
+     "range_entries": 858,
+     "range_tables": 8,
+     "register_count": 6,
+     "register_depth": 5,
+     "stage_depth": 9,
+     "stages": 4,
+     "ternary_depth": 8,
+     "ternary_entries": 483,
+     "ternary_tables": 6
+    }
+   },
+   "row_id": "independent_low_sd7"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "fwd_packet_length_max",
+    "1": "packet_length_mean",
+    "2": "bwd_packet_length_mean",
+    "3": "fwd_packet_length_max",
+    "4": "packet_length_mean",
+    "5": "packet_length_mean",
+    "6": "bwd_packet_length_mean"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 217,
+    "emitted_features": [
+     "fwd_packet_length_max",
+     "packet_length_mean",
+     "bwd_packet_length_mean",
+     "packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 4,
+    "range_entries": 600,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     1
+    ],
+    "range_levels": [
+     5,
+     4,
+     5,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "fwd_packet_length_max",
+     "packet_length_mean",
+     "bwd_packet_length_mean"
+    ],
+    "ternary_entries": 572,
+    "ternary_key_field_set_ids": [
+     3,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      4,
+      17
+     ],
+     [
+      6,
+      28
+     ],
+     [
+      6,
+      28
+     ],
+     [
+      6,
+      28
+     ],
+     [
+      6,
+      28
+     ],
+     [
+      6,
+      28
+     ],
+     [
+      6,
+      28
+     ],
+     [
+      6,
+      28
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      64
+     ],
+     [
+      4,
+      69
+     ]
+    ],
+    [
+     [
+      5,
+      138
+     ],
+     [
+      6,
+      79
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 4,
+     "depth": 6,
+     "indices": [
+      4,
+      5
+     ],
+     "occupied": 2
+    },
+    "ternary_plan": {
+     "blocks": 46,
+     "depth": 8,
+     "indices": [
+      6,
+      7
+     ],
+     "occupied": 2
+    },
+    "usage": {
+     "blocks": 50,
+     "codeword_length": 217,
+     "range_depth": 6,
+     "range_entries": 600,
+     "range_tables": 4,
+     "register_count": 3,
+     "register_depth": 5,
+     "stage_depth": 9,
+     "stages": 4,
+     "ternary_depth": 8,
+     "ternary_entries": 572,
+     "ternary_tables": 8
+    }
+   },
+   "row_id": "independent_low_sd8"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "fwd_packet_length_max",
+    "1": "bwd_packet_length_mean",
+    "2": "fwd_packet_length_max",
+    "3": "bwd_packet_length_mean"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 477,
+    "emitted_features": [
+     "fwd_packet_length_max",
+     "bwd_packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 4,
+    "range_entries": 751,
+    "range_key_field_set_ids": [
+     0,
+     1
+    ],
+    "range_levels": [
+     5,
+     5
+    ],
+    "range_table_specs": [
+     [
+      3,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "fwd_packet_length_max",
+     "bwd_packet_length_mean"
+    ],
+    "ternary_entries": 1189,
+    "ternary_key_field_set_ids": [
+     2,
+     2,
+     2,
+     2,
+     2,
+     3,
+     3,
+     3
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      11,
+      60
+     ],
+     [
+      11,
+      60
+     ],
+     [
+      11,
+      60
+     ],
+     [
+      11,
+      60
+     ],
+     [
+      11,
+      60
+     ],
+     [
+      2,
+      6
+     ],
+     [
+      2,
+      6
+     ],
+     [
+      2,
+      6
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      477
+     ]
+    ],
+    [
+     [
+      3,
+      46
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 4,
+     "depth": 6,
+     "indices": [
+      5
+     ],
+     "occupied": 1
+    },
+    "ternary_plan": {
+     "blocks": 61,
+     "depth": 10,
+     "indices": [
+      6,
+      7,
+      8,
+      9
+     ],
+     "occupied": 4
+    },
+    "usage": {
+     "blocks": 65,
+     "codeword_length": 477,
+     "range_depth": 6,
+     "range_entries": 751,
+     "range_tables": 2,
+     "register_count": 2,
+     "register_depth": 5,
+     "stage_depth": 11,
+     "stages": 5,
+     "ternary_depth": 10,
+     "ternary_entries": 1189,
+     "ternary_tables": 8
+    }
+   },
+   "row_id": "independent_low_sd10"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "bwd_packet_length_max",
+    "1": "bwd_packet_length_mean",
+    "10": "bwd_packet_length_mean",
+    "11": "bwd_packet_length_mean",
+    "12": "packet_length_mean",
+    "13": "bwd_packet_length_max",
+    "14": "fwd_packet_length_mean",
+    "15": "fwd_iat_min",
+    "2": "fwd_packet_length_max",
+    "3": "fwd_packet_length_mean",
+    "4": "packet_length_mean",
+    "5": "fwd_iat_min",
+    "6": "bwd_packet_length_max",
+    "7": "fwd_packet_length_mean",
+    "8": "packet_length_mean",
+    "9": "fwd_packet_length_max"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 310,
+    "emitted_features": [
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_mean",
+     "packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 10,
+    "range_entries": 933,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     0,
+     1,
+     5,
+     3,
+     4
+    ],
+    "range_levels": [
+     6,
+     6,
+     5,
+     5,
+     4,
+     6,
+     6,
+     6,
+     5,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean",
+     "fwd_last_arrival_time",
+     "fwd_iat_min"
+    ],
+    "ternary_entries": 595,
+    "ternary_key_field_set_ids": [
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     7,
+     7,
+     7
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      8,
+      40
+     ],
+     [
+      8,
+      40
+     ],
+     [
+      8,
+      40
+     ],
+     [
+      8,
+      40
+     ],
+     [
+      8,
+      40
+     ],
+     [
+      8,
+      40
+     ],
+     [
+      8,
+      40
+     ],
+     [
+      4,
+      20
+     ],
+     [
+      4,
+      20
+     ],
+     [
+      4,
+      20
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      72
+     ],
+     [
+      7,
+      47
+     ],
+     [
+      8,
+      66
+     ],
+     [
+      9,
+      69
+     ],
+     [
+      10,
+      56
+     ]
+    ],
+    [
+     [
+      11,
+      32
+     ],
+     [
+      12,
+      31
+     ],
+     [
+      13,
+      26
+     ],
+     [
+      14,
+      30
+     ],
+     [
+      15,
+      32
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 10,
+     "depth": 7,
+     "indices": [
+      4,
+      5,
+      6
+     ],
+     "occupied": 3
+    },
+    "ternary_plan": {
+     "blocks": 68,
+     "depth": 11,
+     "indices": [
+      7,
+      8,
+      9,
+      10
+     ],
+     "occupied": 4
+    },
+    "usage": {
+     "blocks": 78,
+     "codeword_length": 310,
+     "range_depth": 7,
+     "range_entries": 933,
+     "range_tables": 10,
+     "register_count": 7,
+     "register_depth": 6,
+     "stage_depth": 12,
+     "stages": 7,
+     "ternary_depth": 11,
+     "ternary_entries": 595,
+     "ternary_tables": 10
+    }
+   },
+   "row_id": "independent_low_sd12"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "bwd_iat_max",
+    "1": "bwd_iat_mean",
+    "10": "flow_iat_mean",
+    "11": "fwd_packet_length_mean",
+    "12": "bwd_iat_mean",
+    "13": "fwd_iat_min",
+    "14": "bwd_packet_length_min",
+    "15": "bwd_packet_length_max",
+    "16": "bwd_iat_max",
+    "17": "packet_length_mean",
+    "18": "flow_iat_min",
+    "19": "flow_iat_mean",
+    "2": "bwd_packet_length_max",
+    "20": "bwd_iat_max",
+    "21": "bwd_packet_length_max",
+    "22": "bwd_iat_min",
+    "23": "fwd_packet_length_mean",
+    "24": "fwd_iat_min",
+    "25": "bwd_packet_length_mean",
+    "26": "flow_iat_min",
+    "27": "packet_length_mean",
+    "28": "bwd_iat_mean",
+    "29": "flow_iat_max",
+    "3": "bwd_packet_length_min",
+    "4": "flow_iat_min",
+    "5": "fwd_iat_min",
+    "6": "packet_length_mean",
+    "7": "bwd_iat_min",
+    "8": "bwd_packet_length_mean",
+    "9": "flow_iat_max"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 35,
+    "emitted_features": [
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_packet_length_max",
+     "bwd_packet_length_min",
+     "flow_iat_min",
+     "fwd_iat_min",
+     "packet_length_mean",
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "flow_iat_max",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_min",
+     "fwd_packet_length_mean",
+     "packet_length_mean"
+    ],
+    "interior_stages": [
+     6
+    ],
+    "range_blocks": 18,
+    "range_entries": 244,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     0,
+     1,
+     7,
+     2,
+     8,
+     9,
+     10,
+     4,
+     5,
+     11,
+     6
+    ],
+    "range_levels": [
+     7,
+     7,
+     6,
+     7,
+     5,
+     6,
+     4,
+     7,
+     7,
+     8,
+     6,
+     7,
+     5,
+     5,
+     5,
+     6,
+     6,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_last_arrival_time",
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_packet_length_max",
+     "bwd_packet_length_min",
+     "flow_last_arrival_time",
+     "flow_iat_min",
+     "fwd_last_arrival_time",
+     "fwd_iat_min",
+     "packet_length_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_mean",
+     "flow_iat_max",
+     "flow_iat_mean",
+     "fwd_packet_length_mean"
+    ],
+    "ternary_entries": 50,
+    "ternary_key_field_set_ids": [
+     12,
+     13
+    ],
+    "ternary_ragged": [
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      2,
+      7
+     ],
+     [
+      3,
+      12
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      16
+     ]
+    ],
+    [
+     [
+      7,
+      16
+     ]
+    ],
+    [
+     [
+      8,
+      16
+     ]
+    ],
+    [
+     [
+      9,
+      16
+     ]
+    ],
+    [
+     [
+      10,
+      16
+     ]
+    ],
+    [
+     [
+      11,
+      16
+     ]
+    ],
+    [
+     [
+      12,
+      1
+     ],
+     [
+      13,
+      1
+     ],
+     [
+      14,
+      2
+     ],
+     [
+      15,
+      3
+     ],
+     [
+      16,
+      3
+     ],
+     [
+      17,
+      1
+     ],
+     [
+      18,
+      2
+     ]
+    ],
+    [
+     [
+      19,
+      6
+     ],
+     [
+      20,
+      1
+     ],
+     [
+      21,
+      9
+     ],
+     [
+      22,
+      1
+     ],
+     [
+      23,
+      2
+     ],
+     [
+      24,
+      6
+     ],
+     [
+      25,
+      3
+     ],
+     [
+      26,
+      3
+     ],
+     [
+      27,
+      1
+     ],
+     [
+      28,
+      2
+     ],
+     [
+      29,
+      1
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 18,
+     "depth": 9,
+     "indices": [
+      4,
+      5,
+      7,
+      8
+     ],
+     "occupied": 4
+    },
+    "ternary_plan": {
+     "blocks": 6,
+     "depth": 10,
+     "indices": [
+      9
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 24,
+     "codeword_length": 35,
+     "range_depth": 9,
+     "range_entries": 244,
+     "range_tables": 18,
+     "register_count": 15,
+     "register_depth": 8,
+     "stage_depth": 11,
+     "stages": 5,
+     "ternary_depth": 10,
+     "ternary_entries": 50,
+     "ternary_tables": 2
+    }
+   },
+   "row_id": "independent_high_sd6"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "bwd_iat_max",
+    "1": "bwd_iat_mean",
+    "10": "bwd_iat_min",
+    "11": "fwd_iat_max",
+    "12": "fwd_iat_mean",
+    "13": "min_packet_length",
+    "14": "bwd_packet_length_max",
+    "15": "fwd_packet_length_max",
+    "16": "fwd_packet_length_mean",
+    "17": "bwd_iat_max",
+    "18": "bwd_iat_mean",
+    "19": "packet_length_mean",
+    "2": "bwd_packet_length_max",
+    "20": "flow_iat_min",
+    "21": "flow_iat_mean",
+    "22": "fwd_iat_min",
+    "23": "bwd_packet_length_mean",
+    "24": "flow_iat_min",
+    "25": "fwd_iat_mean",
+    "26": "fwd_iat_min",
+    "27": "fwd_packet_length_mean",
+    "28": "flow_iat_mean",
+    "29": "bwd_packet_length_max",
+    "3": "bwd_packet_length_mean",
+    "30": "bwd_iat_min",
+    "31": "fwd_iat_max",
+    "32": "bwd_iat_mean",
+    "33": "bwd_packet_length_mean",
+    "34": "min_packet_length",
+    "35": "packet_length_mean",
+    "4": "flow_iat_mean",
+    "5": "flow_iat_min",
+    "6": "fwd_iat_min",
+    "7": "fwd_packet_length_max",
+    "8": "fwd_packet_length_mean",
+    "9": "packet_length_mean"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 30,
+    "emitted_features": [
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_max",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 22,
+    "range_entries": 270,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     1,
+     10,
+     2,
+     3,
+     4,
+     5,
+     11,
+     12,
+     6,
+     8,
+     13,
+     9
+    ],
+    "range_levels": [
+     8,
+     8,
+     7,
+     7,
+     5,
+     5,
+     6,
+     5,
+     6,
+     4,
+     8,
+     8,
+     7,
+     7,
+     5,
+     5,
+     6,
+     6,
+     6,
+     6,
+     4,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_last_arrival_time",
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "flow_last_arrival_time",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_last_arrival_time",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean",
+     "bwd_iat_min",
+     "fwd_iat_max",
+     "fwd_iat_mean",
+     "min_packet_length"
+    ],
+    "ternary_entries": 61,
+    "ternary_key_field_set_ids": [
+     14,
+     15
+    ],
+    "ternary_ragged": [
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      2,
+      10
+     ],
+     [
+      3,
+      12
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      16
+     ]
+    ],
+    [
+     [
+      7,
+      16
+     ]
+    ],
+    [
+     [
+      8,
+      16
+     ]
+    ],
+    [
+     [
+      9,
+      16
+     ]
+    ],
+    [
+     [
+      10,
+      16
+     ]
+    ],
+    [
+     [
+      11,
+      16
+     ]
+    ],
+    [
+     [
+      12,
+      16
+     ]
+    ],
+    [
+     [
+      13,
+      16
+     ]
+    ],
+    [
+     [
+      14,
+      4
+     ],
+     [
+      15,
+      3
+     ],
+     [
+      16,
+      3
+     ],
+     [
+      17,
+      3
+     ],
+     [
+      18,
+      3
+     ],
+     [
+      19,
+      2
+     ],
+     [
+      20,
+      1
+     ],
+     [
+      21,
+      1
+     ],
+     [
+      22,
+      1
+     ],
+     [
+      23,
+      8
+     ]
+    ],
+    [
+     [
+      24,
+      2
+     ],
+     [
+      25,
+      2
+     ],
+     [
+      26,
+      4
+     ],
+     [
+      27,
+      2
+     ],
+     [
+      28,
+      2
+     ],
+     [
+      29,
+      4
+     ],
+     [
+      30,
+      4
+     ],
+     [
+      31,
+      1
+     ],
+     [
+      32,
+      1
+     ],
+     [
+      33,
+      2
+     ],
+     [
+      34,
+      1
+     ],
+     [
+      35,
+      5
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 22,
+     "depth": 9,
+     "indices": [
+      4,
+      5,
+      6,
+      7,
+      8
+     ],
+     "occupied": 5
+    },
+    "ternary_plan": {
+     "blocks": 6,
+     "depth": 10,
+     "indices": [
+      9
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 28,
+     "codeword_length": 30,
+     "range_depth": 9,
+     "range_entries": 270,
+     "range_tables": 22,
+     "register_count": 17,
+     "register_depth": 8,
+     "stage_depth": 11,
+     "stages": 6,
+     "ternary_depth": 10,
+     "ternary_entries": 61,
+     "ternary_tables": 2
+    }
+   },
+   "row_id": "independent_high_sd7"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "bwd_iat_max",
+    "1": "bwd_iat_mean",
+    "10": "fwd_packet_length_mean",
+    "11": "packet_length_mean",
+    "12": "flow_iat_mean",
+    "13": "fwd_iat_max",
+    "14": "fwd_iat_mean",
+    "15": "min_packet_length",
+    "16": "flow_iat_max",
+    "17": "bwd_iat_max",
+    "18": "bwd_packet_length_mean",
+    "19": "flow_iat_min",
+    "2": "bwd_iat_min",
+    "20": "bwd_iat_min",
+    "21": "bwd_iat_mean",
+    "22": "fwd_packet_length_max",
+    "23": "packet_length_mean",
+    "24": "bwd_packet_length_max",
+    "25": "fwd_iat_min",
+    "26": "bwd_packet_length_min",
+    "27": "fwd_packet_length_mean",
+    "28": "min_packet_length",
+    "29": "flow_iat_mean",
+    "3": "bwd_packet_length_max",
+    "30": "fwd_packet_length_mean",
+    "31": "bwd_packet_length_min",
+    "32": "flow_iat_min",
+    "33": "fwd_iat_max",
+    "34": "bwd_packet_length_mean",
+    "35": "packet_length_mean",
+    "36": "bwd_iat_max",
+    "37": "fwd_iat_min",
+    "38": "bwd_iat_min",
+    "39": "fwd_iat_mean",
+    "4": "bwd_packet_length_mean",
+    "40": "bwd_packet_length_max",
+    "5": "bwd_packet_length_min",
+    "6": "flow_iat_max",
+    "7": "flow_iat_min",
+    "8": "fwd_iat_min",
+    "9": "fwd_packet_length_max"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 108,
+    "emitted_features": [
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_iat_max",
+     "flow_iat_min",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean",
+     "bwd_iat_max",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_max",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean"
+    ],
+    "interior_stages": [
+     5
+    ],
+    "range_blocks": 25,
+    "range_entries": 682,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     0,
+     2,
+     3,
+     4,
+     5,
+     12,
+     7,
+     13,
+     14,
+     8,
+     10,
+     15,
+     11
+    ],
+    "range_levels": [
+     8,
+     8,
+     8,
+     7,
+     7,
+     8,
+     5,
+     5,
+     7,
+     6,
+     6,
+     4,
+     8,
+     8,
+     7,
+     7,
+     8,
+     5,
+     5,
+     6,
+     6,
+     7,
+     6,
+     4,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_last_arrival_time",
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_last_arrival_time",
+     "flow_iat_max",
+     "flow_iat_min",
+     "fwd_last_arrival_time",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean",
+     "flow_iat_mean",
+     "fwd_iat_max",
+     "fwd_iat_mean",
+     "min_packet_length"
+    ],
+    "ternary_entries": 212,
+    "ternary_key_field_set_ids": [
+     16,
+     17,
+     17,
+     17
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      4,
+      19
+     ],
+     [
+      3,
+      16
+     ],
+     [
+      3,
+      16
+     ],
+     [
+      3,
+      16
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      16
+     ]
+    ],
+    [
+     [
+      7,
+      16
+     ]
+    ],
+    [
+     [
+      8,
+      16
+     ]
+    ],
+    [
+     [
+      9,
+      16
+     ]
+    ],
+    [
+     [
+      10,
+      16
+     ]
+    ],
+    [
+     [
+      11,
+      16
+     ]
+    ],
+    [
+     [
+      12,
+      16
+     ]
+    ],
+    [
+     [
+      13,
+      16
+     ]
+    ],
+    [
+     [
+      14,
+      16
+     ]
+    ],
+    [
+     [
+      15,
+      16
+     ]
+    ],
+    [
+     [
+      16,
+      5
+     ],
+     [
+      17,
+      9
+     ],
+     [
+      18,
+      12
+     ],
+     [
+      19,
+      4
+     ],
+     [
+      20,
+      5
+     ],
+     [
+      21,
+      6
+     ],
+     [
+      22,
+      11
+     ],
+     [
+      23,
+      16
+     ],
+     [
+      24,
+      17
+     ],
+     [
+      25,
+      6
+     ],
+     [
+      26,
+      3
+     ],
+     [
+      27,
+      14
+     ]
+    ],
+    [
+     [
+      28,
+      1
+     ],
+     [
+      29,
+      6
+     ],
+     [
+      30,
+      10
+     ],
+     [
+      31,
+      2
+     ],
+     [
+      32,
+      5
+     ],
+     [
+      33,
+      4
+     ],
+     [
+      34,
+      9
+     ],
+     [
+      35,
+      14
+     ],
+     [
+      36,
+      3
+     ],
+     [
+      37,
+      7
+     ],
+     [
+      38,
+      8
+     ],
+     [
+      39,
+      7
+     ],
+     [
+      40,
+      7
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 25,
+     "depth": 9,
+     "indices": [
+      4,
+      6,
+      7,
+      8
+     ],
+     "occupied": 4
+    },
+    "ternary_plan": {
+     "blocks": 14,
+     "depth": 10,
+     "indices": [
+      9
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 39,
+     "codeword_length": 108,
+     "range_depth": 9,
+     "range_entries": 682,
+     "range_tables": 25,
+     "register_count": 19,
+     "register_depth": 8,
+     "stage_depth": 11,
+     "stages": 5,
+     "ternary_depth": 10,
+     "ternary_entries": 212,
+     "ternary_tables": 4
+    }
+   },
+   "row_id": "independent_high_sd8"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "bwd_iat_max",
+    "1": "bwd_iat_mean",
+    "10": "fwd_iat_min",
+    "11": "fwd_packet_length_max",
+    "12": "fwd_packet_length_mean",
+    "13": "min_packet_length",
+    "14": "packet_length_mean",
+    "15": "fwd_iat_max",
+    "16": "flow_iat_mean",
+    "17": "min_packet_length",
+    "18": "bwd_iat_mean",
+    "19": "fwd_packet_length_mean",
+    "2": "bwd_iat_min",
+    "20": "bwd_packet_length_mean",
+    "21": "fwd_packet_length_max",
+    "22": "fwd_iat_mean",
+    "23": "packet_length_mean",
+    "24": "bwd_packet_length_max",
+    "25": "bwd_iat_min",
+    "26": "bwd_packet_length_min",
+    "27": "bwd_iat_max",
+    "28": "flow_iat_min",
+    "29": "fwd_iat_min",
+    "3": "bwd_packet_length_max",
+    "30": "flow_iat_max",
+    "31": "bwd_iat_max",
+    "32": "flow_iat_mean",
+    "33": "fwd_packet_length_mean",
+    "34": "bwd_iat_min",
+    "35": "bwd_packet_length_max",
+    "36": "bwd_packet_length_mean",
+    "37": "fwd_iat_max",
+    "38": "fwd_iat_min",
+    "39": "bwd_packet_length_min",
+    "4": "bwd_packet_length_mean",
+    "40": "packet_length_mean",
+    "41": "min_packet_length",
+    "42": "fwd_iat_mean",
+    "43": "flow_iat_min",
+    "44": "bwd_iat_mean",
+    "5": "bwd_packet_length_min",
+    "6": "flow_iat_max",
+    "7": "flow_iat_mean",
+    "8": "flow_iat_min",
+    "9": "fwd_iat_mean"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 205,
+    "emitted_features": [
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_iat_max",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean",
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_max",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean"
+    ],
+    "interior_stages": [
+     5
+    ],
+    "range_blocks": 29,
+    "range_entries": 907,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     7,
+     8,
+     15,
+     9,
+     10,
+     12,
+     13,
+     14
+    ],
+    "range_levels": [
+     8,
+     8,
+     8,
+     7,
+     7,
+     8,
+     5,
+     5,
+     5,
+     6,
+     7,
+     6,
+     6,
+     4,
+     4,
+     8,
+     8,
+     8,
+     7,
+     7,
+     8,
+     5,
+     5,
+     6,
+     6,
+     7,
+     6,
+     4,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_last_arrival_time",
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_last_arrival_time",
+     "flow_iat_max",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_last_arrival_time",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean",
+     "fwd_iat_max"
+    ],
+    "ternary_entries": 287,
+    "ternary_key_field_set_ids": [
+     16,
+     16,
+     16,
+     17
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      6,
+      33
+     ],
+     [
+      6,
+      33
+     ],
+     [
+      6,
+      33
+     ],
+     [
+      3,
+      14
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      16
+     ]
+    ],
+    [
+     [
+      7,
+      16
+     ]
+    ],
+    [
+     [
+      8,
+      16
+     ]
+    ],
+    [
+     [
+      9,
+      16
+     ]
+    ],
+    [
+     [
+      10,
+      16
+     ]
+    ],
+    [
+     [
+      11,
+      16
+     ]
+    ],
+    [
+     [
+      12,
+      16
+     ]
+    ],
+    [
+     [
+      13,
+      16
+     ]
+    ],
+    [
+     [
+      14,
+      16
+     ]
+    ],
+    [
+     [
+      15,
+      16
+     ]
+    ],
+    [
+     [
+      16,
+      9
+     ],
+     [
+      17,
+      2
+     ],
+     [
+      18,
+      19
+     ],
+     [
+      19,
+      22
+     ],
+     [
+      20,
+      20
+     ],
+     [
+      21,
+      20
+     ],
+     [
+      22,
+      5
+     ],
+     [
+      23,
+      27
+     ],
+     [
+      24,
+      24
+     ],
+     [
+      25,
+      11
+     ],
+     [
+      26,
+      7
+     ],
+     [
+      27,
+      10
+     ],
+     [
+      28,
+      10
+     ],
+     [
+      29,
+      11
+     ],
+     [
+      30,
+      8
+     ]
+    ],
+    [
+     [
+      31,
+      3
+     ],
+     [
+      32,
+      1
+     ],
+     [
+      33,
+      4
+     ],
+     [
+      34,
+      5
+     ],
+     [
+      35,
+      7
+     ],
+     [
+      36,
+      7
+     ],
+     [
+      37,
+      2
+     ],
+     [
+      38,
+      6
+     ],
+     [
+      39,
+      2
+     ],
+     [
+      40,
+      2
+     ],
+     [
+      41,
+      1
+     ],
+     [
+      42,
+      4
+     ],
+     [
+      43,
+      4
+     ],
+     [
+      44,
+      5
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 29,
+     "depth": 10,
+     "indices": [
+      4,
+      6,
+      7,
+      8,
+      9
+     ],
+     "occupied": 5
+    },
+    "ternary_plan": {
+     "blocks": 21,
+     "depth": 11,
+     "indices": [
+      10
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 50,
+     "codeword_length": 205,
+     "range_depth": 10,
+     "range_entries": 907,
+     "range_tables": 29,
+     "register_count": 19,
+     "register_depth": 8,
+     "stage_depth": 12,
+     "stages": 6,
+     "ternary_depth": 11,
+     "ternary_entries": 287,
+     "ternary_tables": 4
+    }
+   },
+   "row_id": "independent_high_sd10"
+  },
+  {
+   "encoding": "disjoint",
+   "field_names": {
+    "0": "bwd_iat_max",
+    "1": "bwd_iat_mean",
+    "10": "fwd_packet_length_max",
+    "11": "fwd_packet_length_mean",
+    "12": "fwd_packet_length_min",
+    "13": "min_packet_length",
+    "14": "packet_length_mean",
+    "15": "flow_iat_mean",
+    "16": "fwd_iat_mean",
+    "17": "bwd_iat_min",
+    "18": "min_packet_length",
+    "19": "flow_iat_max",
+    "2": "bwd_iat_min",
+    "20": "fwd_iat_min",
+    "21": "bwd_packet_length_max",
+    "22": "bwd_packet_length_mean",
+    "23": "fwd_packet_length_max",
+    "24": "fwd_packet_length_mean",
+    "25": "fwd_iat_max",
+    "26": "packet_length_mean",
+    "27": "bwd_iat_mean",
+    "28": "fwd_packet_length_min",
+    "29": "bwd_iat_max",
+    "3": "bwd_packet_length_max",
+    "30": "flow_iat_min",
+    "31": "bwd_packet_length_min",
+    "32": "fwd_iat_mean",
+    "33": "fwd_iat_min",
+    "34": "bwd_packet_length_mean",
+    "35": "bwd_iat_max",
+    "36": "bwd_packet_length_max",
+    "37": "bwd_iat_min",
+    "38": "packet_length_mean",
+    "39": "fwd_iat_max",
+    "4": "bwd_packet_length_mean",
+    "40": "fwd_packet_length_min",
+    "41": "fwd_packet_length_mean",
+    "42": "min_packet_length",
+    "43": "fwd_packet_length_max",
+    "44": "flow_iat_mean",
+    "45": "flow_iat_min",
+    "5": "bwd_packet_length_min",
+    "6": "flow_iat_max",
+    "7": "flow_iat_min",
+    "8": "fwd_iat_max",
+    "9": "fwd_iat_min"
+   },
+   "group": "independent",
+   "inputs": {
+    "codeword_length": 209,
+    "emitted_features": [
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_iat_max",
+     "flow_iat_min",
+     "fwd_iat_max",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "fwd_packet_length_min",
+     "min_packet_length",
+     "packet_length_mean",
+     "bwd_iat_max",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_max",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "fwd_packet_length_min",
+     "min_packet_length",
+     "packet_length_mean"
+    ],
+    "interior_stages": [
+     5,
+     7
+    ],
+    "range_blocks": 29,
+    "range_entries": 964,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     0,
+     2,
+     3,
+     4,
+     15,
+     7,
+     8,
+     16,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14
+    ],
+    "range_levels": [
+     8,
+     8,
+     9,
+     7,
+     8,
+     8,
+     5,
+     5,
+     6,
+     7,
+     6,
+     6,
+     6,
+     4,
+     4,
+     8,
+     9,
+     7,
+     8,
+     5,
+     5,
+     6,
+     7,
+     7,
+     6,
+     6,
+     6,
+     4,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_last_arrival_time",
+     "bwd_iat_max",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_last_arrival_time",
+     "flow_iat_max",
+     "flow_iat_min",
+     "fwd_last_arrival_time",
+     "fwd_iat_max",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "fwd_packet_length_min",
+     "min_packet_length",
+     "packet_length_mean",
+     "flow_iat_mean",
+     "fwd_iat_mean"
+    ],
+    "ternary_entries": 346,
+    "ternary_key_field_set_ids": [
+     17,
+     17,
+     17,
+     17,
+     17,
+     18
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      6,
+      33
+     ],
+     [
+      6,
+      33
+     ],
+     [
+      6,
+      33
+     ],
+     [
+      6,
+      33
+     ],
+     [
+      6,
+      33
+     ],
+     [
+      4,
+      19
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      16
+     ]
+    ],
+    [
+     [
+      7,
+      16
+     ]
+    ],
+    [
+     [
+      8,
+      16
+     ]
+    ],
+    [
+     [
+      9,
+      16
+     ]
+    ],
+    [
+     [
+      10,
+      16
+     ]
+    ],
+    [
+     [
+      11,
+      16
+     ]
+    ],
+    [
+     [
+      12,
+      16
+     ]
+    ],
+    [
+     [
+      13,
+      16
+     ]
+    ],
+    [
+     [
+      14,
+      16
+     ]
+    ],
+    [
+     [
+      15,
+      16
+     ]
+    ],
+    [
+     [
+      16,
+      16
+     ]
+    ],
+    [
+     [
+      17,
+      9
+     ],
+     [
+      18,
+      2
+     ],
+     [
+      19,
+      12
+     ],
+     [
+      20,
+      11
+     ],
+     [
+      21,
+      30
+     ],
+     [
+      22,
+      19
+     ],
+     [
+      23,
+      22
+     ],
+     [
+      24,
+      19
+     ],
+     [
+      25,
+      6
+     ],
+     [
+      26,
+      28
+     ],
+     [
+      27,
+      23
+     ],
+     [
+      28,
+      3
+     ],
+     [
+      29,
+      8
+     ],
+     [
+      30,
+      12
+     ],
+     [
+      31,
+      5
+     ]
+    ],
+    [
+     [
+      32,
+      13
+     ],
+     [
+      33,
+      12
+     ],
+     [
+      34,
+      2
+     ],
+     [
+      35,
+      2
+     ],
+     [
+      36,
+      17
+     ],
+     [
+      37,
+      8
+     ],
+     [
+      38,
+      5
+     ],
+     [
+      39,
+      4
+     ],
+     [
+      40,
+      1
+     ],
+     [
+      41,
+      8
+     ],
+     [
+      42,
+      2
+     ],
+     [
+      43,
+      11
+     ],
+     [
+      44,
+      5
+     ],
+     [
+      45,
+      6
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 29,
+     "depth": 11,
+     "indices": [
+      4,
+      6,
+      8,
+      9,
+      10
+     ],
+     "occupied": 5
+    },
+    "ternary_plan": {
+     "blocks": 34,
+     "depth": 13,
+     "indices": [
+      11,
+      12
+     ],
+     "occupied": 2
+    },
+    "usage": {
+     "blocks": 63,
+     "codeword_length": 209,
+     "range_depth": 11,
+     "range_entries": 964,
+     "range_tables": 29,
+     "register_count": 20,
+     "register_depth": 9,
+     "stage_depth": 14,
+     "stages": 7,
+     "ternary_depth": 13,
+     "ternary_entries": 346,
+     "ternary_tables": 6
+    }
+   },
+   "row_id": "independent_high_sd12"
+  },
+  {
+   "encoding": "joint",
+   "field_names": {
+    "0": "fwd_packet_length_max",
+    "1": "fwd_packet_length_max"
+   },
+   "group": "joint",
+   "inputs": {
+    "codeword_length": 188,
+    "emitted_features": [
+     "fwd_packet_length_max"
+    ],
+    "interior_stages": [],
+    "range_blocks": 1,
+    "range_entries": 309,
+    "range_key_field_set_ids": [
+     0
+    ],
+    "range_levels": [
+     5
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "fwd_packet_length_max"
+    ],
+    "ternary_entries": 194,
+    "ternary_key_field_set_ids": [
+     1,
+     1
+    ],
+    "ternary_ragged": [
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      5,
+      24
+     ],
+     [
+      5,
+      24
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      188
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 1,
+     "depth": 6,
+     "indices": [
+      5
+     ],
+     "occupied": 1
+    },
+    "ternary_plan": {
+     "blocks": 10,
+     "depth": 7,
+     "indices": [
+      6
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 11,
+     "codeword_length": 188,
+     "range_depth": 6,
+     "range_entries": 309,
+     "range_tables": 1,
+     "register_count": 1,
+     "register_depth": 5,
+     "stage_depth": 8,
+     "stages": 2,
+     "ternary_depth": 7,
+     "ternary_entries": 194,
+     "ternary_tables": 2
+    }
+   },
+   "row_id": "joint_low_sd5"
+  },
+  {
+   "encoding": "joint",
+   "field_names": {
+    "0": "bwd_packet_length_mean",
+    "1": "fwd_packet_length_max",
+    "2": "fwd_packet_length_mean",
+    "3": "packet_length_mean",
+    "4": "fwd_packet_length_mean",
+    "5": "packet_length_mean",
+    "6": "fwd_packet_length_max",
+    "7": "bwd_packet_length_mean"
+   },
+   "group": "joint",
+   "inputs": {
+    "codeword_length": 242,
+    "emitted_features": [
+     "bwd_packet_length_mean",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 4,
+    "range_entries": 445,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "range_levels": [
+     5,
+     5,
+     5,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_packet_length_mean",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "packet_length_mean"
+    ],
+    "ternary_entries": 286,
+    "ternary_key_field_set_ids": [
+     4,
+     4,
+     4,
+     4
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      6,
+      32
+     ],
+     [
+      6,
+      32
+     ],
+     [
+      6,
+      32
+     ],
+     [
+      6,
+      32
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      52
+     ],
+     [
+      5,
+      63
+     ],
+     [
+      6,
+      65
+     ],
+     [
+      7,
+      62
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 4,
+     "depth": 6,
+     "indices": [
+      4,
+      5
+     ],
+     "occupied": 2
+    },
+    "ternary_plan": {
+     "blocks": 24,
+     "depth": 7,
+     "indices": [
+      6
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 28,
+     "codeword_length": 242,
+     "range_depth": 6,
+     "range_entries": 445,
+     "range_tables": 4,
+     "register_count": 4,
+     "register_depth": 5,
+     "stage_depth": 8,
+     "stages": 3,
+     "ternary_depth": 7,
+     "ternary_entries": 286,
+     "ternary_tables": 4
+    }
+   },
+   "row_id": "joint_low_sd6"
+  },
+  {
+   "encoding": "joint",
+   "field_names": {
+    "0": "bwd_packet_length_max",
+    "1": "fwd_packet_length_max",
+    "2": "bwd_packet_length_max",
+    "3": "fwd_packet_length_max"
+   },
+   "group": "joint",
+   "inputs": {
+    "codeword_length": 249,
+    "emitted_features": [
+     "bwd_packet_length_max",
+     "fwd_packet_length_max"
+    ],
+    "interior_stages": [],
+    "range_blocks": 2,
+    "range_entries": 442,
+    "range_key_field_set_ids": [
+     0,
+     1
+    ],
+    "range_levels": [
+     5,
+     5
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_packet_length_max",
+     "fwd_packet_length_max"
+    ],
+    "ternary_entries": 389,
+    "ternary_key_field_set_ids": [
+     2,
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      6,
+      32
+     ],
+     [
+      6,
+      32
+     ],
+     [
+      6,
+      32
+     ],
+     [
+      6,
+      32
+     ],
+     [
+      6,
+      32
+     ],
+     [
+      6,
+      32
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      93
+     ],
+     [
+      3,
+      156
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 2,
+     "depth": 6,
+     "indices": [
+      5
+     ],
+     "occupied": 1
+    },
+    "ternary_plan": {
+     "blocks": 36,
+     "depth": 8,
+     "indices": [
+      6,
+      7
+     ],
+     "occupied": 2
+    },
+    "usage": {
+     "blocks": 38,
+     "codeword_length": 249,
+     "range_depth": 6,
+     "range_entries": 442,
+     "range_tables": 2,
+     "register_count": 2,
+     "register_depth": 5,
+     "stage_depth": 9,
+     "stages": 3,
+     "ternary_depth": 8,
+     "ternary_entries": 389,
+     "ternary_tables": 6
+    }
+   },
+   "row_id": "joint_low_sd7"
+  },
+  {
+   "encoding": "joint",
+   "field_names": {
+    "0": "bwd_packet_length_max",
+    "1": "fwd_packet_length_max",
+    "2": "packet_length_mean",
+    "3": "bwd_packet_length_max",
+    "4": "fwd_packet_length_max",
+    "5": "packet_length_mean"
+   },
+   "group": "joint",
+   "inputs": {
+    "codeword_length": 285,
+    "emitted_features": [
+     "bwd_packet_length_max",
+     "fwd_packet_length_max",
+     "packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 3,
+    "range_entries": 521,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2
+    ],
+    "range_levels": [
+     5,
+     5,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_packet_length_max",
+     "fwd_packet_length_max",
+     "packet_length_mean"
+    ],
+    "ternary_entries": 392,
+    "ternary_key_field_set_ids": [
+     3,
+     3,
+     3,
+     3,
+     3,
+     3
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      70
+     ],
+     [
+      4,
+      111
+     ],
+     [
+      5,
+      104
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 3,
+     "depth": 6,
+     "indices": [
+      4,
+      5
+     ],
+     "occupied": 2
+    },
+    "ternary_plan": {
+     "blocks": 42,
+     "depth": 9,
+     "indices": [
+      6,
+      7,
+      8
+     ],
+     "occupied": 3
+    },
+    "usage": {
+     "blocks": 45,
+     "codeword_length": 285,
+     "range_depth": 6,
+     "range_entries": 521,
+     "range_tables": 3,
+     "register_count": 3,
+     "register_depth": 5,
+     "stage_depth": 10,
+     "stages": 5,
+     "ternary_depth": 9,
+     "ternary_entries": 392,
+     "ternary_tables": 6
+    }
+   },
+   "row_id": "joint_low_sd10"
+  },
+  {
+   "encoding": "joint",
+   "field_names": {
+    "0": "fwd_packet_length_max",
+    "1": "fwd_packet_length_max"
+   },
+   "group": "joint",
+   "inputs": {
+    "codeword_length": 321,
+    "emitted_features": [
+     "fwd_packet_length_max"
+    ],
+    "interior_stages": [],
+    "range_blocks": 2,
+    "range_entries": 460,
+    "range_key_field_set_ids": [
+     0
+    ],
+    "range_levels": [
+     5
+    ],
+    "range_table_specs": [
+     [
+      2,
+      2
+     ]
+    ],
+    "register_names": [
+     "fwd_packet_length_max"
+    ],
+    "ternary_entries": 766,
+    "ternary_key_field_set_ids": [
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      8,
+      41
+     ],
+     [
+      8,
+      41
+     ],
+     [
+      8,
+      41
+     ],
+     [
+      8,
+      41
+     ],
+     [
+      8,
+      41
+     ],
+     [
+      8,
+      41
+     ],
+     [
+      8,
+      41
+     ],
+     [
+      8,
+      41
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      321
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 2,
+     "depth": 6,
+     "indices": [
+      5
+     ],
+     "occupied": 1
+    },
+    "ternary_plan": {
+     "blocks": 64,
+     "depth": 10,
+     "indices": [
+      6,
+      7,
+      8,
+      9
+     ],
+     "occupied": 4
+    },
+    "usage": {
+     "blocks": 66,
+     "codeword_length": 321,
+     "range_depth": 6,
+     "range_entries": 460,
+     "range_tables": 1,
+     "register_count": 1,
+     "register_depth": 5,
+     "stage_depth": 11,
+     "stages": 5,
+     "ternary_depth": 10,
+     "ternary_entries": 766,
+     "ternary_tables": 8
+    }
+   },
+   "row_id": "joint_low_sd12"
+  },
+  {
+   "encoding": "joint",
+   "field_names": {
+    "0": "bwd_iat_mean",
+    "1": "bwd_iat_min",
+    "10": "fwd_packet_length_mean",
+    "11": "fwd_packet_length_min",
+    "12": "packet_length_mean",
+    "13": "fwd_iat_mean",
+    "14": "fwd_packet_length_mean",
+    "15": "bwd_packet_length_max",
+    "16": "fwd_iat_min",
+    "17": "fwd_packet_length_max",
+    "18": "bwd_packet_length_mean",
+    "19": "fwd_packet_length_min",
+    "2": "bwd_packet_length_max",
+    "20": "bwd_packet_length_min",
+    "21": "bwd_iat_mean",
+    "22": "fwd_iat_max",
+    "23": "bwd_iat_min",
+    "24": "flow_iat_min",
+    "25": "packet_length_mean",
+    "3": "bwd_packet_length_mean",
+    "4": "bwd_packet_length_min",
+    "5": "flow_iat_min",
+    "6": "fwd_iat_max",
+    "7": "fwd_iat_mean",
+    "8": "fwd_iat_min",
+    "9": "fwd_packet_length_max"
+   },
+   "group": "joint",
+   "inputs": {
+    "codeword_length": 84,
+    "emitted_features": [
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_iat_min",
+     "fwd_iat_max",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "fwd_packet_length_min",
+     "packet_length_mean"
+    ],
+    "interior_stages": [],
+    "range_blocks": 13,
+    "range_entries": 289,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12
+    ],
+    "range_levels": [
+     8,
+     8,
+     7,
+     7,
+     7,
+     5,
+     6,
+     6,
+     6,
+     5,
+     5,
+     6,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_last_arrival_time",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_last_arrival_time",
+     "flow_iat_min",
+     "fwd_last_arrival_time",
+     "fwd_iat_max",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "fwd_packet_length_min",
+     "packet_length_mean"
+    ],
+    "ternary_entries": 87,
+    "ternary_key_field_set_ids": [
+     13,
+     13
+    ],
+    "ternary_ragged": [
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      3,
+      16
+     ],
+     [
+      3,
+      16
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      16
+     ]
+    ],
+    [
+     [
+      7,
+      16
+     ]
+    ],
+    [
+     [
+      8,
+      16
+     ]
+    ],
+    [
+     [
+      9,
+      16
+     ]
+    ],
+    [
+     [
+      10,
+      16
+     ]
+    ],
+    [
+     [
+      11,
+      16
+     ]
+    ],
+    [
+     [
+      12,
+      16
+     ]
+    ],
+    [
+     [
+      13,
+      3
+     ],
+     [
+      14,
+      11
+     ],
+     [
+      15,
+      4
+     ],
+     [
+      16,
+      8
+     ],
+     [
+      17,
+      8
+     ],
+     [
+      18,
+      11
+     ],
+     [
+      19,
+      1
+     ],
+     [
+      20,
+      4
+     ],
+     [
+      21,
+      7
+     ],
+     [
+      22,
+      3
+     ],
+     [
+      23,
+      8
+     ],
+     [
+      24,
+      6
+     ],
+     [
+      25,
+      10
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 13,
+     "depth": 9,
+     "indices": [
+      4,
+      5,
+      6,
+      7,
+      8
+     ],
+     "occupied": 5
+    },
+    "ternary_plan": {
+     "blocks": 6,
+     "depth": 10,
+     "indices": [
+      9
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 19,
+     "codeword_length": 84,
+     "range_depth": 9,
+     "range_entries": 289,
+     "range_tables": 13,
+     "register_count": 16,
+     "register_depth": 8,
+     "stage_depth": 11,
+     "stages": 6,
+     "ternary_depth": 10,
+     "ternary_entries": 87,
+     "ternary_tables": 2
+    }
+   },
+   "row_id": "joint_high_sd6"
+  },
+  {
+   "encoding": "joint",
+   "field_names": {
+    "0": "bwd_iat_max",
+    "1": "bwd_iat_min",
+    "10": "fwd_packet_length_mean",
+    "11": "min_packet_length",
+    "12": "packet_length_mean",
+    "13": "packet_length_mean",
+    "14": "bwd_packet_length_max",
+    "15": "flow_iat_mean",
+    "16": "bwd_iat_min",
+    "17": "fwd_packet_length_max",
+    "18": "fwd_iat_min",
+    "19": "bwd_packet_length_min",
+    "2": "bwd_packet_length_max",
+    "20": "bwd_packet_length_mean",
+    "21": "bwd_iat_max",
+    "22": "flow_iat_min",
+    "23": "fwd_packet_length_mean",
+    "24": "fwd_iat_mean",
+    "25": "min_packet_length",
+    "3": "bwd_packet_length_mean",
+    "4": "bwd_packet_length_min",
+    "5": "flow_iat_mean",
+    "6": "flow_iat_min",
+    "7": "fwd_iat_mean",
+    "8": "fwd_iat_min",
+    "9": "fwd_packet_length_max"
+   },
+   "group": "joint",
+   "inputs": {
+    "codeword_length": 175,
+    "emitted_features": [
+     "bwd_iat_max",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean"
+    ],
+    "interior_stages": [
+     6
+    ],
+    "range_blocks": 13,
+    "range_entries": 550,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12
+    ],
+    "range_levels": [
+     7,
+     8,
+     7,
+     7,
+     7,
+     5,
+     5,
+     6,
+     6,
+     5,
+     6,
+     4,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_last_arrival_time",
+     "bwd_iat_max",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_last_arrival_time",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_last_arrival_time",
+     "fwd_iat_mean",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean"
+    ],
+    "ternary_entries": 202,
+    "ternary_key_field_set_ids": [
+     13,
+     13,
+     13,
+     13
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      6,
+      29
+     ],
+     [
+      6,
+      29
+     ],
+     [
+      6,
+      29
+     ],
+     [
+      6,
+      29
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      16
+     ]
+    ],
+    [
+     [
+      7,
+      16
+     ]
+    ],
+    [
+     [
+      8,
+      16
+     ]
+    ],
+    [
+     [
+      9,
+      16
+     ]
+    ],
+    [
+     [
+      10,
+      16
+     ]
+    ],
+    [
+     [
+      11,
+      16
+     ]
+    ],
+    [
+     [
+      12,
+      16
+     ]
+    ],
+    [
+     [
+      13,
+      17
+     ],
+     [
+      14,
+      14
+     ],
+     [
+      15,
+      9
+     ],
+     [
+      16,
+      12
+     ],
+     [
+      17,
+      25
+     ],
+     [
+      18,
+      19
+     ],
+     [
+      19,
+      3
+     ],
+     [
+      20,
+      19
+     ],
+     [
+      21,
+      7
+     ],
+     [
+      22,
+      11
+     ],
+     [
+      23,
+      22
+     ],
+     [
+      24,
+      16
+     ],
+     [
+      25,
+      1
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 13,
+     "depth": 9,
+     "indices": [
+      4,
+      5,
+      7,
+      8
+     ],
+     "occupied": 4
+    },
+    "ternary_plan": {
+     "blocks": 24,
+     "depth": 10,
+     "indices": [
+      9
+     ],
+     "occupied": 1
+    },
+    "usage": {
+     "blocks": 37,
+     "codeword_length": 175,
+     "range_depth": 9,
+     "range_entries": 550,
+     "range_tables": 13,
+     "register_count": 16,
+     "register_depth": 8,
+     "stage_depth": 11,
+     "stages": 5,
+     "ternary_depth": 10,
+     "ternary_entries": 202,
+     "ternary_tables": 4
+    }
+   },
+   "row_id": "joint_high_sd7"
+  },
+  {
+   "encoding": "joint",
+   "field_names": {
+    "0": "bwd_iat_mean",
+    "1": "bwd_iat_min",
+    "10": "fwd_packet_length_mean",
+    "11": "min_packet_length",
+    "12": "packet_length_mean",
+    "13": "packet_length_mean",
+    "14": "fwd_packet_length_mean",
+    "15": "bwd_iat_min",
+    "16": "bwd_iat_mean",
+    "17": "fwd_iat_max",
+    "18": "flow_iat_mean",
+    "19": "bwd_packet_length_max",
+    "2": "bwd_packet_length_max",
+    "20": "fwd_packet_length_max",
+    "21": "bwd_packet_length_min",
+    "22": "bwd_packet_length_mean",
+    "23": "flow_iat_min",
+    "24": "fwd_iat_min",
+    "25": "min_packet_length",
+    "3": "bwd_packet_length_mean",
+    "4": "bwd_packet_length_min",
+    "5": "flow_iat_mean",
+    "6": "flow_iat_min",
+    "7": "fwd_iat_max",
+    "8": "fwd_iat_min",
+    "9": "fwd_packet_length_max"
+   },
+   "group": "joint",
+   "inputs": {
+    "codeword_length": 232,
+    "emitted_features": [
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_iat_max",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean"
+    ],
+    "interior_stages": [
+     6
+    ],
+    "range_blocks": 13,
+    "range_entries": 711,
+    "range_key_field_set_ids": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12
+    ],
+    "range_levels": [
+     7,
+     8,
+     7,
+     7,
+     7,
+     5,
+     5,
+     6,
+     6,
+     5,
+     6,
+     4,
+     4
+    ],
+    "range_table_specs": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "register_names": [
+     "bwd_last_arrival_time",
+     "bwd_iat_mean",
+     "bwd_iat_min",
+     "bwd_packet_length_max",
+     "bwd_packet_length_mean",
+     "bwd_packet_length_min",
+     "flow_last_arrival_time",
+     "flow_iat_mean",
+     "flow_iat_min",
+     "fwd_last_arrival_time",
+     "fwd_iat_max",
+     "fwd_iat_min",
+     "fwd_packet_length_max",
+     "fwd_packet_length_mean",
+     "min_packet_length",
+     "packet_length_mean"
+    ],
+    "ternary_entries": 272,
+    "ternary_key_field_set_ids": [
+     13,
+     13,
+     13,
+     13,
+     13,
+     13
+    ],
+    "ternary_ragged": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "ternary_table_specs": [
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ],
+     [
+      7,
+      36
+     ]
+    ]
+   },
+   "key_field_sets": [
+    [
+     [
+      0,
+      16
+     ]
+    ],
+    [
+     [
+      1,
+      16
+     ]
+    ],
+    [
+     [
+      2,
+      16
+     ]
+    ],
+    [
+     [
+      3,
+      16
+     ]
+    ],
+    [
+     [
+      4,
+      16
+     ]
+    ],
+    [
+     [
+      5,
+      16
+     ]
+    ],
+    [
+     [
+      6,
+      16
+     ]
+    ],
+    [
+     [
+      7,
+      16
+     ]
+    ],
+    [
+     [
+      8,
+      16
+     ]
+    ],
+    [
+     [
+      9,
+      16
+     ]
+    ],
+    [
+     [
+      10,
+      16
+     ]
+    ],
+    [
+     [
+      11,
+      16
+     ]
+    ],
+    [
+     [
+      12,
+      16
+     ]
+    ],
+    [
+     [
+      13,
+      28
+     ],
+     [
+      14,
+      22
+     ],
+     [
+      15,
+      15
+     ],
+     [
+      16,
+      23
+     ],
+     [
+      17,
+      11
+     ],
+     [
+      18,
+      18
+     ],
+     [
+      19,
+      30
+     ],
+     [
+      20,
+      25
+     ],
+     [
+      21,
+      10
+     ],
+     [
+      22,
+      25
+     ],
+     [
+      23,
+      10
+     ],
+     [
+      24,
+      14
+     ],
+     [
+      25,
+      1
+     ]
+    ]
+   ],
+   "outputs": {
+    "range_plan": {
+     "blocks": 13,
+     "depth": 9,
+     "indices": [
+      4,
+      5,
+      7,
+      8
+     ],
+     "occupied": 4
+    },
+    "ternary_plan": {
+     "blocks": 42,
+     "depth": 12,
+     "indices": [
+      9,
+      10,
+      11
+     ],
+     "occupied": 3
+    },
+    "usage": {
+     "blocks": 55,
+     "codeword_length": 232,
+     "range_depth": 9,
+     "range_entries": 711,
+     "range_tables": 13,
+     "register_count": 16,
+     "register_depth": 8,
+     "stage_depth": 13,
+     "stages": 7,
+     "ternary_depth": 12,
+     "ternary_entries": 272,
+     "ternary_tables": 6
+    }
+   },
+   "row_id": "joint_high_sd8"
+  }
+ ]
+}
