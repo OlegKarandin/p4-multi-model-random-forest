@@ -2,20 +2,24 @@ import pandas as pd
 import pytest
 
 from src.reporting import replay_scoring as rs
+from src.reporting.replay_scoring import derive_columns
 
 
 def _replay_frame():
     """Two model pairs, an unaligned control row and an aligned row each.
-    Pair 0 crosses a band (90 -> 84, factor 3 -> 2); pair 1 sheds five bits
-    and crosses nothing."""
+    Pair 0 crosses a band and buys a block (90 -> 84, factor 3 -> 2, blocks
+    6 -> 5); pair 1 sheds five bits, crosses nothing and buys no block
+    (blocks stay at 6)."""
     rows = []
-    for pair, (before, after_aligned) in enumerate([(90, 84), (100, 95)]):
+    for pair, (before, after_aligned, blocks_after) in enumerate(
+            [(90, 84, 5), (100, 95, 6)]):
         for policy, after, blocks in (('none', before, 30),
                                       ('aligned', after_aligned, 28)):
             rows.append({'source_arm': 'joint-d020', 'M': 25, 'split': 10,
                          'k': pair, 'overlap_threshold': 0.5, 'policy': policy,
                          'align_codeword_before': before,
                          'align_codeword_after': after, 'blocks': blocks,
+                         'align_blocks_before': 6, 'align_blocks_after': blocks_after,
                          'acc_app': 0.90, 'acc_ddos': 0.95})
     return pd.DataFrame(rows)
 
@@ -46,6 +50,7 @@ def test_s5_uses_the_tightest_swept_threshold_as_the_reference_not_literal_0_5()
                      'k': 0, 'overlap_threshold': threshold, 'policy': 'aligned',
                      'align_codeword_before': 100,
                      'align_codeword_after': after, 'blocks': blocks,
+                     'align_blocks_before': 6, 'align_blocks_after': 6,
                      'acc_app': 0.90, 'acc_ddos': 0.95})
     frame = pd.DataFrame(rows)
     verdict = rs.score(rs.derive_columns(frame))
@@ -111,3 +116,37 @@ def test_score_accepts_a_frame_with_a_single_objective_value():
     frame['objective'] = 'blocks'
     verdict = rs.score(rs.derive_columns(frame))
     assert verdict == rs.score(rs.derive_columns(_replay_frame()))
+
+
+def test_wasted_bits_charges_every_shed_bit_when_no_block_was_bought():
+    """§4.6: bits shed that did not lower blocks_after bought nothing. The
+    band-derived version charged only the overshoot past a band boundary,
+    which understated the waste wherever the crossbar arm bound -- exactly
+    the high-k cells where alignment's benefit is measured to grow."""
+    frame = pd.DataFrame([{
+        'policy': 'aligned', 'align_codeword_before': 88,
+        'align_codeword_after': 60, 'align_blocks_before': 6,
+        'align_blocks_after': 6}])
+    out = derive_columns(frame)
+    assert out['bits_shed'].iloc[0] == 28
+    assert out['wasted_bits'].iloc[0] == 28
+
+
+def test_wasted_bits_is_zero_when_a_block_was_bought():
+    frame = pd.DataFrame([{
+        'policy': 'aligned', 'align_codeword_before': 88,
+        'align_codeword_after': 60, 'align_blocks_before': 6,
+        'align_blocks_after': 5}])
+    assert derive_columns(frame)['wasted_bits'].iloc[0] == 0
+
+
+def test_the_legacy_band_column_survives_alongside_it():
+    """The 57.8% campaign figure must stay reproducible next to the corrected
+    one -- it is a published result measured under a step function that no
+    longer applies, not a number to quietly overwrite."""
+    frame = pd.DataFrame([{
+        'policy': 'aligned', 'align_codeword_before': 88,
+        'align_codeword_after': 60, 'align_blocks_before': 6,
+        'align_blocks_after': 6}])
+    out = derive_columns(frame)
+    assert 'legacy_band_wasted_bits' in out.columns

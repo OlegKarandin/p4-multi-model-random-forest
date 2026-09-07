@@ -24,7 +24,12 @@ from src.training.align_budget import band_ceiling
 PAIR_KEYS = ['source_arm', 'M', 'split', 'k', 'overlap_threshold']
 
 # The companion document's measured baseline: the share of shed bits that
-# crossed no band boundary across the whole campaign.
+# crossed no BAND boundary across the whole campaign. Retained as the
+# pre-registered target, but note the two sides are no longer the same
+# measurement -- S3's numerator is now block-derived (design §4.6) and the
+# corrected share is expected to be HIGHER in the high-k cells, because bits
+# that did cross a band still bought nothing there. Read a FAIL as "the
+# corrected accounting is stricter", not automatically as a regression.
 WASTED_BITS_BASELINE = 0.578
 
 
@@ -36,11 +41,10 @@ def derive_columns(frame):
     is a pure function of those plus the band arithmetic, so storing it twice
     would be two places to get it wrong.
 
-    wasted_bits is the honest version of "bits that bought nothing": bits shed
-    below the CEILING of the band the run actually landed in. If no band was
-    crossed that is every bit shed; if one was, it is only the overshoot past
-    the boundary. Capped at bits_shed so a run that started deep inside its
-    band is not charged for bits it never shed.
+    wasted_bits is now rebased on the BLOCK FACTOR (§4.6): a shed bit bought
+    something only if it actually lowered align_blocks_after below
+    align_blocks_before -- the same test the corrected gate uses. Otherwise
+    every bit shed on that run bought nothing.
 
     policy='none' rows are dropped here: 'none' is a pseudo-policy that skips
     align_with_policy entirely (scripts/replay_alignment.py's run_one_policy),
@@ -53,9 +57,22 @@ def derive_columns(frame):
     out['factor_before'] = out['align_codeword_before'].apply(band_factor)
     out['factor_after'] = out['align_codeword_after'].apply(band_factor)
     out['bits_shed'] = out['align_codeword_before'] - out['align_codeword_after']
+
+    # §4.6: rebased on the BLOCK FACTOR. A shed bit bought something only if
+    # the per-table factor actually dropped -- which is what ResourceUsage
+    # charges. Under the superseded band model this was the overshoot past a
+    # 44-bit boundary, and that UNDERSTATED the waste wherever the crossbar
+    # arm bound: bits that did cross a band still bought nothing there.
+    bought = out['align_blocks_after'] < out['align_blocks_before']
+    out['wasted_bits'] = out['bits_shed'].where(~bought, 0)
+
+    # The band-derived figure, kept so the campaign's published 57.8% stays
+    # reproducible beside the corrected one. LEGACY: measured against a step
+    # function the hardware does not have. Do not score new work on it.
     overshoot = (out['factor_after'].apply(band_ceiling)
                  - out['align_codeword_after']).clip(lower=0)
-    out['wasted_bits'] = pd.concat([out['bits_shed'], overshoot], axis=1).min(axis=1)
+    out['legacy_band_wasted_bits'] = pd.concat(
+        [out['bits_shed'], overshoot], axis=1).min(axis=1)
     return out
 
 
@@ -106,7 +123,8 @@ def score(frame):
     shed = aligned['bits_shed'].sum()
     share = (aligned['wasted_bits'].sum() / shed) if shed else 1.0
     out['S3'] = _verdict(len(aligned), share < WASTED_BITS_BASELINE, share,
-                         'wasted {:.1%} of {} shed bits (baseline {:.1%})'.format(
+                         'wasted {:.1%} of {} shed bits, block-derived '
+                         '(band-derived baseline {:.1%})'.format(
                              share, int(shed), WASTED_BITS_BASELINE))
 
     # S5 -- C3(c): does loosening the candidate gate widen the generator at
