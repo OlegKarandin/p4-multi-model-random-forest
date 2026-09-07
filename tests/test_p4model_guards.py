@@ -4,11 +4,33 @@ and the old import paths resolve to that same object.
 Identity (`is`) assertions, not equality: a re-export that rebinds rather than
 aliases would still compare equal on an int, then drift silently the first time
 one side is edited."""
+import os
+import subprocess
+import sys
+import textwrap
+
 import pytest
 
 from src.p4gen import build_p4_script as bps
 from src.p4gen import evaluation as ev
 from src.p4model import errors, program, target
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HEAVY = ("sklearn", "numpy", "pandas", "scipy", "optuna", "matplotlib")
+
+
+def _run_isolated(source, cwd):
+    """Run `source` in a fresh interpreter, returning stdout.
+
+    A subprocess, not an importlib dance: sklearn/numpy are already in THIS
+    process's sys.modules (pytest imported evaluation), so an in-process check
+    could never tell whether p4model pulled them in or found them already
+    there."""
+    env = dict(os.environ, PYTHONPATH=REPO_ROOT)
+    result = subprocess.run([sys.executable, "-c", textwrap.dedent(source)],
+                            cwd=cwd, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
 
 TARGET_NAMES = (
     "TCAM_BLOCKS_PER_STAGE", "TCAM_ROWS_PER_STAGE", "TCAM_COLUMNS_PER_STAGE",
@@ -217,3 +239,45 @@ def test_resource_usage_field_order_is_pinned():
         "codeword_length", "register_depth", "register_count", "range_depth",
         "ternary_depth", "range_tables", "ternary_tables",
     ]
+
+
+def test_importing_p4model_pulls_in_no_heavy_dependency():
+    # The invariant that replaces p4/range_expansion.py's duplication. If this
+    # fails, p4/deploy_table_entries.py stops working under bfshell's embedded
+    # Python -- which has no sklearn -- and the failure would only surface on a
+    # real switch.
+    out = _run_isolated("""
+        import sys
+        import src.p4model
+        print(','.join(sorted(m for m in {heavy} if m in sys.modules)))
+    """.format(heavy=HEAVY), cwd=REPO_ROOT)
+    assert out == "", "src.p4model dragged in: " + out
+
+
+def test_importing_every_p4model_submodule_pulls_in_no_heavy_dependency():
+    # __init__.py is deliberately import-light, so importing the package alone
+    # could pass while a submodule is dirty. Import them all.
+    out = _run_isolated("""
+        import sys
+        import src.p4model.catalog, src.p4model.errors, src.p4model.names
+        import src.p4model.packing, src.p4model.program, src.p4model.ranges
+        import src.p4model.registers, src.p4model.tables, src.p4model.target
+        import src.p4model.usage
+        print(','.join(sorted(m for m in {heavy} if m in sys.modules)))
+    """.format(heavy=HEAVY), cwd=REPO_ROOT)
+    assert out == "", "a p4model submodule dragged in: " + out
+
+
+def test_p4model_imports_and_computes_from_an_unrelated_cwd(tmp_path):
+    # build_p4_script reads three .p4 templates from CWD-relative paths at
+    # IMPORT time (build_p4_script.py:87,88,95 via PATH = "resources/"), so
+    # anything importing it must run from the repo root. p4model must not
+    # inherit that -- an installed package has no idea where the repo is.
+    out = _run_isolated("""
+        from src.p4model.packing import crossbar_stages_needed
+        plan = crossbar_stages_needed([(8, 4)] * 3)
+        print(plan.occupied)
+    """, cwd=str(tmp_path))
+    # Three 8-block tables sum to exactly 24 but need two stages: a table chains
+    # its blocks down ONE 12-row column, so 8+8 overflows.
+    assert out == "2"
