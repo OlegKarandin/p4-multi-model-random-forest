@@ -196,3 +196,24 @@ def test_registers_reports_schedule_and_depth_but_not_sram():
     from src.p4model import registers
 
     assert not hasattr(registers, "register_sram_bits")
+
+
+def test_resource_usage_is_the_same_class():
+    from src.p4model import usage
+
+    assert ev.ResourceUsage is usage.ResourceUsage
+
+
+def test_resource_usage_field_order_is_pinned():
+    # The golden fixture serializes these by name, but scripts/ and
+    # src/training/ build rows positionally in places -- a reordering would be a
+    # silent data corruption, so pin it here rather than discover it later.
+    import dataclasses
+
+    from src.p4model import usage
+
+    assert [f.name for f in dataclasses.fields(usage.ResourceUsage)] == [
+        "stages", "blocks", "stage_depth", "range_entries", "ternary_entries",
+        "codeword_length", "register_depth", "register_count", "range_depth",
+        "ternary_depth", "range_tables", "ternary_tables",
+    ]
