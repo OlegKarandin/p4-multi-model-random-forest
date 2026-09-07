@@ -100,3 +100,46 @@ def test_gated_block_interior_stages_still_derives_from_emitted_features(row_id,
     # unexercised by the golden replay. Deriving it here pins that half too.
     derived = gated_block_interior_stages(row["inputs"]["emitted_features"])
     assert sorted(derived) == row["inputs"]["interior_stages"], row_id
+
+
+def test_classification_stages_are_derivable_from_the_block_factor():
+    """Design 2026-09-07 §4.3: the claim that justifies DELETING the 'stages'
+    alignment objective.
+
+    A table of `factor` blocks chains them down ONE column, and a stage is 12
+    rows x 2 columns, so a stage holds 2 * (12 // factor) such tables and the
+    classification pool occupies ceil(T / that). Where it holds, stages step
+    ONLY when factor steps -- blocks are the finer-grained objective and
+    stages are strictly downstream, so there is no state in which the two
+    could be traded against each other, which is precisely what a second
+    objective was for.
+
+    Applies only where every classification table shares one block count. The
+    disjoint rows carry two models' differently-sized tables and are "not
+    applicable", never "predicted wrong" -- skipped, and the surviving count
+    is asserted so a fixture change cannot make this pass vacuously.
+
+    Asserted against the PACKER, not against the formula: if the 2x12 column
+    geometry ever changes, this fails loudly rather than a retired objective
+    quietly becoming relevant again (§8).
+    """
+    from src.p4model.target import TCAM_ROWS_PER_STAGE
+
+    checked = 0
+    for row in load_fixture()["rows"]:
+        pool = rebuild_pool(row)
+        specs = pool["ternary_table_specs"]
+        factors = {blocks for blocks, _ in specs}
+        if len(factors) != 1:
+            continue                      # mixed factors: formula not applicable
+        factor = factors.pop()
+        if factor > TCAM_ROWS_PER_STAGE:
+            continue                      # §10 Q3: a table wider than one column
+        tables = len(specs)
+        _usage, _range_plan, ternary_plan = assemble_usage(pool)
+        per_stage = 2 * (TCAM_ROWS_PER_STAGE // factor)
+        assert -(-tables // per_stage) == ternary_plan.occupied, row["row_id"]
+        checked += 1
+
+    # 8 joint rows + independent_low_sd5 + independent_low_sd7.
+    assert checked == 10
