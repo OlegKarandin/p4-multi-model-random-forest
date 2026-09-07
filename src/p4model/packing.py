@@ -1,14 +1,19 @@
 """Where the tables land: TCAM column geometry and the ternary crossbar packer.
 
-Depends on target.py and errors.py only. Deliberately knows nothing about
-features, registers or trees -- it is handed (blocks, byte_width) specs plus
-readiness levels and returns a placement, which is what lets the same packer
-serve both the range pool and the classification pool."""
+Depends on target.py, errors.py and tables.py's crossbar geometry only.
+Deliberately knows nothing about features, registers or trees -- it is handed
+(blocks, byte_width) specs plus readiness levels and returns a placement, which
+is what lets the same packer serve both the range pool and the classification
+pool. The one thing it must ask tables.py is version_block_penalty: a table's
+block count is not a property of the table alone, so the placement and the
+charge have to be computed together (see crossbar_stages_needed's
+key_field_bits)."""
 import itertools
 import math
 from dataclasses import dataclass
 
 from src.p4model.errors import CrossbarKeyTooWide
+from src.p4model.tables import version_block_delta
 from src.p4model.target import (
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
@@ -29,11 +34,13 @@ class StagePlan:
   depth: int             # max(occupied index) + 1 -- the quantity a 12-stage ceiling reads
   indices: frozenset     # for assertions and debugging
   blocks: int            # total TCAM blocks actually CHARGED across every stage --
-                         # not the naive per-table sum passed in as table_specs, since
-                         # a ragged key's group-offset penalty (see crossbar_stages_needed's
-                         # ragged_keys) is a per-STAGE placement fact, not a per-table one.
-                         # Measured to matter: independent_low_sd5 (compiler_calibration_v6,
-                         # 2026-09-06) reported 13 from the naive sum where p4c used 16.
+                         # not the naive per-table sum passed in as table_specs, since the
+                         # version-block penalty (see crossbar_stages_needed's
+                         # key_field_bits) depends on the group offset a key gets, which
+                         # is a per-STAGE placement fact rather than a per-table one.
+                         # Measured to matter: independent_low_sd5's three ddos trees cost
+                         # 3 TCAM blocks each where their 11-byte key buys 2, so the naive
+                         # sum reports 13 against p4c's 16 (resources.json, stage 6).
 
   def __int__(self):     # transitional: `stages` is still the occupancy count
     return self.occupied
@@ -116,7 +123,7 @@ def _stage_shards(block_count, byte_width):
 
 
 def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
-                           unavailable_stages=frozenset(), ragged_keys=None):
+                           unavailable_stages=frozenset(), key_field_bits=None):
   """Packs independent match tables into pipeline stages under ALL three
   per-stage hardware limits simultaneously, and returns a StagePlan
   describing where the tables landed (not just how many stages that took).
@@ -159,32 +166,36 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   returned plan has no absolute stage indices to exclude, so the pure packer
   below ignores it.
 
-  ragged_keys (optional) is one bool per table, positionally aligned with
-  table_specs, saying whether that table's key leaves part-used crossbar
-  bytes (ternary_key_is_ragged). It exists because a table's BLOCK COUNT is
-  not a property of the table alone: the crossbar hands out groups in one
-  consecutive run per key, so the second distinct key in a stage starts at
-  the group offset the first one ended at, and a ragged key starting on an
-  ODD group reaches one midbyte fewer than it does at offset 0 -- the midbyte
-  at its low end is shared with the previous key's last group. p4c then pads
-  the table with a whole extra TCAM. Confirmed from the pack format, not
-  inferred: sharing, the table's memory unit 0 holds the 2-bit --version--
-  field and NOTHING else (bits [41:0] empty); alone, unit 0 holds version
-  plus 40 bits of match data. That is TableFormat::ternary_version()
-  push_back()ing a block because no midbyte nibble was left for version --
-  the same waste reviews/github_issue_tcam_version_bit_packing.md documents,
-  reached by a new trigger.
+  key_field_bits (optional) is one tuple of key-field BIT widths per table,
+  positionally aligned with table_specs. It exists because a table's BLOCK
+  COUNT is not a property of the table alone: the crossbar hands out groups in
+  one consecutive run per key, so the second distinct key in a stage starts at
+  the group offset the first one ended at, and where a key's run starts decides
+  whether any crossbar MIDBYTE keeps a free nibble for the mandatory 2-bit
+  --version-- field. When none does, p4c pads the table with a whole extra
+  TCAM. tables.version_block_penalty is the rule and carries the measurement;
+  the short version is that it fires on a key that saturates the byte slots its
+  groups supply, and that saturation depends on the offset.
 
-  Measured directly, scripts/tcam_stretch_sweep.py, one artifact set:
-  a table keying 179 + 204 bits (49 crossbar bytes, 9 groups) costs 9 TCAMs
-  ALONE in a stage and 10 when a 12-byte key holds groups 0..2 ahead of it;
-  the same block-and-byte geometry built from SOLID single fields costs 9
-  either way. That +1 is the whole of independent_low_sd9's stage divergence
-  (10 blocks + 5 x 3 = 25 > TCAM_BLOCKS_PER_STAGE), the last one the
-  compiler-calibration study had open. Appendix B "Mechanism G".
+  Confirmed from the pack format, not inferred: sharing, the table's memory
+  unit 0 holds the version field and NOTHING else (bits [41:0] empty); alone,
+  unit 0 holds version plus 40 bits of match data. That is
+  TableFormat::ternary_version() push_back()ing a block because no midbyte
+  nibble was left -- the same waste
+  reviews/github_issue_tcam_version_bit_packing.md documents.
 
-  Passing ragged_keys=None -- the default -- charges every table its declared
-  block count at every offset, i.e. exactly the pre-existing pricing.
+  Measured directly, scripts/tcam_stretch_sweep.py, one artifact set: a table
+  keying 179 + 204 bits (49 crossbar bytes, 9 groups) costs 9 TCAMs ALONE in a
+  stage and 10 when a 12-byte key holds groups 0..2 ahead of it; the same
+  block-and-byte geometry built from SOLID single fields costs 9 either way.
+  And directly in the calibration set, from resources.json rather than a probe:
+  independent_low_sd5's three ddos trees each cost 3 TCAMs where their 11-byte
+  key buys 2. Appendix B "Mechanism G".
+
+  Passing key_field_bits=None -- the default -- charges every table its
+  declared block count at every offset, i.e. exactly the pre-existing pricing.
+  The range pool never passes it: a range table keys one whole-byte field with
+  slack to spare, so the penalty is inert there by construction.
 
   RM-5/RM-6/RM-7 measured these limits
   on the Ternary Match Input crossbar specifically. A follow-up compile
@@ -242,12 +253,12 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
             "a mismatch would mis-price every stage the table lands in"
             % (idx, declared, byte_width))
 
-  if ragged_keys is not None and len(ragged_keys) != len(table_specs):
+  if key_field_bits is not None and len(key_field_bits) != len(table_specs):
     raise ValueError(
-        "crossbar_stages_needed: got %d ragged_keys for %d table_specs; the "
-        "two must be positionally aligned, one flag per table, or a table "
-        "would be priced against another table's key shape"
-        % (len(ragged_keys), len(table_specs)))
+        "crossbar_stages_needed: got %d key_field_bits for %d table_specs; the "
+        "two must be positionally aligned, one field-width tuple per table, or "
+        "a table would be priced against another table's key shape"
+        % (len(key_field_bits), len(table_specs)))
 
   shards = []
   for idx, (block_count, byte_width) in enumerate(table_specs):
@@ -257,9 +268,14 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     # backwards compatible rather than approximately so.
     fields = (key_fields[idx] if key_fields is not None
               else frozenset({(("<private>", idx), byte_width)}))
-    ragged = bool(ragged_keys[idx]) if ragged_keys is not None else False
-    for shard in _stage_shards(block_count, byte_width):
-      shards.append((shard[0], shard[1], idx, fields, ragged))
+    bits = tuple(key_field_bits[idx]) if key_field_bits is not None else None
+    # Only the FIRST shard carries the key's field widths. A table wider than
+    # one TCAM column is split into column-sized pieces (_stage_shards), but
+    # the version field is stored once per table word, not once per shard, so
+    # charging every piece would multiply a single 2-bit field's cost.
+    for position, shard in enumerate(_stage_shards(block_count, byte_width)):
+      shards.append((shard[0], shard[1], idx, fields,
+                     bits if position == 0 else None))
 
   def load(shard):
     blocks, width, _, _, _ = shard
@@ -282,21 +298,35 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       running += key_blocks
     return offsets
 
-  def charged(offsets, blocks, fields, ragged):
-    return blocks + 1 if ragged and offsets[fields] % 2 else blocks
+  def charged(offsets, blocks, fields, bits):
+    # The DELTA, not the penalty: `blocks` already prices this key standalone,
+    # i.e. at group offset 0, so a placement only adds what the offset changes.
+    # Charging the penalty itself would re-bill a key that already paid in its
+    # own declared block count -- independent_low_sd5's ddos key does exactly
+    # that (it pays at offset 0), and would then be charged twice.
+    if not bits:
+      return blocks
+    return blocks + version_block_delta(bits, offsets[fields])
 
-  def fits(stage, blocks, fields, ragged):
-    # stage[3] is the per-shard (blocks, key, ragged) already here, stage[4]
+  def fits(stage, blocks, fields, bits):
+    # stage[3] is the per-shard (blocks, key, field-bits) already here, stage[4]
     # the distinct keys with their group counts. A new key shifts every later
     # key's offset, so the whole stage is re-priced against the key set it
     # would HAVE -- a table already placed can become more expensive.
     #
-    # Every ORDER of those keys is tried and the stage fits if any one of them
-    # packs. The crossbar hands out groups in the order tables enter the
-    # stage, which is p4c's placement order, not this packer's; assuming one
-    # order would invent refusals the compiler does not make (measured: probe
-    # point ragged_ax1_bx4 fits with the narrow key first and does not with
-    # the wide one first). Distinct keys per stage are one to three here, so
+    # Every ORDER of those keys is tried and the stage fits only if ALL of
+    # them pack. The crossbar hands out groups in the order tables enter the
+    # stage, which is p4c's own placement order and not this packer's -- and
+    # it is measurably NOT the cheapest one: in both artifacts where the two
+    # differ, p4c gave the low groups to the key that made the OTHER one pay.
+    # (probe ragged_ax1_bx4: the 12-byte key takes groups 0..2 and the 49-byte
+    # key pays at group 3; independent_low_sd5: the ddos key takes groups 0..1
+    # and pays there while the app key sits free at group 3.) Fitting on the
+    # cheapest order would under-count -- ragged_ax1_bx5 really needs 2 stages
+    # and packs into 1 if the wide key is allowed to claim group 0. Requiring
+    # every order keeps the estimator on the safe side of the 12-stage gate,
+    # and costs nothing on real data: over the 19 calibration rows this choice
+    # changes no block count and no stage depth. Distinct keys per stage are one to three here, so
     # this is a handful of permutations.
     keys = list(stage[4])
     if all(key != fields for key, _ in keys):
@@ -304,70 +334,67 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     if (crossbar_bytes(stage[1] | fields) > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
         or stage[2] + 1 > TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE):
       return False
-    shards_here = stage[3] + [(blocks, fields, ragged)]
+    shards_here = stage[3] + [(blocks, fields, bits)]
     for key_order in itertools.permutations(keys):
       offsets = offsets_for(key_order)
       # The TCAM test is a column PACKING, not a running total against
       # TCAM_BLOCKS_PER_STAGE -- see fits_two_columns: three 8-block tables
       # sum to exactly 24 and still do not fit, four 6-block ones do.
-      if fits_two_columns([charged(offsets, *shard) for shard in shards_here]):
-        return True
-    return False
+      if not fits_two_columns([charged(offsets, *shard)
+                               for shard in shards_here]):
+        return False
+    return True
 
-  def place(stage, blocks, fields, ragged):
+  def place(stage, blocks, fields, bits):
     stage[0] += blocks
     stage[1] |= fields
     stage[2] += 1
-    stage[3].append((blocks, fields, ragged))
+    stage[3].append((blocks, fields, bits))
     if all(key != fields for key, _ in stage[4]):
       stage[4].append((fields, blocks))
 
-  def opened(blocks, fields, ragged):
-    return [blocks, set(fields), 1, [(blocks, fields, ragged)],
+  def opened(blocks, fields, bits):
+    return [blocks, set(fields), 1, [(blocks, fields, bits)],
             [(fields, blocks)]]
 
   def stage_charged_blocks(stage):
-    """The TCAM blocks ONE finished stage actually costs, ragged charge
-    included -- the same question `fits()` already answers for placement,
-    asked once more after the fact so the total can be reported.
+    """The TCAM blocks ONE finished stage actually costs, version-block
+    charge included -- the same question `fits()` already answers for
+    placement, asked once more after the fact so the total can be reported.
 
     Tries every order of the stage's distinct keys, exactly as `fits()`
-    does, and keeps the LARGEST total that still respects fits_two_columns.
-    Not the order actually used to justify placement (place() only ever
-    records arrival order, and fits() may have accepted a stage via a
-    DIFFERENT permutation than that): this packer does not know which
-    order p4c's placer will pick (see fits()'s own docstring), and 'largest
-    feasible' is this module's standing rule for that uncertainty --
-    consistent with never under-counting real hardware (crossbar_stages_
-    needed's own FFD-upper-bound rationale). Validated against ground
-    truth on the one case with more than one feasible order (ragged_ax1_
-    bx4): the cheaper order (25) is infeasible by fits_two_columns, so the
-    max over FEASIBLE orders is 22 -- exactly what p4c compiled.
+    does, and keeps the LARGEST total. Not the order tables arrived in
+    (place() records that, but the crossbar does not follow it): this packer
+    cannot know which order p4c's placer will pick, and 'largest' is this
+    module's standing rule for that uncertainty -- consistent with never
+    under-counting real hardware (crossbar_stages_needed's own FFD
+    upper-bound rationale). It is also what the two measurements show, since
+    in both of them p4c picked the EXPENSIVE order: probe ragged_ax1_bx4
+    compiles to 22 blocks, not the 21 its cheap order would give, and
+    independent_low_sd5's stage 6 to 12, not 9.
 
-    At least one permutation is guaranteed feasible: this stage exists
-    because place()/opened() only ever commit a shard once `fits` (the
-    same search) found one."""
-    best = None
-    for key_order in itertools.permutations(stage[4]):
-      offsets = offsets_for(key_order)
-      charged_list = [charged(offsets, blocks, fields, ragged)
-                      for blocks, fields, ragged in stage[3]]
-      if fits_two_columns(charged_list):
-        total = sum(charged_list)
-        best = total if best is None else max(best, total)
-    return best
+    No feasibility filter is applied. `fits` already requires EVERY order to
+    pack before a shard joins an existing stage, so for those stages the
+    filter would be a no-op. The one stage it could reject is a freshly
+    `opened()` one, which is committed without a `fits` call -- a lone
+    12-block shard that then takes the version charge would be 13, wider than
+    a TCAM column. That stage is still real and still costs those blocks, so
+    it must be counted rather than dropped."""
+    return max(sum(charged(offsets_for(key_order), blocks, fields, bits)
+                   for blocks, fields, bits in stage[3])
+               for key_order in itertools.permutations(stage[4]))
 
   if readiness_levels is None:
     # entry: [blocks_used, fields_present, tables_used, shards, key_order]
     stages = []
-    for blocks, _width, _idx, fields, ragged in sorted(shards, key=load,
-                                                       reverse=True):
+    for blocks, _width, _idx, fields, bits in sorted(shards, key=load,
+                                                     reverse=True):
       for stage in stages:
-        if fits(stage, blocks, fields, ragged):
-          place(stage, blocks, fields, ragged)
+        if fits(stage, blocks, fields, bits):
+          place(stage, blocks, fields, bits)
           break
       else:
-        stages.append(opened(blocks, fields, ragged))
+        stages.append(opened(blocks, fields, bits))
 
     return StagePlan(occupied=len(stages), depth=len(stages),
                       indices=frozenset(range(len(stages))),
@@ -394,16 +421,16 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   # lowest level hold register/hash work, not tables from this pool.
   by_index = {}  # index -> [blocks, fields_present, tables, shards, key_order]
   ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]], -load(s)))
-  for blocks, _width, table_idx, fields, ragged in ordered:
+  for blocks, _width, table_idx, fields, bits in ordered:
     index = readiness_levels[table_idx]
     while (index in unavailable_stages or
            (index in by_index
-            and not fits(by_index[index], blocks, fields, ragged))):
+            and not fits(by_index[index], blocks, fields, bits))):
       index += 1
     if index in by_index:
-      place(by_index[index], blocks, fields, ragged)
+      place(by_index[index], blocks, fields, bits)
     else:
-      by_index[index] = opened(blocks, fields, ragged)
+      by_index[index] = opened(blocks, fields, bits)
 
   return StagePlan(occupied=len(by_index),
                     depth=(max(by_index) + 1) if by_index else 0,

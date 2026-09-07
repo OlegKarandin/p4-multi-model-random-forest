@@ -26,6 +26,11 @@ def rebuild_pool(row):
     """Interned (id, bits) sets -> the (id, bytes) frozensets the packer takes."""
     sets = [frozenset((fid, math.ceil(bits / 8)) for fid, bits in fields)
             for fields in row["key_field_sets"]]
+    # The version-block penalty prices a key by its field BIT widths, which the
+    # (id, bytes) frozensets above have already rounded away -- so read them
+    # back off the interned sets rather than storing a second copy.
+    bit_sets = [tuple(sorted(bits for _, bits in fields))
+                for fields in row["key_field_sets"]]
     src = row["inputs"]
     pool = {
         "range_table_specs": [tuple(s) for s in src["range_table_specs"]],
@@ -33,7 +38,8 @@ def rebuild_pool(row):
         "range_levels": src["range_levels"],
         "range_fields": [sets[i] for i in src["range_key_field_set_ids"]],
         "ternary_fields": [sets[i] for i in src["ternary_key_field_set_ids"]],
-        "ternary_ragged": src["ternary_ragged"],
+        "ternary_key_bits": [bit_sets[i]
+                             for i in src["ternary_key_field_set_ids"]],
         "interior_stages": frozenset(src["interior_stages"]),
         "emitted_features": src["emitted_features"],
         "register_names": tuple(src["register_names"]),

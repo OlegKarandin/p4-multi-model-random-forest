@@ -809,17 +809,20 @@ _PRE_TASK_SINGLE_APP_TERNARY_SPECS = [(1, 4), (1, 4)]
 # fix landed in the same change and must not have moved either of them on a
 # fixture whose tables all key on their own fields.
 _PRE_TASK_MULTI_JOINT = (2, 8, 6)                  # stages, blocks, stage_depth
-# disjoint's blocks moved 11 -> 13 (2026-09-06, StagePlan.blocks / Mechanism
-# G): this fixture's app and ddos trees both have ragged keys
-# (ternary_key_is_ragged is True on both feature_intervals) and land in the
-# same ternary stage, so the group-offset extra block that crossbar_stages_
-# needed already charged during PLACEMENT (it moved `stages`/`stage_depth`
-# nowhere here -- the stage still fits) now also shows up in the total,
-# exactly as independent_low_sd5's real p4c compile did
-# (results/compiler_calibration_v6.csv: 13 predicted, 16 real, before this
-# fix). `stages` and `stage_depth` are unaffected, confirming the fix only
-# touches the total block count, not placement.
-_PRE_TASK_MULTI_DISJOINT = (2, 13, 6)
+# disjoint's blocks went 11 -> 13 on 2026-09-06, when StagePlan.blocks began
+# reporting the charged total rather than the naive per-table sum, and back to
+# 11 on 2026-09-07, when the charge itself was replaced. The old rule charged
+# +1 to any "ragged" key that landed on an ODD crossbar group offset; measured
+# against the 100 classification tables of the 19 archived compiles it fired on
+# 5 stages where p4c charged nothing, and on the one stage where p4c DID charge
+# it picked the wrong table. tables.version_block_penalty replaces it: the
+# block is spent only when the mandatory 2-bit --version-- field has no midbyte
+# nibble left to live in. This fixture's two keys both keep one, so 11 -- the
+# naive sum -- is now the right answer, and it is what the pre-2026-09-06 model
+# reported too. See tests/test_version_block.py for the rule's measurement set.
+# `stages` and `stage_depth` were unaffected throughout: the charge moves a
+# total, not a placement.
+_PRE_TASK_MULTI_DISJOINT = (2, 11, 6)
 
 
 def test_single_model_memory_evaluation_default_is_unchanged_by_discount_wiring():
@@ -1727,125 +1730,134 @@ def test_stage_depth_counts_the_vote_epilogue_stage():
                                  + ev.VOTE_EPILOGUE_STAGES)
 
 
-# --- Mechanism G: a ragged key at an odd crossbar group offset costs +1 block
+# --- Mechanism G: the version-block penalty (tables.version_block_penalty)
+#
+# SUPERSEDED RULE. This section used to assert "a ragged key at an ODD crossbar
+# group offset costs +1 block". That predicate over-fired on 5 of the 6
+# calibration stages where it was live, and on the one row it appeared to fix it
+# charged the WRONG table: resources.json for independent_low_sd5 shows p4c
+# penalising the ddos key at group offset 0 and leaving the app key at offset 3
+# alone. What actually costs the block is the mandatory 2-bit --version-- field
+# having no free midbyte nibble to live in. See tests/test_version_block.py for
+# the rule's own measurement set.
 
-def test_a_ragged_key_is_one_whose_fields_do_not_fill_whole_bytes():
-    # A field of len(intervals) - 1 bits presents ceil(bits/8) crossbar bytes
-    # and the last of them is only part used unless the width is a multiple
-    # of 8. Those part-used bytes are the ones that must ride a midbyte
-    # nibble, which is what the group offset can make unreachable.
-    assert ev.ternary_key_is_ragged({'f': list(range(180))})       # 179 bits
-    assert not ev.ternary_key_is_ragged({'f': list(range(193))})   # 192 bits
-    assert ev.ternary_key_is_ragged({'a': list(range(180)),
-                                     'b': list(range(193))})
-    assert not ev.ternary_key_is_ragged({})
+APP_49 = (179, 204)      # 23 + 26 = 49 crossbar bytes, 9 groups, ragged
+DDOS_12 = (37, 49)       # 5 + 7 = 12 crossbar bytes, 3 groups
+SOLID_49 = (392,)        # one dense field: 49 bytes, no part-used byte at all
 
 
-def test_a_ragged_key_starting_on_an_odd_group_costs_an_extra_block():
+def test_a_key_that_loses_its_last_midbyte_nibble_costs_an_extra_block():
     # Measured, scripts/tcam_stretch_sweep.py: a table keying 179+204 bits
     # (49 crossbar bytes, 9 groups) costs 9 TCAMs alone and 10 when a second
-    # 12-byte key holds groups 0..2 ahead of it, because at group 3 the
-    # midbyte at its low end is half owned by that other key, so no nibble is
-    # left for the mandatory version field and p4c gives it a TCAM block of
-    # its own (the waste reviews/github_issue_tcam_version_bit_packing.md
-    # documents, reached by a new trigger). The same geometry with SOLID
-    # single-field keys costs 9 either way.
+    # 12-byte key holds groups 0..2 ahead of it. At group 3 the run no longer
+    # ends on a half midbyte, its 49 bytes fill every whole slot its groups
+    # supply, and no nibble-clean byte can reach an interior midbyte -- so the
+    # version field gets a TCAM block to itself (the waste
+    # reviews/github_issue_tcam_version_bit_packing.md documents).
     solid = ev.crossbar_stages_needed(
-        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12), (3, 12)],
+        [(9, 49)] + [(3, 12)] * 5,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 5,
-        ragged_keys=[False] + [False] * 5)
+        key_field_bits=[SOLID_49] + [DDOS_12] * 5)
     assert solid.occupied == 1
 
     ragged = ev.crossbar_stages_needed(
-        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12), (3, 12)],
+        [(9, 49)] + [(3, 12)] * 5,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 5,
-        ragged_keys=[True] + [True] * 5)
+        key_field_bits=[APP_49] + [DDOS_12] * 5)
     assert ragged.occupied == 2
 
 
-def test_a_ragged_key_at_group_zero_pays_nothing():
+def test_the_same_key_pays_nothing_when_it_starts_at_group_zero():
     # 21 blocks, same two keys: measured to fit one stage (probe point
     # ragged_ax1_bx4), with the wide table charged 10 and the four narrow
     # ones 3 each -- 10 | 12 across the two columns.
     plan = ev.crossbar_stages_needed(
-        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12)],
+        [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
-        ragged_keys=[True] * 5)
+        key_field_bits=[APP_49] + [DDOS_12] * 4)
     assert plan.occupied == 1
 
 
-def test_stage_plan_blocks_reflects_the_ragged_charge_not_the_naive_sum():
+def test_stage_plan_blocks_reflects_the_version_charge_not_the_naive_sum():
     # Same ragged_ax1_bx4 ground truth as the test above -- real p4c charges
-    # the wide table 10 blocks (9 declared + 1 for landing on the narrow
-    # key's odd group offset) and each narrow table its declared 3, for 22
-    # total. compiler_calibration_v6's fresh compile of independent_low_sd5
-    # is the same mechanism at production scale: multi_model_memory_
-    # evaluation reported 13 blocks (the naive per-table sum) where p4c
-    # used 16, because this +1 was only ever wired into stage PLACEMENT
-    # (crossbar_stages_needed's internal `charged()`), never into a total a
-    # caller could read. StagePlan.blocks is that total.
+    # the wide table 10 blocks and each narrow table its declared 3, for 22
+    # total. independent_low_sd5 is the same mechanism at production scale:
+    # multi_model_memory_evaluation reported 13 blocks (the naive per-table
+    # sum) where p4c used 16, because the charge was only ever wired into
+    # stage PLACEMENT, never into a total a caller could read.
     plan = ev.crossbar_stages_needed(
-        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12)],
+        [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
-        ragged_keys=[True] * 5)
+        key_field_bits=[APP_49] + [DDOS_12] * 4)
     assert plan.blocks == 22            # not 21, the naive sum
 
 
-def test_stage_plan_blocks_matches_the_naive_sum_when_nothing_is_ragged():
+def test_stage_plan_blocks_matches_the_naive_sum_for_a_solid_key():
+    # A key of whole-byte fields presents no nibble-clean byte, so nothing can
+    # ride the half midbyte an odd start exposes and it stays free for version
+    # at every offset -- the sweep's solid control arm, 9 blocks either way.
     plan = ev.crossbar_stages_needed(
-        [(9, 49), (3, 12), (3, 12), (3, 12), (3, 12)],
+        [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
-        ragged_keys=[False] * 5)
+        key_field_bits=[SOLID_49] + [DDOS_12] * 4)
     assert plan.blocks == 9 + 4 * 3
 
 
 def test_stage_plan_blocks_is_inert_on_a_single_key_stage():
     # Every joint-encoding stage and most independent stages key one shared
-    # field -- the commonest case in this generator -- and the group-offset
-    # penalty must stay a no-op there (test_the_group_offset_penalty_never_
-    # fires_on_a_single_key_stage's own invariant, extended to the total).
+    # field -- the commonest case in this generator -- and it sits at offset 0.
+    # None of the 8 joint calibration rows has a single penalised table.
     fields = [frozenset({(('shared',), 12)})] * 4
     specs = [(3, 12)] * 4
     plan = ev.crossbar_stages_needed(specs, key_fields=fields,
-                                     ragged_keys=[True] * 4)
+                                     key_field_bits=[DDOS_12] * 4)
     assert plan.blocks == sum(blocks for blocks, _ in specs)
 
 
-def test_the_group_offset_penalty_never_fires_on_a_single_key_stage():
+def test_the_version_penalty_never_fires_on_a_single_key_stage():
     # Every tree of one task keys the identical code_<feature> set, so the
-    # commonest stage in this generator holds ONE key set at offset 0. The
-    # penalty must be inert there or it would re-price every design.
+    # commonest stage in this generator holds ONE key set at offset 0.
     fields = [frozenset({(('shared',), 12)})] * 4
     specs = [(3, 12)] * 4
     assert (ev.crossbar_stages_needed(specs, key_fields=fields,
-                                      ragged_keys=[True] * 4).occupied ==
-            ev.crossbar_stages_needed(specs, key_fields=fields,
-                                      ragged_keys=[False] * 4).occupied)
+                                      key_field_bits=[DDOS_12] * 4).occupied ==
+            ev.crossbar_stages_needed(specs, key_fields=fields).occupied)
 
 
-def test_ragged_keys_defaults_to_the_pre_existing_pricing():
+def test_key_field_bits_defaults_to_the_pre_existing_pricing():
     specs = [(9, 49)] + [(3, 12)] * 5
     fields = [frozenset({(('a',), 49)})] + [frozenset({(('b',), 12)})] * 5
     assert (ev.crossbar_stages_needed(specs, key_fields=fields).occupied ==
             ev.crossbar_stages_needed(specs, key_fields=fields,
-                                      ragged_keys=[False] * 6).occupied)
+                                      key_field_bits=[SOLID_49] +
+                                                     [DDOS_12] * 5).occupied)
 
 
-def test_ragged_keys_must_be_positionally_aligned_with_table_specs():
-    with pytest.raises(ValueError, match="ragged_keys"):
-        ev.crossbar_stages_needed([(1, 4), (1, 4)], ragged_keys=[True])
+def test_key_field_bits_must_be_positionally_aligned_with_table_specs():
+    with pytest.raises(ValueError, match="key_field_bits"):
+        ev.crossbar_stages_needed([(1, 4), (1, 4)], key_field_bits=[(30,)])
+
+
+def test_ternary_key_field_bits_reports_every_code_field_width():
+    # A field of len(intervals) - 1 bits is what build_p4_script declares, and
+    # the penalty depends on the multiset of those widths, so they come back
+    # sorted rather than in emission order.
+    assert ev.ternary_key_field_bits({'f': list(range(180))}) == (179,)
+    assert ev.ternary_key_field_bits({'a': list(range(180)),
+                                      'b': list(range(193))}) == (179, 192)
+    assert ev.ternary_key_field_bits({}) == ()
 
 
 # --- Task 9: the _pool_inputs / assemble_usage seam
 
 POOL_KEYS = {
     "range_table_specs", "ternary_table_specs", "range_levels", "range_fields",
-    "ternary_fields", "ternary_ragged", "interior_stages", "emitted_features",
+    "ternary_fields", "ternary_key_bits", "interior_stages", "emitted_features",
     "register_names", "range_entries", "range_blocks", "ternary_entries",
     "codeword_length",
 }

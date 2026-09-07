@@ -17,6 +17,16 @@ TCAM_BLOCKS_PER_STAGE = 24
 TCAM_ROWS_PER_STAGE = 12
 TCAM_COLUMNS_PER_STAGE = 2
 TCAM_BLOCK_KEY_LENGTH = 44
+# ...and those 44 bits are 5 PRIVATE bytes plus one nibble of a MIDBYTE the group
+# shares with its pair partner (5 x 8 + 4 = 44). The ternary input crossbar is
+# 12 groups x 5 private bytes + 6 midbytes = 66 bytes total, so group 2i and
+# group 2i+1 are fed from one 11-byte span laid out private-x5, midbyte,
+# private-x5. The split matters because the mandatory 2-bit --version-- field
+# may live ONLY in a midbyte nibble: a key that consumes every midbyte its
+# groups reach costs an extra TCAM block to hold two bits. See
+# tables.version_block_penalty and reviews/github_issue_tcam_version_bit_packing.md
+# Sec 1.2-1.3.
+CROSSBAR_PRIVATE_BYTES_PER_GROUP = 5
 TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
 TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys

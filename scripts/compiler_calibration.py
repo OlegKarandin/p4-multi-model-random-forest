@@ -522,8 +522,9 @@ def _p4_table_keys(p4_path):
     `bit<N> <f>_val;`), byte-rounded per FIELD because that is how the ternary
     crossbar allocates -- see evaluation.ternary_table_key_bytes. The raw bit
     widths come back too because a field that is not a whole number of bytes
-    hands the crossbar a part-used byte, which is what makes a table's block
-    count depend on its group offset (evaluation.ternary_key_is_ragged)."""
+    hands the crossbar a part-used byte, which is what decides whether a
+    midbyte nibble survives for the version field
+    (evaluation.version_block_penalty)."""
     with open(p4_path, encoding='utf-8', errors='replace') as handle:
         text = handle.read()
     widths, bits = {}, {}
@@ -753,7 +754,7 @@ def replay_stage_depth(row_id, artifacts_root, readiness_levels=None):
     interior = gated_block_interior_stages(row_features)
 
     range_specs, range_fields, range_levels = [], [], []
-    ternary_specs, ternary_fields, ternary_ragged = [], [], []
+    ternary_specs, ternary_fields, ternary_key_bits = [], [], []
     for name, keys in tables.items():
         if name not in blocks or not keys:
             continue
@@ -764,20 +765,33 @@ def replay_stage_depth(row_id, artifacts_root, readiness_levels=None):
             range_fields.append(fields)
             range_levels.append(levels[keys[0][:-len('_val')]])
         elif name.startswith('get_classification_tree'):
+            # blocks[name] is the count p4c committed, which is exactly the
+            # key's cost at the offset it actually got -- and every committed
+            # classification key in this corpus sits at crossbar group 0. That
+            # is the same basis crossbar_stages_needed assumes for a declared
+            # spec, so it is fed in unmodified: the packer adds only
+            # version_block_delta, i.e. what a DIFFERENT offset would change.
+            key_bits = tuple(sorted(bits[key] for key in keys))
             ternary_specs.append((blocks[name], width))
             ternary_fields.append(fields)
-            # Mechanism G: a key with a part-used crossbar byte costs one
-            # extra TCAM when it does not start at crossbar group 0.
-            ternary_ragged.append(any(bits[key] % 8 for key in keys))
+            ternary_key_bits.append(key_bits)
 
     range_plan = crossbar_stages_needed(range_specs, readiness_levels=range_levels,
                                          key_fields=range_fields,
                                          unavailable_stages=interior)
     ternary_level = range_plan.depth if range_specs else 0
+    # key_field_bits matters even though the block counts here are p4c's own.
+    # The version charge is what makes a MIXED stage infeasible: in
+    # independent_low_sd9 two 9-block app tables and two 3-block ddos tables
+    # pack cleanly into 9+3 | 9+3 = 24 blocks, and p4c still refuses, because
+    # whichever key it hands the later crossbar groups pays a version block
+    # and 26 > 24. The committed placement then puts each key at offset 0, so
+    # nothing actually pays -- the charge decides the PLACEMENT, not the
+    # invoice.
     ternary_plan = crossbar_stages_needed(
         ternary_specs, readiness_levels=[ternary_level] * len(ternary_specs),
         key_fields=ternary_fields, unavailable_stages=interior,
-        ragged_keys=ternary_ragged)
+        key_field_bits=ternary_key_bits)
 
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
     return predicted, committed_stages_real(logs_dir)

@@ -14,6 +14,7 @@ from src.p4model.program import FEATURE_VALUE_BIT_WIDTH
 from src.p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_count
 from src.p4model.target import (
     CODEWORD_KEY_OVERHEAD_BITS,
+    CROSSBAR_PRIVATE_BYTES_PER_GROUP,
     MAX_CODEWORD_LENGTH,
     TCAM_BLOCK_KEY_LENGTH,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
@@ -141,22 +142,174 @@ def band_factor(codeword_length):
       (codeword_length + CODEWORD_KEY_OVERHEAD_BITS) / TCAM_BLOCK_KEY_LENGTH)
 
 
-def ternary_key_is_ragged(feature_intervals):
-  """Does this classification table's key leave part-used crossbar bytes?
+def ternary_key_field_bits(feature_intervals):
+  """The bit width of every `meta.code_<feature>` field in one classification
+  table's key, which is what version_block_penalty prices.
 
-  Each `meta.code_<feature>` field is declared `bit<len(intervals) - 1>`
-  (build_p4_script.py:773-776) and the crossbar byte-rounds every field
-  separately, so a field whose width is not a multiple of 8 hands the
-  crossbar one byte that is only partly used. Such a byte can ride a MIDBYTE
-  -- half a crossbar byte, shared between two neighbouring groups (§2.1.2)
-  -- and that is what makes the table's cost depend on WHICH group it starts
-  at: see crossbar_stages_needed's group-offset penalty.
+  Each field is declared `bit<len(intervals) - 1>` (build_p4_script.py:773-776).
+  Widths are returned SORTED because the penalty depends only on the multiset
+  of field widths, never on the order the generator happens to emit them in --
+  the crossbar allocator is free to place fields where it likes, and measurably
+  does (independent_low_sd6's 19-byte key lands on crossbar bytes 5-10, 12, 14,
+  17-21 and 27-32, not on a contiguous run)."""
+  return tuple(sorted(max(len(intervals) - 1, 0)
+                      for intervals in feature_intervals.values()))
 
-  A key of solid, byte-multiple fields presents only fully-used bytes, needs
-  only whole midbytes, and is priced the same at every offset -- measured,
-  scripts/tcam_stretch_sweep.py's solid arm."""
-  return any((max(len(intervals) - 1, 0)) % 8
-             for intervals in feature_intervals.values())
+
+def _full_midbytes(start_group, groups):
+  """Midbytes both of whose groups lie inside the run [start, start+groups-1].
+
+  Crossbar groups pair up: group 2i and 2i+1 are fed from one 11-byte span
+  laid out as 5 private bytes, the shared MIDBYTE, 5 private bytes. A pair
+  straddling the end of the run yields only a HALF midbyte -- one nibble --
+  which can never carry a whole key byte."""
+  last = start_group + groups - 1
+  return sum(1 for i in range(start_group // 2, last // 2 + 1)
+             if 2 * i >= start_group and 2 * i + 1 <= last)
+
+
+def _midbyte_slot_indices(start_group, groups):
+  """Where the fully-owned midbytes sit among the run's WHOLE byte slots.
+
+  Walking the run group by group: every group contributes its 5 private byte
+  slots, and an even group additionally contributes the midbyte it shares with
+  its partner whenever that partner is also in the run."""
+  slots, index = [], 0
+  last = start_group + groups - 1
+  for group in range(start_group, last + 1):
+    index += CROSSBAR_PRIVATE_BYTES_PER_GROUP
+    if group % 2 == 0 and group + 1 <= last:
+      slots.append(index)
+      index += 1
+  return slots
+
+
+def _clean_byte_can_reach_a_midbyte(byte_widths, nibble_clean, slots):
+  """Could some ordering of the key's fields put a nibble-clean byte on a
+  fully-owned midbyte? Such a byte claims one nibble and leaves the other
+  free, which is a legal home for --version--
+  (`IXBar::Use::Byte::only_one_nibble_in_use`, input_xbar.h:298).
+
+  A field's nibble-clean byte is always its LAST one, so the slots it can
+  reach are `(sum of the fields placed before it) + width - 1`. Those sums are
+  every subset sum of the other fields' widths, computed here as a bitset --
+  exact, and far cheaper than enumerating the 15! orderings a wide key admits.
+  """
+  if not slots or not any(nibble_clean):
+    return False
+  total = sum(byte_widths)
+  for i, is_clean in enumerate(nibble_clean):
+    if not is_clean:
+      continue
+    reachable = 1                       # bit j set == a preceding sum of j
+    for j, width in enumerate(byte_widths):
+      if j != i:
+        reachable |= reachable << width
+    for slot in slots:
+      preceding = slot - byte_widths[i] + 1
+      if 0 <= preceding <= total and (reachable >> preceding) & 1:
+        return True
+  return False
+
+
+def ternary_block_factor(field_bit_widths, start_group=0):
+  """TCAM blocks ONE table word of this key spans, version field included.
+
+  Composes the two independent lower bounds correctly, which is subtler than
+  it looks: `band_factor` carries `CODEWORD_KEY_OVERHEAD_BITS` (4) alongside
+  the key bits, and those 4 bits ARE the version/valid field expressed
+  bit-wise. So it must be maxed against the byte-wise arm with the version
+  charge ALREADY added --
+
+      max(band_factor, crossbar_block_width + version_block_penalty)
+
+  -- and not `max(band_factor, crossbar_block_width) + version_block_penalty`,
+  which bills the same 2-bit field twice whenever the band arm wins.
+
+  Measured, `results/tcam_version_sweep.csv` (12 fresh p4c compiles run to test
+  exactly this): a SOLID key of 11 crossbar bytes compiles to 3 TCAM blocks,
+  22 bytes to 5 and 33 bytes to 7 -- the composition above on all three, where
+  the doubled form says 4, 6 and 8. Their one-byte-smaller neighbours (10, 21
+  and 32 bytes) compile to 2, 4 and 6, so the saturation step itself is real
+  and lands exactly where version_block_penalty puts it."""
+  key_bytes = sum(math.ceil(bits / 8) for bits in field_bit_widths)
+  return max(band_factor(sum(field_bit_widths)),
+             crossbar_block_width(key_bytes)
+             + version_block_penalty(field_bit_widths, start_group))
+
+
+def version_block_delta(field_bit_widths, start_group):
+  """How many blocks this key costs at `start_group` OVER its cost at 0.
+
+  In {-1, 0, +1}. The stage packer needs this rather than the penalty itself:
+  a table's declared block count already prices the key standalone, i.e. at
+  offset 0, so what a placement adds is only the difference the offset makes.
+  Charging `version_block_penalty` directly there would re-bill a key that
+  already paid in its own spec."""
+  return (ternary_block_factor(field_bit_widths, start_group)
+          - ternary_block_factor(field_bit_widths, 0))
+
+
+def version_block_penalty(field_bit_widths, start_group=0):
+  """Extra TCAM blocks (0 or 1) this key costs to house the --version-- field.
+
+  Every ternary entry carries a mandatory 2-bit version/valid field, and it
+  can live only in a crossbar MIDBYTE nibble (§1.3 of
+  reviews/github_issue_tcam_version_bit_packing.md). p4c's crossbar sizing
+  never reserves that nibble, so when the key's own bytes consume every
+  midbyte the format falls through and `TableFormat::ternary_version()`
+  push_back()s a whole extra TCAM to hold two bits.
+
+  A key of `key_bytes` crossbar bytes takes `g = crossbar_block_width` groups
+  starting at `start_group`. Those groups supply `5g` private byte slots plus
+  `_full_midbytes` fully-owned midbytes; the run additionally exposes a HALF
+  midbyte at its low end when it starts on an odd group, and at its high end
+  when it ends on an even one. Version has a home when any of:
+
+    (a) the run ENDS on a half midbyte -- a whole byte can never ride it, so
+        it survives whatever the key does;
+    (b) a whole byte slot is spare -- p4c scatters the key's bytes rather than
+        packing them contiguously, so any slack anywhere lets it keep a
+        midbyte open (measured: independent_low_sd6);
+    (c) the run BEGINS on a half midbyte and the key has no nibble-clean byte
+        to put there (this is why a SOLID key is priced the same at every
+        offset, and a ragged one is not);
+    (d) a nibble-clean byte can land on a fully-owned midbyte.
+
+  MEASUREMENT. Over the 100 classification tables of the 19 archived compiles
+  in `results/compiler_calibration_v6/`, block counts read straight out of
+  `resources.json`, this is exact on every table: 3 penalties predicted, 3
+  observed, no false alarms and no misses. The three are independent_low_sd5's
+  ddos trees, whose 11-byte key exactly saturates two groups' 11 byte slots.
+  The start-offset term is pinned separately by scripts/tcam_stretch_sweep.py,
+  whose ragged arm costs the same table 9 blocks at offset 0 and 10 at
+  offset 3 while its solid control costs 9 at both.
+
+  THIS SUPERSEDES the earlier "Mechanism G" rule, which charged +1 whenever a
+  ragged key sat at an ODD group offset. That predicate over-fired on 5 of the
+  6 calibration stages where it was live, and on the one row it appeared to
+  fix it charged the WRONG table -- resources.json shows p4c penalising the
+  even-offset ddos key, not the odd-offset app key. See
+  reviews/p4_tofino_reference.md Appendix B "Mechanism G"."""
+  byte_widths = [math.ceil(bits / 8) for bits in field_bit_widths]
+  key_bytes = sum(byte_widths)
+  if key_bytes == 0:
+    return 0
+  nibble_clean = [1 <= (bits % 8) <= 4 for bits in field_bit_widths]
+  groups = crossbar_block_width(key_bytes)
+  last = start_group + groups - 1
+
+  if last % 2 == 0:
+    return 0                                                        # (a)
+  whole_slots = (CROSSBAR_PRIVATE_BYTES_PER_GROUP * groups
+                 + _full_midbytes(start_group, groups))
+  if whole_slots - key_bytes >= 1:
+    return 0                                                        # (b)
+  if start_group % 2 == 1 and not any(nibble_clean):
+    return 0                                                        # (c)
+  return 0 if _clean_byte_can_reach_a_midbyte(                      # (d)
+      byte_widths, nibble_clean,
+      _midbyte_slot_indices(start_group, groups)) else 1
 
 
 def crossbar_block_width(key_bytes):
@@ -237,10 +390,11 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
 
   # Two independent lower bounds on how many blocks one row spans: its bit
   # width (band_factor, which carries the +4 version/valid nibble) and its
-  # crossbar byte width. The byte arm is the one that binds on every table
-  # this generator emits; the bit arm is kept because §2.1's
-  # single-field 41-bit and 88-bit measurements need it.
-  factor = max(band_factor(codeword_length), crossbar_block_width(table_bytes))
+  # crossbar byte width plus the version block that width may not leave room
+  # for. ternary_block_factor composes them -- the +4 and the version penalty
+  # are the SAME field counted two ways, so the max must be taken after the
+  # penalty is added, never before.
+  factor = ternary_block_factor(ternary_key_field_bits(feature_intervals))
   for index, tree in enumerate(codewords):
     tree_entry_count = len(codewords[tree])
     if dropped_per_tree is not None:

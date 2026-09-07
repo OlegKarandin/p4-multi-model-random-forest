@@ -123,7 +123,7 @@ def assemble_usage(pool):
   range_levels = pool["range_levels"]
   range_fields = pool["range_fields"]
   ternary_fields = pool["ternary_fields"]
-  ternary_ragged = pool["ternary_ragged"]
+  ternary_key_bits = pool["ternary_key_bits"]
   interior_stages = pool["interior_stages"]
   register_names = pool["register_names"]
   range_entries = pool["range_entries"]
@@ -165,16 +165,17 @@ def assemble_usage(pool):
                                       key_fields=range_fields,
                                       unavailable_stages=interior_stages)
   ternary_level = range_plan.depth if range_table_specs else FLOW_HASH_LEVEL + 1
-  # Only the classification pool gets ragged_keys. A range table keys one
-  # meta.<feature>_val field of FEATURE_VALUE_BIT_WIDTH bits, a whole number
-  # of bytes, so it presents no part-used crossbar byte and the group-offset
-  # penalty is inert there by construction -- passing it would be noise.
+  # Only the classification pool gets key_field_bits. A range table keys one
+  # meta.<feature>_val field of FEATURE_VALUE_BIT_WIDTH bits -- 2 whole bytes
+  # in 1 crossbar group, which supplies 5 private byte slots, so it has three
+  # spare and clause (b) of version_block_penalty can never fail. Passing it
+  # would be noise.
   ternary_plan = crossbar_stages_needed(
       ternary_table_specs,
       readiness_levels=[ternary_level] * len(ternary_table_specs),
       key_fields=ternary_fields,
       unavailable_stages=interior_stages,
-      ragged_keys=ternary_ragged)
+      key_field_bits=ternary_key_bits)
 
   # The property that makes summing occupancies below meaningful: the two
   # pools must never claim the same stage index.
@@ -206,10 +207,10 @@ def assemble_usage(pool):
   register_count = len(register_names)
 
   # ternary_plan.blocks, not ternary_blocks: the latter is the naive
-  # per-table sum computed above, before the ragged-key group-offset charge
+  # per-table sum computed above, before the version-block charge
   # (Mechanism G) that only crossbar_stages_needed's stage packing knows
   # about -- see StagePlan.blocks. range_blocks needs no such substitution:
-  # a range table's key is always a whole number of bytes (never ragged),
+  # a range table's key always leaves spare crossbar byte slots,
   # so range_plan.blocks is provably identical to range_blocks.
   usage = ResourceUsage(
       stages=range_plan.occupied + ternary_plan.occupied,

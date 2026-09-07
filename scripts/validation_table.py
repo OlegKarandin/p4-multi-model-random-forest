@@ -23,21 +23,19 @@ ground truth. The CSV's own stage_depth/blocks columns are read ONLY by the
 drift check below, whose job is precisely to catch a stale-column case like
 this one.
 
-KNOWN FINDING carried over from Task 11 (id
-mechanism_g_over_application_2026_09_07, tests/fixtures/
-resource_model_golden.json's metadata.known_findings[0] and scripts/
-dump_resource_fixtures.py's own module docstring): on 5 rows -- all
-group='independent'/encoding='disjoint' with every ternary table
-ternary_ragged=True -- recomputed blocks is HIGHER than tcam_real (+1 on
-independent_low_sd7/independent_high_sd6/independent_high_sd7/
-independent_high_sd8, +3 on independent_low_sd6). This is a pre-existing,
-already-diagnosed over-application of the ragged-key group-offset charge
-("Mechanism G"), not something this Tier 1 extraction task introduced or is
-scoped to fix. So blocks comes out exact on 12 of 17 comparable rows here,
-not 17 of 17 -- see the drift check section below for the accounting.
-stage_depth is unaffected: it remains exact on 18 of 19, the sole miss being
-independent_high_sd12 (predicts 14 against stages_real=13, the safe/over
-direction, on a design already past the 12-stage ceiling).
+RESOLVED FINDING (2026-09-07). This script used to carry a 5-row known
+finding: recomputed blocks came out HIGHER than tcam_real on
+independent_low_sd6/sd7 and independent_high_sd6/sd7/sd8, an over-application
+of "Mechanism G" (the rule charging +1 TCAM block to a ragged key at an odd
+crossbar group offset). That rule has been replaced by
+tables.version_block_penalty, which prices the real constraint -- whether any
+crossbar midbyte in a key's group run keeps a free nibble for the mandatory
+2-bit --version-- field. Validated per TABLE against p4c's own resources.json
+across all 19 compiles (100 classification tables, 3 penalties predicted and 3
+observed, no false alarms and no misses), it takes blocks to 17 of 17 exact
+with no under-prediction. stage_depth is untouched at 18 of 19, the sole miss
+being independent_high_sd12, which over-predicts by 1 on a design already past
+the 12-stage ceiling -- the safe direction.
 
 Run (from the repository root):
   "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" scripts/validation_table.py
@@ -74,18 +72,14 @@ KNOWN_BLOCKS_COLUMN_CORRECTION = {
         "(results/compiler_calibration_verify.csv)"),
 }
 
-# The 5-row Mechanism G over-application finding, carried over from Task 11
-# (tests/fixtures/resource_model_golden.json metadata.known_findings /
-# scripts/dump_resource_fixtures.py's module docstring). Recomputed blocks is
-# higher than the CSV's own (also-stale, pre-Mechanism-G) blocks column here
-# by the same amount it is higher than tcam_real.
-KNOWN_MECHANISM_G_ROWS = {
-    "independent_low_sd6": 3,
-    "independent_low_sd7": 1,
-    "independent_high_sd6": 1,
-    "independent_high_sd7": 1,
-    "independent_high_sd8": 1,
-}
+# EMPTY, deliberately. This held the 5 rows whose recomputed blocks exceeded
+# both tcam_real and the CSV's own blocks column under the old Mechanism G
+# rule. version_block_penalty replaced that rule on 2026-09-07 and all 5 now
+# agree with p4c exactly, so nothing is expected to drift here any more. The
+# lookup is kept (rather than deleted along with its rows) so a future
+# regression lands as a NEW entry with an explanation, instead of silently
+# widening KNOWN_BLOCKS_COLUMN_CORRECTION.
+KNOWN_MECHANISM_G_ROWS = {}
 
 
 def _clean_cell(value):

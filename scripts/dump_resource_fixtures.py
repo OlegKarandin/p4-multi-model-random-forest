@@ -35,49 +35,29 @@ Run (from the repository root; takes several minutes -- 38 forests refit):
   PYTHONPATH=. "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" \\
       scripts/dump_resource_fixtures.py --out tests/fixtures/resource_model_golden.json
 
-KNOWN FINDING (Mechanism G over-application, unresolved, out of scope for this
-Tier 1 extraction -- tracked, not fixed here). Cross-checking this fixture's
-`usage.blocks` against results/compiler_calibration_v6.csv's `blocks` column
-turned up 5 rows that disagree (this model's current blocks always higher,
-by +1 to +3 depending on the row), beyond the one already-documented
-independent_low_sd5 exception (where the CSV's 13 is itself stale and the
-corrected value is 16, per results/compiler_calibration_verify.csv and
-CLAUDE.md): independent_low_sd6 (+3), independent_low_sd7 (+1),
-independent_high_sd6 (+1), independent_high_sd7 (+1), independent_high_sd8
-(+1). All 5 are group='independent' (encoding='disjoint') with every one of
-their ternary tables' ternary_ragged=True; every 'joint' row agrees with the
-CSV exactly.
+RESOLVED FINDING (Mechanism G superseded, 2026-09-07). This fixture used to
+record a 5-row over-application of "Mechanism G" -- the rule that charged +1
+TCAM block to any ragged key landing on an ODD crossbar group offset. It is
+now resolved, and the rule is gone.
 
-Diagnosed mechanistically (no live p4c recompile): for all 5 rows,
-`range_blocks + sum(block_count for block_count, _ in ternary_table_specs)`
-(the PRE-Mechanism-G naive per-table sum this model used before
-StagePlan.blocks/stage_charged_blocks existed) reproduces the CSV's stale
-`blocks` value EXACTLY -- and the CSV's value is independently confirmed to
-equal `tcam_real` (real p4c ground truth) on all 5 rows. So unlike
-independent_low_sd5 (where the naive pre-fix sum was the one wrong against
-ground truth, and Mechanism G's charge corrected it to match), on these 5
-rows it is the CURRENT model's Mechanism-G-charged `ternary_plan.blocks` that
-disagrees with real hardware, entirely via the ragged-key group-offset
-penalty (crossbar_stages_needed's `ragged_keys`/`charged`/`stage_charged_
-blocks` logic in src/p4model/packing.py) -- i.e. Mechanism G appears to
-OVER-fire on these 5 rows' stages, charging block(s) real p4c does not. The
-per-row delta is not uniformly +1: independent_low_sd6's single occupied
-ternary stage is charged +3 over its naive sum where the other 4 rows are
-each +1 (on 1-2 occupied stages) -- the exact per-stage mechanics of that
-larger delta were not further isolated here (out of scope for this Tier 1
-task; a candidate follow-up for whoever picks up this finding).
+What settled it was reading p4c's own per-table numbers instead of comparing
+row totals: `resources.json` records both the TCAM units each table got
+(`tcams.tcams`) and the exact crossbar bytes its key was given (`xbar_bytes`,
+byte_type 'ternary'). Over the 100 classification tables of the 19 compiles in
+results/compiler_calibration_v6/, exactly 3 cost more than
+`ceil(8 * key_bytes / 44)` blocks -- independent_low_sd5's three ddos trees --
+and Mechanism G got that stage right only by accident: it charged the app key
+at group offset 3, where the compiler charged the ddos key at offset 0.
 
-This is a pre-existing property of the ALREADY-LANDED Mechanism G rule,
-present in the working tree before this extraction plan's Task 1, not
-something Tasks 1-10's verbatim relocation introduced -- recalibrating the
-rule would be a genuine model-behavior change, out of scope for a Tier 1
-plan whose whole premise is "move verbatim, prove nothing changed" (see
-CLAUDE.md and reviews/p4_tofino_reference.md Sec 7 "Mechanism G" for the
-rule's own history). This fixture therefore pins the model's CURRENT
-predictions on these 5 rows (22, 39, 24, 28, 39) as-is, not a hand-corrected
-value -- exactly the numbers a Tier 2 validation-table comparison against
-tcam_real (scripts/validation_table.py, a separate task) is meant to surface
-as a finding, not something this fixture should paper over.
+`tables.version_block_penalty` replaces it with the physical question -- does
+any crossbar midbyte in the key's group run keep a free nibble for the
+mandatory 2-bit --version-- field? That predicts all 100 tables exactly, and
+takes usage.blocks from 12/17 to 17/17 against tcam_real with no
+under-prediction. See tests/test_version_block.py and
+reviews/p4_tofino_reference.md Appendix B "Mechanism G".
+
+`ternary_ragged` is no longer serialized: the penalty prices a key by its
+field BIT widths, and key_field_sets already carries those.
 """
 import argparse
 import datetime
@@ -216,7 +196,6 @@ def serialize_row(row_id, group, encoding, pool, usage, range_plan, ternary_plan
         'range_key_field_set_ids': range_ids,
         'ternary_key_field_set_ids': ternary_ids,
         'range_levels': list(pool['range_levels']),
-        'ternary_ragged': list(pool['ternary_ragged']),
         'interior_stages': sorted(pool['interior_stages']),
         'emitted_features': list(pool['emitted_features']),
         'register_names': list(pool['register_names']),
@@ -275,53 +254,28 @@ def _metadata(campaign_dir):
                  'usage.assemble_usage.'),
         'known_findings': [
             {
-                'id': 'mechanism_g_over_application_2026_09_07',
-                'rows': ['independent_low_sd6', 'independent_low_sd7',
-                        'independent_high_sd6', 'independent_high_sd7',
-                        'independent_high_sd8'],
-                'row_deltas': {'independent_low_sd6': 3, 'independent_low_sd7': 1,
-                              'independent_high_sd6': 1, 'independent_high_sd7': 1,
-                              'independent_high_sd8': 1},
+                'id': 'mechanism_g_superseded_2026_09_07',
+                'rows': [],
+                'row_deltas': {},
                 'summary': (
-                    "This fixture's usage.blocks is higher than results/"
-                    "compiler_calibration_v6.csv's blocks column on these 5 "
-                    "rows -- by +1 (independent_low_sd7, independent_high_sd6, "
-                    "independent_high_sd7, independent_high_sd8) or +3 "
-                    "(independent_low_sd6); see row_deltas above. All 5 are "
-                    "group='independent'/encoding='disjoint' with every "
-                    "ternary table's ternary_ragged=True; every 'joint' row "
-                    "agrees with the CSV exactly. Diagnosed mechanistically: "
-                    "range_blocks + the naive per-table sum of "
-                    "ternary_table_specs' block counts (the PRE-Mechanism-G "
-                    "formula) reproduces the CSV's stale blocks value exactly "
-                    "on all 5 rows, and that CSV value is independently "
-                    "confirmed to equal tcam_real (real p4c ground truth) on "
-                    "all 5. So here -- unlike independent_low_sd5, where the "
-                    "naive sum was the one wrong and Mechanism G's ragged-key "
-                    "group-offset charge (crossbar_stages_needed's "
-                    "ragged_keys/charged/stage_charged_blocks logic, "
-                    "src/p4model/packing.py) corrected it to match ground "
-                    "truth (13 -> 16) -- Mechanism G's charge is what "
-                    "disagrees with ground truth here, appearing to over-fire "
-                    "on these 5 rows' stages. The larger independent_low_sd6 "
-                    "delta (+3 on a single occupied ternary stage, vs +1 on "
-                    "the other rows' 1-2 occupied stages) was not further "
-                    "isolated -- out of scope for this Tier 1 task. This is a "
-                    "pre-existing property of the already-landed Mechanism G "
-                    "rule, not a regression introduced by the p4model "
-                    "extraction (Tasks 1-10 are verbatim relocations, "
-                    "independently reviewed byte-for-byte faithful). "
-                    "Recalibrating the rule is out of scope for this Tier 1 "
-                    "extraction, whose premise is 'move verbatim, prove "
-                    "nothing changed' -- tracked here as a known model-"
-                    "calibration finding for a Tier 2 validation-table "
-                    "comparison (scripts/validation_table.py) to surface "
-                    "against tcam_real, not reconciled away in this fixture. "
-                    "independent_low_sd5's own +3 (13 -> 16) is NOT part of "
-                    "this finding: it is the already-documented, already-"
-                    "corrected exception (results/"
-                    "compiler_calibration_verify.csv)."
-                ),
+                    "RESOLVED. Mechanism G -- '+1 TCAM block for a ragged key "
+                    "at an odd crossbar group offset' -- was replaced on "
+                    "2026-09-07 by tables.version_block_penalty, which asks "
+                    "whether any midbyte in the key's crossbar group run keeps "
+                    "a free nibble for the mandatory 2-bit --version-- field. "
+                    "Scored per TABLE against p4c's own resources.json over "
+                    "the 100 classification tables of the 19 compiles in "
+                    "results/compiler_calibration_v6/, the new rule is exact: "
+                    "3 penalties predicted, 3 observed, no false alarms and no "
+                    "misses. usage.blocks goes from 12/17 to 17/17 exact "
+                    "against tcam_real, with no under-prediction; stage_depth "
+                    "is unchanged at 18/19. The old rule's 5-row "
+                    "over-application (independent_low_sd6 +3, "
+                    "independent_low_sd7 / independent_high_sd6 / "
+                    "independent_high_sd7 / independent_high_sd8 +1 each) is "
+                    "gone, and so is the accident that made it look right on "
+                    "independent_low_sd5: p4c charges that stage's ddos key at "
+                    "group offset 0, not its app key at offset 3."),
             },
         ],
     }

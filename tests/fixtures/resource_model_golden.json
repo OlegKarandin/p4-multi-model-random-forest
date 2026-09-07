@@ -4,13 +4,13 @@
   "generated": "2026-09-07",
   "known_findings": [
    {
-    "id": "mechanism_g_over_application_2026_09_07",
+    "id": "mechanism_g_superseded_2026_09_07",
     "row_deltas": {
-     "independent_high_sd6": 1,
-     "independent_high_sd7": 1,
-     "independent_high_sd8": 1,
-     "independent_low_sd6": 3,
-     "independent_low_sd7": 1
+     "independent_high_sd6": -1,
+     "independent_high_sd7": -1,
+     "independent_high_sd8": -1,
+     "independent_low_sd6": -3,
+     "independent_low_sd7": -1
     },
     "rows": [
      "independent_low_sd6",
@@ -19,7 +19,7 @@
      "independent_high_sd7",
      "independent_high_sd8"
     ],
-    "summary": "This fixture's usage.blocks is higher than results/compiler_calibration_v6.csv's blocks column on these 5 rows -- by +1 (independent_low_sd7, independent_high_sd6, independent_high_sd7, independent_high_sd8) or +3 (independent_low_sd6); see row_deltas above. All 5 are group='independent'/encoding='disjoint' with every ternary table's ternary_ragged=True; every 'joint' row agrees with the CSV exactly. Diagnosed mechanistically: range_blocks + the naive per-table sum of ternary_table_specs' block counts (the PRE-Mechanism-G formula) reproduces the CSV's stale blocks value exactly on all 5 rows, and that CSV value is independently confirmed to equal tcam_real (real p4c ground truth) on all 5. So here -- unlike independent_low_sd5, where the naive sum was the one wrong and Mechanism G's ragged-key group-offset charge (crossbar_stages_needed's ragged_keys/charged/stage_charged_blocks logic, src/p4model/packing.py) corrected it to match ground truth (13 -> 16) -- Mechanism G's charge is what disagrees with ground truth here, appearing to over-fire on these 5 rows' stages. The larger independent_low_sd6 delta (+3 on a single occupied ternary stage, vs +1 on the other rows' 1-2 occupied stages) was not further isolated -- out of scope for this Tier 1 task. This is a pre-existing property of the already-landed Mechanism G rule, not a regression introduced by the p4model extraction (Tasks 1-10 are verbatim relocations, independently reviewed byte-for-byte faithful). Recalibrating the rule is out of scope for this Tier 1 extraction, whose premise is 'move verbatim, prove nothing changed' -- tracked here as a known model-calibration finding for a Tier 2 validation-table comparison (scripts/validation_table.py) to surface against tcam_real, not reconciled away in this fixture. independent_low_sd5's own +3 (13 -> 16) is NOT part of this finding: it is the already-documented, already-corrected exception (results/compiler_calibration_verify.csv)."
+    "summary": "The 5-row over-application recorded here as 'mechanism_g_over_application_2026_09_07' is RESOLVED, and this fixture is re-pinned against the rule that resolved it. Mechanism G charged +1 TCAM block to any ragged key landing on an odd crossbar group offset. Scored against p4c's own per-table numbers -- the TCAM units in tcams.tcams and the crossbar bytes in xbar_bytes, over the 100 classification tables of the 19 compiles in results/compiler_calibration_v6/ -- that predicate fired on 5 stages where the compiler charged nothing, and on the one stage where the compiler DID charge a block it named the wrong table: independent_low_sd5's resources.json shows the three ddos trees at 3 blocks each at group offset 0, and the app tree free at offset 3. tables.version_block_penalty replaces it and asks the physical question instead -- does any crossbar midbyte in the key's group run keep a free nibble for the mandatory 2-bit --version-- field? That rule predicts all 100 tables exactly (3 penalties predicted, 3 observed, no false alarms, no misses) and takes usage.blocks to 17/17 exact against tcam_real, from 12/17. stage_depth is unchanged at 18/19, the sole miss still being independent_high_sd12, which over-predicts by 1 on a design already past the 12-stage ceiling. FOLLOW-UP 2026-09-07: a 12-compile out-of-sample sweep (scripts/tcam_version_sweep.py, results/tcam_version_sweep.csv) confirmed the rule on geometries chosen to sit on its decision boundary, and caught one composition bug it had not exposed: band_factor's +4 overhead bits ARE the version/valid field, so the block count must be max(band, xbar + penalty), not max(band, xbar) + penalty. Measured: a solid 11-byte key is 3 TCAMs not 4, 22 bytes is 5 not 6, 33 bytes is 7 not 8. Fixed via tables.ternary_block_factor; the packer now charges version_block_delta (the offset's effect) rather than the penalty itself, since a table's declared blocks already price it at offset 0."
    }
   ],
   "note": "Inputs captured at evaluation._pool_inputs; outputs from usage.assemble_usage.",
@@ -93,27 +93,21 @@
      4,
      4
     ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       3,
       14
      ],
      [
-      2,
+      3,
       11
      ],
      [
-      2,
+      3,
       11
      ],
      [
-      2,
+      3,
       11
      ]
     ]
@@ -244,16 +238,6 @@
      3,
      3
     ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       4,
@@ -325,7 +309,7 @@
      "occupied": 1
     },
     "ternary_plan": {
-     "blocks": 20,
+     "blocks": 17,
      "depth": 7,
      "indices": [
       6
@@ -333,7 +317,7 @@
      "occupied": 1
     },
     "usage": {
-     "blocks": 22,
+     "blocks": 19,
      "codeword_length": 146,
      "range_depth": 6,
      "range_entries": 337,
@@ -453,14 +437,6 @@
      6,
      6
     ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       5,
@@ -567,7 +543,7 @@
      "occupied": 2
     },
     "ternary_plan": {
-     "blocks": 31,
+     "blocks": 30,
      "depth": 8,
      "indices": [
       6,
@@ -576,7 +552,7 @@
      "occupied": 2
     },
     "usage": {
-     "blocks": 39,
+     "blocks": 38,
      "codeword_length": 204,
      "range_depth": 6,
      "range_entries": 858,
@@ -660,16 +636,6 @@
      4,
      4,
      4
-    ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
     ],
     "ternary_table_specs": [
      [
@@ -832,16 +798,6 @@
      3,
      3,
      3
-    ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
     ],
     "ternary_table_specs": [
      [
@@ -1066,18 +1022,6 @@
      7,
      7,
      7
-    ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
     ],
     "ternary_table_specs": [
      [
@@ -1441,10 +1385,6 @@
      12,
      13
     ],
-    "ternary_ragged": [
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       2,
@@ -1619,7 +1559,7 @@
      "occupied": 4
     },
     "ternary_plan": {
-     "blocks": 6,
+     "blocks": 5,
      "depth": 10,
      "indices": [
       9
@@ -1627,7 +1567,7 @@
      "occupied": 1
     },
     "usage": {
-     "blocks": 24,
+     "blocks": 23,
      "codeword_length": 35,
      "range_depth": 9,
      "range_entries": 244,
@@ -1875,10 +1815,6 @@
      14,
      15
     ],
-    "ternary_ragged": [
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       2,
@@ -2082,7 +2018,7 @@
      "occupied": 5
     },
     "ternary_plan": {
-     "blocks": 6,
+     "blocks": 5,
      "depth": 10,
      "indices": [
       9
@@ -2090,7 +2026,7 @@
      "occupied": 1
     },
     "usage": {
-     "blocks": 28,
+     "blocks": 27,
      "codeword_length": 30,
      "range_depth": 9,
      "range_entries": 270,
@@ -2370,12 +2306,6 @@
      17,
      17
     ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       4,
@@ -2610,7 +2540,7 @@
      "occupied": 4
     },
     "ternary_plan": {
-     "blocks": 14,
+     "blocks": 13,
      "depth": 10,
      "indices": [
       9
@@ -2618,7 +2548,7 @@
      "occupied": 1
     },
     "usage": {
-     "blocks": 39,
+     "blocks": 38,
      "codeword_length": 108,
      "range_depth": 9,
      "range_entries": 682,
@@ -2929,12 +2859,6 @@
      16,
      16,
      17
-    ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true
     ],
     "ternary_table_specs": [
      [
@@ -3512,14 +3436,6 @@
      17,
      18
     ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       6,
@@ -3845,10 +3761,6 @@
      1,
      1
     ],
-    "ternary_ragged": [
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       5,
@@ -3974,12 +3886,6 @@
      4,
      4,
      4
-    ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true
     ],
     "ternary_table_specs": [
      [
@@ -4128,14 +4034,6 @@
      2,
      2
     ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       6,
@@ -4281,14 +4179,6 @@
      3,
      3
     ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
-    ],
     "ternary_table_specs": [
      [
       7,
@@ -4427,16 +4317,6 @@
      1,
      1,
      1
-    ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
     ],
     "ternary_table_specs": [
      [
@@ -4681,10 +4561,6 @@
     "ternary_key_field_set_ids": [
      13,
      13
-    ],
-    "ternary_ragged": [
-     true,
-     true
     ],
     "ternary_table_specs": [
      [
@@ -5030,12 +4906,6 @@
      13,
      13,
      13
-    ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true
     ],
     "ternary_table_specs": [
      [
@@ -5390,14 +5260,6 @@
      13,
      13,
      13
-    ],
-    "ternary_ragged": [
-     true,
-     true,
-     true,
-     true,
-     true,
-     true
     ],
     "ternary_table_specs": [
      [

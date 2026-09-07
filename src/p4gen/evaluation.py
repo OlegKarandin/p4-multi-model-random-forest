@@ -83,7 +83,8 @@ from src.p4model.tables import (
     range_key_fields_for,
     range_matching_resource_usage,
     ternary_key_fields,
-    ternary_key_is_ragged,
+    ternary_key_field_bits,
+    version_block_penalty,
     ternary_table_key_bytes,
 )
 from src.p4model import tables as _tables
@@ -201,7 +202,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   ternary_blocks (the naive per-table block sum each branch computes below)
   is deliberately NOT one of the 13 keys: it is already dead after the branch
   converges -- assemble_usage's ResourceUsage.blocks uses ternary_plan.blocks,
-  the ragged-key-charged StagePlan total from src.p4model.packing, never this
+  the version-block-charged StagePlan total from src.p4model.packing, never this
   naive sum. Carrying it into the pool would invite exactly the confusion the
   StagePlan.blocks fix (see CLAUDE.md's compiler-calibration note) was
   created to resolve.
@@ -240,8 +241,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # One merged interval set, so every tree keys on the same fields.
     range_fields = range_key_fields_for(feature_intervals)
     ternary_fields = [ternary_key_fields(feature_intervals)] * len(ternary_table_specs)
-    ternary_ragged = ([ternary_key_is_ragged(feature_intervals)]
-                      * len(ternary_table_specs))
+    ternary_key_bits = ([ternary_key_field_bits(feature_intervals)]
+                        * len(ternary_table_specs))
 
   elif encoding == 'disjoint':
 
@@ -294,9 +295,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     ternary_fields = (
         [ternary_key_fields(feature_intervals_app)] * len(ternary_table_specs_app) +
         [ternary_key_fields(feature_intervals_ddos)] * len(ternary_table_specs_ddos))
-    ternary_ragged = (
-        [ternary_key_is_ragged(feature_intervals_app)] * len(ternary_table_specs_app) +
-        [ternary_key_is_ragged(feature_intervals_ddos)] * len(ternary_table_specs_ddos))
+    ternary_key_bits = (
+        [ternary_key_field_bits(feature_intervals_app)] * len(ternary_table_specs_app) +
+        [ternary_key_field_bits(feature_intervals_ddos)] * len(ternary_table_specs_ddos))
     # Registers, unlike range_levels, must be deduplicated ACROSS both
     # models: they are a single physical Register<> array shared by the
     # whole generated program regardless of 'joint' vs 'disjoint' ENCODING
@@ -332,7 +333,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       "range_levels": range_levels,
       "range_fields": range_fields,
       "ternary_fields": ternary_fields,
-      "ternary_ragged": ternary_ragged,
+      "ternary_key_bits": ternary_key_bits,
       "interior_stages": interior_stages,
       "emitted_features": emitted_features,
       "register_names": register_names,

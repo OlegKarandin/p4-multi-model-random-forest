@@ -824,7 +824,7 @@ def test_replay_rejects_a_row_the_backend_never_allocated():
 # These 11 were produced by TODAY's generator, which is what the model is
 # supposed to predict, and on them it is exact everywhere -- including
 # independent_low_sd9, the last divergence the study had open, closed by the
-# group-offset penalty (evaluation.crossbar_stages_needed's ragged_keys).
+# version-block charge (evaluation.crossbar_stages_needed's key_field_bits).
 # ---------------------------------------------------------------------------
 
 _CURRENT_ARTIFACTS = {
@@ -854,13 +854,22 @@ def test_the_model_is_exact_on_every_current_generator_row(row_id):
     assert predicted == real
 
 
-def test_independent_low_sd9_costs_the_stage_the_group_offset_penalty_buys():
-    # The row the penalty exists for. Its app trees key 179 + 204 bits (49
+def test_independent_low_sd9_costs_the_stage_the_version_charge_buys():
+    # The row the charge exists for. Its app trees key 179 + 204 bits (49
     # crossbar bytes, 9 blocks) and its ddos trees 37 + 49 bits (12 bytes, 3
-    # blocks); both keys are ragged, so whichever of them the crossbar puts
-    # second starts on an odd group and every table on it costs one extra
-    # TCAM. 2 app + 2 ddos is then 26 blocks either way round, not 24, and the
-    # compiler's four classification stages are correct.
+    # blocks). 2 app + 2 ddos is 24 blocks and packs both columns cleanly as
+    # 9+3 | 9+3, so every limit this model knows says they may share a stage --
+    # and p4c still refuses. The version charge is why: whichever key the
+    # crossbar hands the later groups pays one extra TCAM for the --version--
+    # field, so the mixed stage really prices at 26, not 24.
+    #
+    # Note what the committed artifact does NOT show: any table at 10 blocks.
+    # resources.json has all five app trees at 9 and all five ddos at 3, in
+    # four stages (5 ddos | 2 app | 2 app | 1 app). The charge decides the
+    # PLACEMENT and the placement it settles on puts each key at group 0,
+    # where nothing is owed. Reading that artifact is what falsified the older
+    # "ragged key at an odd group offset" rule, which claimed these tables
+    # cost 10 -- see tests/test_version_block.py.
     root = _CURRENT_ARTIFACTS['independent_low_sd9']
     if not os.path.isdir(os.path.join(root, 'compiles', 'independent_low_sd9')):
         pytest.skip('needs %s (gitignored; run collect() first)' % root)
