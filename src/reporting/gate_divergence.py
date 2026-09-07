@@ -31,10 +31,10 @@ def score_gate_divergence(frame):
         spending at all. Answers §8's "the corrected gate may never open"
         risk before any behaviour changes.
 
-    Only rows that actually spent budget are counted: _run_one_arm returns the
-    speculative result before consulting crossed_a_boundary when spent_budget
-    is False, so a free-moves row was never judged by either gate and would
-    inflate both counts with runs the gate never saw.
+    Only rows that actually spent budget are counted: align_with_policy returns
+    the speculative result before consulting crossed_a_boundary when
+    spent_budget is False, so a free-moves row was never judged by either gate
+    and would inflate both counts with runs the gate never saw.
     """
     aligned = frame[(frame['policy'] == 'aligned')
                     & frame['align_spent_budget'].astype(bool)].copy()

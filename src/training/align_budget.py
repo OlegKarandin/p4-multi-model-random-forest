@@ -121,8 +121,6 @@ def bits_to_next_byte(width):
     return ((width - 1) % 8) + 1
 
 
-
-
 def _pooled_widths(intervals1, intervals2):
     """Per-feature codeword width AFTER pooling, keyed as the inputs are.
 
@@ -233,7 +231,6 @@ def bits_to_reach(pooled_widths, own_floors, target_bytes):
         return 0
     costs.sort()
     return sum(costs[:need]) if need <= len(costs) else None
-
 
 
 class BlockBudget:

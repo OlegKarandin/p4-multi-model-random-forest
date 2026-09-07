@@ -1420,6 +1420,42 @@ def test_align_stats_records_the_codeword_length_it_optimises():
     assert stats['rolled_back'] is False
 
 
+def test_accuracy_spent_is_zero_when_no_move_is_accepted(monkeypatch):
+    """A run that accepts nothing changed no threshold, so it spent nothing.
+    Forcing every candidate to be rejected is the cleanest way to pin the
+    floor of the quantity."""
+    monkeypatch.setattr(ta, 'accept_alignment', lambda before, after, d: False)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=0.05, align_stats=stats)
+    assert stats['accepted'] == 0
+    assert stats['accuracy_spent'] == 0.0
+
+
+def test_accuracy_spent_is_a_max_across_tasks_not_a_mean(monkeypatch):
+    """The module's own standard everywhere else (accept_alignment's all(),
+    ratchet, _rank_targets' damage). A run cheap on average but expensive on
+    one task is not cheap, and this field must not be the first place that
+    principle is violated."""
+    captured = {}
+    real = ta.rel_deg
+
+    def spy(before, after):
+        captured.setdefault('pairs', []).append((before, after))
+        return real(before, after)
+
+    monkeypatch.setattr(ta, 'rel_deg', spy)
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+                           delta_rel=0.05, align_stats=stats)
+    # The final four calls are the accuracy_spent computation itself, one per
+    # metric, and its result must be their maximum.
+    final_four = captured['pairs'][-4:]
+    assert stats['accuracy_spent'] == max(0.0, max(real(b, a) for b, a in final_four))
+
+
 def test_the_recorded_codeword_is_the_one_the_block_cost_was_computed_from():
     """align_rf_thresholds counts in the models' COLUMN-INDEX space while
     multi_model_memory_evaluation counts over the union of the two models'
@@ -1680,7 +1716,10 @@ def test_rank_targets_orders_equal_gain_corners_by_max_damage_not_sum():
 
 
 # ---------------------------------------------------------------------------
-# The align_objective axis (design 2026-08-30 §2.1-§2.4).
+# Feature ordering and crossed_a_boundary after the align_objective axis was
+# retired (design 2026-09-07): feature_order now has one behaviour (byte
+# completion), not a choice between a 'blocks' and a 'stages' branch, and
+# crossed_a_boundary reads only the block factor.
 # ---------------------------------------------------------------------------
 
 def _ordering_fixture():
@@ -1791,8 +1830,9 @@ def test_crossed_a_boundary_takes_only_the_stats():
 
 
 def test_the_byte_domain_stats_are_recorded():
-    """B is as fundamental to the stage cost as L is to the block cost, and
-    the validation needs these to have anything to compare against."""
+    """B (key bytes) IS the block cost after this repair -- there is no
+    separate stage cost any more -- and the validation needs these recorded
+    to have anything to compare against."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
     ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,

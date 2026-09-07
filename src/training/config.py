@@ -50,14 +50,15 @@ class TrainConfig:
         ACCEPTED (that is delta_align). Was hardcoded at the call site.
         Enters `arm_slug` (conditionally -- see `_overlap_suffix`), unlike
         `align_objective`, which is deliberately absent from it.
-    align_objective : what the shed bits are AIMED at -- 'blocks' (today's
-        behaviour, the default), 'stages', or 'both'. A different axis from
-        delta_align: that is how much accuracy may be spent, this is which
-        boundary it is spent to cross. Applies to the JOINT arm only, and is
-        deliberately absent from arm_slug -- distinguishing objectives in the
-        output filename is a campaign-design decision, and a campaign that
-        sweeps two objectives must change the slug before it can, or the two
-        runs overwrite one file.
+    align_objective : retained at 'blocks' -- the only value ALIGN_OBJECTIVES
+        still accepts -- for config/manifest backward compatibility.
+        'stages' and 'both' were retired by the 2026-09-07 alignment
+        cost-model repair (the block factor now consumes the real generator
+        cost directly, which removed the separate stages-domain objective
+        this field used to select between) and are rejected by the validator
+        below. Applies to the JOINT arm only, and is deliberately absent from
+        arm_slug -- distinguishing objectives in the output filename is a
+        campaign-design decision.
     n_trees, max_depth : inclusive search bounds -- per-axis and independent,
         so `rf_params` may suggest either maximum without suggesting both at
         once. No -1 sentinel (F10i). Rederived from the measured capacity

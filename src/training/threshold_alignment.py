@@ -193,7 +193,7 @@ def joint_interval_count(intervals1, intervals2):
     savings at all.
 
     Delegates to align_budget._pooled_widths -- the per-feature decomposition
-    of this exact total, already needed by the block/stage budgets -- instead
+    of this exact total, already needed by the block budget -- instead
     of re-deriving the same pooled threshold set a second way. A feature's
     width is its pooled interval count minus one, so summing widths and
     adding back one per feature recovers the interval count exactly; provably
@@ -631,9 +631,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # §2.4: what this run gave away, in the same units accept_alignment uses,
     # priced as a MAX across the four metrics rather than a sum or a mean --
     # the standard this module already applies in accept_alignment's all(),
-    # in ratchet, and in _rank_targets' damage. Recorded on every objective:
-    # 'both' ranks on it, and single-objective runs need it so a campaign has
-    # something to compare a 'both' run against.
+    # in ratchet, and in _rank_targets' damage. Recorded unconditionally
+    # (design spec: "Unchanged, still written with exactly today's values")
+    # so a campaign always has this stat to compare runs against, regardless
+    # of which objective or delta_align produced them.
     stats['accuracy_spent'] = max(0.0, max(rel_deg(b, a)
                                            for b, a in zip(started_at, current)))
 

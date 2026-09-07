@@ -1375,7 +1375,7 @@ def test_codeword_length_is_the_pooled_threshold_count():
     codeword length is the pooled split-threshold count -- which is what
     joint_interval_count measures, less one interval per feature.
 
-    If this fails, BandBudget's arithmetic is measuring the wrong quantity and
+    If this fails, BlockBudget's arithmetic is measuring the wrong quantity and
     every task after this one is built on sand.
     """
     from src.training.threshold_alignment import (

@@ -66,8 +66,9 @@ def test_codeword_floor_counts_exclusive_features_in_full():
 # 2026-09-07 (gate repair): BlockBudget replaces it as the wired gate, and
 # BlockBudget carries the identical-shaped tests below (search "BlockBudget
 # (design 2026-09-07"), so keeping both would be duplication, not coverage.
-# BandBudget the CLASS is untouched and still importable -- only the wiring
-# moved -- so nothing here is testing dead code by omission.
+# BandBudget the CLASS was itself deleted from align_budget.py in a later
+# commit of this same repair -- BlockBudget's own tests below are its
+# replacement, not merely a stand-in for tests of a still-importable class.
 #
 # ---------------------------------------------------------------------------
 # Byte-domain arithmetic (design 2026-08-30 §2.2): the twin of the block-domain
@@ -162,18 +163,17 @@ def test_factor_ignores_the_dicts_own_key_order():
 def test_factor_of_an_empty_width_dict_is_the_empty_key_factor():
     """Reachable, not hypothetical: neither forest split on any feature, which
     happens whenever min_samples_leaf approaches n_samples and every tree is a
-    single leaf. tables_per_stage's docstring already records it as a real
-    Optuna sample."""
+    single leaf -- a real Optuna sample, not a synthetic corner case."""
     from src.p4model.tables import ternary_block_factor
     assert ab._factor({}) == ternary_block_factor(())
 
 
 # ---------------------------------------------------------------------------
-# BlockBudget (design 2026-09-07 §4.1). Widths chosen so the crossbar arm
-# binds: 5 fields of 9 bits are 10 crossbar bytes (2 blocks) against a
-# 45-bit band (band_factor 2) -- shedding one field to 8 bits drops it to
-# 9 bytes and the factor to 2... so the fixtures below state their own
-# arithmetic rather than relying on intuition about where a step lands.
+# BlockBudget (design 2026-09-07 §4.1). Widths below (3 fields of 40 bits
+# each, vs. a floor of 8 bits each) put both models comfortably past a block
+# boundary in ternary_block_factor -- band and crossbar arms agree exactly at
+# these widths, so what matters is only that factor(current) > factor(floor),
+# not which arm binds.
 
 def _block_widths(*widths):
     return {i: w for i, w in enumerate(widths)}
