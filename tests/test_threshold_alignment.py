@@ -2190,3 +2190,93 @@ def test_stopping_early_does_not_trip_the_fixpoint_invariant(monkeypatch):
     ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, delta_rel=None,
                          align_stats=stats)      # must not raise
     assert stats['accepted'] >= 0
+
+
+def test_a_late_round_block_purchase_does_not_trip_the_fixpoint_invariant(monkeypatch):
+    """Mutation-tested strengthening of the test above.
+
+    A reviewer mutation-tested `test_stopping_early_does_not_trip_the_
+    fixpoint_invariant` by reverting the `and not bought_here` guard and
+    rerunning it: it still PASSED. On `_golden_alignment_pair()` the feature
+    that ends up buying a block does so on round 1, so `rounds > 1` and
+    `bought_here` never co-occur there -- the collision the guard exists for
+    is never exercised, and that test would pass just as well with the guard
+    deleted.
+
+    This test forces the actual collision instead of hoping a fixture
+    produces it. On a DIFFERENT, still fully deterministic forest pair (fixed
+    seeds, `n_estimators=4, max_depth=4, min_samples_leaf=10`, verified by
+    direct experiment -- see the commit message), feature index 2 naturally
+    takes two rounds: 5 accepted moves land in round 1, and a 6th lands only
+    in round 2 after round 1's moves expose a new overlap. `total_blocks` is
+    monkeypatched (module-level, exactly like MAX_RECOMPUTE_ROUNDS above) to
+    watch feature 2's own width in the live budget: the first 5 times it
+    changes (round 1's moves) the fake reports no cheaper total -- `bought_
+    here` stays False, matching the real dynamics -- and only the 6th change
+    (round 2's move) reports a drop. That is round 2, so at the moment
+    `bought_here` is set, `rounds == 2 > 1` and `progressed` is True: exactly
+    the state the raise's `and not bought_here` clause exists to wave through
+    without an AlignmentInvariantError.
+
+    Calls align_rf_thresholds directly (not align_with_policy) so the
+    monkeypatched total_blocks cannot trigger align_with_policy's separate
+    rollback-and-rerun path, which would call it again under different
+    conditions and make the intended collision unreproducible.
+
+    The two setup calls before the per-feature loop (`total_blocks_before`,
+    `total_blocks_floor`) are passed through to the REAL total_blocks
+    unmodified -- they are computed once, over different width dicts
+    (pooled/floor, not the live budget), and are not part of what this test
+    is isolating.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+
+    seed = 7
+    target_feature = 2
+    rng = np.random.default_rng(seed)
+    n, nf = 300, 3
+    X1 = np.clip(rng.integers(0, 90000, size=(n, nf)), 0, INFINITE).astype(float)
+    y1 = np.array([c % 3 for c in range(n)])
+    X2 = np.clip(rng.integers(0, 90000, size=(n, nf)), 0, INFINITE).astype(float)
+    y2 = np.where(np.arange(n) % 2 == 0, -1, 1)
+    rf1 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=4, max_depth=4, min_samples_leaf=10,
+        random_state=seed).fit(X1, y1))
+    rf2 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=4, max_depth=4, min_samples_leaf=10,
+        random_state=seed + 1).fit(X2, y2))
+
+    real_total_blocks = ta.total_blocks
+    state = {'calls': 0, 'last': 'UNSET', 'changes': 0}
+    NOT_BOUGHT_CHANGES = 5   # round 1's accepted-move count for feature 2
+    BASE = 10 ** 6
+
+    def fake_total_blocks(widths, multiplier):
+        state['calls'] += 1
+        if state['calls'] <= 2:
+            # total_blocks_before / total_blocks_floor: real arithmetic,
+            # untouched -- not the quantity under test.
+            return real_total_blocks(widths, multiplier)
+        width = widths.get(target_feature)
+        if state['last'] == 'UNSET':
+            state['last'] = width
+            return BASE
+        if width != state['last']:
+            state['last'] = width
+            state['changes'] += 1
+            if state['changes'] <= NOT_BOUGHT_CHANGES:
+                return BASE                # round 1's moves: not bought
+            return BASE - 1                # round 2's move: bought
+        return BASE
+
+    monkeypatch.setattr(ta, 'total_blocks', fake_total_blocks)
+
+    stats = {}
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, delta_rel=None,
+                           align_stats=stats)      # must not raise
+
+    # Confirms the collision actually happened rather than the fake simply
+    # never being exercised: a 6th change is exactly the round-2 move that
+    # crosses NOT_BOUGHT_CHANGES and sets bought_here at rounds == 2.
+    assert state['changes'] >= NOT_BOUGHT_CHANGES + 1
+    assert stats['accepted'] >= 0
