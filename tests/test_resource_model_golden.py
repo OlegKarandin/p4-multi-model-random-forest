@@ -107,8 +107,15 @@ def test_classification_stages_are_derivable_from_the_block_factor():
     alignment objective.
 
     A table of `factor` blocks chains them down ONE column, and a stage is 12
-    rows x 2 columns, so a stage holds 2 * (12 // factor) such tables and the
-    classification pool occupies ceil(T / that). Where it holds, stages step
+    rows x 2 columns, so the column geometry admits `2 * (12 // factor)` such
+    tables -- but the ternary crossbar independently caps a stage at
+    TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE tables whatever their width, so the
+    classification pool occupies
+    `ceil(T / min(8, 2 * (12 // factor)))`. The cap is not subsumed by the
+    geometry: it binds below factor 3, which no archived row reaches. See
+    test_the_classification_stage_formula_honours_the_eight_table_cap.
+
+    Where it holds, stages step
     ONLY when factor steps -- blocks are the finer-grained objective and
     stages are strictly downstream, so there is no state in which the two
     could be traded against each other, which is precisely what a second
@@ -123,7 +130,8 @@ def test_classification_stages_are_derivable_from_the_block_factor():
     geometry ever changes, this fails loudly rather than a retired objective
     quietly becoming relevant again (§8).
     """
-    from src.p4model.target import TCAM_ROWS_PER_STAGE
+    from src.p4model.target import (TCAM_ROWS_PER_STAGE,
+                                    TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
     checked = 0
     for row in load_fixture()["rows"]:
@@ -137,9 +145,41 @@ def test_classification_stages_are_derivable_from_the_block_factor():
             continue                      # §10 Q3: a table wider than one column
         tables = len(specs)
         _usage, _range_plan, ternary_plan = assemble_usage(pool)
-        per_stage = 2 * (TCAM_ROWS_PER_STAGE // factor)
+        per_stage = min(TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
+                        2 * (TCAM_ROWS_PER_STAGE // factor))
         assert -(-tables // per_stage) == ternary_plan.occupied, row["row_id"]
         checked += 1
 
     # 8 joint rows + independent_low_sd5 + independent_low_sd7.
     assert checked == 10
+
+
+@pytest.mark.parametrize("factor", range(1, 9))
+def test_the_classification_stage_formula_honours_the_eight_table_cap(factor):
+    """Audit §9.1, promoted from a one-off probe to a test.
+
+    The stage formula has TWO independent per-stage limits, not one. The 2x12
+    column geometry gives `2 * (12 // factor)` tables per stage; the ternary
+    crossbar independently refuses more than TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
+    of them whatever their width. The documented summary carried only the first,
+    and could not be caught by the golden fixture: every archived joint row runs
+    at factor >= 3, where `2 * (12 // factor) <= 8` already, so the cap never
+    binds there and the existing assertion passes VACUOUSLY on the regime where
+    the formula breaks (T=10 at factor 1 or 2: the packer needs 2 stages, the
+    old formula says 1).
+
+    Asserted against the PACKER over the whole T x factor grid the audit
+    measured at zero mismatches, so a future change to either limit fails here
+    rather than quietly making a retired objective relevant again.
+    """
+    from src.p4model.packing import crossbar_stages_needed
+    from src.p4model.target import (TCAM_ROWS_PER_STAGE,
+                                    TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
+
+    # The byte width is a placeholder: with key_fields=None every table gets a
+    # private synthetic field, so nothing here depends on its value.
+    for tables in range(1, 21):
+        per_stage = min(TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
+                        2 * (TCAM_ROWS_PER_STAGE // factor))
+        plan = crossbar_stages_needed([(factor, 5)] * tables)
+        assert plan.occupied == -(-tables // per_stage), (factor, tables)
