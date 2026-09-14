@@ -136,16 +136,16 @@ def test_ternary_matching_resource_usage_unaffected_at_168_bits():
     assert blocks == 4
 
 
-def test_ternary_table_key_bytes_sums_per_feature_fields():
+def test_codeword_fields_to_bytes_sums_per_feature_fields():
     # The classification tables key on one ternary field PER FEATURE
     # (build_p4_script.py:630-635), and the crossbar allocates per field.
     # 3 features x 4 bits: 3 separate 1-byte fields = 3 bytes, NOT
     # ceil(12/8) = 2 bytes on the concatenated codeword.
     feature_intervals = {f: [(i, i) for i in range(5)] for f in "ABC"}
-    assert ev.ternary_table_key_bytes(feature_intervals) == 3
+    assert ev.codeword_fields_to_bytes(feature_intervals) == 3
 
 
-def test_ternary_table_key_bytes_never_below_concatenated_rounding():
+def test_codeword_fields_to_bytes_never_below_concatenated_rounding():
     # The per-field sum must always be >= the (under-counting) whole-
     # codeword rounding, for every split shape.
     import math
@@ -153,7 +153,7 @@ def test_ternary_table_key_bytes_never_below_concatenated_rounding():
         feature_intervals = {
             str(i): [(0, 0)] * (w + 1) for i, w in enumerate(widths)
         }
-        assert (ev.ternary_table_key_bytes(feature_intervals)
+        assert (ev.codeword_fields_to_bytes(feature_intervals)
                 >= math.ceil(sum(widths) / 8))
 
 
@@ -167,30 +167,31 @@ def test_ternary_matching_resource_usage_exposes_per_tree_table_specs():
     assert blocks == sum(spec[0] for spec in specs)
 
 
-def test_crossbar_block_width_charges_44_bits_per_5_and_a_half_bytes():
+def test_codeword_bytes_to_blocks_charges_44_bits_per_5_and_a_half_bytes():
     # Ref 4.1 / Sec 7 "Mechanism D": one TCAM block is fed by ONE ternary
     # crossbar group, and a group delivers 5 private bytes + 1 midbyte
     # nibble = 44 bits = 5.5 bytes. Measured ladder from 144 real compiled
     # tables -- 33 bytes is the largest key that still fits 6 blocks, 34
     # needs 7.
-    assert ev.crossbar_block_width(5) == 1
-    assert ev.crossbar_block_width(6) == 2
-    assert ev.crossbar_block_width(33) == 6
-    assert ev.crossbar_block_width(34) == 7
+    assert ev.codeword_bytes_to_blocks(5) == 1
+    assert ev.codeword_bytes_to_blocks(6) == 2
+    assert ev.codeword_bytes_to_blocks(33) == 6
+    assert ev.codeword_bytes_to_blocks(34) == 7
 
 
 def test_ternary_blocks_charge_byte_rounded_key_fields_not_raw_bits():
     # Sec 7 "Mechanism D". Six features of 5 codeword bits each: 30 bits
-    # total, so band_factor says ceil((30+4)/44) = 1 block. But the crossbar
-    # allocates per FIELD, byte-rounded, so the key really costs 6 bytes =
-    # 48 bits and needs 2 blocks. Mirrors the real independent_high_sd7
-    # (10 fields, 29 bits, 6 crossbar bytes, 2 committed blocks).
+    # total, so codeword_bits_to_blocks says ceil((30+4)/44) = 1 block. But
+    # the crossbar allocates per FIELD, byte-rounded, so the key really costs
+    # 6 bytes = 48 bits and needs 2 blocks. Mirrors the real
+    # independent_high_sd7 (10 fields, 29 bits, 6 crossbar bytes, 2 committed
+    # blocks).
     feature_intervals = {f: [(i, i) for i in range(6)] for f in "ABCDEF"}
     codewords = {0: {"0" * 30: 0}}
     _, blocks, codeword_length, specs = ev.ternary_matching_resource_usage(
         codewords, feature_intervals)
     assert codeword_length == 30
-    assert ev.band_factor(codeword_length) == 1     # what the old model charged
+    assert ev.codeword_bits_to_blocks(codeword_length) == 1     # what the old model charged
     assert blocks == 2
     assert specs == [(2, 6)]
 
@@ -1359,14 +1360,14 @@ def _joint_pair_fixture():
     return clf_app, clf_ddos, features
 
 
-def test_band_factor_matches_the_inline_expression_it_replaces():
+def test_codeword_bits_to_blocks_matches_the_inline_expression_it_replaces():
     """The 44-bit step structure C1 gates on. Boundaries are at L+4 == 44k,
     i.e. L in {40, 84, 128, ...}, NOT at multiples of 44."""
-    assert ev.band_factor(0) == 1
-    assert ev.band_factor(40) == 1      # 44 key bits exactly
-    assert ev.band_factor(41) == 2      # first bit of the second block
-    assert ev.band_factor(84) == 2      # 88 key bits exactly
-    assert ev.band_factor(85) == 3
+    assert ev.codeword_bits_to_blocks(0) == 1
+    assert ev.codeword_bits_to_blocks(40) == 1      # 44 key bits exactly
+    assert ev.codeword_bits_to_blocks(41) == 2      # first bit of the second block
+    assert ev.codeword_bits_to_blocks(84) == 2      # 88 key bits exactly
+    assert ev.codeword_bits_to_blocks(85) == 3
 
 
 def test_codeword_length_is_the_pooled_threshold_count():

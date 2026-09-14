@@ -17,8 +17,8 @@ WHAT EACH ARM ASKS.
   A. The saturation edge, solid keys, ONE table (so the group offset is
      unambiguously 0). B and B+1 crossbar bytes across the predicted step: a
      key with one spare byte slot must not pay, a key with none must. Three of
-     these are also DOUBLE-COUNT discriminators -- `band_factor`'s `+4`
-     overhead bits are themselves a version/valid allowance, so
+     these are also DOUBLE-COUNT discriminators -- `codeword_bits_to_blocks`'s
+     `+4` overhead bits are themselves a version/valid allowance, so
      `max(band, xbar) + penalty` (what ships today) charges the version field
      twice when the band arm wins, where `max(band, xbar + penalty)` charges it
      once. The two differ by a whole block on these points.
@@ -56,7 +56,7 @@ import pandas as pd
 
 from scripts.tcam_stretch_sweep import as_fields, key_bytes_for, synthetic_program
 from src.p4gen.p4_compile import compile_p4
-from src.p4model.tables import (band_factor, crossbar_block_width,
+from src.p4model.tables import (codeword_bits_to_blocks, codeword_bytes_to_blocks,
                                 version_block_penalty)
 
 DEFAULT_OUT = 'results/tcam_version_sweep.csv'
@@ -104,20 +104,23 @@ POINTS = [
 def predict(field_bits, start_group):
     """Both compositions, so the compiler can choose between them.
 
-    `shipped`   = max(band_factor, crossbar_block_width) + version penalty
+    `shipped`   = max(codeword_bits_to_blocks, codeword_bytes_to_blocks) + version penalty
                   -- what the code does today.
-    `corrected` = max(band_factor, crossbar_block_width + version penalty)
-                  -- band_factor's own +4 version/valid bits stop being charged
-                  a second time.
+    `corrected` = max(codeword_bits_to_blocks, codeword_bytes_to_blocks + version penalty)
+                  -- codeword_bits_to_blocks's own +4 version/valid bits stop
+                  being charged a second time.
     They differ only where the band arm wins AND the penalty fires."""
     bits = list(field_bits)
     key_bytes = sum(math.ceil(b / 8) for b in bits)
-    band = band_factor(sum(bits))
-    xbar = crossbar_block_width(key_bytes)
+    band = codeword_bits_to_blocks(sum(bits))
+    xbar = codeword_bytes_to_blocks(key_bytes)
     penalty = version_block_penalty(bits, start_group)
     return {
         'key_bytes': key_bytes,
         'groups': xbar,
+        # Column name kept as 'band_factor' deliberately: results/tcam_version_sweep.csv
+        # is archived data, and renaming a column silently rewrites what an
+        # archived row means. The identifier is codeword_bits_to_blocks.
         'band_factor': band,
         'penalty': penalty,
         'shipped': max(band, xbar) + penalty,

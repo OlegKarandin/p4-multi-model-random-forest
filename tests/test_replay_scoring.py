@@ -27,8 +27,8 @@ def _replay_frame():
 def test_derive_columns_computes_the_band_factors_and_wasted_bits():
     out = rs.derive_columns(_replay_frame())
     first = out[(out['policy'] == 'aligned') & (out['k'] == 0)].iloc[0]
-    assert first['factor_before'] == 3      # 90 + 4 = 94 -> 3
-    assert first['factor_after'] == 2       # 84 + 4 = 88 -> 2
+    assert first['band_factor_before'] == 3      # 90 + 4 = 94 -> 3
+    assert first['band_factor_after'] == 2       # 84 + 4 = 88 -> 2
     assert first['bits_shed'] == 6
     assert first['wasted_bits'] == 0        # the band was crossed
 
@@ -36,7 +36,7 @@ def test_derive_columns_computes_the_band_factors_and_wasted_bits():
 def test_wasted_bits_counts_every_bit_when_no_band_is_crossed():
     out = rs.derive_columns(_replay_frame())
     second = out[(out['policy'] == 'aligned') & (out['k'] == 1)].iloc[0]
-    assert second['factor_before'] == second['factor_after']
+    assert second['band_factor_before'] == second['band_factor_after']
     assert second['wasted_bits'] == second['bits_shed']
 
 
@@ -72,9 +72,9 @@ def test_s5_reports_no_data_when_only_one_threshold_was_swept():
 
 def test_derive_columns_drops_none_policy_rows_without_crashing():
     """policy='none' rows carry no align_* columns (run_one_policy skips
-    align_with_policy for 'none') -- band_factor(NaN) must not be reached,
-    and the aligned rows' scoring must be unaffected by 'none' rows being
-    present in the input frame."""
+    align_with_policy for 'none') -- codeword_bits_to_blocks(NaN) must not be
+    reached, and the aligned rows' scoring must be unaffected by 'none' rows
+    being present in the input frame."""
     frame = _replay_frame()
     none_rows = pd.DataFrame([
         {'source_arm': 'joint-d020', 'M': 25, 'split': 10, 'k': pair,

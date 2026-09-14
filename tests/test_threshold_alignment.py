@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, normalise_feature_name
-from src.p4gen.evaluation import band_factor
+from src.p4gen.evaluation import codeword_bits_to_blocks
 from src.training import align_budget as ab
 from src.training import align_targets as at
 from src.training import threshold_alignment as ta
@@ -1566,10 +1566,10 @@ def test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves():
     a1, a2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
                                   overlap_threshold=0.5, delta_rel=0.20,
                                   align_stats=stats)
-    from src.p4gen.evaluation import band_factor
+    from src.p4gen.evaluation import codeword_bits_to_blocks
     if not stats['rolled_back']:
-        assert (band_factor(stats['codeword_after'])
-                < band_factor(stats['codeword_before'])
+        assert (codeword_bits_to_blocks(stats['codeword_after'])
+                < codeword_bits_to_blocks(stats['codeword_before'])
                 or not stats['spent_budget'])
         pytest.skip('this fixture crossed a band or never spent; nothing to roll back')
 
@@ -1843,11 +1843,11 @@ def test_the_byte_domain_stats_are_recorded():
     assert stats['key_bytes_floor'] <= stats['key_bytes_after']
 
 
-def test_pooled_key_bytes_equals_the_evaluators_ternary_key_bytes():
+def test_pooled_key_bytes_equals_the_evaluators_codeword_fields_to_bytes():
     """E1, the premise. If this fails the budget prices a table the switch
     does not build, and nothing else in the byte domain may be read."""
     from src.p4gen.build_p4_script import get_joint_feature_intervals
-    from src.p4gen.evaluation import ternary_table_key_bytes
+    from src.p4gen.evaluation import codeword_fields_to_bytes
 
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     names = ['f0', 'f1', 'f2', 'f3']
@@ -1858,7 +1858,7 @@ def test_pooled_key_bytes_equals_the_evaluators_ternary_key_bytes():
         joint = get_joint_feature_intervals(m1, names, m2, names)
         assert ab.pooled_key_bytes(ta.extract_feature_intervals(m1),
                                    ta.extract_feature_intervals(m2)) == \
-            ternary_table_key_bytes(joint)
+            codeword_fields_to_bytes(joint)
 
 
 def test_the_block_factor_equals_the_evaluators_block_factor():
@@ -1946,9 +1946,9 @@ def test_a_band_crossing_that_buys_no_block_no_longer_counts_as_crossing():
     superseded gate a run that crossed a 44-bit band kept its result even
     where the crossbar arm bound and the block factor never moved -- so
     accuracy was spent for nothing, the exact failure C1 exists to prevent.
-    88 -> 40 is a real band crossing (band_factor 3 -> 1)."""
+    88 -> 40 is a real band crossing (codeword_bits_to_blocks 3 -> 1)."""
     stats = _crossing_stats(88, 40, 6, 6)
-    assert band_factor(stats['codeword_after']) < band_factor(stats['codeword_before'])
+    assert codeword_bits_to_blocks(stats['codeword_after']) < codeword_bits_to_blocks(stats['codeword_before'])
     assert ta.crossed_a_boundary(stats) is False
 
 
@@ -1958,7 +1958,7 @@ def test_a_block_saving_without_a_band_crossing_now_counts_as_crossing():
     gate the whole run was discarded and re-run at delta = 0, throwing the
     saving away."""
     stats = _crossing_stats(88, 86, 6, 5)
-    assert band_factor(stats['codeword_after']) == band_factor(stats['codeword_before'])
+    assert codeword_bits_to_blocks(stats['codeword_after']) == codeword_bits_to_blocks(stats['codeword_before'])
     assert ta.crossed_a_boundary(stats) is True
 
 
@@ -1988,7 +1988,7 @@ def _order_fixture_pair():
 
 
 def test_feature_order_puts_byte_completing_features_first():
-    """§4.2: crossbar_block_width depends on sum(ceil(w_f / 8)), so a bit can
+    """§4.2: codeword_bytes_to_blocks depends on sum(ceil(w_f / 8)), so a bit can
     only change the factor by completing a byte on SOME feature. Byte
     completion is therefore the block-correct order, and it is now the only
     one.

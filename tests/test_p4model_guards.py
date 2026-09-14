@@ -160,9 +160,9 @@ def test_stage_shards_stays_reachable_as_a_private_name():
 
 TABLES_REEXPORTS = (
     "range_matching_resource_usage", "range_deployment_overflow",
-    "ternary_table_key_bytes", "band_factor", "ternary_key_field_bits",
+    "codeword_fields_to_bytes", "codeword_bits_to_blocks", "ternary_key_field_bits",
     "version_block_penalty",
-    "crossbar_block_width", "exact_match_resource_usage",
+    "codeword_bytes_to_blocks", "exact_match_resource_usage",
     "range_key_fields_for", "ternary_key_fields",
 )
 
@@ -282,3 +282,25 @@ def test_p4model_imports_and_computes_from_an_unrelated_cwd(tmp_path):
     # Three 8-block tables sum to exactly 24 but need two stages: a table chains
     # its blocks down ONE 12-row column, so 8+8 overflows.
     assert out == "2"
+
+
+def test_the_cost_decomposition_names_say_what_they_take():
+    """Design §5.2. Each name is a true function of its stated input, so a
+    wrong composition stops being representable rather than merely
+    currently-avoided.
+
+    `codeword_bytes_to_blocks` deliberately carries NO version charge: the
+    penalty depends on the width MULTISET and the group offset, never on a byte
+    total -- 11 bytes costs 2 blocks or 3 depending on the field split -- so a
+    signature promising otherwise would assert a dependency the quantity does
+    not have.
+    """
+    from src.p4model import tables
+
+    assert tables.codeword_fields_to_bytes({'a': [0] * 5, 'b': [0] * 5}) == 2
+    assert tables.codeword_bytes_to_blocks(11) == 2
+    assert tables.codeword_bits_to_blocks(40) == 1
+    assert tables.codeword_bits_to_blocks(41) == 2      # 41 + 4 > 44
+    for retired in ('ternary_table_key_bytes', 'crossbar_block_width',
+                    'band_factor'):
+        assert not hasattr(tables, retired), retired

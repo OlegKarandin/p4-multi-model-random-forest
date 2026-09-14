@@ -31,7 +31,7 @@ def test_a_tuple_key_is_a_list_of_field_bit_widths():
 def test_the_two_arms_present_the_same_crossbar_bytes_and_blocks():
     # The arms have to be comparable or the sweep measures raggedness
     # confounded with size. 179 bits is 23 bytes and 204 is 26 -- byte-rounded
-    # per FIELD, exactly as evaluation.ternary_table_key_bytes does it -- so
+    # per FIELD, exactly as evaluation.codeword_fields_to_bytes does it -- so
     # the ragged app key costs the same 49 bytes and 9 blocks as the solid
     # 392-bit one, and the ddos key the same 12 bytes and 3 blocks.
     assert sweep.key_bytes_for(sweep.SD9_APP_KEY) == sweep.key_bytes_for(49) == 49

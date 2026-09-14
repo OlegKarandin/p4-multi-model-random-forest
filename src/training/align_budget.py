@@ -13,15 +13,16 @@ minimising `factor` is exactly minimising blocks, and the whole objective
 collapses to one small integer -- see _factor.
 
 SUPERSEDED, 2026-09-07. This module used to state the cost as
-`range_blocks + n_trees * band_factor(L)` over the pooled split-threshold
-count L, and gate spending on `band_target(L) >= floor`. That identity is
-wrong wherever the ternary input crossbar binds, which is every many-feature
-design measured: the crossbar allocates per key FIELD and byte-rounds each
-one, so a 13-field 84-bit key really presents 16 bytes = 3 blocks where
-band_factor says 2. It looked right for years only because on few wide fields
-byte-rounding is nearly a no-op. band_factor survives here as one ARM of
-ternary_block_factor and in src/reporting/replay_scoring.py's legacy columns;
-it no longer gates anything.
+`range_blocks + n_trees * codeword_bits_to_blocks(L)` over the pooled
+split-threshold count L, and gate spending on `band_target(L) >= floor`. That
+identity is wrong wherever the ternary input crossbar binds, which is every
+many-feature design measured: the crossbar allocates per key FIELD and
+byte-rounds each one, so a 13-field 84-bit key really presents 16 bytes = 3
+blocks where codeword_bits_to_blocks says 2. It looked right for years only
+because on few wide fields byte-rounding is nearly a no-op.
+codeword_bits_to_blocks survives here as one ARM of ternary_block_factor and
+in src/reporting/replay_scoring.py's legacy columns; it no longer gates
+anything.
 
 The byte-domain helpers below (byte_width, bits_to_next_byte, bits_to_reach,
 key_bytes_floor, pooled_key_bytes) are MORE central after the repair, not
@@ -35,7 +36,8 @@ Imports from p4gen only, so both threshold_alignment and the replay harness
 can use it without importing the mutation loop.
 """
 from src.p4gen.build_p4_script import INFINITE, TCAM_BLOCK_KEY_LENGTH
-from src.p4gen.evaluation import (CODEWORD_KEY_OVERHEAD_BITS, band_factor,
+from src.p4gen.evaluation import (CODEWORD_KEY_OVERHEAD_BITS,
+                                  codeword_bits_to_blocks,
                                   ternary_block_factor)
 
 
@@ -79,7 +81,7 @@ def codeword_floor(intervals1, intervals2):
 def band_ceiling(factor):
     """The highest codeword length that still fits in `factor` key blocks.
 
-    band_factor(L) == ceil((L + 4) / 44), so the largest L in a given band
+    codeword_bits_to_blocks(L) == ceil((L + 4) / 44), so the largest L in a given band
     satisfies L + 4 <= 44 * factor. src/reporting/replay_scoring.py uses this
     to price overshoot: bits shed below the ceiling of the band a run actually
     landed in bought nothing.
@@ -94,13 +96,13 @@ def band_target(codeword_length):
     `target >= floor` False for every non-negative floor -- there is no
     cheaper band to reach.
     """
-    return band_ceiling(band_factor(codeword_length) - 1)
+    return band_ceiling(codeword_bits_to_blocks(codeword_length) - 1)
 
 
 def byte_width(bits):
     """ceil(bits / 8) without importing math -- the crossbar allocates per
     FIELD, so every per-feature width is byte-rounded on its own before being
-    summed (evaluation.ternary_table_key_bytes)."""
+    summed (evaluation.codeword_fields_to_bytes)."""
     return -(-bits // 8)
 
 
@@ -164,8 +166,8 @@ def _factor(widths):
 
     Delegates to p4model rather than restating the rule, which is the point of
     the repair -- the superseded `blocks = range_blocks + n_trees *
-    band_factor(L)` identity this module was built around drifted precisely
-    because it was a restatement. Pinned by E1-blocks
+    codeword_bits_to_blocks(L)` identity this module was built around drifted
+    precisely because it was a restatement. Pinned by E1-blocks
     (tests/test_threshold_alignment.py).
 
     Sorted because ternary_block_factor prices a MULTISET of field widths and
@@ -179,7 +181,7 @@ def _factor(widths):
 def pooled_key_bytes(intervals1, intervals2):
     """Crossbar byte width of one classification table under joint encoding.
 
-    MUST equal evaluation.ternary_table_key_bytes on the joint intervals the
+    MUST equal evaluation.codeword_fields_to_bytes on the joint intervals the
     generator emits from the same pooled thresholds -- required test E1. If it
     does not, this budget prices a table the switch does not build.
     """

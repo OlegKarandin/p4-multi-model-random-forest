@@ -88,7 +88,7 @@ def feature_order(intervals1, intervals2, *, widths=None, floors=None):
     Byte completion, cheapest first: features that can actually complete a
     crossbar byte come first, the rest follow by combined interval count
     descending. This is the BLOCK-CORRECT order and, since 2026-09-07, the
-    only one -- crossbar_block_width depends on sum(ceil(w_f / 8)), so a shed
+    only one -- codeword_bytes_to_blocks depends on sum(ceil(w_f / 8)), so a shed
     bit can only change the factor by completing a byte on some feature.
     Shedding bits that complete no byte is the waste the repair exists to stop.
 

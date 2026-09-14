@@ -19,7 +19,7 @@ import math
 
 import pytest
 
-from src.p4model.tables import (crossbar_block_width, ternary_block_factor,
+from src.p4model.tables import (codeword_bytes_to_blocks, ternary_block_factor,
                                 version_block_penalty)
 
 
@@ -46,15 +46,16 @@ def test_block_factor_matches_the_fresh_compile_sweep(field_bits, real_blocks, w
 
 
 def test_the_version_field_is_not_charged_twice_when_the_band_arm_wins():
-    # band_factor's `+ CODEWORD_KEY_OVERHEAD_BITS` is ITSELF a version/valid
-    # allowance, so composing it as `max(band, xbar) + penalty` bills the same
-    # 2-bit field twice. Measured: a solid 11-byte key compiles to 3 TCAMs, not
-    # 4 (sweep point solid_g2_B11); 22 bytes to 5, not 6; 33 bytes to 7, not 8.
-    from src.p4model.tables import band_factor
+    # codeword_bits_to_blocks's `+ CODEWORD_KEY_OVERHEAD_BITS` is ITSELF a
+    # version/valid allowance, so composing it as `max(band, xbar) + penalty`
+    # bills the same 2-bit field twice. Measured: a solid 11-byte key compiles
+    # to 3 TCAMs, not 4 (sweep point solid_g2_B11); 22 bytes to 5, not 6;
+    # 33 bytes to 7, not 8.
+    from src.p4model.tables import codeword_bits_to_blocks
     for bits, real in (((88,), 3), ((176,), 5), ((264,), 7)):
         key_bytes = sum(math.ceil(b / 8) for b in bits)
-        band = band_factor(sum(bits))
-        xbar = crossbar_block_width(key_bytes)
+        band = codeword_bits_to_blocks(sum(bits))
+        xbar = codeword_bytes_to_blocks(key_bytes)
         assert band > xbar, bits              # the arm that triggers the bug
         assert version_block_penalty(bits, 0) == 1, bits
         assert band + version_block_penalty(bits, 0) != real    # the old way
@@ -64,7 +65,7 @@ def test_the_version_field_is_not_charged_twice_when_the_band_arm_wins():
 def blocks(field_bits, start=0):
     """What the model charges one table keyed on these fields."""
     key_bytes = sum(math.ceil(b / 8) for b in field_bits)
-    return (crossbar_block_width(key_bytes)
+    return (codeword_bytes_to_blocks(key_bytes)
             + version_block_penalty(field_bits, start))
 
 
@@ -78,7 +79,7 @@ def test_sd5_ddos_key_pays_a_version_block_because_it_saturates_its_groups():
     # shows all three of them at 3 TCAM blocks where the width alone buys 2,
     # and shows why: the pair's midbyte (relative crossbar byte 5) carries
     # code_ddos_packet_length_mean[32:39], a full byte, so no nibble is left.
-    assert crossbar_block_width(11) == 2
+    assert codeword_bytes_to_blocks(11) == 2
     assert blocks([27, 52]) == 3
 
 

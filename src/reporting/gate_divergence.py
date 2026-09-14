@@ -13,7 +13,7 @@ is strictly better: an archived row would have forced reconstructing the factor
 from align_key_bytes alone, which cannot see version_block_penalty at all,
 since that charge depends on the width multiset rather than any scalar (§1.3).
 """
-from src.p4gen.evaluation import band_factor
+from src.p4gen.evaluation import codeword_bits_to_blocks
 
 
 def score_gate_divergence(frame):
@@ -38,8 +38,8 @@ def score_gate_divergence(frame):
     """
     aligned = frame[(frame['policy'] == 'aligned')
                     & frame['align_spent_budget'].astype(bool)].copy()
-    band = (aligned['align_codeword_after'].apply(band_factor)
-            < aligned['align_codeword_before'].apply(band_factor))
+    band = (aligned['align_codeword_after'].apply(codeword_bits_to_blocks)
+            < aligned['align_codeword_before'].apply(codeword_bits_to_blocks))
     block = aligned['align_blocks_after'] < aligned['align_blocks_before']
     judged = frame[frame['policy'] == 'aligned']
     return {

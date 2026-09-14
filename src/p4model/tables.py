@@ -1,7 +1,7 @@
 """What one table costs: rows, blocks, and the crossbar key fields it claims.
 
 The two accounting rules that matter, both measured rather than derived: blocks
-charge crossbar BYTES per key FIELD (crossbar_block_width), not raw codeword
+charge crossbar BYTES per key FIELD (codeword_bytes_to_blocks), not raw codeword
 bits; and a range table's blocks come from the DECLARED interval count via
 compiler_range_rows, never from the expanded physical row count that
 range_entry_count gives -- those answer different questions, and
@@ -114,8 +114,12 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   return range_entries, range_blocks, range_table_specs
 
 
-def ternary_table_key_bytes(feature_intervals):
+def codeword_fields_to_bytes(feature_intervals):
   """Crossbar byte width of ONE classification table.
+
+  (Was `ternary_table_key_bytes` until 2026-09-14. Renamed, not changed: the
+  name now states the decomposition step it performs -- feature interval
+  FIELDS in, crossbar BYTES out.)
 
   The classification tables do not key on a single concatenated codeword
   field: build_p4_script.py:630-635 emits one separate ternary key field
@@ -133,11 +137,15 @@ def ternary_table_key_bytes(feature_intervals):
              for intervals in feature_intervals.values())
 
 
-def band_factor(codeword_length):
+def codeword_bits_to_blocks(codeword_length):
   """How many TCAM_BLOCK_KEY_LENGTH-wide key blocks one classification-table
   row spans. THE step function alignment is optimising against: a shed bit is
   worth nothing unless it carries codeword_length across a band boundary, and
-  then it is worth n_trees blocks at once."""
+  then it is worth n_trees blocks at once.
+
+  (Was `band_factor` until 2026-09-14. Renamed, not changed: the name now
+  states what it takes -- raw codeword BITS -- so it cannot be mistaken for
+  the byte-wise arm below.)"""
   return math.ceil(
       (codeword_length + CODEWORD_KEY_OVERHEAD_BITS) / TCAM_BLOCK_KEY_LENGTH)
 
@@ -216,14 +224,15 @@ def ternary_block_factor(field_bit_widths, start_group=0):
   """TCAM blocks ONE table word of this key spans, version field included.
 
   Composes the two independent lower bounds correctly, which is subtler than
-  it looks: `band_factor` carries `CODEWORD_KEY_OVERHEAD_BITS` (4) alongside
-  the key bits, and those 4 bits ARE the version/valid field expressed
-  bit-wise. So it must be maxed against the byte-wise arm with the version
-  charge ALREADY added --
+  it looks: `codeword_bits_to_blocks` carries `CODEWORD_KEY_OVERHEAD_BITS` (4)
+  alongside the key bits, and those 4 bits ARE the version/valid field
+  expressed bit-wise. So it must be maxed against the byte-wise arm with the
+  version charge ALREADY added --
 
-      max(band_factor, crossbar_block_width + version_block_penalty)
+      max(codeword_bits_to_blocks, codeword_bytes_to_blocks + version_block_penalty)
 
-  -- and not `max(band_factor, crossbar_block_width) + version_block_penalty`,
+  -- and not
+  `max(codeword_bits_to_blocks, codeword_bytes_to_blocks) + version_block_penalty`,
   which bills the same 2-bit field twice whenever the band arm wins.
 
   Measured, `results/tcam_version_sweep.csv` (12 fresh p4c compiles run to test
@@ -233,8 +242,8 @@ def ternary_block_factor(field_bit_widths, start_group=0):
   and 32 bytes) compile to 2, 4 and 6, so the saturation step itself is real
   and lands exactly where version_block_penalty puts it."""
   key_bytes = sum(math.ceil(bits / 8) for bits in field_bit_widths)
-  return max(band_factor(sum(field_bit_widths)),
-             crossbar_block_width(key_bytes)
+  return max(codeword_bits_to_blocks(sum(field_bit_widths)),
+             codeword_bytes_to_blocks(key_bytes)
              + version_block_penalty(field_bit_widths, start_group))
 
 
@@ -260,8 +269,8 @@ def version_block_penalty(field_bit_widths, start_group=0):
   midbyte the format falls through and `TableFormat::ternary_version()`
   push_back()s a whole extra TCAM to hold two bits.
 
-  A key of `key_bytes` crossbar bytes takes `g = crossbar_block_width` groups
-  starting at `start_group`. Those groups supply `5g` private byte slots plus
+  A key of `key_bytes` crossbar bytes takes `g = codeword_bytes_to_blocks`
+  groups starting at `start_group`. Those groups supply `5g` private byte slots plus
   `_full_midbytes` fully-owned midbytes; the run additionally exposes a HALF
   midbyte at its low end when it starts on an odd group, and at its high end
   when it ends on an even one. Version has a home when any of:
@@ -296,7 +305,7 @@ def version_block_penalty(field_bit_widths, start_group=0):
   if key_bytes == 0:
     return 0
   nibble_clean = [1 <= (bits % 8) <= 4 for bits in field_bit_widths]
-  groups = crossbar_block_width(key_bytes)
+  groups = codeword_bytes_to_blocks(key_bytes)
   last = start_group + groups - 1
 
   if last % 2 == 0:
@@ -312,21 +321,28 @@ def version_block_penalty(field_bit_widths, start_group=0):
       _midbyte_slot_indices(start_group, groups)) else 1
 
 
-def crossbar_block_width(key_bytes):
+def codeword_bytes_to_blocks(key_bytes):
   """TCAM blocks one classification-table row spans because of the ternary
   input CROSSBAR, as opposed to because of its bit width.
+
+  (Was `crossbar_block_width` until 2026-09-14. Renamed, not changed: the name
+  now states what it takes -- crossbar key BYTES -- so the decomposition
+  fields -> bytes -> blocks reads in one direction. It carries NO version
+  charge; see version_block_penalty for why that charge cannot live here.)
 
   One block is fed by exactly one crossbar group, and a group delivers 5
   private bytes + 1 midbyte nibble = TCAM_BLOCK_KEY_LENGTH bits = 5.5 BYTES
   (§2.1.2). The crossbar allocates per FIELD and byte-rounds each one, so
-  what it charges is key_bytes (ternary_table_key_bytes), not the raw codeword
-  length -- a table keying 15 separate code_<feature> fields totalling 205
-  bits really presents 33 bytes = 264 bits and needs 6 blocks, not 5.
+  what it charges is key_bytes (codeword_fields_to_bytes), not the raw
+  codeword length -- a table keying 15 separate code_<feature> fields
+  totalling 205 bits really presents 33 bytes = 264 bits and needs 6 blocks,
+  not 5.
 
-  This is the term band_factor misses, and it is why band_factor was
-  accidentally right for years: on ONE dense wide codeword field byte-rounding
-  is a no-op and the two agree exactly. They diverge as soon as the key is
-  split per feature, which is what build_p4_script actually emits.
+  This is the term codeword_bits_to_blocks misses, and it is why
+  codeword_bits_to_blocks was accidentally right for years: on ONE dense wide
+  codeword field byte-rounding is a no-op and the two agree exactly. They
+  diverge as soon as the key is split per feature, which is what
+  build_p4_script actually emits.
 
   Measured exact on 144 real compiled classification tables spanning three
   compile eras -- the whole observed key_bytes -> blocks ladder (4 -> 1,
@@ -374,7 +390,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   if codeword_length > MAX_CODEWORD_LENGTH:
     raise CodewordTooLong("Codewords are too long", codeword_length)
 
-  table_bytes = ternary_table_key_bytes(feature_intervals)
+  table_bytes = codeword_fields_to_bytes(feature_intervals)
 
   if table_bytes > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
     # Checked here, where the key width is already known, rather than deep
@@ -389,11 +405,11 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
         % (table_bytes, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), table_bytes)
 
   # Two independent lower bounds on how many blocks one row spans: its bit
-  # width (band_factor, which carries the +4 version/valid nibble) and its
-  # crossbar byte width plus the version block that width may not leave room
-  # for. ternary_block_factor composes them -- the +4 and the version penalty
-  # are the SAME field counted two ways, so the max must be taken after the
-  # penalty is added, never before.
+  # width (codeword_bits_to_blocks, which carries the +4 version/valid nibble)
+  # and its crossbar byte width plus the version block that width may not
+  # leave room for. ternary_block_factor composes them -- the +4 and the
+  # version penalty are the SAME field counted two ways, so the max must be
+  # taken after the penalty is added, never before.
   factor = ternary_block_factor(ternary_key_field_bits(feature_intervals))
   for index, tree in enumerate(codewords):
     tree_entry_count = len(codewords[tree])
@@ -485,7 +501,7 @@ def ternary_key_fields(feature_intervals):
   table of a model keys on -- one field per selected feature
   (`meta.code_<resolved_name> : ternary`, build_p4_script.py:1129), each
   ceil((len(intervals) - 1) / 8) bytes wide. Sums to
-  ternary_table_key_bytes(feature_intervals) by construction, which is the
+  codeword_fields_to_bytes(feature_intervals) by construction, which is the
   invariant crossbar_stages_needed checks.
 
   The field id carries the interval list, not just the name, because that is

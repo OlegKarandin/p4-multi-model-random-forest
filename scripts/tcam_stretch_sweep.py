@@ -91,7 +91,7 @@ def as_fields(key):
 
 def key_bytes_for(key):
     """Crossbar bytes a key costs: Sec 4.1.1's per-FIELD byte rounding, which
-    is `evaluation.ternary_table_key_bytes`."""
+    is `evaluation.codeword_fields_to_bytes`."""
     return sum(math.ceil(bits / 8) for bits in as_fields(key))
 
 

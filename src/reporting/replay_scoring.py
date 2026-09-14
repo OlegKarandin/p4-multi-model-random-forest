@@ -16,7 +16,7 @@ result on three pairs cannot be read as one that held on three hundred.
 """
 import pandas as pd
 
-from src.p4gen.evaluation import band_factor
+from src.p4gen.evaluation import codeword_bits_to_blocks
 from src.training.align_budget import band_ceiling
 
 # One model pair. overlap_threshold is part of the identity because the same
@@ -48,14 +48,14 @@ def derive_columns(frame):
 
     policy='none' rows are dropped here: 'none' is a pseudo-policy that skips
     align_with_policy entirely (scripts/replay_alignment.py's run_one_policy),
-    so it carries no align_* columns at all -- band_factor would raise on the
-    resulting NaN. 'none' is an unaligned control never meant to be scored by
-    S1-S6, all of which reason about alignment's effect, so excluding it here
-    is correct, not merely a crash workaround.
+    so it carries no align_* columns at all -- codeword_bits_to_blocks would
+    raise on the resulting NaN. 'none' is an unaligned control never meant to
+    be scored by S1-S6, all of which reason about alignment's effect, so
+    excluding it here is correct, not merely a crash workaround.
     """
     out = frame[frame['policy'] != 'none'].copy()
-    out['factor_before'] = out['align_codeword_before'].apply(band_factor)
-    out['factor_after'] = out['align_codeword_after'].apply(band_factor)
+    out['band_factor_before'] = out['align_codeword_before'].apply(codeword_bits_to_blocks)
+    out['band_factor_after'] = out['align_codeword_after'].apply(codeword_bits_to_blocks)
     out['bits_shed'] = out['align_codeword_before'] - out['align_codeword_after']
 
     # §4.6: rebased on the BLOCK FACTOR. A shed bit bought something only if
@@ -69,7 +69,7 @@ def derive_columns(frame):
     # The band-derived figure, kept so the campaign's published 57.8% stays
     # reproducible beside the corrected one. LEGACY: measured against a step
     # function the hardware does not have. Do not score new work on it.
-    overshoot = (out['factor_after'].apply(band_ceiling)
+    overshoot = (out['band_factor_after'].apply(band_ceiling)
                  - out['align_codeword_after']).clip(lower=0)
     out['legacy_band_wasted_bits'] = pd.concat(
         [out['bits_shed'], overshoot], axis=1).min(axis=1)

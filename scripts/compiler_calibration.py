@@ -520,7 +520,7 @@ def _p4_table_keys(p4_path):
 
     The widths come from the metadata declarations (`bit<N> code_<f>;` /
     `bit<N> <f>_val;`), byte-rounded per FIELD because that is how the ternary
-    crossbar allocates -- see evaluation.ternary_table_key_bytes. The raw bit
+    crossbar allocates -- see evaluation.codeword_fields_to_bytes. The raw bit
     widths come back too because a field that is not a whole number of bytes
     hands the crossbar a part-used byte, which is what decides whether a
     midbyte nibble survives for the version field

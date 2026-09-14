@@ -76,8 +76,8 @@ from src.p4model.ranges import (
     range_entry_count,
 )
 from src.p4model.tables import (
-    band_factor,
-    crossbar_block_width,
+    codeword_bits_to_blocks,
+    codeword_bytes_to_blocks,
     exact_match_resource_usage,
     range_deployment_overflow,
     range_key_fields_for,
@@ -86,7 +86,7 @@ from src.p4model.tables import (
     ternary_key_fields,
     ternary_key_field_bits,
     version_block_penalty,
-    ternary_table_key_bytes,
+    codeword_fields_to_bytes,
 )
 from src.p4model import tables as _tables
 from src.p4model.registers import (

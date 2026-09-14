@@ -19,7 +19,8 @@ def test_a_band_crossing_that_buys_no_block_is_a_false_positive():
     """§1.4's first failure: the run crosses a 44-bit band, the crossbar arm
     still binds, crossed_a_boundary returns True, the rollback declines to
     fire, and the accuracy is spent for nothing."""
-    # 88 -> 40 crosses a band (band_factor 3 -> 1); the factor does not move.
+    # 88 -> 40 crosses a band (codeword_bits_to_blocks 3 -> 1); the factor
+    # does not move.
     out = score_gate_divergence(pd.DataFrame([_row(88, 40, 6, 6)]))
     assert out['false_positive'] == 1
     assert out['false_negative'] == 0

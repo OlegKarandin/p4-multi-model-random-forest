@@ -20,11 +20,11 @@ def test_band_ceiling_is_the_highest_length_still_in_a_band():
     """Used by the scoring module to price how far past a boundary a run
     overshot -- bits below the ceiling of the band it landed in bought
     nothing."""
-    from src.p4gen.evaluation import band_factor
+    from src.p4gen.evaluation import codeword_bits_to_blocks
     for factor in (1, 2, 3, 7):
         ceiling = ab.band_ceiling(factor)
-        assert band_factor(ceiling) == factor
-        assert band_factor(ceiling + 1) == factor + 1
+        assert codeword_bits_to_blocks(ceiling) == factor
+        assert codeword_bits_to_blocks(ceiling + 1) == factor + 1
 
 
 def test_band_target_is_the_highest_length_one_band_cheaper():
@@ -32,9 +32,9 @@ def test_band_target_is_the_highest_length_one_band_cheaper():
     the highest length in the next band down, never one off."""
     for length in (41, 60, 84, 85, 128, 300):
         target = ab.band_target(length)
-        from src.p4gen.evaluation import band_factor
-        assert band_factor(target) == band_factor(length) - 1
-        assert band_factor(target + 1) == band_factor(length)
+        from src.p4gen.evaluation import codeword_bits_to_blocks
+        assert codeword_bits_to_blocks(target) == codeword_bits_to_blocks(length) - 1
+        assert codeword_bits_to_blocks(target + 1) == codeword_bits_to_blocks(length)
 
 
 def test_band_target_is_unreachable_in_the_first_band():
