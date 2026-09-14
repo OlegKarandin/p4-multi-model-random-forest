@@ -93,8 +93,15 @@ Alignment configuration
                               applicable" once delta_align_num is NaN for
                               both.
     delta_select      float64
-    overlap_threshold float64  NaN when alignment did not run for this row's
-                              arm/config (independent arm, or joint-off).
+    overlap_threshold float64  OPTIONAL (Task 9's archive boundary): NaN when
+                              alignment did not run for this row's arm/config
+                              (independent arm, or joint-off), and NaN for
+                              EVERY row when the loaded file's header omits
+                              the column entirely -- true of every file
+                              written after 2026-09-14, once the tunable
+                              itself was retired (design D4). The same
+                              missing-column tolerance `stage_depth` etc.
+                              already have.
 
 Outcome metrics -- present on every row because infeasible rows (whose
 accuracy fields were '') have already been filtered out by the time
@@ -215,8 +222,16 @@ _FLOAT_COLUMNS = [
     'rel_shortfall', 'n_trials_run', 'n_feasible',
     'align_attempted', 'align_accepted', 'intervals_before', 'intervals_after',
     'stages_real', 'tcam_real', 'sram_real', 'map_ram_real',
-    'delta_select', 'overlap_threshold',
+    'delta_select',
 ]
+
+# The archive boundary (Task 9): overlap_threshold is written by every
+# archived campaign CSV but by none written after 2026-09-14 -- TrainConfig
+# no longer has the tunable (design D4, Task 7). Kept out of _FLOAT_COLUMNS'
+# required set and coerced separately below so a fresh file's missing column
+# degrades the same way an old file's missing `stage_depth`/etc. does: an
+# all-NaN float64 column, never a KeyError.
+OPTIONAL_COLUMNS = ('overlap_threshold',)
 
 
 def _parse_filename(path):
@@ -313,7 +328,13 @@ def _cross_check_identity(path, parsed, file_df):
     arm_values = pd.unique(file_df['arm'])
     align_values = pd.unique(file_df['alignment_enabled'])
     delta_values = pd.unique(file_df['delta_align'])
-    overlap_values = pd.unique(file_df['overlap_threshold'])
+    # overlap_threshold is the archive boundary (Task 9): every archived file
+    # has it, no fresh file does. '' -- the same "no suffix" sentinel
+    # _expected_overlap_suffix already treats a suppressed arm's raw CSV text
+    # as meaning -- stands in for the whole column when it is absent, rather
+    # than this check reading a column that is not there.
+    has_overlap = 'overlap_threshold' in file_df.columns
+    overlap_values = pd.unique(file_df['overlap_threshold']) if has_overlap else ['']
     if (len(arm_values) != 1 or len(align_values) != 1 or len(delta_values) != 1
             or len(overlap_values) != 1):
         raise MislabelledArtifactError(
@@ -396,7 +417,7 @@ def load_campaign(results_dir='results'):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='raise').astype('int64')
 
-    for col in _FLOAT_COLUMNS:
+    for col in _FLOAT_COLUMNS + list(OPTIONAL_COLUMNS):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
         else:

@@ -150,3 +150,25 @@ def test_the_legacy_band_column_survives_alongside_it():
         'align_blocks_after': 6}])
     out = derive_columns(frame)
     assert 'legacy_band_wasted_bits' in out.columns
+
+
+def test_an_archived_frame_and_a_fresh_frame_both_score():
+    """The archive boundary (design §6.3). New output stops carrying
+    overlap_threshold; every archived CSV still has it. Reporting ACCEPTS the
+    column and does not REQUIRE it -- a documented asymmetry with a test on
+    each side, never a silent fillna and never a KeyError at report time.
+    """
+    archived = _replay_frame()                       # carries overlap_threshold
+    fresh = archived.drop(columns=['overlap_threshold'])
+
+    assert rs.pair_keys(archived) == rs.PAIR_KEYS
+    assert 'overlap_threshold' not in rs.pair_keys(fresh)
+
+    for frame in (archived, fresh):
+        out = rs.score(rs.derive_columns(frame))
+        assert set(out) == {'S3', 'S5'}
+        assert isinstance(out['S3']['value'], float)
+
+    # S5 compares ACROSS thresholds, so it has no referent on a fresh frame.
+    # Reported as unpaired, never as a pass and never as a crash.
+    assert rs.score(rs.derive_columns(fresh))['S5']['detail'].startswith('0 paired')

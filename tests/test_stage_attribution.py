@@ -224,3 +224,22 @@ def test_score_accepts_a_frame_with_a_single_objective_value():
     assert verdict['D1'] == baseline['D1']
     assert verdict['D2']['fraction_passing'] == baseline['D2']['fraction_passing']
     assert verdict['D2']['n_cells'] == baseline['D2']['n_cells']
+
+
+def test_pair_keys_drops_the_archived_column_when_it_is_absent():
+    """Same asymmetry as replay_scoring: the merge identity narrows to the
+    columns the frame has, so a fresh frame merges on (source_arm, M, split, k)
+    and an archived one still distinguishes its per-threshold refits.
+
+    `_row` is this file's existing row builder and still emits
+    overlap_threshold -- deliberately, because it is what an ARCHIVED replay
+    row looks like and that is exactly what must keep scoring.
+    """
+    archived = pd.DataFrame([_row(), _row(k=2)])
+    fresh = archived.drop(columns=['overlap_threshold'])
+    assert sa.pair_keys(archived) == sa.PAIR_KEYS
+    assert sa.pair_keys(fresh) == [k for k in sa.PAIR_KEYS
+                                   if k != 'overlap_threshold']
+    # Both sides must still SCORE, not merely report their keys.
+    for frame in (archived, fresh):
+        assert sa.score(frame)['D1']['passed'] is True

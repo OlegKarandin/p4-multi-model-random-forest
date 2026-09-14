@@ -26,6 +26,23 @@ PAIR_KEYS = ['source_arm', 'M', 'split', 'k', 'overlap_threshold']
 CELL_KEYS = ['M', 'k']
 
 
+def pair_keys(frame):
+    """PAIR_KEYS narrowed to the columns THIS frame actually has.
+
+    The archive boundary, stated rather than incidental (design §6.3).
+    overlap_threshold was part of a pair's identity because the same
+    (arm, M, split, k) refit was replayed once per threshold. That axis is gone
+    from new output and present in every archived CSV, so reporting ACCEPTS the
+    column and does not REQUIRE it.
+
+    Narrowing the merge key is the correct response, not filling the column in:
+    a fresh frame has ONE row per (arm, M, split, k), so including an absent
+    key would raise, while inventing a default would make pre- and
+    post-2026-09-14 runs look like the same treatment.
+    """
+    return [key for key in PAIR_KEYS if key in frame.columns]
+
+
 def derive_columns(frame):
     """ternary_spill and the three per-row deltas the identity
     Δ_encoding = Δ_range + Δ_ternary_spill (spec Sec 5.1) is built from --
@@ -94,7 +111,7 @@ def _independent_pairs(subset, policy):
     values, so it is never deduped here."""
     if policy != 'none':
         return subset
-    dedupe_keys = [k for k in PAIR_KEYS if k != 'overlap_threshold']
+    dedupe_keys = [k for k in pair_keys(subset) if k != 'overlap_threshold']
     return subset.drop_duplicates(subset=dedupe_keys)
 
 
@@ -144,7 +161,7 @@ def _d4(frame, none_policy):
     for policy in aligned_policies:
         aligned_rows = frame[frame['policy'] == policy]
         paired = none_rows.merge(
-            aligned_rows, on=PAIR_KEYS, suffixes=('_none', '_aligned'))
+            aligned_rows, on=pair_keys(frame), suffixes=('_none', '_aligned'))
         if not len(paired):
             out[policy] = _empty_cells(
                 'no paired {}/{} rows'.format(none_policy, policy))

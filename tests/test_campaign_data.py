@@ -27,6 +27,7 @@ import pytest
 
 from src.reporting.campaign_data import (
     MislabelledArtifactError,
+    _expected_arm_slug,
     load_campaign,
     pair_arms,
 )
@@ -451,6 +452,25 @@ def test_pair_arms_keys_on_arm_slug_not_on_the_legacy_method_column(tmp_path):
 
     assert (paired['arm_slug_treatment'] == 'joint-d005').all()
     assert (paired['arm_slug_baseline'] == 'independent').all()
+
+
+def test_an_archived_slug_still_validates_from_its_own_overlap_column():
+    """Archived filenames carry the -o suffix and archived rows carry the
+    column that reproduces it. TrainConfig no longer writes either, but the
+    check that a file named joint-d020-o025 really holds
+    overlap_threshold=0.25 must keep working, or the archive stops being
+    readable."""
+    assert _expected_arm_slug('joint', True, '0.2', '0.25') == 'joint-d020-o025'
+    assert _expected_arm_slug('joint', True, '0.2', '0.5') == 'joint-d020'
+
+
+def test_a_fresh_file_without_the_column_validates_too():
+    """The other half. A frame written after 2026-09-14 has no
+    overlap_threshold at all; requiring it would make every new campaign
+    unreadable. `''` is the raw CSV text for a suppressed arm and `None`/NaN is
+    what an absent column becomes -- both must mean "no suffix"."""
+    assert _expected_arm_slug('joint', True, '0.2', '') == 'joint-d020'
+    assert _expected_arm_slug('joint', True, '0.2', None) == 'joint-d020'
 
 
 def test_pair_arms_returns_empty_frame_for_an_arm_slug_present_in_neither_arm(tmp_path):

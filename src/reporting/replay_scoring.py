@@ -23,6 +23,23 @@ from src.training.align_budget import band_ceiling
 # (arm, M, split, k) refit is replayed once per threshold.
 PAIR_KEYS = ['source_arm', 'M', 'split', 'k', 'overlap_threshold']
 
+
+def pair_keys(frame):
+    """PAIR_KEYS narrowed to the columns THIS frame actually has.
+
+    The archive boundary, stated rather than incidental (design §6.3).
+    overlap_threshold was part of a pair's identity because the same
+    (arm, M, split, k) refit was replayed once per threshold. That axis is gone
+    from new output and present in every archived CSV, so reporting ACCEPTS the
+    column and does not REQUIRE it.
+
+    Narrowing the merge key is the correct response, not filling the column in:
+    a fresh frame has ONE row per (arm, M, split, k), so including an absent
+    key would raise, while inventing a default would make pre- and
+    post-2026-09-14 runs look like the same treatment.
+    """
+    return [key for key in PAIR_KEYS if key in frame.columns]
+
 # The companion document's measured baseline: the share of shed bits that
 # crossed no BAND boundary across the whole campaign. Retained as the
 # pre-registered target, but note the two sides are no longer the same
@@ -130,7 +147,14 @@ def score(frame):
     # S5 -- C3(c): does loosening the candidate gate widen the generator at
     # all? Compared within one policy across overlap_threshold, so the merge
     # key drops that column.
-    keys = [k for k in PAIR_KEYS if k != 'overlap_threshold']
+    if 'overlap_threshold' not in aligned.columns:
+        # No threshold axis in this frame: S5 compares ACROSS thresholds, so
+        # it has no referent. Unpaired, never a pass.
+        out['S5'] = _verdict(0, False, 0.0,
+                             'frame carries no overlap_threshold axis to compare')
+        return out
+
+    keys = [k for k in pair_keys(aligned) if k != 'overlap_threshold']
     loose_threshold = aligned['overlap_threshold'].min()
     tight_threshold = aligned['overlap_threshold'].max()
     loose = aligned[aligned['overlap_threshold'] == loose_threshold]
