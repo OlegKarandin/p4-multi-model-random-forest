@@ -262,3 +262,25 @@ def test_two_different_ragged_keys_do_not_share_a_stage():
     # touch the calibration set -- sd9 is not one of the 19 v6 rows, where
     # blocks is exact on all 17 that compiled.
     assert plan.blocks == 61
+
+
+def test_the_entry_to_block_arithmetic_has_a_name():
+    """Audit §8.1's multiplier. A block is MEMORY, so it is charged once per
+    TREE -- unlike the crossbar's byte slots, which are charged once per stage
+    however many tables read them. Alignment needs this quantity by name to
+    weigh a range step (1 block) against a ternary step (the multiplier, 8-80
+    blocks in the golden fixture).
+
+    At this project's tree sizes every tree costs exactly one block-row, so the
+    multiplier is simply the table count -- true on all 19 golden rows. The
+    ceil is what stops that coincidence from being baked in.
+    """
+    from src.p4model.tables import (entries_across_trees_to_blocks,
+                                    tree_entries_to_blocks)
+
+    assert tree_entries_to_blocks(1) == 1
+    assert tree_entries_to_blocks(512) == 1
+    assert tree_entries_to_blocks(513) == 2
+    assert entries_across_trees_to_blocks([100, 200, 300]) == 3
+    assert entries_across_trees_to_blocks([600, 100]) == 3
+    assert entries_across_trees_to_blocks([]) == 0

@@ -371,6 +371,32 @@ def codeword_bytes_to_blocks(key_bytes):
   return math.ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH)
 
 
+def tree_entries_to_blocks(entries):
+  """Block-rows ONE tree's classification table needs for its own leaves.
+
+  A block is TERNARY_MATCHING_ENTRIES_PER_BLOCK rows deep, and each leaf is one
+  row. Multiply by the key's own block width (codeword_to_blocks) for the
+  table's real block count: depth and width are independent and both cost.
+  """
+  return math.ceil(entries / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
+
+
+def entries_across_trees_to_blocks(entry_counts):
+  """What ONE step of the key's block width is worth, in blocks.
+
+  Blocks are charged once per TREE, because a block is memory and different
+  tables store different rows -- the exact opposite of the crossbar's byte
+  slots, which a stage charges once however many tables read them
+  (crossbar_stages_needed's key_fields). Confusing the two is a mistake this
+  project has already made once in the other direction.
+
+  This is the multiplier src/training/align_budget.py needs to weigh a range
+  step (worth 1 block) against a key-width step (worth this, 8-80 blocks across
+  the golden fixture).
+  """
+  return sum(tree_entries_to_blocks(count) for count in entry_counts)
+
+
 def ternary_matching_resource_usage(codewords, feature_intervals,
                                      dropped_per_tree=None):
   """Returns (ternary_entries, ternary_blocks, codeword_length,
@@ -433,7 +459,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
     if dropped_per_tree is not None:
       tree_entry_count -= dropped_per_tree[index]
 
-    tree_blocks = math.ceil(tree_entry_count / TERNARY_MATCHING_ENTRIES_PER_BLOCK) * factor
+    tree_blocks = tree_entries_to_blocks(tree_entry_count) * factor
 
     ternary_entries += tree_entry_count
     ternary_blocks += tree_blocks

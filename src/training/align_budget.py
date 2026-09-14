@@ -38,6 +38,7 @@ can use it without importing the mutation loop.
 from src.p4gen.build_p4_script import INFINITE, TCAM_BLOCK_KEY_LENGTH
 from src.p4gen.evaluation import (CODEWORD_KEY_OVERHEAD_BITS,
                                   codeword_bits_to_blocks,
+                                  codeword_fields_to_bytes_from_bits,
                                   codeword_to_blocks)
 
 
@@ -181,11 +182,15 @@ def _factor(widths):
 def pooled_key_bytes(intervals1, intervals2):
     """Crossbar byte width of one classification table under joint encoding.
 
-    MUST equal evaluation.codeword_fields_to_bytes on the joint intervals the
+    MUST equal tables.codeword_fields_to_bytes on the joint intervals the
     generator emits from the same pooled thresholds -- required test E1. If it
     does not, this budget prices a table the switch does not build.
+
+    Delegates the byte-rounding rule rather than restating it (design §5.1):
+    this module's 2026-09-07 lesson was that a restated cost rule drifts.
     """
-    return sum(byte_width(w) for w in _pooled_widths(intervals1, intervals2).values())
+    return codeword_fields_to_bytes_from_bits(
+        _pooled_widths(intervals1, intervals2).values())
 
 
 def key_bytes_floor(intervals1, intervals2):
@@ -194,7 +199,8 @@ def key_bytes_floor(intervals1, intervals2):
     Exact for the same reason codeword_floor is, and computed once at entry:
     nothing alignment does can move it.
     """
-    return sum(byte_width(w) for w in _own_floor_widths(intervals1, intervals2).values())
+    return codeword_fields_to_bytes_from_bits(
+        _own_floor_widths(intervals1, intervals2).values())
 
 
 def bits_to_reach(pooled_widths, own_floors, target_bytes):

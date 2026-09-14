@@ -165,6 +165,7 @@ TABLES_REEXPORTS = (
     "version_block_penalty",
     "codeword_bytes_to_blocks", "exact_match_resource_usage",
     "range_key_fields_for", "ternary_key_fields",
+    "tree_entries_to_blocks", "entries_across_trees_to_blocks",
 )
 
 
