@@ -2028,3 +2028,75 @@ def test_feature_order_no_longer_takes_an_objective():
     intervals1, intervals2 = _order_fixture_pair()
     with pytest.raises(TypeError):
         ta.feature_order(intervals1, intervals2, 'blocks')
+
+
+def test_still_overlaps_rejects_a_pair_an_earlier_move_pulled_apart():
+    """Audit §8.3's undocumented third job, and the crash.
+
+    find_partially_overlapping_ranges is computed once per ROUND and its pairs
+    are RE-READ inside the round, so an accepted move earlier in the same round
+    can have rewritten either tuple. The stale pair below produces the
+    empty-intersection target (701, 700), which inverts the tiling when
+    committed. Until now nothing revalidated this except, incidentally, the
+    similarity ratio -- so the one setting that disabled the heuristic
+    (overlap_threshold=0.0) disabled the correctness check with it.
+    """
+    assert ta.still_overlaps((581, 1005), (701, 1005))
+    assert not ta.still_overlaps((581, 700), (701, 1005))
+    assert not ta.still_overlaps((0, 100), (100, 200))     # touching, not overlapping
+
+
+def test_structurally_alignable_vetoes_a_lone_sentinel():
+    """The zero-side and INFINITE-side vetoes, which adjust_range_boundaries
+    physically cannot satisfy: a boundary sitting on a sentinel is never moved,
+    so `ranges` would claim a move the model refused to make (the C5 bug).
+    dataset.py clips every feature at INFINITE, so (m, INFINITE) is common.
+    """
+    assert ta.structurally_alignable((0, 100), (0, 200))
+    assert ta.structurally_alignable((10, INFINITE), (20, INFINITE))
+    assert not ta.structurally_alignable((0, 100), (10, 200))
+    assert not ta.structurally_alignable((10, INFINITE), (20, 900))
+
+
+def test_target_is_well_formed_rejects_the_inverted_target():
+    """The live crash, as a unit. neighbour_writes validates that NEIGHBOURING
+    intervals do not invert; nothing validated the target itself.
+    """
+    assert ta.target_is_well_formed((701, 1005))
+    assert ta.target_is_well_formed((700, 700))
+    assert not ta.target_is_well_formed(
+        ta.calculate_target_range((581, 700), (701, 1005)))     # (701, 700)
+
+
+def test_the_stale_pair_leaves_the_tiling_and_the_index_intact():
+    """The regression the three checks exist for: rejected, not committed.
+
+    Asserts on the STRUCTURES, not just on the absence of a raise -- a
+    committed inverted target is what desynchronises `ranges` from
+    threshold_index, and a test that only catches the eventual
+    AlignmentInvariantError would pass on a version that corrupted them both
+    consistently.
+    """
+    ranges = [(0, 580), (581, 700), (701, 1005), (1006, INFINITE)]
+    before = list(ranges)
+    index = {(0, 580): [(0, 1)], (0, 700): [(0, 2)], (0, 1005): [(0, 3)]}
+    index_before = {k: list(v) for k, v in index.items()}
+
+    assert not ta.still_overlaps(ranges[1], ranges[2])
+    assert ranges == before
+    assert index == index_before
+
+
+@pytest.mark.parametrize('overlap_threshold', [0.0, 0.1, 0.5])
+def test_a_real_fitted_pair_aligns_without_an_invariant_error(overlap_threshold):
+    """Audit §8.3: zero AlignmentInvariantErrors across 324 replayed runs with
+    the ratio test disabled, versus a hard crash at a literal
+    overlap_threshold=0.0 today. Pinned here on the golden pair so the fix
+    cannot silently regress.
+    """
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
+                         overlap_threshold=overlap_threshold, delta_rel=0.0,
+                         align_stats=stats)
+    assert stats['intervals_after'] <= stats['intervals_before']

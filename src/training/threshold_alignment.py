@@ -474,6 +474,15 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     continue
                 seen.add((range1, range2))
 
+                # Three named, unconditional correctness checks. The ratio test
+                # below is a separate, heuristic concern (removed in the next
+                # commit); these are not, and must never again be disableable
+                # by the same knob.
+                if not still_overlaps(range1, range2):
+                    continue
+                if not structurally_alignable(range1, range2):
+                    continue
+
                 overlap_ratio = calculate_range_overlap(range1, range2)
 
                 if overlap_ratio < overlap_threshold:
@@ -484,6 +493,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     idx1, idx2, feature_idx, sorted_cols1, sorted_cols2)
 
                 for target, pooled_after in ranked_targets:
+                    if not target_is_well_formed(target):
+                        continue
+
                     # Purely diagnostic -- only computed when a candidate_log
                     # is actually requested.
                     mass1 = mass2 = None
@@ -852,6 +864,59 @@ def shift_mass(sorted_col, old_thr, new_thr):
     lo, hi = (old_thr, new_thr) if old_thr <= new_thr else (new_thr, old_thr)
     return float(np.searchsorted(sorted_col, hi, 'right')
                  - np.searchsorted(sorted_col, lo, 'right')) / len(sorted_col)
+
+
+def still_overlaps(range1, range2):
+    """Do these two intervals, as they read RIGHT NOW, actually overlap?
+
+    find_partially_overlapping_ranges is computed once per ROUND and its pairs
+    are re-read -- not recomputed -- inside the round, so an accepted move
+    earlier in the same round can have rewritten either tuple. A pair that no
+    longer overlaps yields an empty-intersection target such as (701, 700),
+    which inverts the tiling when committed: traced live as
+    `AlignmentInvariantError: (0, 700) missing from threshold_index` (audit
+    §8.3).
+
+    Until 2026-09-14 this job was done only INCIDENTALLY, by
+    `calculate_range_overlap(...) < overlap_threshold` returning 0.0 for a
+    non-overlapping pair -- which is why setting that threshold to 0.0 disabled
+    a correctness check along with the similarity heuristic. Unconditional now,
+    and named, so the two can never be disabled together again.
+    """
+    (start1, end1), (start2, end2) = range1, range2
+    return max(start1, start2) < min(end1, end2)
+
+
+def structurally_alignable(range1, range2):
+    """Can adjust_range_boundaries move these boundaries at all?
+
+    A boundary sitting ON a sentinel -- 0 at the bottom, INFINITE at the top --
+    is never moved (adjust_range_boundaries' own guard). Where exactly one side
+    sits on one, nothing vetoed the PAIR, so
+    update_neighboring_ranges_and_index wrote the shrunk boundary into `ranges`
+    while the model kept splitting at the sentinel and the index kept the true
+    key: the C5 bug. dataset.py clips every feature at INFINITE, so a
+    (m, INFINITE) interval is common, not exotic.
+
+    Extracted verbatim from calculate_range_overlap's two early returns, whose
+    0.0 made them indistinguishable from "no overlap".
+    """
+    (min1, max1), (min2, max2) = range1, range2
+    return ((min1 == 0) == (min2 == 0)
+            and (max1 == INFINITE) == (max2 == INFINITE))
+
+
+def target_is_well_formed(target):
+    """Is this target a non-empty, non-inverted interval?
+
+    NEW as of 2026-09-14. neighbour_writes validates that NEIGHBOURING
+    intervals do not invert; nothing validated the target itself, which is
+    exactly what the §8.3 crash committed. Cheap, unconditional, and the last
+    line of defence if a future candidate generator offers a corner
+    still_overlaps did not already rule out.
+    """
+    low, high = target
+    return low <= high
 
 
 def calculate_range_overlap(range1, range2):
