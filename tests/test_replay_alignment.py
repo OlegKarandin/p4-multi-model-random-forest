@@ -50,7 +50,7 @@ def test_run_one_policy_none_skips_alignment_and_reports_both_encodings():
 
     result = ra.run_one_policy(
         (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-        'none', delta_rel=0.0, overlap_threshold=0.5)
+        'none', delta_rel=0.0)
 
     assert not any(k.startswith('align_') for k in result)
     assert result['blocks'] == result['joint_blocks']
@@ -66,7 +66,7 @@ def test_run_one_policy_aligned_runs_alignment_and_reports_align_stats():
 
     result = ra.run_one_policy(
         (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-        'aligned', delta_rel=0.0, overlap_threshold=0.5)
+        'aligned', delta_rel=0.0)
 
     assert any(k.startswith('align_') for k in result)
     assert 'align_codeword_before' in result
@@ -84,7 +84,7 @@ def test_run_one_policy_none_never_calls_align_with_policy():
     with mock.patch.object(ra, 'align_with_policy') as mocked:
         ra.run_one_policy(
             (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-            'none', delta_rel=0.0, overlap_threshold=0.5)
+            'none', delta_rel=0.0)
     mocked.assert_not_called()
 
 
@@ -155,34 +155,31 @@ def _replay_row_fixture():
 
 
 def test_replay_row_skips_a_failing_swept_cell_but_keeps_the_rest(capsys):
-    """One (policy, overlap_threshold) cell raising (e.g. CrossbarKeyTooWide
-    at a combination the campaign never validated) must not lose the other
-    cells already computed for this row."""
+    """One policy cell raising (e.g. CrossbarKeyTooWide at a policy the
+    campaign never validated) must not lose the other cells already computed
+    for this row."""
     row, refit_result = _replay_row_fixture()
 
     def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
-                            names_app, names_ddos, policy, delta_rel,
-                            overlap_threshold):
-        if overlap_threshold == 0.25:
+                            names_app, names_ddos, policy, delta_rel):
+        if policy == 'aligned':
             # Stand-in for a real evaluation.CrossbarKeyTooWide -- any
             # exception at this call site must be caught, so the fixture
             # doesn't need the real exception class.
             raise RuntimeError('table key is 67 crossbar bytes')
-        return {'policy': policy, 'overlap_threshold': overlap_threshold,
-                'blocks': 10}
+        return {'policy': policy, 'blocks': 10}
 
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=fake_run_one_policy):
-        results = ra.replay_row(row, data=None, policies=['aligned'],
-                                overlap_thresholds=[0.25, 0.5],
+        results = ra.replay_row(row, data=None, policies=['none', 'aligned'],
                                 ladder_delta=0.20, verify=False)
 
     assert len(results) == 1
-    assert results[0]['overlap_threshold'] == 0.5
+    assert results[0]['policy'] == 'none'
     out = capsys.readouterr().out
     assert 'SKIPPED (error)' in out
     assert 'VERIFY FAILED' not in out
-    assert 'joint-d000' in out and 'overlap=0.25' in out
+    assert 'joint-d000' in out and 'policy=aligned' in out
     assert 'RuntimeError' in out
 
 
@@ -197,8 +194,7 @@ def test_replay_row_reports_a_failing_verify_call_distinctly(capsys):
          mock.patch.object(ra, 'run_one_policy',
                            side_effect=RuntimeError('boom')):
         results = ra.replay_row(row, data=None, policies=[],
-                                overlap_thresholds=[], ladder_delta=0.20,
-                                verify=True)
+                                ladder_delta=0.20, verify=True)
 
     assert results == []
     out = capsys.readouterr().out
@@ -215,26 +211,24 @@ def test_replay_row_verify_failure_does_not_block_later_swept_cells(capsys):
 
     # replay_row always issues the verify call before the sweep loop, so the
     # first call is the (failing) verify call and the second is the swept
-    # cell -- no need to distinguish by policy/overlap value.
+    # cell -- no need to distinguish by policy.
     calls = []
 
     def side_effect(models, app, ddos, cols_app, cols_ddos, names_app,
-                    names_ddos, policy, delta_rel, overlap_threshold):
-        calls.append((policy, overlap_threshold))
+                    names_ddos, policy, delta_rel):
+        calls.append(policy)
         if len(calls) == 1:
             raise RuntimeError('verify broke')
-        return {'policy': policy, 'overlap_threshold': overlap_threshold,
-                'blocks': 10}
+        return {'policy': policy, 'blocks': 10}
 
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=side_effect):
         results = ra.replay_row(row, data=None, policies=['aligned'],
-                                overlap_thresholds=[0.5], ladder_delta=0.20,
-                                verify=True)
+                                ladder_delta=0.20, verify=True)
 
     assert len(calls) == 2
     assert len(results) == 1
-    assert results[0]['overlap_threshold'] == 0.5
+    assert results[0]['policy'] == 'aligned'
     out = capsys.readouterr().out
     assert 'VERIFY FAILED (error)' in out
 
@@ -247,22 +241,18 @@ def test_replay_row_skip_counts_accumulate_by_policy_across_calls():
     row, refit_result = _replay_row_fixture()
 
     def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
-                            names_app, names_ddos, policy, delta_rel,
-                            overlap_threshold):
+                            names_app, names_ddos, policy, delta_rel):
         if policy == 'aligned':
             raise RuntimeError('infeasible cell')
-        return {'policy': policy, 'overlap_threshold': overlap_threshold,
-                'blocks': 10}
+        return {'policy': policy, 'blocks': 10}
 
     skip_counts = Counter()
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=fake_run_one_policy):
         ra.replay_row(row, data=None, policies=['none', 'aligned'],
-                      overlap_thresholds=[0.5], ladder_delta=0.20,
-                      verify=False, skip_counts=skip_counts)
+                      ladder_delta=0.20, verify=False, skip_counts=skip_counts)
         ra.replay_row(row, data=None, policies=['aligned'],
-                      overlap_thresholds=[0.5], ladder_delta=0.20,
-                      verify=False, skip_counts=skip_counts)
+                      ladder_delta=0.20, verify=False, skip_counts=skip_counts)
 
     assert skip_counts == Counter({'aligned': 2})
 
@@ -276,8 +266,7 @@ def test_replay_row_skip_counts_default_to_a_throwaway_counter():
          mock.patch.object(ra, 'run_one_policy',
                            side_effect=RuntimeError('boom')):
         results = ra.replay_row(row, data=None, policies=['aligned'],
-                                overlap_thresholds=[0.5], ladder_delta=0.20,
-                                verify=False)
+                                ladder_delta=0.20, verify=False)
 
     assert results == []
 
@@ -290,5 +279,5 @@ def test_run_one_policy_no_longer_accepts_an_objective():
     with pytest.raises(TypeError):
         ra.run_one_policy(
             (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-            'aligned', delta_rel=0.0, overlap_threshold=0.5,
+            'aligned', delta_rel=0.0,
             objective='blocks')

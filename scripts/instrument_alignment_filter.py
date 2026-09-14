@@ -76,7 +76,7 @@ def main():
             rf1, rf2,
             app.X_val_align, app.y_val_align,
             ddos.X_val_align, ddos.y_val_align,
-            overlap_threshold=0.5, delta_rel=delta,
+            delta_rel=delta,
             candidate_log=log)
         elapsed = time.perf_counter() - start
 

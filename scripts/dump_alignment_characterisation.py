@@ -25,19 +25,14 @@ pair, no Optuna search and no p4c):
 import json
 import os
 
-# The configurations. delta_rel spans the three regimes that behave
-# differently: 0.0 accepts only free moves, 0.05 spends a real tolerance, and
-# None is the accept-everything anchor that skips accuracy evaluation entirely.
-# Both overlap thresholds are swept because the 2026-08-31 spike measured
-# overlap_threshold, not delta, as the binding gate on candidate supply.
-CONFIGS = [
-    {'delta_rel': 0.0, 'overlap_threshold': 0.5},
-    {'delta_rel': 0.05, 'overlap_threshold': 0.5},
-    {'delta_rel': None, 'overlap_threshold': 0.5},
-    {'delta_rel': 0.0, 'overlap_threshold': 0.25},
-    {'delta_rel': 0.05, 'overlap_threshold': 0.25},
-    {'delta_rel': None, 'overlap_threshold': 0.25},
-]
+from src.main import DELTA_ALIGNS
+
+# The configurations: one row per delta value the campaign actually sweeps
+# (src.main.DELTA_ALIGNS), imported rather than duplicated so this fixture
+# cannot silently drift from the real arm grid. The overlap_threshold axis
+# that used to multiply this grid by three is gone (Task 7, design D4): the
+# tunable it swept no longer exists.
+CONFIGS = [{'delta_rel': d} for d in DELTA_ALIGNS]
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        os.pardir, 'tests', 'fixtures',
@@ -53,12 +48,6 @@ def capture():
     for config in CONFIGS:
         rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
         stats, log = {}, []
-        # overlap_threshold is no longer a parameter of align_rf_thresholds
-        # (Task 7, design D4) -- config['overlap_threshold'] survives below as
-        # pure row-labelling metadata only, not passed to the call. It is not
-        # yet collapsed out of CONFIGS itself: that grid restructuring is
-        # Task 8's job (see this module's own docstring on why this fixture
-        # is a record, not a requirement).
         a1, a2 = ta.align_rf_thresholds(
             rf1, rf2, X1, y1, X2, y2,
             delta_rel=config['delta_rel'], align_stats=stats, candidate_log=log)
@@ -90,8 +79,8 @@ def main():
         json.dump(data, handle, indent=1, sort_keys=True)
         handle.write('\n')
     for row in data['rows']:
-        print('delta={!r:>5} overlap={:g}  accepted={:<4} blocks {}->{} (floor {})'.format(
-            row['config']['delta_rel'], row['config']['overlap_threshold'],
+        print('delta={!r:>5}  accepted={:<4} blocks {}->{} (floor {})'.format(
+            row['config']['delta_rel'],
             len(row['accepted']), row['stats']['blocks_before'],
             row['stats']['blocks_after'], row['stats']['blocks_floor']))
     print('wrote', os.path.normpath(FIXTURE))

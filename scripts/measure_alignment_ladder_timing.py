@@ -73,7 +73,7 @@ def main():
             rf1, rf2 = mk(X1, y1, 0), mk(X2, y2, 1)
             t0 = time.perf_counter()
             ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.5, delta_rel=delta)
+                                    delta_rel=delta)
             times.append(time.perf_counter() - t0)
         print('delta={!r:<6} n={} median={:.3f}s '
               'min={:.3f}s max={:.3f}s all={}'.format(

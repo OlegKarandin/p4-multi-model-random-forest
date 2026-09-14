@@ -88,7 +88,7 @@ def main():
                 try:
                     ta.align_rf_thresholds(
                         rf1, rf2, X1, y1, X2, y2,
-                        overlap_threshold=0.5, delta_rel=delta,
+                        delta_rel=delta,
                         candidate_log=log)
                 except AlignmentInvariantError as exc:
                     print('seed={} delta={!r}: TRUNCATED at '

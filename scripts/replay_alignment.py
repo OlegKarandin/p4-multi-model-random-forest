@@ -150,7 +150,7 @@ def refit_pair(row, data):
 
 
 def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos,
-                   policy, delta_rel, overlap_threshold):
+                   policy, delta_rel):
     """One policy on one already-fit pair. Returns a result dict.
 
     Evaluates the resulting model pair under BOTH encodings -- 'joint' (the
@@ -177,13 +177,11 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
             model_app, model_ddos,
             app.X_val_align[:, cols_app], app.y_val_align,
             ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
-            overlap_threshold=overlap_threshold,
             delta_rel=delta_rel,
             align_stats=stats)
     elapsed = time.time() - started
 
     out = {'policy': policy,
-           'overlap_threshold': overlap_threshold,
            'delta_rel': 'inf' if delta_rel is None else delta_rel,
            'runtime_s': elapsed}
 
@@ -218,9 +216,9 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
     return out
 
 
-def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
+def replay_row(row, data, policies, ladder_delta, verify,
                skip_counts=None):
-    """Every (policy, overlap_threshold) cell for one campaign row.
+    """Every policy cell for one campaign row.
 
     skip_counts, if given, is a collections.Counter (or any Counter-like
     mapping) shared across calls that gets incremented per-policy every time
@@ -240,24 +238,19 @@ def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
     if verify:
         # Reproduce the row under ITS OWN arm settings. If `blocks` disagrees,
         # the refit is not reproducing the campaign and nothing below is valid.
-        # NOT `or 0.5`: a NaN is truthy, and a NaN overlap_threshold would make
-        # `overlap_ratio < overlap_threshold` False for every pair, silently
-        # disabling the candidate gate instead of failing.
-        recorded = row.get('overlap_threshold')
-        verify_overlap = 0.5 if pd.isna(recorded) else float(recorded)
         try:
             own = run_one_policy(models, app, ddos, cols_app, cols_ddos,
                                  names_app, names_ddos, 'aligned',
-                                 ARM_DELTA[row['arm_slug']], verify_overlap)
+                                 ARM_DELTA[row['arm_slug']])
         except Exception as exc:
             # This row's OWN recorded settings failed to reproduce -- that is
             # a break in the harness's determinism claim, not merely "this
             # swept combination happened to be infeasible", so it gets a
             # visually distinct diagnostic from the swept-cell skip below.
             print('  VERIFY FAILED (error): {} M={} split={} k={} '
-                  'policy=aligned overlap={} -- {}: {}'.format(
+                  'policy=aligned -- {}: {}'.format(
                       row['arm_slug'], row['M'], row['split'], row['k'],
-                      verify_overlap, type(exc).__name__, exc))
+                      type(exc).__name__, exc))
         else:
             own['policy'] = 'verify'
             own['blocks_recorded'] = int(row['blocks'])
@@ -265,25 +258,24 @@ def replay_row(row, data, policies, overlap_thresholds, ladder_delta, verify,
             results.append(own)
 
     for policy in policies:
-        for overlap in overlap_thresholds:
-            try:
-                result = run_one_policy(
-                    models, app, ddos, cols_app, cols_ddos, names_app,
-                    names_ddos, policy, ladder_delta, overlap)
-            except Exception as exc:
-                # An exploratory sweep cell landed outside the feasible
-                # region for this refit pair (e.g. CrossbarKeyTooWide at a
-                # (policy, overlap_threshold) the campaign never validated).
-                # Skip the cell rather than losing every row already
-                # computed -- matches select_rows' "drop infeasible rows"
-                # semantics for the campaign's own data.
-                print('  SKIPPED (error): {} M={} split={} k={} policy={} '
-                      'overlap={} -- {}: {}'.format(
-                          row['arm_slug'], row['M'], row['split'], row['k'],
-                          policy, overlap, type(exc).__name__, exc))
-                skip_counts[policy] += 1
-                continue
-            results.append(result)
+        try:
+            result = run_one_policy(
+                models, app, ddos, cols_app, cols_ddos, names_app,
+                names_ddos, policy, ladder_delta)
+        except Exception as exc:
+            # An exploratory sweep cell landed outside the feasible
+            # region for this refit pair (e.g. CrossbarKeyTooWide at a
+            # policy the campaign never validated).
+            # Skip the cell rather than losing every row already
+            # computed -- matches select_rows' "drop infeasible rows"
+            # semantics for the campaign's own data.
+            print('  SKIPPED (error): {} M={} split={} k={} policy={} '
+                  '-- {}: {}'.format(
+                      row['arm_slug'], row['M'], row['split'], row['k'],
+                      policy, type(exc).__name__, exc))
+            skip_counts[policy] += 1
+            continue
+        results.append(result)
 
     for result in results:
         result.update({'source_arm': row['arm_slug'], 'M': int(row['M']),
@@ -302,7 +294,6 @@ def parse_args(argv=None):
     parser.add_argument('--n-splits', type=int, default=3)
     parser.add_argument('--policies', default='aligned',
                         help="comma-separated subset of {}".format(REPLAY_POLICIES))
-    parser.add_argument('--overlap-thresholds', default='0.5')
     parser.add_argument('--ladder-delta', default='0.20',
                         help="delta_rel every policy in the ladder runs at; 'inf' for accept-all")
     parser.add_argument('--verify', action='store_true',
@@ -318,7 +309,6 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     ints = lambda s: [int(v) for v in s.split(',')] if s else None
-    floats = lambda s: [float(v) for v in s.split(',')]
 
     policies = args.policies.split(',')
     unknown = [p for p in policies if p not in REPLAY_POLICIES]
@@ -331,8 +321,7 @@ def main(argv=None):
                        ints(args.M), ints(args.k), args.n_splits)
     if args.limit:
         rows = rows.head(args.limit)
-    print('replaying {} rows x {} policies x {} overlap thresholds'.format(
-        len(rows), len(policies), len(args.overlap_thresholds.split(','))))
+    print('replaying {} rows x {} policies'.format(len(rows), len(policies)))
 
     data = load_campaign_data()
     ladder_delta = None if args.ladder_delta == 'inf' else float(args.ladder_delta)
@@ -340,8 +329,7 @@ def main(argv=None):
     skip_counts = collections.Counter()
     out, started = [], time.time()
     for i, (_, row) in enumerate(rows.iterrows()):
-        out.extend(replay_row(row, data, policies,
-                              floats(args.overlap_thresholds), ladder_delta,
+        out.extend(replay_row(row, data, policies, ladder_delta,
                               args.verify, skip_counts=skip_counts))
         print('  [{}/{}] {} M={} split={} k={}  ({:.1f}s elapsed)'.format(
             i + 1, len(rows), row['arm_slug'], row['M'], row['split'], row['k'],

@@ -1,4 +1,6 @@
 """Spec A.2's arm grid and C.2's file naming."""
+import re
+
 from src import main as m
 from src.training.config import TrainConfig
 
@@ -129,6 +131,35 @@ def test_delta_select_stays_out_of_the_sweep():
     from src.main import select_arms
 
     assert {cfg.delta_select for _, cfg in select_arms('all')} == {0.02}
+
+
+def test_the_arm_grid_lost_the_overlap_axis():
+    """D4: 21 aligned arms collapse to 6, one per delta value. The overlap axis
+    multiplied every delta by three thresholds; with the tunable gone there is
+    one alignment behaviour and the product term disappears.
+
+    (And to 1 if Track 5 retires delta too -- a separate plan, gated on a
+    pre-registered live-Optuna verdict.)
+
+    The brief's own draft of this test asserted `not any('-o' in slug for
+    slug in slugs)`, which false-positives on 'joint-off' ('-o' is a
+    substring of '-off') regardless of whether the retired overlap-suffix
+    axis is really gone. The old suffix was `-o{:03d}` -- three digits after
+    `-o`, e.g. '-o025' -- so check for that shape specifically.
+    """
+    from src import main
+
+    assert not hasattr(main, 'OVERLAP_THRESHOLDS')
+    assert len(main.PRIMARY_ARMS) == 3
+    assert len(main.SENSITIVITY_ARMS) == len(main.DELTA_ALIGNS) - 1 == 5
+
+    slugs = [cfg.arm_slug('joint' if arm == 'joint' else 'disjoint')
+             for arm, cfg in main.select_arms('all')]
+    assert len(slugs) == len(set(slugs)), slugs
+    assert not any(re.search(r'-o\d{3}\b', slug) for slug in slugs), slugs
+    # 'joint-off' is the genuine skip-alignment anchor, not a retired
+    # overlap-threshold suffix -- the precise check above must not flag it.
+    assert 'joint-off' in slugs
 
 
 def test_the_default_M_grid_is_the_archive_grid():
