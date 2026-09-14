@@ -160,7 +160,8 @@ def test_stage_shards_stays_reachable_as_a_private_name():
 
 TABLES_REEXPORTS = (
     "range_matching_resource_usage", "range_deployment_overflow",
-    "codeword_fields_to_bytes", "codeword_bits_to_blocks", "ternary_key_field_bits",
+    "codeword_fields_to_bytes", "codeword_fields_to_bytes_from_bits",
+    "codeword_bits_to_blocks", "ternary_key_field_bits",
     "version_block_penalty",
     "codeword_bytes_to_blocks", "exact_match_resource_usage",
     "range_key_fields_for", "ternary_key_fields",

@@ -3,7 +3,7 @@
 The joint block cost is
 
     blocks = range_blocks + sum over trees of ceil(entries_t / 512) * factor
-    factor = tables.ternary_block_factor(sorted per-feature field widths)
+    factor = tables.codeword_to_blocks(sorted per-feature field widths)
 
 Alignment changes neither entries_t nor the tree count, and range blocks are
 alignment-invariant (a range table is sized by p4c at COMPILE time from the
@@ -20,7 +20,7 @@ many-feature design measured: the crossbar allocates per key FIELD and
 byte-rounds each one, so a 13-field 84-bit key really presents 16 bytes = 3
 blocks where codeword_bits_to_blocks says 2. It looked right for years only
 because on few wide fields byte-rounding is nearly a no-op.
-codeword_bits_to_blocks survives here as one ARM of ternary_block_factor and
+codeword_bits_to_blocks survives here as one ARM of codeword_to_blocks and
 in src/reporting/replay_scoring.py's legacy columns; it no longer gates
 anything.
 
@@ -38,7 +38,7 @@ can use it without importing the mutation loop.
 from src.p4gen.build_p4_script import INFINITE, TCAM_BLOCK_KEY_LENGTH
 from src.p4gen.evaluation import (CODEWORD_KEY_OVERHEAD_BITS,
                                   codeword_bits_to_blocks,
-                                  ternary_block_factor)
+                                  codeword_to_blocks)
 
 
 def pooled_interval_count(ranges1, ranges2):
@@ -170,12 +170,12 @@ def _factor(widths):
     precisely because it was a restatement. Pinned by E1-blocks
     (tests/test_threshold_alignment.py).
 
-    Sorted because ternary_block_factor prices a MULTISET of field widths and
+    Sorted because codeword_to_blocks prices a MULTISET of field widths and
     documents its input as sorted (ternary_key_field_bits returns it that way).
     The dict's own key order is the generator's feature-emission order, and the
     crossbar allocator does not honour it.
     """
-    return ternary_block_factor(tuple(sorted(widths.values())))
+    return codeword_to_blocks(tuple(sorted(widths.values())))
 
 
 def pooled_key_bytes(intervals1, intervals2):

@@ -133,8 +133,19 @@ def codeword_fields_to_bytes(feature_intervals):
   Note: the "+4" ternary overhead used by ternary_matching_resource_usage
   is a TCAM *block capacity* fact (RM-3 Design A), not a crossbar-byte
   fact, and is deliberately NOT applied here."""
-  return sum(math.ceil(max(len(intervals) - 1, 0) / 8)
-             for intervals in feature_intervals.values())
+  return codeword_fields_to_bytes_from_bits(
+      [max(len(intervals) - 1, 0) for intervals in feature_intervals.values()])
+
+
+def codeword_fields_to_bytes_from_bits(field_bit_widths):
+  """Crossbar byte width of a key given its field BIT widths.
+
+  The same rule as codeword_fields_to_bytes, which takes the interval dict the
+  generator hands out; this one takes the bit tuple ternary_key_field_bits
+  returns. Two entry points, ONE rounding rule -- the inline
+  `sum(math.ceil(bits / 8) for bits in ...)` this replaces was the third live
+  copy (design §5.1)."""
+  return sum(math.ceil(bits / 8) for bits in field_bit_widths)
 
 
 def codeword_bits_to_blocks(codeword_length):
@@ -220,31 +231,39 @@ def _clean_byte_can_reach_a_midbyte(byte_widths, nibble_clean, slots):
   return False
 
 
-def ternary_block_factor(field_bit_widths, start_group=0):
+def codeword_to_blocks(field_bit_widths, start_group=0):
   """TCAM blocks ONE table word of this key spans, version field included.
 
-  Composes the two independent lower bounds correctly, which is subtler than
-  it looks: `codeword_bits_to_blocks` carries `CODEWORD_KEY_OVERHEAD_BITS` (4)
-  alongside the key bits, and those 4 bits ARE the version/valid field
-  expressed bit-wise. So it must be maxed against the byte-wise arm with the
-  version charge ALREADY added --
+  (Was `ternary_block_factor` until 2026-09-14.)
 
-      max(codeword_bits_to_blocks, codeword_bytes_to_blocks + version_block_penalty)
+  THE composition, and the only place the version charge may be added: it is a
+  function of the width MULTISET and of `start_group`, so neither leaf function
+  below could carry it without lying about what it depends on.
 
-  -- and not
-  `max(codeword_bits_to_blocks, codeword_bytes_to_blocks) + version_block_penalty`,
-  which bills the same 2-bit field twice whenever the band arm wins.
+  Keeps a max() between the bit-width lower bound and the crossbar-plus-version
+  arm, unchanged from the retired `ternary_block_factor`. The plan this function
+  was written under (design D5, 2026-09-14) intended to demote the bit-width arm
+  to a bare assertion, reasoning it was a PROVABLE lower bound that could never
+  exceed the crossbar arm. That reasoning does not hold against this codebase's
+  actual `version_block_penalty`: its clause (a) only checks the HIGH end of a
+  crossbar run for a free half-midbyte, missing (1) the LOW end when
+  `start_group` is odd, and (2) the empty-key case, where a version field still
+  needs a physical block even though the byte-domain arm claims 0 blocks
+  suffice. Measured directly against this code: 272 of 500 000 random
+  field-width trials violate the "provable" bound (e.g. widths (38, 48) at
+  start_group=3: bit-bound 3 vs crossbar-plus-version 2), and the empty tuple
+  -- reachable whenever every tree in a forest is a single leaf, see
+  test_factor_of_an_empty_width_dict_is_the_empty_key_factor -- violates it
+  without any randomness at all (bit-bound 1 vs crossbar-plus-version 0).
 
-  Measured, `results/tcam_version_sweep.csv` (12 fresh p4c compiles run to test
-  exactly this): a SOLID key of 11 crossbar bytes compiles to 3 TCAM blocks,
-  22 bytes to 5 and 33 bytes to 7 -- the composition above on all three, where
-  the doubled form says 4, 6 and 8. Their one-byte-smaller neighbours (10, 21
-  and 32 bytes) compile to 2, 4 and 6, so the saturation step itself is real
-  and lands exactly where version_block_penalty puts it."""
-  key_bytes = sum(math.ceil(bits / 8) for bits in field_bit_widths)
-  return max(codeword_bits_to_blocks(sum(field_bit_widths)),
-             codeword_bytes_to_blocks(key_bytes)
-             + version_block_penalty(field_bit_widths, start_group))
+  D5's demotion is therefore DECLINED here, not adopted: a hard assertion that
+  crashes on a reachable, already-tested input is a worse regression than
+  keeping the max(). Repairing version_block_penalty's clause (a) so the bound
+  really is provable is out of this track's scope (no cost-rule changes
+  permitted here) and is left as a follow-up task."""
+  blocks = (codeword_bytes_to_blocks(codeword_fields_to_bytes_from_bits(field_bit_widths))
+            + version_block_penalty(field_bit_widths, start_group))
+  return max(codeword_bits_to_blocks(sum(field_bit_widths)), blocks)
 
 
 def version_block_delta(field_bit_widths, start_group):
@@ -255,8 +274,8 @@ def version_block_delta(field_bit_widths, start_group):
   offset 0, so what a placement adds is only the difference the offset makes.
   Charging `version_block_penalty` directly there would re-bill a key that
   already paid in its own spec."""
-  return (ternary_block_factor(field_bit_widths, start_group)
-          - ternary_block_factor(field_bit_widths, 0))
+  return (codeword_to_blocks(field_bit_widths, start_group)
+          - codeword_to_blocks(field_bit_widths, 0))
 
 
 def version_block_penalty(field_bit_widths, start_group=0):
@@ -407,10 +426,8 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   # Two independent lower bounds on how many blocks one row spans: its bit
   # width (codeword_bits_to_blocks, which carries the +4 version/valid nibble)
   # and its crossbar byte width plus the version block that width may not
-  # leave room for. ternary_block_factor composes them -- the +4 and the
-  # version penalty are the SAME field counted two ways, so the max must be
-  # taken after the penalty is added, never before.
-  factor = ternary_block_factor(ternary_key_field_bits(feature_intervals))
+  # leave room for. codeword_to_blocks composes them with max().
+  factor = codeword_to_blocks(ternary_key_field_bits(feature_intervals))
   for index, tree in enumerate(codewords):
     tree_entry_count = len(codewords[tree])
     if dropped_per_tree is not None:

@@ -17,9 +17,10 @@ reviews/p4_tofino_reference.md Appendix B "Mechanism G".
 """
 import math
 
+import numpy as np
 import pytest
 
-from src.p4model.tables import (codeword_bytes_to_blocks, ternary_block_factor,
+from src.p4model.tables import (codeword_bytes_to_blocks, codeword_to_blocks,
                                 version_block_penalty)
 
 
@@ -42,7 +43,7 @@ from src.p4model.tables import (codeword_bytes_to_blocks, ternary_block_factor,
     ((124,), 3, "same, ragged"),
 ])
 def test_block_factor_matches_the_fresh_compile_sweep(field_bits, real_blocks, why):
-    assert ternary_block_factor(field_bits) == real_blocks, why
+    assert codeword_to_blocks(field_bits) == real_blocks, why
 
 
 def test_the_version_field_is_not_charged_twice_when_the_band_arm_wins():
@@ -59,7 +60,7 @@ def test_the_version_field_is_not_charged_twice_when_the_band_arm_wins():
         assert band > xbar, bits              # the arm that triggers the bug
         assert version_block_penalty(bits, 0) == 1, bits
         assert band + version_block_penalty(bits, 0) != real    # the old way
-        assert ternary_block_factor(bits) == real
+        assert codeword_to_blocks(bits) == real
 
 
 def blocks(field_bits, start=0):
@@ -164,17 +165,38 @@ def test_the_packer_charges_sd5s_stage_the_twelve_blocks_p4c_charged():
 
     app = frozenset({(("code", "app_flm"), 7), (("code", "app_plm"), 7)})
     ddos = frozenset({(("code", "ddos_bplm"), 4), (("code", "ddos_plm"), 7)})
-    # Specs are what ternary_block_factor now yields standalone: the app key
+    # Specs are what codeword_to_blocks now yields standalone: the app key
     # costs 3 and the ddos key 3 (2 for its 11 bytes, plus the version block
     # those 11 bytes leave no midbyte nibble for). resources.json stage 6 shows
     # exactly that -- one app tree and three ddos trees, 3 blocks each, 12
     # total, where the pre-Mechanism-G naive sum said 9.
-    assert ternary_block_factor((27, 52)) == 3
+    assert codeword_to_blocks((27, 52)) == 3
     plan = crossbar_stages_needed(
         [(3, 14), (3, 11), (3, 11), (3, 11)],
         key_fields=[app, ddos, ddos, ddos],
         key_field_bits=[(54, 56), (27, 52), (27, 52), (27, 52)])
     assert plan.blocks == 12
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_the_bit_width_bound_never_exceeds_the_composed_cost(seed):
+    """D5 proposed demoting `codeword_bits_to_blocks` from a load-bearing
+    max() arm to a bare assertion, reasoning it was a PROVABLE lower bound
+    that the crossbar-plus-version arm could never exceed. Measured instead:
+    272 of 500 000 random field-width trials violate the crossbar-plus-version
+    arm alone (see codeword_to_blocks's docstring), plus a non-random
+    empty-key counterexample. So `codeword_to_blocks` keeps `max()` rather
+    than asserting, and this test now guards that the max() composition --
+    not a bare inequality -- is what's actually in place. All 200 seeds pass
+    because max() makes the property hold by construction.
+    """
+    from src.p4model.tables import codeword_bits_to_blocks, codeword_to_blocks
+    rng = np.random.default_rng(seed)
+    widths = tuple(sorted(int(w) for w in
+                          rng.integers(1, 61, size=int(rng.integers(1, 16)))))
+    for start_group in range(0, 4):
+        assert (codeword_bits_to_blocks(sum(widths))
+                <= codeword_to_blocks(widths, start_group)), (widths, start_group)
 
 
 def test_a_stage_of_one_shared_key_is_never_charged_an_offset_penalty():

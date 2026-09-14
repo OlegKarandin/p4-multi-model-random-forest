@@ -145,17 +145,17 @@ def test_bits_to_reach_is_none_exactly_when_the_floor_blocks_the_target(seed):
 def test_factor_prices_a_width_dict_exactly_as_p4model_does():
     """The anchor for the whole repair: alignment's block arithmetic must BE
     the generator's, not a copy of it. A dict is what _pooled_widths produces;
-    ternary_block_factor takes a sorted tuple, so the sort belongs here rather
+    codeword_to_blocks takes a sorted tuple, so the sort belongs here rather
     than at every call site."""
-    from src.p4model.tables import ternary_block_factor
+    from src.p4model.tables import codeword_to_blocks
     widths = {'a': 11, 'b': 3, 'c': 84}
-    assert ab._factor(widths) == ternary_block_factor((3, 11, 84))
+    assert ab._factor(widths) == codeword_to_blocks((3, 11, 84))
 
 
 def test_factor_ignores_the_dicts_own_key_order():
     """The dict's order is the generator's feature-emission order. The crossbar
     allocator is free to place fields where it likes and measurably does, so
-    ternary_block_factor prices a MULTISET -- emission order must never reach
+    codeword_to_blocks prices a MULTISET -- emission order must never reach
     the cost model."""
     assert ab._factor({'a': 11, 'b': 3}) == ab._factor({'b': 3, 'a': 11})
 
@@ -164,14 +164,14 @@ def test_factor_of_an_empty_width_dict_is_the_empty_key_factor():
     """Reachable, not hypothetical: neither forest split on any feature, which
     happens whenever min_samples_leaf approaches n_samples and every tree is a
     single leaf -- a real Optuna sample, not a synthetic corner case."""
-    from src.p4model.tables import ternary_block_factor
-    assert ab._factor({}) == ternary_block_factor(())
+    from src.p4model.tables import codeword_to_blocks
+    assert ab._factor({}) == codeword_to_blocks(())
 
 
 # ---------------------------------------------------------------------------
 # BlockBudget (design 2026-09-07 §4.1). Widths below (3 fields of 40 bits
 # each, vs. a floor of 8 bits each) put both models comfortably past a block
-# boundary in ternary_block_factor -- band and crossbar arms agree exactly at
+# boundary in codeword_to_blocks -- band and crossbar arms agree exactly at
 # these widths, so what matters is only that factor(current) > factor(floor),
 # not which arm binds.
 

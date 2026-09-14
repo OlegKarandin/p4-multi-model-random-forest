@@ -1869,7 +1869,7 @@ def test_the_block_factor_equals_the_evaluators_block_factor():
     going stale, which is exactly how the superseded band model survived for
     years."""
     from src.p4gen.build_p4_script import get_joint_feature_intervals
-    from src.p4gen.evaluation import ternary_block_factor, ternary_key_field_bits
+    from src.p4gen.evaluation import codeword_to_blocks, ternary_key_field_bits
 
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     names = ['f0', 'f1', 'f2', 'f3']
@@ -1880,7 +1880,7 @@ def test_the_block_factor_equals_the_evaluators_block_factor():
         joint = get_joint_feature_intervals(m1, names, m2, names)
         widths = ab._pooled_widths(ta.extract_feature_intervals(m1),
                                    ta.extract_feature_intervals(m2))
-        assert ab._factor(widths) == ternary_block_factor(
+        assert ab._factor(widths) == codeword_to_blocks(
             ternary_key_field_bits(joint))
 
 
@@ -1892,11 +1892,11 @@ def test_the_block_factor_matches_p4model_on_random_width_vectors(seed):
     almost never produce. 1-15 fields of 1-60 bits is the design's own probe
     range (§1.3). Guards against anyone reimplementing _factor's arithmetic
     locally instead of delegating."""
-    from src.p4model.tables import ternary_block_factor
+    from src.p4model.tables import codeword_to_blocks
     rng = np.random.default_rng(seed)
     widths = {i: int(w) for i, w in
               enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}
-    assert ab._factor(widths) == ternary_block_factor(
+    assert ab._factor(widths) == codeword_to_blocks(
         tuple(sorted(widths.values())))
 
 

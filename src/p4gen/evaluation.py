@@ -78,15 +78,16 @@ from src.p4model.ranges import (
 from src.p4model.tables import (
     codeword_bits_to_blocks,
     codeword_bytes_to_blocks,
+    codeword_to_blocks,
     exact_match_resource_usage,
     range_deployment_overflow,
     range_key_fields_for,
     range_matching_resource_usage,
-    ternary_block_factor,
     ternary_key_fields,
     ternary_key_field_bits,
     version_block_penalty,
     codeword_fields_to_bytes,
+    codeword_fields_to_bytes_from_bits,
 )
 from src.p4model import tables as _tables
 from src.p4model.registers import (
