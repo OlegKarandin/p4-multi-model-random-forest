@@ -2,7 +2,8 @@ from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thres
 from src.training.align_budget import (BlockBudget, _factor,
                                        _own_floor_widths,
                                        _pooled_widths,
-                                       bits_to_next_byte, bits_to_reach,
+                                       bits_to_reach,
+                                       blocks_bought_by,
                                        codeword_floor,
                                        key_bytes_floor, pooled_interval_count,
                                        pooled_key_bytes, total_blocks,
@@ -83,49 +84,70 @@ def _legacy_combined_order(intervals1, intervals2):
                                    + len(intervals2.get(f, []))), f))
 
 
-def feature_order(intervals1, intervals2, *, widths=None, floors=None):
-    """The order features are offered to the alignment loop.
+def feature_order(intervals1, intervals2, *, multiplier, widths=None,
+                  floors=None, features=None):
+    """The order features are offered to the alignment loop, cheapest first.
 
-    Byte completion, cheapest first: features that can actually complete a
-    crossbar byte come first, the rest follow by combined interval count
-    descending. This is the BLOCK-CORRECT order and, since 2026-09-07, the
-    only one -- codeword_bytes_to_blocks depends on sum(ceil(w_f / 8)), so a shed
-    bit can only change the factor by completing a byte on some feature.
-    Shedding bits that complete no byte is the waste the repair exists to stop.
+    Ranked by the BLOCKS a shed on that feature would actually buy and what it
+    would cost, against the CURRENT widths:
 
-    A feature that cannot complete a byte is NOT dropped: it only loses
-    priority. Byte distance participates in the key only for reachable
-    features, so among unreachable ones the combined-count key still decides.
+        key = (-blocks_bought, bits_spent, -combined, feature)
 
-    Key: (0 if reachable else 1, to_next_byte if reachable else 0, -combined, f)
-    reachable := bits_to_next_byte(w_f) <= w_f - max(own1_f, own2_f)
+    This is one edit fixing two audit gaps, and they are inseparable. Gap 2:
+    the old key was `bits_to_next_byte`, a byte-domain proxy blind both to
+    version_block_penalty (which depends on the width MULTISET, so no
+    per-feature scalar can see it) and to range steps. Gap 1: range blocks are
+    not alignment-invariant, so a feature four intervals from a free range
+    block outranks a feature one bit from a byte boundary that buys nothing.
+    A ranking by achieved cost is meaningless on stale widths, so the staleness
+    fix is the same edit as the ranking fix.
 
-    The trailing feature index makes it a TOTAL order, keeping the run
-    deterministic -- which train_model.py:373-377's refit assertion depends on
+    RECOMPUTED PER FEATURE. This used to be computed once at entry, which was
+    justified by features being structurally independent in the mutation loop
+    -- true of the loop, false of the COST: the bits still needed for a ternary
+    step are a joint quantity across features, so after one feature sheds, the
+    ranking of the rest is out of date (audit §8.2 item 9). The caller takes
+    `[0]` from a fresh call per feature and passes the budget's live widths.
+
+    A feature that can buy nothing is NOT dropped: it only loses priority.
+    Among such features the pre-existing combined-count key still decides, so
+    the fallback is the order the archive was produced under.
+
+    NOT A STRICT IMPROVEMENT, and no write-up may claim it is (design D6).
+    Acceptance is greedy and the accuracy budget (`marks`) is ONE GLOBAL
+    ratchet, not a per-feature budget, so which feature is visited first
+    changes which moves are still affordable when a later feature's turn comes.
+    Ranking by blocks bought is a better HEURISTIC; individual rows may do
+    worse than the byte-domain order. Audit §8.4's
+    joint-dinf/M100/k17/split12 row is the precedent that this shape really
+    occurs -- per-instance optimality was never claimed for a greedy heuristic
+    and is not claimed here.
+
+    The trailing feature index makes this a TOTAL order, keeping the run
+    deterministic -- which train_model.py's refit assertion depends on
     (invariant 5).
 
-    Computed ONCE at entry, which is correct rather than a shortcut: features
-    are structurally independent in the loop below -- each owns its interval
-    lists, `seen` resets per feature, and no accepted move on one feature
-    changes another's widths.
-
+    multiplier : what one step of the block factor is worth, in blocks
+        (align_budget.tree_multiplier). Required: without it a range step and a
+        ternary step are incomparable, which is the whole defect.
     widths, floors : optional precomputed _pooled_widths / _own_floor_widths.
-        align_rf_thresholds passes its own copies, already built for the block
-        factor, instead of paying for the identical O(n_features) pass twice.
+        align_rf_thresholds passes the BUDGET's live widths, not its entry
+        copy.
+    features : which features to rank. Defaults to the common set.
     """
-    common = set(intervals1) & set(intervals2)
     if widths is None:
         widths = _pooled_widths(intervals1, intervals2)
     if floors is None:
         floors = _own_floor_widths(intervals1, intervals2)
+    if features is None:
+        features = set(intervals1) & set(intervals2)
 
     def key(feature):
-        step = bits_to_next_byte(widths[feature])
-        reachable = step <= widths[feature] - floors[feature]
+        bought, spent = blocks_bought_by(widths, floors, feature, multiplier)
         combined = len(intervals1[feature]) + len(intervals2[feature])
-        return (0 if reachable else 1, step if reachable else 0, -combined, feature)
+        return (-bought, spent, -combined, feature)
 
-    return sorted(common, key=key)
+    return sorted(features, key=key)
 
 
 def accept_alignment(before, after, delta_rel):
@@ -420,10 +442,21 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # -- the best case any alignment of this pair could reach.
     budget = BlockBudget(pooled_widths, own_floor_widths, delta_rel)
 
-    sorted_features = feature_order(intervals1, intervals2,
-                                    widths=pooled_widths, floors=own_floor_widths)
+    # Recomputed per feature against the budget's LIVE widths (audit §8.2 item
+    # 9). Computing it once at entry was justified by features being
+    # structurally independent in the loop below -- true of the loop, false of
+    # the cost. `remaining` and the total order inside feature_order keep this
+    # deterministic, which the refit assertion depends on.
+    remaining = set(intervals1) & set(intervals2)
 
-    for feature_idx in sorted_features:
+    while remaining:
+        feature_idx = feature_order(intervals1, intervals2,
+                                    multiplier=multiplier,
+                                    widths=budget.widths,
+                                    floors=own_floor_widths,
+                                    features=remaining)[0]
+        remaining.discard(feature_idx)
+
         current_ranges1 = intervals1[feature_idx]
         current_ranges2 = intervals2[feature_idx]
 

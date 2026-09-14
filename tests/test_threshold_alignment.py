@@ -767,9 +767,21 @@ def _golden_alignment_pair(n=300):
 # to reject -- there is no gate-state exemption left for either arm.
 #   0.0:  attempted 27->46, accepted 17->26, intervals_after 71->62
 #   0.05: attempted 29->40, accepted 10->27, intervals_after 81->62
+#
+# Regenerated a FOURTH time 2026-09-14 by Task 12: feature_order now ranks by
+# blocks bought, recomputed per feature against the budget's live widths,
+# instead of byte-completion order computed once at entry -- a real,
+# documented visiting-order change (D6), so this MAX_RECOMPUTE_ROUNDS=1 gate
+# legitimately moves. 0.0 barely moves (attempted 46->41, accepted 26->27,
+# intervals_after unchanged at 62) since delta_rel == 0.0 forces
+# effective_delta == 0.0 regardless of order. 0.05 moves hard the other way
+# (attempted 40->117, accepted 27->10, intervals_after 62->81): D6's
+# non-guarantee, realised on this exact pair -- the new order is a better
+# HEURISTIC on average, not a per-row improvement, and this golden pin is the
+# proof it is not one here.
 _ALIGNMENT_GOLDEN_C1C2 = {
     0.0: {
-        'stats': {'attempted': 46, 'accepted': 26,
+        'stats': {'attempted': 41, 'accepted': 27,
                   'intervals_before': 91, 'intervals_after': 62},
         't1': [
             [50135, 33860, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33384, -2,
@@ -778,7 +790,7 @@ _ALIGNMENT_GOLDEN_C1C2 = {
              -2],
             [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
              -2],
-            [11493, -2, 15571, -2, 26424, -2, 43169, 33744, -2, -2, 26063, -2,
+            [11493, -2, 15571, -2, 26424, -2, 43169, 33254, -2, -2, 26063, -2,
              -2],
             [45724, 17534, 48924, -2, -2, 25535, -2, 44845, -2, -2, 53373, -2,
              49629, -2, -2],
@@ -797,49 +809,51 @@ _ALIGNMENT_GOLDEN_C1C2 = {
              53373, -2, -2],
             [27321, 53909, 49629, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
              60939, -2, -2],
-            [54408, 44768, 33744, -2, -2, 62045, -2, -2, 17244, -2, 41841, -2,
+            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 17244, -2, 41841, -2,
              50610, -2, -2],
             [54766, 48924, 24115, -2, -2, 38129, -2, -2, 49965, 26063, -2, -2,
              -2],
         ],
     },
-    # Both arms are now on equal footing (see the module-level comment above):
-    # delta_rel == 0.0 forces effective_delta == 0.0 regardless of the budget
-    # or sweep order, so its arm above pins the tightest possible acceptance;
-    # this arm additionally permits real degradation, which is why more moves
-    # (27) are accepted here than at 0.0 (26) despite fewer attempts (40 vs 46).
+    # Task 12: no longer more permissive than 0.0 -- see the module comment
+    # above. This arm attempts far MORE candidates than 0.0 (117 vs 41)
+    # because the new visiting order reaches admissible-but-eventually-dead
+    # corners 0.0's order never opened, and accepts far FEWER (10 vs 27)
+    # because the accuracy budget is one global ratchet a bad early move can
+    # exhaust (D6) -- exactly the shape this golden pin now demonstrates
+    # rather than merely asserts.
     0.05: {
-        'stats': {'attempted': 40, 'accepted': 27,
-                  'intervals_before': 91, 'intervals_after': 62},
+        'stats': {'attempted': 117, 'accepted': 10,
+                  'intervals_before': 91, 'intervals_after': 81},
         't1': [
-            [50135, 33860, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33384, -2,
+            [50135, 37970, -2, 64068, 30850, -2, -2, -2, 29481, -2, 36261, -2,
              -2],
-            [25153, 17906, 44768, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
+            [25153, 17534, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
              -2],
-            [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
+            [9867, -2, 41694, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
              -2],
-            [11493, -2, 15571, -2, 26424, -2, 43169, 33254, -2, -2, 26063, -2,
+            [11493, -2, 15571, -2, 26336, -2, 43169, 33744, -2, -2, 26063, -2,
              -2],
-            [45724, 17534, 48924, -2, -2, 25535, -2, 44845, -2, -2, 53373, -2,
+            [45724, 14536, 48924, -2, -2, 25535, -2, 48261, -2, -2, 53373, -2,
              49629, -2, -2],
-            [39753, 58452, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
-             48048, -2, -2, -2],
-            [40996, 17244, -2, 35130, -2, 58798, -2, -2, 60939, 65407, -2, -2,
+            [40514, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 28712, -2,
+             50610, -2, -2, -2],
+            [40996, 17244, -2, 35130, -2, 58798, -2, -2, 52649, 65407, -2, -2,
              -2],
         ],
         't2': [
-            [8902, -2, 58514, 50135, 29400, -2, -2, 30850, -2, -2, 33384, -2,
+            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
              -2],
-            [14536, -2, 39753, -2, 40996, -2, 61298, 35130, -2, -2, -2],
+            [14536, -2, 26063, -2, 40514, -2, 61298, 38258, -2, -2, -2],
             [27458, 47461, -2, -2, 58452, 65407, 33860, -2, -2, -2, 61513, -2,
              -2],
-            [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
+            [61422, 45058, 26424, 15571, -2, -2, -2, 16443, -2, 57942, -2, -2,
              53373, -2, -2],
-            [27321, 53909, 49629, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
+            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
              60939, -2, -2],
-            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 17244, -2, 41841, -2,
+            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 18076, -2, 41360, -2,
              48048, -2, -2],
-            [54766, 48924, 24115, -2, -2, 38129, -2, -2, 49965, 26063, -2, -2,
+            [54766, 44845, 24115, -2, -2, 38129, -2, -2, 49965, 25535, -2, -2,
              -2],
         ],
     },
@@ -1729,9 +1743,12 @@ def test_rank_targets_orders_equal_gain_corners_by_max_damage_not_sum():
 
 # ---------------------------------------------------------------------------
 # Feature ordering and crossed_a_boundary after the align_objective axis was
-# retired (design 2026-09-07): feature_order now has one behaviour (byte
-# completion), not a choice between a 'blocks' and a 'stages' branch, and
-# crossed_a_boundary reads only the block factor.
+# retired (design 2026-09-07): feature_order now has one behaviour, not a
+# choice between a 'blocks' and a 'stages' branch, and crossed_a_boundary
+# reads only the block factor. As of Task 12, feature_order's one behaviour
+# ranks by the blocks a shed would actually buy (audit Gaps 1+2), recomputed
+# per feature against the budget's live widths -- superseding the
+# byte-completion order this comment used to describe.
 # ---------------------------------------------------------------------------
 
 def _ordering_fixture():
@@ -1782,28 +1799,6 @@ def test_legacy_combined_order_reproduces_the_pre_2026_09_07_order():
                       key=lambda f: len(iv1.get(f, [])) + len(iv2.get(f, [])),
                       reverse=True)
     assert ta._legacy_combined_order(iv1, iv2) == expected
-
-
-def test_feature_order_puts_the_cheapest_reachable_byte_first():
-    """A feature that cannot complete a byte is NOT dropped -- its bits still
-    shrink L and buy blocks -- it only loses priority. Repointed from
-    test_feature_order_under_stages_puts_the_cheapest_reachable_byte_first:
-    the 'stages' behaviour it exercised is now feature_order's only
-    behaviour, so the `objective` argument is simply dropped."""
-    iv1, iv2 = _ordering_fixture()
-    assert ta.feature_order(iv1, iv2) == [0, 2, 1]
-
-
-def test_feature_order_keeps_the_combined_count_key_among_unreachable_features():
-    """Byte distance decides only among features that can actually complete a
-    byte; the rest follow by combined interval count descending. Repointed
-    from test_feature_order_keeps_the_pre_existing_key_among_unreachable_features
-    with the removed `objective` argument dropped."""
-    def tiling(width):
-        return [(0, 0)] + [(i, i) for i in range(1, width + 1)]
-    # both unreachable (floor == pooled width), widths 20 and 28
-    iv = {0: tiling(20), 1: tiling(28)}
-    assert ta.feature_order(iv, iv) == [1, 0]
 
 
 def test_align_rf_thresholds_no_longer_accepts_an_objective():
@@ -2000,39 +1995,62 @@ def _order_fixture_pair():
     return intervals1, intervals2
 
 
-def test_feature_order_puts_byte_completing_features_first():
-    """§4.2: codeword_bytes_to_blocks depends on sum(ceil(w_f / 8)), so a bit can
-    only change the factor by completing a byte on SOME feature. Byte
-    completion is therefore the block-correct order, and it is now the only
-    one.
+def test_feature_order_puts_the_feature_that_buys_the_most_blocks_first():
+    """Gap 2's fix (audit §3), and Gap 1's (§2) -- they are ONE edit: a ranking
+    by achieved cost is meaningless on stale widths, and a ranking by byte
+    distance is blind to both version_block_penalty and range steps.
 
-    f0 is 2 bits from a byte and can afford them; f1 is 8 bits away and can
-    afford them; f2 is at its floor and can shed nothing. A feature that
-    cannot complete a byte is NOT dropped -- its bits still shrink the pooled
-    key -- it only loses priority, which is why f2 is last rather than absent.
+    Feature 0 is one bit from completing a crossbar byte (width 9 -> 8 drops
+    the key from 2 bytes to 1, so the ternary factor steps and the saving is
+    worth the MULTIPLIER). Feature 1 is one interval from a free range block
+    (207 intervals -> 206, the measured per-block capacity), worth exactly 1
+    block however many trees there are.
+
+    Both cost one bit, so the multiplier alone decides -- which is precisely
+    what no byte-domain rule can see. Verified numerically before this plan was
+    written: at multiplier 1 the keys are (-1, 1, -20, 0) and (-1, 1, -414, 1),
+    so the larger combined count breaks the tie toward feature 1; at multiplier
+    8 they are (-8, 1, -20, 0) and (-1, 1, -414, 1).
     """
-    intervals1, intervals2 = _order_fixture_pair()
-    assert ta.feature_order(intervals1, intervals2) == [0, 1, 2]
+    iv1 = {0: [(0, 1)] * 10, 1: [(0, 1)] * 207}
+    iv2 = dict(iv1)
+    widths = {0: 9, 1: 206}
+    floors = {0: 0, 1: 0}
 
-
-def test_the_byte_order_and_the_legacy_order_genuinely_differ():
-    """The whole point of landing this as its own step. On this fixture the
-    two orders are exact reverses, so a regression to combined-count ordering
-    cannot pass by coincidence."""
-    intervals1, intervals2 = _order_fixture_pair()
-    assert ta.feature_order(intervals1, intervals2) == [0, 1, 2]
-    assert ta._legacy_combined_order(intervals1, intervals2) == [2, 1, 0]
+    assert ta.feature_order(iv1, iv2, multiplier=1,
+                            widths=widths, floors=floors)[0] == 1
+    assert ta.feature_order(iv1, iv2, multiplier=8,
+                            widths=widths, floors=floors)[0] == 0
 
 
 def test_feature_order_is_a_total_order():
-    """Invariant 5. train_model.py:373-377 refits the winning trial rather
-    than caching it, so a tie the sort resolves arbitrarily would break a live
-    assertion. The trailing feature index is what makes it total: these three
-    features are identical in every other component of the key."""
-    same = {0: [(0, 5), (0, INFINITE)],
-            1: [(0, 5), (0, INFINITE)],
-            2: [(0, 5), (0, INFINITE)]}
-    assert ta.feature_order(same, dict(same)) == [0, 1, 2]
+    """Invariant 5: train_model.py's refit assertion depends on alignment being
+    a deterministic function of (models, data, params), so the trailing feature
+    index must break every tie."""
+    same = {0: [(0, 1)] * 5, 1: [(0, 1)] * 5, 2: [(0, 1)] * 5}
+    order = ta.feature_order(same, dict(same), multiplier=4)
+    assert order == [0, 1, 2]
+    assert order == ta.feature_order(same, dict(same), multiplier=4)
+
+
+def test_feature_order_ranks_only_the_features_it_is_given():
+    """The loop takes [0] from a FRESH call per feature, against the CURRENT
+    widths -- audit §8.2 item 9. `features` is what is left to visit."""
+    iv = {0: [(0, 1)] * 5, 1: [(0, 1)] * 9, 2: [(0, 1)] * 5}
+    assert set(ta.feature_order(iv, dict(iv), multiplier=4,
+                                features={1, 2})) == {1, 2}
+
+
+def test_feature_order_keeps_the_combined_count_key_when_nothing_buys_a_block():
+    """A feature that can buy nothing is NOT dropped -- it only loses priority,
+    and among such features the pre-existing combined-count key still decides,
+    so the fallback order is the one the archive was produced under."""
+    iv1 = {0: [(0, 1)] * 3, 1: [(0, 1)] * 5}
+    iv2 = {0: [(0, 1)] * 3, 1: [(0, 1)] * 5}
+    floors = {0: 2, 1: 4}          # no room anywhere
+    widths = {0: 2, 1: 4}
+    assert ta.feature_order(iv1, iv2, multiplier=4,
+                            widths=widths, floors=floors) == [1, 0]
 
 
 def test_feature_order_no_longer_takes_an_objective():
