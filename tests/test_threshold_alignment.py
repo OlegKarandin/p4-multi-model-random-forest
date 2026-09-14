@@ -42,7 +42,7 @@ def _aligned_forest_pair():
     # delta_rel=None accepts every move, which is the maximum-mutation path --
     # exactly what a partition-invariant test should be exercising.
     return ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                  overlap_threshold=0.5, delta_rel=None)
+                                  delta_rel=None)
 
 
 def test_missing_threshold_raises_a_catchable_exception_not_systemexit():
@@ -270,7 +270,7 @@ def test_alignment_does_not_mutate_the_callers_validation_arrays():
     before_dtype, before_copy = X1.dtype, X1.copy()
 
     ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                           overlap_threshold=0.5, delta_rel=None)
+                           delta_rel=None)
 
     assert X1.dtype == before_dtype
     assert np.array_equal(X1, before_copy)
@@ -298,7 +298,7 @@ def test_original_forests_are_unchanged_after_an_alignment_that_accepts_a_move()
 
     stats = {}
     out1, out2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                        overlap_threshold=0.5, delta_rel=None,
+                                        delta_rel=None,
                                         align_stats=stats)
 
     assert stats['accepted'] > 0, 'the fixture must accept at least one move'
@@ -366,7 +366,7 @@ def test_a_candidate_that_moves_nothing_costs_no_prediction(monkeypatch):
 
     stats = {}
     ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2,
-                           overlap_threshold=0.5, delta_rel=0.05,
+                           delta_rel=0.05,
                            align_stats=stats)
 
     # Exactly one of this fixture's two candidates survives the bail, so
@@ -758,96 +758,88 @@ def _golden_alignment_pair(n=300):
 # deletes the legacy/c1 policies. Under that deletion c1c2's behaviour becomes
 # the ONLY behaviour, so these arrays must come through it bit-identical --
 # that is the whole proof that the deletion touched nothing that survived it.
-# It must likewise not be regenerated after the deletion -- EXCEPT the 0.05
-# arm, which the 2026-09-07 gate repair (BlockBudget replaces BandBudget)
-# legitimately moves; see the comment on that arm below for why 0.0 is exempt.
+# It must likewise not be regenerated after the deletion -- EXCEPT where a
+# real behavioural change legitimately moves it; see each arm's own comment.
+#
+# Regenerated a THIRD time 2026-09-14 by Task 7 (design D4): the ratio test
+# `overlap_ratio < overlap_threshold` that used to gate admission is gone
+# unconditionally, so both arms now consider candidates the 0.5 default used
+# to reject -- there is no gate-state exemption left for either arm.
+#   0.0:  attempted 27->46, accepted 17->26, intervals_after 71->62
+#   0.05: attempted 29->40, accepted 10->27, intervals_after 81->62
 _ALIGNMENT_GOLDEN_C1C2 = {
     0.0: {
-        'stats': {'attempted': 27, 'accepted': 17,
-                  'intervals_before': 91, 'intervals_after': 71},
+        'stats': {'attempted': 46, 'accepted': 26,
+                  'intervals_before': 91, 'intervals_after': 62},
         't1': [
-            [49965, 37970, -2, 60939, 30850, -2, -2, -2, 29400, -2, 33384, -2,
+            [50135, 33860, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33384, -2,
              -2],
-            [25153, 17906, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
+            [25153, 17906, 44768, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
              -2],
             [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
              -2],
-            [11493, -2, 15571, -2, 26424, -2, 43169, 33744, -2, -2, 27856, -2,
+            [11493, -2, 15571, -2, 26424, -2, 43169, 33744, -2, -2, 26063, -2,
              -2],
-            [45724, 17518, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
+            [45724, 17534, 48924, -2, -2, 25535, -2, 44845, -2, -2, 53373, -2,
              49629, -2, -2],
-            [40514, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
+            [39753, 58452, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
              50610, -2, -2, -2],
-            [40996, 17244, -2, 35130, -2, 58452, -2, -2, 52649, 65407, -2, -2,
+            [40996, 17244, -2, 35130, -2, 58798, -2, -2, 60939, 65407, -2, -2,
              -2],
         ],
         't2': [
             [8902, -2, 58514, 50135, 29400, -2, -2, 30850, -2, -2, 33384, -2,
              -2],
-            [14536, -2, 27856, -2, 40996, -2, 61298, 38258, -2, -2, -2],
-            [27458, 47461, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
+            [14536, -2, 39753, -2, 40996, -2, 61298, 35130, -2, -2, -2],
+            [27458, 47461, -2, -2, 58452, 65407, 33860, -2, -2, -2, 61513, -2,
              -2],
             [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
              53373, -2, -2],
-            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
+            [27321, 53909, 49629, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
              60939, -2, -2],
-            [54408, 44768, 33744, -2, -2, 62045, -2, -2, 17244, -2, 41360, -2,
-             52649, -2, -2],
-            [54766, 50955, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
+            [54408, 44768, 33744, -2, -2, 62045, -2, -2, 17244, -2, 41841, -2,
+             50610, -2, -2],
+            [54766, 48924, 24115, -2, -2, 38129, -2, -2, 49965, 26063, -2, -2,
              -2],
         ],
     },
-    # Regenerated 2026-09-07 by the gate repair (BlockBudget replaces
-    # BandBudget): this arm's whole point is that the gate's spending/
-    # reachability decisions move at delta_rel != 0.0, since the budget now
-    # tracks the per-table block factor instead of the codeword band, so
-    # pinning the pre-repair literal here would just re-encode the bug this
-    # task exists to fix. The 0.0 arm above is untouched deliberately -- a
-    # delta of exactly 0.0 always yields effective_delta == 0.0 regardless of
-    # which budget is asked, so it is unaffected by which budget gates
-    # spending, and this test's own pass at delta_rel=0.0 (unchanged) is what
-    # proves that.
-    #
-    # Regenerated AGAIN 2026-09-07 by the byte-completion feature-order task
-    # (§9): `feature_order` now visits features in a different sequence, so
-    # sweep order at delta_rel=0.05 -- which the docstring above already notes
-    # is sensitive to gate state -- legitimately changes which candidates are
-    # tried and accepted first. attempted 30->29, accepted 12->10,
-    # intervals_after 77->81. Still 0.0-exempt for the same reason as before:
-    # delta_rel == 0.0 forces effective_delta == 0.0 regardless of order or
-    # budget, and this test's own delta_rel=0.0 pass is unchanged, proving it.
+    # Both arms are now on equal footing (see the module-level comment above):
+    # delta_rel == 0.0 forces effective_delta == 0.0 regardless of the budget
+    # or sweep order, so its arm above pins the tightest possible acceptance;
+    # this arm additionally permits real degradation, which is why more moves
+    # (27) are accepted here than at 0.0 (26) despite fewer attempts (40 vs 46).
     0.05: {
-        'stats': {'attempted': 29, 'accepted': 10,
-                  'intervals_before': 91, 'intervals_after': 81},
+        'stats': {'attempted': 40, 'accepted': 27,
+                  'intervals_before': 91, 'intervals_after': 62},
         't1': [
-            [50148, 37970, -2, 60939, 30850, -2, -2, -2, 29400, -2, 36261, -2,
+            [50135, 33860, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33384, -2,
              -2],
-            [25153, 17906, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
+            [25153, 17906, 44768, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
              -2],
             [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
              -2],
-            [11493, -2, 15571, -2, 27458, -2, 43169, 33254, -2, -2, 26063, -2,
+            [11493, -2, 15571, -2, 26424, -2, 43169, 33254, -2, -2, 26063, -2,
              -2],
-            [45724, 17518, 48924, -2, -2, 25535, -2, 48261, -2, -2, 63815, -2,
+            [45724, 17534, 48924, -2, -2, 25535, -2, 44845, -2, -2, 53373, -2,
              49629, -2, -2],
-            [39753, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
+            [39753, 58452, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
              48048, -2, -2, -2],
-            [40996, 17244, -2, 35130, -2, 58798, -2, -2, 52649, 65407, -2, -2,
+            [40996, 17244, -2, 35130, -2, 58798, -2, -2, 60939, 65407, -2, -2,
              -2],
         ],
         't2': [
-            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
+            [8902, -2, 58514, 50135, 29400, -2, -2, 30850, -2, -2, 33384, -2,
              -2],
-            [14536, -2, 27856, -2, 40514, -2, 61298, 38258, -2, -2, -2],
-            [27458, 48468, -2, -2, 58452, 62051, 33860, -2, -2, -2, 61513, -2,
+            [14536, -2, 39753, -2, 40996, -2, 61298, 35130, -2, -2, -2],
+            [27458, 47461, -2, -2, 58452, 65407, 33860, -2, -2, -2, 61513, -2,
              -2],
             [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
              53373, -2, -2],
-            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
+            [27321, 53909, 49629, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
              60939, -2, -2],
-            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 18076, -2, 41360, -2,
-             52649, -2, -2],
-            [54766, 44845, 24115, -2, -2, 38129, -2, -2, 49965, 25912, -2, -2,
+            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 17244, -2, 41841, -2,
+             48048, -2, -2],
+            [54766, 48924, 24115, -2, -2, 38129, -2, -2, 49965, 26063, -2, -2,
              -2],
         ],
     },
@@ -889,7 +881,7 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
 
     # C8: align_rf_thresholds no longer mutates rf1/rf2 in place -- it returns
     # copies -- so the aligned models to check are the returned ones.
-    rf1, rf2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    rf1, rf2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            delta_rel=delta_rel, align_stats=stats)
 
     # Compare only the keys the golden literal was captured for. The literal
@@ -964,11 +956,22 @@ def _neighbour_widening_pair():
         I1 = [(0,99), (100,999), (1000,5999), (6000,INF)]
         I2 = [(0,99), (100,999), (1000,2999), (3000,5999), (6000,INF)]
 
-    Round 1 has exactly one eligible candidate, (1000,5999) vs (3000,5999) at
-    ratio 0.5999. Accepting it drags I1's left neighbour out to (100,2999),
-    which then overlaps I2's (1000,2999) at ratio 0.6896 -- a pair that did
-    not overlap AT ALL before the move (it was (100,999) vs (1000,2999)), so
-    no amount of re-reading the original overlap list could reach it.
+    find_partially_overlapping_ranges' one sweep over these lists reports TWO
+    pairs at (1000,5999): first (1000,5999)&(1000,2999) (sweep order is (i
+    ascending, j ascending)), then (1000,5999)&(3000,5999). Before Task 7
+    (design D4) the ratio gate admitted only the second (ratio 0.5999 >=
+    0.5's threshold; the first, at ratio 0.39997, was rejected before ever
+    reaching still_overlaps), so round 1 had exactly one eligible candidate.
+    With the gate gone, both are OFFERED in round 1, but only the first is
+    ever ATTEMPTED: accepting it immediately shrinks (1000,5999) to
+    (1000,2999) and widens the neighbour (6000,INF) left to (3000,INF), so
+    the second pair, re-read afterward, no longer overlaps at all -- exactly
+    Task 6's `still_overlaps` check, added for this reason, rejects it.
+
+    The widened neighbour itself then creates further candidates only the
+    recompute can reach -- see
+    test_a_widened_neighbour_becomes_a_candidate_only_after_the_recompute for
+    the full cascade this fixture now produces under delta_rel=None.
     """
     rf1 = _hand_built_forest([99, 999, 5999])
     rf2 = _hand_built_forest([99, 999, 2999, 5999])
@@ -1033,25 +1036,35 @@ def _isolate_c3(monkeypatch):
 
 
 def test_a_widened_neighbour_becomes_a_candidate_only_after_the_recompute(monkeypatch):
-    """THE motivating test for C3: without the rescan this pair is unreachable.
+    """THE motivating test for C3: without the rescan later pairs are unreachable.
 
     With the recompute disabled (a single round) the fixture attempts exactly
-    the one candidate the original overlap list held. With it enabled, the
-    pair the accepted move CREATED is attempted too -- in round 2, the only
-    place it could ever appear.
-    """
-    new_pair = ((100, 2999), (1000, 2999))
+    the one candidate still_overlaps admits after the first move (see
+    _neighbour_widening_pair's docstring for why the sweep's second-listed
+    pair is offered but never attempted here). With it enabled, the widened
+    neighbour cascades into three further candidates across three more
+    rounds -- reachable only because each round recomputes the overlap list
+    from the just-mutated ranges.
 
+    Regenerated 2026-09-14 by Task 7 (design D4): the ratio gate that used to
+    make this fixture's story a clean two-candidate example is gone, so the
+    single-round pass now attempts the ratio-0.39997 pair instead of the
+    ratio-0.5999 one (both were always "eligible" by the surviving structural
+    checks; the ratio was the only thing choosing between them), and the full
+    recompute cascades to 4 rounds instead of 2. Captured directly from this
+    commit's code via a throwaway script -- not hand-derived -- so it is a
+    characterisation pin, not a re-derivation of the mechanism.
+    """
     _isolate_c3(monkeypatch)
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
     rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
     stats_one_round, log_one_round = {}, []
-    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2,
                            delta_rel=None, align_stats=stats_one_round,
                            candidate_log=log_one_round)
 
     assert [(e['range1'], e['range2']) for e in log_one_round] == \
-        [((1000, 5999), (3000, 5999))]
+        [((1000, 5999), (1000, 2999))]
     assert stats_one_round['attempted'] == 1
 
     # undo() only lifts the MAX_RECOMPUTE_ROUNDS=1 patch -- _isolate_c3's two
@@ -1062,14 +1075,18 @@ def test_a_widened_neighbour_becomes_a_candidate_only_after_the_recompute(monkey
     _isolate_c3(monkeypatch)
     rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
     stats, log = {}, []
-    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2,
                            delta_rel=None, align_stats=stats,
                            candidate_log=log)
 
-    assert [(e['range1'], e['range2']) for e in log] == \
-        [((1000, 5999), (3000, 5999)), new_pair]
-    assert [e['round'] for e in log] == [1, 2]
-    assert stats['attempted'] == 2 and stats['accepted'] == 2
+    assert [(e['range1'], e['range2']) for e in log] == [
+        ((1000, 5999), (1000, 2999)),
+        ((3000, INFINITE), (6000, INFINITE)),
+        ((1000, 5999), (3000, 5999)),
+        ((100, 2999), (100, 999)),
+    ]
+    assert [e['round'] for e in log] == [1, 2, 3, 4]
+    assert stats['attempted'] == 4 and stats['accepted'] == 4
 
 
 def test_the_recompute_stops_as_soon_as_a_round_accepts_nothing(monkeypatch):
@@ -1091,7 +1108,7 @@ def test_the_recompute_stops_as_soon_as_a_round_accepts_nothing(monkeypatch):
     y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1])
     y2 = np.array([-1, 1, -1, 1, -1, 1, -1, 1])
     stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2,
                            delta_rel=None, align_stats=stats)
 
     assert stats['accepted'] == 0
@@ -1120,7 +1137,7 @@ def test_the_recompute_cap_raises_instead_of_looping_without_end(monkeypatch):
     rf1, rf2, X, y1, y2 = _neighbour_widening_pair()
 
     with pytest.raises(AlignmentInvariantError) as excinfo:
-        ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+        ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2,
                                delta_rel=None)
 
     assert 'fixpoint' in str(excinfo.value).lower()
@@ -1155,7 +1172,7 @@ def test_the_recompute_never_evaluates_the_same_value_pair_twice(monkeypatch):
     y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1, 2])
     y2 = np.array([-1, 1, -1, 1, -1, 1, -1, 1, -1])
     stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2,
                            delta_rel=None, align_stats=stats)
 
     # A single-feature fixture, so every judgement belongs to the same feature
@@ -1268,7 +1285,7 @@ def test_joint_interval_count_never_rises_across_random_alignment_runs():
         for delta in (None, 0.0, 0.05, 0.2):
             stats = {}
             ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                   overlap_threshold=0.5, delta_rel=delta,
+                                   delta_rel=delta,
                                    align_stats=stats)
             if stats['intervals_after'] > stats['intervals_before']:
                 violations.append((seed, delta, stats))
@@ -1281,7 +1298,7 @@ def _align_golden_pair(delta_rel, cap, monkeypatch):
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', cap)
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats, log = {}, []
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            delta_rel=delta_rel, align_stats=stats,
                            candidate_log=log)
     monkeypatch.undo()
@@ -1328,15 +1345,14 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     to check before assuming a bug.
 
     Whether C3's extra rounds surface anything NEW on this fixture is a
-    measured fact of the current feature order, not a theorem, and it moved
-    with the 2026-09-07 byte-completion order (§9): under the old
-    combined-count order every arm reached round 2; under byte-completion
-    order only delta_rel=0.0 does -- the round-1 candidate set for None/0.05
-    is already the recompute fixpoint (`progressed` is false, so C3 exits
-    without a second round; see MAX_RECOMPUTE_ROUNDS's docstring). The
-    append-only shape asserted above still holds trivially when round 1 and
-    C3 coincide, so `finds_new_work` below gates only the "did C3 do
-    anything" assertions, not the ones proving it did nothing WRONG.
+    measured fact of the current feature order and admission rule, not a
+    theorem. It has moved twice: under the pre-2026-09-07 combined-count
+    order every arm reached round 2; under byte-completion order only
+    delta_rel=0.0 did, because the ratio gate then in place made the
+    None/0.05 round-1 candidate set already the recompute fixpoint. Task 7
+    (design D4) removed that gate, and with it removed the fixpoint: all
+    three arms now attempt more in the full recompute than in round 1 alone
+    (measured: 40->43 for None, 46->49 for 0.0, 40->43 for 0.05).
     """
     stats_r1, log_r1 = _align_golden_pair(delta_rel, 1, monkeypatch)
     stats_c3, log_c3 = _align_golden_pair(delta_rel, ta.MAX_RECOMPUTE_ROUNDS, monkeypatch)
@@ -1362,18 +1378,12 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     assert moves_r1, 'the fixture must accept something in the single-round pass'
     # Under the now-unconditional c1c2 target ranking (2026-08-30 ladder
     # deletion) a recomputed round can surface a candidate that C2's gain
-    # filter or the now-mandatory C1 accuracy gate then rejects, so on this
-    # fixture ACCEPTED count no longer strictly grows on every delta arm
-    # (measured: flat at 2 accepted for None and 0.05, still 17->18 for
-    # 0.0). attempted is the honest "C3 found something new" signal -- but,
-    # per the docstring's byte-completion-order note, only where round 1 is
-    # NOT already the fixpoint (delta_rel=0.0 on this fixture).
-    finds_new_work = delta_rel == 0.0
-    if finds_new_work:
-        assert stats_c3['attempted'] > stats_r1['attempted'], 'C3 must find something new here'
-    else:
-        assert stats_c3['attempted'] == stats_r1['attempted'], \
-            'round 1 was expected to already be the fixpoint on this arm'
+    # filter or the now-mandatory C1 accuracy gate then rejects, so ACCEPTED
+    # count does not have to grow in lockstep with ATTEMPTED. attempted is
+    # the honest "C3 found something new" signal, and as of Task 7 (design
+    # D4) it does on every arm of this fixture -- there is no longer a
+    # gate-produced fixpoint at round 1 (see this test's docstring).
+    assert stats_c3['attempted'] > stats_r1['attempted'], 'C3 must find something new here'
     assert len(moves_c3) >= len(moves_r1)
 
     features_r1 = list(dict.fromkeys(f for f, _, _ in moves_r1))
@@ -1389,10 +1399,9 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     # Every round-1 candidate is round 1 in the C3 run too -- the rounds above
     # 1 are the appended work and nothing else.
     assert [e['round'] for e in log_r1] == [1] * len(log_r1)
-    if finds_new_work:
-        assert max(e['round'] for e in log_c3) > 1
-    else:
-        assert max(e['round'] for e in log_c3) == 1
+    # As of Task 7 (design D4), all three arms find something in a later
+    # round on this fixture -- see the docstring's measured note.
+    assert max(e['round'] for e in log_c3) > 1
 
 
 def test_align_stats_records_the_codeword_length_it_optimises():
@@ -1402,7 +1411,7 @@ def test_align_stats_records_the_codeword_length_it_optimises():
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
     ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                           overlap_threshold=0.5, delta_rel=0.0, align_stats=stats)
+                           delta_rel=0.0, align_stats=stats)
 
     assert set(stats) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
@@ -1427,7 +1436,7 @@ def test_accuracy_spent_is_zero_when_no_move_is_accepted(monkeypatch):
     monkeypatch.setattr(ta, 'accept_alignment', lambda before, after, d: False)
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            delta_rel=0.05, align_stats=stats)
     assert stats['accepted'] == 0
     assert stats['accuracy_spent'] == 0.0
@@ -1448,7 +1457,7 @@ def test_accuracy_spent_is_a_max_across_tasks_not_a_mean(monkeypatch):
     monkeypatch.setattr(ta, 'rel_deg', spy)
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            delta_rel=0.05, align_stats=stats)
     # The final four calls are the accuracy_spent computation itself, one per
     # metric, and its result must be their maximum.
@@ -1469,7 +1478,7 @@ def test_the_recorded_codeword_is_the_one_the_block_cost_was_computed_from():
     names = ['f{}'.format(i) for i in range(X1.shape[1])]
     stats = {}
     a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.5, delta_rel=0.0,
+                                    delta_rel=0.0,
                                     align_stats=stats)
     usage = multi_model_memory_evaluation(a1, a2, names, names, 'joint')
     assert stats['codeword_after'] == usage.codeword_length
@@ -1486,13 +1495,13 @@ def test_an_unreachable_boundary_is_identical_to_spending_nothing():
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats_c1 = {}
     a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.5, delta_rel=0.20,
+                                    delta_rel=0.20,
                                     align_stats=stats_c1)
 
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats_zero = {}
     b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.5, delta_rel=0.0,
+                                    delta_rel=0.0,
                                     align_stats=stats_zero)
 
     if stats_c1['spent_budget']:
@@ -1530,7 +1539,7 @@ def test_the_per_move_sheds_sum_to_the_whole_runs_shed():
         return real_note_shed(self, feature, bits)
 
     with mock.patch.object(ab.BlockBudget, 'note_shed', record):
-        ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+        ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                                delta_rel=0.05, align_stats=stats)
 
     assert sum(budget_lengths) == stats['codeword_before'] - stats['codeword_after']
@@ -1545,7 +1554,7 @@ def test_the_oracle_is_built_even_at_an_unbounded_delta():
     the runtime budget."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            delta_rel=None, align_stats=stats)
     # With the oracle live, some candidate must have been judged rather than
     # waved through, so accepted cannot equal attempted on a reject-capable
@@ -1564,7 +1573,7 @@ def test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves():
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
     a1, a2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
-                                  overlap_threshold=0.5, delta_rel=0.20,
+                                  delta_rel=0.20,
                                   align_stats=stats)
     from src.p4gen.evaluation import codeword_bits_to_blocks
     if not stats['rolled_back']:
@@ -1576,7 +1585,7 @@ def test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves():
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     free = {}
     b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    overlap_threshold=0.5, delta_rel=0.0,
+                                    delta_rel=0.0,
                                     align_stats=free)
     for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
         assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
@@ -1588,7 +1597,7 @@ def test_a_rollback_never_fires_when_no_budget_was_spent():
     the second pass must not be paid for."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
                          delta_rel=0.0, align_stats=stats)
     assert stats['spent_budget'] is False
     assert stats['rolled_back'] is False
@@ -1637,7 +1646,7 @@ def test_c2_evaluates_at_most_four_targets_per_pair(monkeypatch):
                         lambda *a, **k: calls.append(1) or original(*a, **k))
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            delta_rel=0.0, align_stats=stats)
     assert len(calls) <= 4 * stats['attempted'] or stats['attempted'] == 0
 
@@ -1800,7 +1809,7 @@ def test_align_rf_thresholds_no_longer_accepts_an_objective():
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     with pytest.raises(TypeError):
         ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                               overlap_threshold=0.5, delta_rel=0.0,
+                               delta_rel=0.0,
                                align_objective='stages')
 
 
@@ -1835,7 +1844,7 @@ def test_the_byte_domain_stats_are_recorded():
     to have anything to compare against."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
                          delta_rel=0.05, align_stats=stats)
     for key in ('key_bytes_before', 'key_bytes_after', 'key_bytes_floor'):
         assert isinstance(stats[key], int), key
@@ -1853,7 +1862,7 @@ def test_pooled_key_bytes_equals_the_evaluators_codeword_fields_to_bytes():
     names = ['f0', 'f1', 'f2', 'f3']
     for models in ((rf1, rf2),
                    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                          overlap_threshold=0.5, delta_rel=0.05)):
+                                          delta_rel=0.05)):
         m1, m2 = models
         joint = get_joint_feature_intervals(m1, names, m2, names)
         assert ab.pooled_key_bytes(ta.extract_feature_intervals(m1),
@@ -1875,7 +1884,7 @@ def test_the_block_factor_equals_the_evaluators_block_factor():
     names = ['f0', 'f1', 'f2', 'f3']
     for models in ((rf1, rf2),
                    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                          overlap_threshold=0.5, delta_rel=0.05)):
+                                          delta_rel=0.05)):
         m1, m2 = models
         joint = get_joint_feature_intervals(m1, names, m2, names)
         widths = ab._pooled_widths(ta.extract_feature_intervals(m1),
@@ -1928,7 +1937,7 @@ def test_align_stats_records_the_block_factor_at_entry_exit_and_floor(delta_rel)
     is not a floor (invariant 4) or shedding raised the factor (invariant 7)."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, overlap_threshold=0.5,
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            delta_rel=delta_rel, align_stats=stats)
     for key in ('blocks_before', 'blocks_after', 'blocks_floor'):
         assert isinstance(stats[key], int), key
@@ -2087,16 +2096,16 @@ def test_the_stale_pair_leaves_the_tiling_and_the_index_intact():
     assert index == index_before
 
 
-@pytest.mark.parametrize('overlap_threshold', [0.0, 0.1, 0.5])
-def test_a_real_fitted_pair_aligns_without_an_invariant_error(overlap_threshold):
+def test_a_real_fitted_pair_aligns_without_an_invariant_error():
     """Audit §8.3: zero AlignmentInvariantErrors across 324 replayed runs with
     the ratio test disabled, versus a hard crash at a literal
     overlap_threshold=0.0 today. Pinned here on the golden pair so the fix
-    cannot silently regress.
+    cannot silently regress. Unparametrised as of Task 7: the ratio test is
+    gone entirely, so there is no threshold left to vary.
     """
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
     ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
-                         overlap_threshold=overlap_threshold, delta_rel=0.0,
+                         delta_rel=0.0,
                          align_stats=stats)
     assert stats['intervals_after'] <= stats['intervals_before']

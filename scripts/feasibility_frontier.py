@@ -85,18 +85,19 @@ FULL_GRID_SIZE = len(CELLS) * len(T_VALUES) * len(ARM_NAMES) * len(SPLIT_INDICES
 def cfg_for_arm(arm, T):
     """One TrainConfig per 2x2-factorial arm (spec 2.2); T pinned via
     n_trees_min == n_trees == T (spec 2.5). 'Alignment on' uses the design's
-    established production setting: delta_align=0.20, overlap_threshold=0.5."""
+    established production setting: delta_align=0.20. Until 2026-09-14 this
+    also set overlap_threshold=0.5; that field is gone from TrainConfig
+    (Task 7, design D4) -- 0.5 was the ratio gate's historical default and no
+    setting of it remains to pass."""
     common = dict(n_trees_min=T, n_trees=T)
     if arm == 'control':
         return TrainConfig(alignment_enabled=False, **common)
     if arm == 'aligned_only':
-        return TrainConfig(alignment_enabled=True, delta_align=0.20,
-                           overlap_threshold=0.5, **common)
+        return TrainConfig(alignment_enabled=True, delta_align=0.20, **common)
     if arm == 'ccp_alpha_only':
         return TrainConfig(alignment_enabled=False, ccp_alpha_max=CCP_ALPHA_STUDY_MAX, **common)
     if arm == 'both':
         return TrainConfig(alignment_enabled=True, delta_align=0.20,
-                           overlap_threshold=0.5,
                            ccp_alpha_max=CCP_ALPHA_STUDY_MAX, **common)
     raise ValueError('unknown arm {!r}, expected one of {}'.format(arm, ARM_NAMES))
 

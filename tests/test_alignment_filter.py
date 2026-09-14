@@ -57,7 +57,7 @@ def test_the_candidate_log_records_one_row_per_candidate_with_both_predictors():
 
     log = []
     ta.align_rf_thresholds(mk(X1, y1, 0), mk(X2, y2, 1), X1, y1, X2, y2,
-                           overlap_threshold=0.5, delta_rel=0.05,
+                           delta_rel=0.05,
                            candidate_log=log)
 
     assert log, 'the fixture must produce candidates'

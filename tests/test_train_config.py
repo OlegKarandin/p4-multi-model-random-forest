@@ -10,7 +10,6 @@ def test_defaults_are_the_primary_joint_arm_at_delta_zero():
     assert cfg.delta_align == 0.0
     assert cfg.alignment_enabled is True
     assert cfg.delta_select == 0.02
-    assert cfg.overlap_threshold == 0.5
     # n_trees is set by utilisation (design 2026-09-03 spec 2.1(b)), not by
     # the measured capacity ceiling: the archive never reaches 11 trees and
     # p75 is 3. max_depth is kept at its previous 14 -- the re-derived grid
@@ -75,25 +74,6 @@ def test_delta_align_label_disjoint_encoding_suppresses_it_like_arm_slug():
     assert cfg.delta_align_label() == '0'
 
 
-def test_overlap_threshold_label_is_what_goes_in_the_row():
-    """Spec C.1: overlap_threshold is a float, or "" when alignment did not
-    run -- mirrors delta_align_label, since overlap_threshold is only
-    consulted by align_with_policy, which is never called for the
-    independent arm or the joint-off ablation.
-
-    Also covers the disjoint-encoding suppression that arm_slug and
-    delta_align_label each get their own test for (mirrors
-    arm_slug('disjoint') / delta_align_label('disjoint')): the independent
-    arm never runs alignment, so its row must not carry the joint arm's
-    overlap_threshold setting, even though TrainConfig()'s default (0.5) is
-    shared by both arms' configs.
-    """
-    assert TrainConfig(overlap_threshold=0.5).overlap_threshold_label() == '0.5'
-    assert TrainConfig(overlap_threshold=0.75).overlap_threshold_label('joint') == '0.75'
-    assert TrainConfig(alignment_enabled=False).overlap_threshold_label() == ''
-    assert TrainConfig().overlap_threshold_label('disjoint') == ''
-
-
 def test_negative_tolerances_are_rejected():
     with pytest.raises(ValueError, match='delta_align'):
         TrainConfig(delta_align=-0.01)
@@ -107,16 +87,11 @@ def test_unknown_encoding_is_rejected_by_arm_slug():
 
 
 def test_unknown_encoding_is_rejected_by_delta_align_label():
-    # delta_align_label and overlap_threshold_label used to fall through
-    # their if/else on any unrecognized `encoding` -- including a typo --
-    # and silently return the joint-arm value instead of failing.
+    # delta_align_label used to fall through its if/else on any unrecognized
+    # `encoding` -- including a typo -- and silently return the joint-arm
+    # value instead of failing.
     with pytest.raises(ValueError, match='encoding'):
         TrainConfig().delta_align_label('mixed')
-
-
-def test_unknown_encoding_is_rejected_by_overlap_threshold_label():
-    with pytest.raises(ValueError, match='encoding'):
-        TrainConfig().overlap_threshold_label('mixed')
 
 
 def test_align_objective_defaults_to_blocks():
@@ -176,29 +151,6 @@ def test_ccp_alpha_max_zero_accepted():
     assert cfg.ccp_alpha_max == 0.0
 
 
-def test_overlap_threshold_enters_the_slug_when_it_leaves_the_default():
-    """Design 2026-09-03 §3: a campaign sweeping overlap_threshold must
-    distinguish its arms in the filename. main.py's skip_existing treats an
-    existing path as 'cell done', so colliding arms are silently SKIPPED --
-    quieter than an overwrite and just as wrong."""
-    assert TrainConfig(delta_align=0.20).arm_slug('joint') == 'joint-d020'
-    assert TrainConfig(delta_align=0.20, overlap_threshold=0.25).arm_slug(
-        'joint') == 'joint-d020-o025'
-    assert TrainConfig(delta_align=0.20, overlap_threshold=0.1).arm_slug(
-        'joint') == 'joint-d020-o010'
-    assert TrainConfig(delta_align=None, overlap_threshold=0.1).arm_slug(
-        'joint') == 'joint-dinf-o010'
-
-
-def test_the_three_overlap_values_give_three_distinct_paths_per_delta():
-    """Spec §4's slug-uniqueness test, over the full swept grid."""
-    slugs = {TrainConfig(delta_align=d, overlap_threshold=o).arm_slug('joint')
-             for d in (0.0, 0.02, 0.05, 0.10, 0.20, None)
-             for o in (0.5, 0.25, 0.1)}
-
-    assert len(slugs) == 18
-
-
 def test_the_default_overlap_keeps_every_archived_slug_reproducible():
     """campaign_backup_20260825's 40 files were all written at 0.5. Suffixing
     unconditionally would rename their expected slugs and make
@@ -209,10 +161,29 @@ def test_the_default_overlap_keeps_every_archived_slug_reproducible():
         assert TrainConfig(delta_align=delta).arm_slug('joint') == expected
 
 
-def test_arms_without_alignment_never_carry_an_overlap_suffix():
-    """overlap_threshold only governs which range pairs align_rf_thresholds
-    considers, so it is meaningless where that function is never called --
-    suppressed the same way overlap_threshold_label suppresses the column."""
-    assert TrainConfig(overlap_threshold=0.1).arm_slug('disjoint') == 'independent'
-    assert TrainConfig(alignment_enabled=False,
-                       overlap_threshold=0.1).arm_slug('joint') == 'joint-off'
+def test_the_overlap_threshold_tunable_is_gone():
+    """D4. The ratio test never protected accuracy (delta_align does) or
+    runtime (the whole sweep costs tenths of a second) -- it only masked the
+    correctness gap at its extreme setting, which is now closed
+    unconditionally. Its loosest setting strictly dominated: one real fitted
+    pair moved from 193 key bytes (factor 36) at the 0.5 default to 176 bytes
+    (factor 32) with no ratio test, at accuracy_spent exactly 0.0.
+
+    The arm slug loses its conditional suffix with it: there is one alignment
+    behaviour now, so `joint-d020` is unambiguous.
+    """
+    import inspect
+    from src.training import config as cfg_mod
+    from src.training import threshold_alignment as ta
+
+    assert not hasattr(cfg_mod, 'DEFAULT_OVERLAP_THRESHOLD')
+    assert 'overlap_threshold' not in cfg_mod.TrainConfig.__dataclass_fields__
+    assert not hasattr(cfg_mod.TrainConfig, 'overlap_threshold_label')
+    assert not hasattr(cfg_mod.TrainConfig, '_overlap_suffix')
+    with pytest.raises(TypeError):
+        cfg_mod.TrainConfig(overlap_threshold=0.5)
+
+    assert cfg_mod.TrainConfig(delta_align=0.20).arm_slug('joint') == 'joint-d020'
+
+    for fn in (ta.align_rf_thresholds, ta.align_with_policy):
+        assert 'overlap_threshold' not in inspect.signature(fn).parameters, fn

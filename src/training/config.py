@@ -11,17 +11,12 @@ from typing import Optional
 
 from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
-# The historical value: every row of campaign_backup_20260825 was written at
-# 0.5, and arm_slug suffixes only AWAY from it so those filenames stay
-# reproducible from their own columns.
-DEFAULT_OVERLAP_THRESHOLD = 0.5
-
 
 def _validate_encoding(encoding):
-    """Shared guard for `TrainConfig.arm_slug` / `delta_align_label` /
-    `overlap_threshold_label`: all three branch on `encoding == 'disjoint'`
-    vs. everything else, so an unrecognized string (a typo, say) used to fall
-    through to the joint-arm behaviour silently instead of failing loudly."""
+    """Shared guard for `TrainConfig.arm_slug` / `delta_align_label`: both
+    branch on `encoding == 'disjoint'` vs. everything else, so an
+    unrecognized string (a typo, say) used to fall through to the joint-arm
+    behaviour silently instead of failing loudly."""
     if encoding not in ('joint', 'disjoint'):
         raise ValueError("encoding must be 'joint' or 'disjoint', got {!r}".format(encoding))
 
@@ -45,11 +40,6 @@ class TrainConfig:
         0.02 sits inside val_select's own standard error on both tasks
         (~0.007 on App = 3.2% of its error; ~0.0036 on DDoS = 9% of its
         error), so it only breaks ties that are not distinguishable.
-    overlap_threshold : minimum overlap ratio for a range pair to be an
-        alignment CANDIDATE -- a separate concern from whether a candidate is
-        ACCEPTED (that is delta_align). Was hardcoded at the call site.
-        Enters `arm_slug` (conditionally -- see `_overlap_suffix`), unlike
-        `align_objective`, which is deliberately absent from it.
     align_objective : retained at 'blocks' -- the only value ALIGN_OBJECTIVES
         still accepts -- for config/manifest backward compatibility.
         'stages' and 'both' were retired by the 2026-09-07 alignment
@@ -109,7 +99,6 @@ class TrainConfig:
     delta_align: Optional[float] = 0.0
     alignment_enabled: bool = True
     delta_select: float = 0.02
-    overlap_threshold: float = DEFAULT_OVERLAP_THRESHOLD
     align_objective: str = 'blocks'
     n_trees: int = 7
     max_depth: int = 14
@@ -126,9 +115,6 @@ class TrainConfig:
         if self.delta_select < 0:
             raise ValueError(
                 'delta_select must be >= 0, got {!r}'.format(self.delta_select))
-        if not 0.0 <= self.overlap_threshold <= 1.0:
-            raise ValueError(
-                'overlap_threshold must be in [0, 1], got {!r}'.format(self.overlap_threshold))
         if self.align_objective not in ALIGN_OBJECTIVES:
             raise ValueError('align_objective must be one of {}, got {!r}'.format(
                 ALIGN_OBJECTIVES, self.align_objective))
@@ -146,6 +132,12 @@ class TrainConfig:
         The independent arm's slug deliberately ignores the alignment fields:
         alignment runs in the joint arm only, so two independent runs differing
         only in delta_align are the SAME arm and must share one output file.
+
+        Until 2026-09-14 this appended a conditional `-o{:03d}` suffix for a
+        swept overlap_threshold. That axis is gone (design D4), so the slug is
+        unambiguous again -- but archived filenames still carry the suffix, and
+        src/reporting/campaign_data.py reconstructs it from an archived row's
+        own column. Reporting ACCEPTS the column; nothing WRITES it.
         """
         _validate_encoding(encoding)
         if encoding == 'disjoint':
@@ -153,28 +145,8 @@ class TrainConfig:
         if not self.alignment_enabled:
             return 'joint-off'
         if self.delta_align is None:
-            slug = 'joint-dinf'
-        else:
-            slug = 'joint-d{:03d}'.format(int(round(self.delta_align * 100)))
-        return slug + self._overlap_suffix()
-
-    def _overlap_suffix(self):
-        """'' at the historical 0.5, '-o{:03d}' anywhere else.
-
-        Design 2026-09-03 §3: a campaign sweeping overlap_threshold must add it
-        to the slug or three overlap arms map to one path -- and because
-        main.py's skip_existing treats an existing path as "cell done", the
-        second and third would be silently SKIPPED rather than overwritten.
-
-        Suffixing only away from the default keeps all 40 archived filenames
-        reproducible from their own columns. That leaves the default implicit,
-        which campaign_data._expected_arm_slug turns into a CHECKED invariant:
-        a file named `joint-d020` carrying overlap_threshold != 0.5 is
-        mislabelled and raises rather than being read.
-        """
-        if self.overlap_threshold == DEFAULT_OVERLAP_THRESHOLD:
-            return ''
-        return '-o{:03d}'.format(int(round(self.overlap_threshold * 100)))
+            return 'joint-dinf'
+        return 'joint-d{:03d}'.format(int(round(self.delta_align * 100)))
 
     def delta_align_label(self, encoding='joint'):
         """What goes in the row's `delta_align` column (spec C.1): the float,
@@ -190,17 +162,3 @@ class TrainConfig:
         if self.delta_align is None:
             return 'inf'
         return '{:g}'.format(self.delta_align)
-
-    def overlap_threshold_label(self, encoding='joint'):
-        """What goes in the row's `overlap_threshold` column (spec C.1): the
-        float, or "" when alignment did not run.
-
-        overlap_threshold only governs which range pairs align_rf_thresholds
-        considers as candidates, so it is meaningless wherever that function
-        is never called -- suppressed the same way delta_align_label is: for
-        the disjoint (independent) arm, and for the joint-off ablation.
-        """
-        _validate_encoding(encoding)
-        if encoding == 'disjoint' or not self.alignment_enabled:
-            return ''
-        return '{:g}'.format(self.overlap_threshold)

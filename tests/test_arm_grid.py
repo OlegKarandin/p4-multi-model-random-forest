@@ -3,32 +3,35 @@ from src import main as m
 from src.training.config import TrainConfig
 
 
-def test_primary_grid_is_five_arms_two_anchors_plus_the_delta_zero_overlap_sweep():
-    """independent, joint with alignment OFF, and joint at delta = 0 swept
-    across the three overlap thresholds (§2.4). The two constant anchors
-    bracket the frontier: `off` is a genuine skip of the align_rf_thresholds
-    call, provably prediction-identical to the unaligned models, and it
-    doubles as the ablation the reviewer asked for."""
+def test_primary_grid_is_three_arms_two_anchors_plus_delta_zero():
+    """independent, joint with alignment OFF, and joint at delta = 0. The two
+    constant anchors bracket the frontier: `off` is a genuine skip of the
+    align_rf_thresholds call, provably prediction-identical to the unaligned
+    models, and it doubles as the ablation the reviewer asked for.
+
+    Until 2026-09-14 the third arm was swept across three overlap thresholds
+    (design §2.4), giving five primary arms. Task 7 (design D4) removed the
+    overlap_threshold tunable those three arms varied, so there is now only
+    one delta-zero joint arm.
+    """
     slugs = [cfg.arm_slug('disjoint' if arm == 'independent' else 'joint')
              for arm, cfg in m.PRIMARY_ARMS]
 
-    assert slugs == ['independent', 'joint-off', 'joint-d000',
-                      'joint-d000-o025', 'joint-d000-o010']
+    assert slugs == ['independent', 'joint-off', 'joint-d000']
 
 
-def test_sensitivity_grid_is_the_fifteen_swept_tolerances_by_overlap():
+def test_sensitivity_grid_is_the_five_swept_tolerances():
     """5 delta_align values (0.01 is deliberately absent: it permits at most
     one DDoS sample to flip -- one flip = 0.83% relative error at val_align
-    ~3000, error ~0.04, so it is operationally identical to delta = 0) x 3
-    overlap thresholds (§2.4)."""
+    ~3000, error ~0.04, so it is operationally identical to delta = 0).
+
+    Until 2026-09-14 each was also swept across three overlap thresholds
+    (design §2.4), giving fifteen sensitivity arms; that axis is gone (Task
+    7, design D4)."""
     slugs = [cfg.arm_slug('joint') for arm, cfg in m.SENSITIVITY_ARMS]
 
     assert slugs == [
-        'joint-d002', 'joint-d002-o025', 'joint-d002-o010',
-        'joint-d005', 'joint-d005-o025', 'joint-d005-o010',
-        'joint-d010', 'joint-d010-o025', 'joint-d010-o010',
-        'joint-d020', 'joint-d020-o025', 'joint-d020-o010',
-        'joint-dinf', 'joint-dinf-o025', 'joint-dinf-o010',
+        'joint-d002', 'joint-d005', 'joint-d010', 'joint-d020', 'joint-dinf',
     ]
 
 
@@ -49,7 +52,7 @@ def test_result_paths_are_self_describing_and_unique_per_arm():
     paths = {m.arm_result_path(arm, cfg, 25)
              for arm, cfg in m.PRIMARY_ARMS + m.SENSITIVITY_ARMS}
 
-    assert len(paths) == 20
+    assert len(paths) == 8
     assert any(p.endswith('rf_t7_d14_M25_independent.csv') for p in paths)
     assert any(p.endswith('rf_t7_d14_M25_joint-d002.csv') for p in paths)
     assert any(p.endswith('rf_t7_d14_M25_joint-dinf.csv') for p in paths)
@@ -79,21 +82,22 @@ def test_select_arms_returns_the_requested_grid():
     assert m.select_arms('all') == m.PRIMARY_ARMS + m.SENSITIVITY_ARMS
 
 
-def test_the_grid_is_twenty_arms_with_twenty_distinct_slugs():
-    """independent (1) + joint-off (1) + 6 delta_align x 3 overlap (18).
+def test_the_grid_is_eight_arms_with_eight_distinct_slugs():
+    """independent (1) + joint-off (1) + 6 delta_align (6).
 
-    NOT 22: design §2.7's cost arithmetic says '7 joint arms x 3', which
-    double-counts joint-off -- §2.4 excludes it from the overlap axis because
-    it never calls align_rf_thresholds. The real multiplier over the archive's
-    8 arms is 2.5x, not 2.75x."""
+    Until 2026-09-14 each of the 6 delta_align values (join-off excepted) was
+    also swept across 3 overlap thresholds, giving 20 arms (independent (1) +
+    joint-off (1) + 6 delta_align x 3 overlap (18)). Task 7 (design D4)
+    removed that axis; the real multiplier over the archive's 8 arms is now
+    1x, not 2.5x."""
     from src.main import select_arms
 
     arms = select_arms('all')
-    assert len(arms) == 20
+    assert len(arms) == 8
 
     slugs = {cfg.arm_slug('joint' if arm == 'joint' else 'disjoint')
              for arm, cfg in arms}
-    assert len(slugs) == 20
+    assert len(slugs) == 8
 
 
 def test_every_campaign_arm_enables_ccp_alpha():
@@ -106,19 +110,6 @@ def test_every_campaign_arm_enables_ccp_alpha():
     assert CAMPAIGN_CCP_ALPHA_MAX == 0.05
     for _, cfg in select_arms('all'):
         assert cfg.ccp_alpha_max == CAMPAIGN_CCP_ALPHA_MAX
-
-
-def test_overlap_is_swept_on_the_aligned_joint_arms_only():
-    """independent has no alignment so no overlap axis; joint-off likewise."""
-    from src.main import select_arms, OVERLAP_THRESHOLDS
-
-    assert set(OVERLAP_THRESHOLDS) == {0.5, 0.25, 0.1}
-
-    swept = [cfg for arm, cfg in select_arms('all')
-             if arm == 'joint' and cfg.alignment_enabled]
-    assert len(swept) == 18
-    assert {cfg.overlap_threshold for cfg in swept} == set(OVERLAP_THRESHOLDS)
-    assert {cfg.delta_align for cfg in swept} == {0.0, 0.02, 0.05, 0.10, 0.20, None}
 
 
 def test_align_objective_stays_at_blocks_on_every_arm():

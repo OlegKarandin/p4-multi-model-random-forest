@@ -268,7 +268,7 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
 
 
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-                        overlap_threshold=0.5, delta_rel=0.0, align_stats=None,
+                        delta_rel=0.0, align_stats=None,
                         candidate_log=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
@@ -277,8 +277,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     -----------
     rf1, rf2 : RandomForestClassifier or RandomForestRegressor
         The two pretrained RandomForest models to align
-    overlap_threshold : float, default=0.5
-        Minimum overlap ratio required to consider ranges similar enough to align
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
@@ -475,18 +473,18 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 seen.add((range1, range2))
 
                 # Three named, unconditional correctness checks. The ratio test
-                # below is a separate, heuristic concern (removed in the next
-                # commit); these are not, and must never again be disableable
-                # by the same knob.
+                # that used to gate admission below it is gone (D4, Task 7) --
+                # it was a separate, heuristic concern; these are not, and must
+                # never again be disableable by the same knob.
                 if not still_overlaps(range1, range2):
                     continue
                 if not structurally_alignable(range1, range2):
                     continue
 
+                # Computed for candidate_log only: nothing compares it to a
+                # threshold any more. The three checks above are what admission
+                # actually is (design §6.1).
                 overlap_ratio = calculate_range_overlap(range1, range2)
-
-                if overlap_ratio < overlap_threshold:
-                    continue
 
                 pooled_before, ranked_targets = _rank_targets(
                     range1, range2, current_ranges1, current_ranges2,
@@ -924,11 +922,15 @@ def calculate_range_overlap(range1, range2):
 
     NOTE this function's 0.0 return is overloaded: it means both "no overlap"
     and "vetoed". The zero-side and INFINITE-side vetoes below are structural
-    (adjust_range_boundaries cannot move those boundaries at all). The old
-    endpoint-ratio-cap heuristic pre-filter that used to live here is gone as
-    of Task 7; align_rf_thresholds does not veto candidates on shift_mass
-    either (removed in P3 Task 8), so no heuristic pre-filter remains --
-    only the two structural vetoes below.
+    -- as of Task 7 they are duplicated (not delegated) by
+    `structurally_alignable`, which is what align_rf_thresholds actually
+    consults; this function's own vetoes are now dead code from admission's
+    point of view, kept only because the ratio itself is still computed and
+    returned for candidate_log. The old endpoint-ratio-cap heuristic
+    pre-filter that used to live here is gone as of Task 7; align_rf_thresholds
+    does not veto candidates on shift_mass either (removed in P3 Task 8), and
+    since Task 7 it does not compare this ratio to a threshold at all -- the
+    returned value is uninterpreted, a diagnostic only.
     """
     min1, max1 = range1
     min2, max2 = range2
@@ -1208,7 +1210,7 @@ def crossed_a_boundary(stats):
 
 
 def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
-                      overlap_threshold=0.5, delta_rel=0.0,
+                      delta_rel=0.0,
                       align_stats=None, candidate_log=None):
     """align_rf_thresholds with C1's commit-or-rollback guarantee.
 
@@ -1235,7 +1237,7 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     stats.clear()
     speculative = align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-        overlap_threshold=overlap_threshold, delta_rel=delta_rel,
+        delta_rel=delta_rel,
         align_stats=stats, candidate_log=candidate_log)
 
     if not stats['spent_budget'] or crossed_a_boundary(stats):
@@ -1250,7 +1252,7 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     stats.clear()
     result = align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-        overlap_threshold=overlap_threshold, delta_rel=0.0,
+        delta_rel=0.0,
         align_stats=stats, candidate_log=candidate_log)
     stats['rolled_back'] = True
     return result

@@ -34,14 +34,6 @@ import numpy as np
 # add dead space at the degenerate-pruning end.
 CAMPAIGN_CCP_ALPHA_MAX = 0.05
 
-# §2.4, the one added factor. Applied to the ALIGNED JOINT arms only:
-# independent has no alignment so no overlap axis, and joint-off likewise.
-# 0.1 is OFF the measured grid (replay tested {0.25,0.50,0.75}) -- loosening
-# monotonically increases candidate count, so more blocks saved and more
-# accuracy spent is the expectation, but the shape below 0.25 is unmeasured
-# and 0.1 must be reported separately as exploratory.
-OVERLAP_THRESHOLDS = (0.5, 0.25, 0.1)
-
 # §2.3: unchanged from the archive's own arm set. The sweep replicated cleanly
 # there -- the feasibility-rate effect is monotone in delta_align to 0.20 and
 # falls back at inf -- and dinf earns its place as the anchor that shows the
@@ -55,9 +47,8 @@ DELTA_ALIGNS = (0.0, 0.02, 0.05, 0.10, 0.20, None)
 DEFAULT_M_GRID = [25, 50, 100, 150, 250]
 
 
-def _joint(delta_align, overlap_threshold):
+def _joint(delta_align):
     return ('joint', TrainConfig(delta_align=delta_align,
-                                 overlap_threshold=overlap_threshold,
                                  ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
 
 
@@ -66,18 +57,24 @@ def _joint(delta_align, overlap_threshold):
 # prediction-identical to the unaligned models and doubles as the requested
 # ablation; `joint-dinf` accepts every alignment unconditionally and bounds the
 # maximum achievable sharing.
+#
+# Until 2026-09-14 this also swept an `overlap_threshold` axis (design §2.4)
+# across the aligned joint arms. That axis is gone (Task 7, design D4): the
+# tunable it swept no longer exists, its loosest setting strictly dominated
+# the others, and TrainConfig no longer accepts the keyword at all -- so
+# _joint(0.0) below now names one arm where it used to name three identical
+# arm SLUGS with (formerly) different overlap_threshold field values.
 PRIMARY_ARMS = [
     ('independent', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
     ('joint', TrainConfig(alignment_enabled=False,
                           ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
-] + [_joint(0.0, overlap) for overlap in OVERLAP_THRESHOLDS]
+    _joint(0.0),
+]
 
-# The swept variables. delta = 0.01 is deliberately excluded: at val_align
+# The swept variable. delta = 0.01 is deliberately excluded: at val_align
 # ~3000 and DDoS error ~0.04, one flipped sample is 0.83% relative error, so 1%
 # permits at most one flip and is operationally identical to 0.
-SENSITIVITY_ARMS = [_joint(delta, overlap)
-                    for delta in DELTA_ALIGNS[1:]
-                    for overlap in OVERLAP_THRESHOLDS]
+SENSITIVITY_ARMS = [_joint(delta) for delta in DELTA_ALIGNS[1:]]
 
 
 def select_arms(which):
@@ -451,11 +448,11 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
             results_df['M'] = max_blocks
             results_df['n_trees'] = cfg.n_trees
             results_df['max_depth'] = cfg.max_depth
-            # Suppressed for the disjoint arm the same way delta_align is
-            # (TrainConfig.overlap_threshold_label): alignment runs on the
-            # joint arm only, so an independent-arm row carrying it would
-            # misrepresent the baseline as having used a joint-arm setting.
-            results_df['overlap_threshold'] = cfg.overlap_threshold_label(encoding)
+            # No longer written (Task 7, design D4): the overlap_threshold
+            # tunable is gone from TrainConfig, so there is nothing left to
+            # stamp here. src/reporting/campaign_data.py still ACCEPTS the
+            # column on archived rows written before this change; nothing
+            # WRITES it any more.
 
             # Overwrite, NOT append -- and write atomically.
             #

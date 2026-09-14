@@ -175,7 +175,13 @@ import re
 
 import pandas as pd
 
-from src.training.config import DEFAULT_OVERLAP_THRESHOLD
+# The value every archived row was written at. NOT a config default any more:
+# the tunable is gone (design D4) and nothing writes this column. It survives
+# here because arm slugs suffix only AWAY from 0.5, so reconstructing an
+# archived filename from an archived row still needs to know where the
+# suppressed point was. Frozen: a future change to it would silently rename
+# files that already exist.
+ARCHIVED_OVERLAP_DEFAULT = 0.5
 
 
 class MislabelledArtifactError(ValueError):
@@ -261,21 +267,24 @@ def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
 
 
 def _expected_overlap_suffix(overlap_threshold_label):
-    """Mirrors `TrainConfig._overlap_suffix` without a TrainConfig instance:
-    '' at the historical 0.5 default, '-o{:03d}' anywhere else.
+    """Mirrors the retired `TrainConfig._overlap_suffix` (removed Task 7,
+    design D4) without a TrainConfig instance: '' at the historical 0.5
+    default, '-o{:03d}' anywhere else. Nothing writes this column any more --
+    this function exists only to read archived rows.
 
-    The suppressed-arm value -- '' (raw CSV text, what `overlap_threshold_label`
-    writes for `independent`/`joint-off`) or NaN (what the same value becomes
-    once `_FLOAT_COLUMNS` has coerced it through `pd.to_numeric`) -- means "no
-    suffix". The NaN check has to come first: NaN compares unequal to
-    everything, including itself, so a `== ''` check alone would not catch it
-    and a float comparison against DEFAULT_OVERLAP_THRESHOLD would silently be
-    False forever instead of matching.
+    The suppressed-arm value -- '' (raw CSV text, what the retired
+    `overlap_threshold_label` wrote for `independent`/`joint-off`) or NaN
+    (what the same value becomes once `_FLOAT_COLUMNS` has coerced it through
+    `pd.to_numeric`) -- means "no suffix". The NaN check has to come first:
+    NaN compares unequal to everything, including itself, so a `== ''` check
+    alone would not catch it and a float comparison against
+    ARCHIVED_OVERLAP_DEFAULT would silently be False forever instead of
+    matching.
     """
     if pd.isna(overlap_threshold_label) or overlap_threshold_label == '':
         return ''
     value = float(overlap_threshold_label)
-    if abs(value - DEFAULT_OVERLAP_THRESHOLD) < 1e-9:
+    if abs(value - ARCHIVED_OVERLAP_DEFAULT) < 1e-9:
         return ''
     return '-o{:03d}'.format(int(round(value * 100)))
 

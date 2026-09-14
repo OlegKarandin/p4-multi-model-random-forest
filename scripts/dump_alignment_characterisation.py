@@ -53,9 +53,14 @@ def capture():
     for config in CONFIGS:
         rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
         stats, log = {}, []
+        # overlap_threshold is no longer a parameter of align_rf_thresholds
+        # (Task 7, design D4) -- config['overlap_threshold'] survives below as
+        # pure row-labelling metadata only, not passed to the call. It is not
+        # yet collapsed out of CONFIGS itself: that grid restructuring is
+        # Task 8's job (see this module's own docstring on why this fixture
+        # is a record, not a requirement).
         a1, a2 = ta.align_rf_thresholds(
             rf1, rf2, X1, y1, X2, y2,
-            overlap_threshold=config['overlap_threshold'],
             delta_rel=config['delta_rel'], align_stats=stats, candidate_log=log)
         rows.append({
             'config': config,

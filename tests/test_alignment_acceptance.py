@@ -128,10 +128,10 @@ def test_alignment_reports_its_acceptance_rate_and_interval_counts():
 
     stats_strict, stats_loose = {}, {}
     ta.align_rf_thresholds(mk(X1, y1, 0), mk(X2, y2, 1), X1, y1, X2, y2,
-                           overlap_threshold=0.5, delta_rel=0.0,
+                           delta_rel=0.0,
                            align_stats=stats_strict)
     ta.align_rf_thresholds(mk(X1, y1, 0), mk(X2, y2, 1), X1, y1, X2, y2,
-                           overlap_threshold=0.5, delta_rel=None,
+                           delta_rel=None,
                            align_stats=stats_loose)
 
     for stats in (stats_strict, stats_loose):

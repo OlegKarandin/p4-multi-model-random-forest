@@ -84,7 +84,6 @@ def test_cfg_for_arm_aligned_only_enables_alignment_not_ccp_alpha():
     cfg = cfg_for_arm('aligned_only', T=4)
     assert cfg.alignment_enabled is True
     assert cfg.delta_align == 0.20
-    assert cfg.overlap_threshold == 0.5
     assert cfg.align_objective == 'blocks'
     assert cfg.ccp_alpha_max == 0.0
     assert cfg.n_trees_min == 4
@@ -103,7 +102,6 @@ def test_cfg_for_arm_both_enables_alignment_and_ccp_alpha():
     cfg = cfg_for_arm('both', T=6)
     assert cfg.alignment_enabled is True
     assert cfg.delta_align == 0.20
-    assert cfg.overlap_threshold == 0.5
     assert cfg.align_objective == 'blocks'
     assert cfg.ccp_alpha_max == feasibility_frontier.CCP_ALPHA_STUDY_MAX
     assert cfg.n_trees_min == 6

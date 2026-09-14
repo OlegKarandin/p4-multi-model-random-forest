@@ -282,19 +282,19 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
         m.compare_independent_joint_mapping(
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
 
-    assert mock_run.call_count == 5       # one call per primary arm
+    assert mock_run.call_count == 3       # one call per primary arm
     # Each call actually carried ITS OWN (arm, cfg) pair, not e.g. the same
     # cfg reused across calls or arm/cfg transposed between calls.
     assert [c.kwargs['arm'] for c in mock_run.call_args_list] == \
         [arm for arm, _ in m.PRIMARY_ARMS]
     assert [c.kwargs['cfg'] for c in mock_run.call_args_list] == \
         [cfg for _, cfg in m.PRIMARY_ARMS]
-    assert mock_csv.call_count == 5       # one file per (arm, M)
+    assert mock_csv.call_count == 3       # one file per (arm, M)
     # Overwrite, never append: a re-run cell must replace its rows, not double
     # them. Every C.3 claim is a paired test on (M, split, k).
     for call in mock_csv.call_args_list:
         assert call.kwargs.get('mode', 'w') == 'w'
-    # os.replace actually ran (not short-circuited): the five real files
+    # os.replace actually ran (not short-circuited): the three real files
     # exist under results/, with no leftover .partial temp files. Filtered to
     # the (arm, M) CSVs: this invocation also writes a manifests/ subdir
     # (write_run_manifest now sees X_app/X_ddos -- real numpy arrays from the
@@ -305,7 +305,7 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
     # with_the_grid_actually_used for that path exercised directly).
     written = sorted(p.name for p in (tmp_path / 'results').iterdir()
                      if p.name.endswith('.csv'))
-    assert len(written) == 5
+    assert len(written) == 3
     assert all(not name.endswith('.partial') for name in written)
 
 
@@ -350,17 +350,16 @@ def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp
     assert joint_d000_df['alignment_enabled'].all()
     assert (joint_d000_df['delta_align'] == '0').all()
 
-    # overlap_threshold is a joint-arm-only setting too (it only governs
-    # candidate selection inside align_rf_thresholds, which the independent
-    # arm never calls) -- same suppression as delta_align, same regression.
-    assert (independent_df['overlap_threshold'] == '').all()
-    assert (joint_d000_df['overlap_threshold'] == '0.5').all()
+    # overlap_threshold is no longer written at all (Task 7, design D4): the
+    # tunable it recorded is gone from TrainConfig, so there is nothing left
+    # to suppress or distinguish per arm.
+    assert 'overlap_threshold' not in independent_df.columns
+    assert 'overlap_threshold' not in joint_d000_df.columns
 
     # The two arms must actually differ -- guards against a fix that makes
     # both columns constant across arms instead of correctly arm-dependent.
     assert not independent_df['alignment_enabled'].equals(joint_d000_df['alignment_enabled'])
     assert not independent_df['delta_align'].equals(joint_d000_df['delta_align'])
-    assert not independent_df['overlap_threshold'].equals(joint_d000_df['overlap_threshold'])
 
 
 def test_a_cell_whose_file_already_exists_is_skipped():
@@ -410,7 +409,7 @@ def test_redo_forces_recomputation():
         m.compare_independent_joint_mapping(
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS, skip_existing=False)
 
-    assert mock_run.call_count == 5
+    assert mock_run.call_count == 3
 
 
 def test_redo_flag_defaults_to_off():
@@ -445,7 +444,7 @@ def test_a_cell_where_every_split_failed_is_not_written():
         m.compare_independent_joint_mapping(
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
 
-    assert mock_run.call_count == 5
+    assert mock_run.call_count == 3
     assert mock_csv.call_count == 0
     assert mock_replace.call_count == 0
 
@@ -642,7 +641,7 @@ def test_a_run_manifest_lands_in_results_manifests_with_the_grid_actually_used(
     assert loaded['M_values'] == [25, 40]
     assert loaded['n_splits'] == 2
     assert loaded['dataset_rows'] == {'app': 37, 'ddos': 53}
-    assert len(loaded['arms']) == 5
+    assert len(loaded['arms']) == 3
 
     # And the protected assertion elsewhere in this file (the exact file
     # listing of results/) is exactly why this lives one level down: the top
