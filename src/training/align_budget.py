@@ -2,15 +2,21 @@
 
 The joint block cost is
 
-    blocks = range_blocks + sum over trees of ceil(entries_t / 512) * factor
+    blocks = sum over features of range_blocks(intervals_f)
+           + factor(widths) * sum over trees of ceil(entries_t / 512)
     factor = tables.codeword_to_blocks(sorted per-feature field widths)
 
-Alignment changes neither entries_t nor the tree count, and range blocks are
-alignment-invariant (a range table is sized by p4c at COMPILE time from the
-declared interval count, giving 206 intervals per block at this project's
-16-bit keys, against real per-feature interval counts of 25-50). So
-minimising `factor` is exactly minimising blocks, and the whole objective
-collapses to one small integer -- see _factor.
+-- see total_blocks, which is the whole objective.
+
+SUPERSEDED, 2026-09-14. This module used to claim range blocks were
+alignment-invariant, on the grounds that a range table holds 206 intervals per
+block against real per-feature interval counts of 25-50, and therefore that
+minimising `factor` alone was exactly minimising blocks. The archive it cited
+contradicts it: joint_low_sd12 in tests/fixtures/resource_model_golden.json is
+ONE feature costing TWO range blocks. At low k a single feature carries the
+whole forest's thresholds and clears 206 routinely, and alignment's only move
+is to remove intervals -- so the term it was told to ignore is exactly the one
+it can move. Audit 2026-09-13 §2.
 
 SUPERSEDED, 2026-09-07. This module used to state the cost as
 `range_blocks + n_trees * codeword_bits_to_blocks(L)` over the pooled
@@ -39,7 +45,10 @@ from src.p4gen.build_p4_script import INFINITE, TCAM_BLOCK_KEY_LENGTH
 from src.p4gen.evaluation import (CODEWORD_KEY_OVERHEAD_BITS,
                                   codeword_bits_to_blocks,
                                   codeword_fields_to_bytes_from_bits,
-                                  codeword_to_blocks)
+                                  codeword_to_blocks,
+                                  entries_across_trees_to_blocks)
+from src.p4model.ranges import compiler_range_rows
+from src.p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 
 
 def pooled_interval_count(ranges1, ranges2):
@@ -177,6 +186,96 @@ def _factor(widths):
     crossbar allocator does not honour it.
     """
     return codeword_to_blocks(tuple(sorted(widths.values())))
+
+
+def range_blocks(interval_count):
+    """TCAM blocks p4c allocates for ONE feature's range table.
+
+    Sized from the DECLARED interval count at COMPILE time, never from the
+    expanded physical row count -- the distinction tables.range_deployment_overflow
+    exists to keep apart. Delegates to compiler_range_rows rather than
+    restating the quarter/worst-case rule: this module's whole 2026-09-07
+    lesson is that a restated cost rule drifts. At this project's 16-bit keys
+    the ladder steps at 206 intervals.
+    """
+    return -(-compiler_range_rows(interval_count)
+             // TERNARY_MATCHING_ENTRIES_PER_BLOCK)
+
+
+def tree_multiplier(*forests):
+    """How many blocks ONE step of the per-table block factor is worth.
+
+    A block is MEMORY, so it is charged once per TREE -- the exact opposite of
+    the crossbar's byte slots, which a stage charges once however many tables
+    read them (audit §8.1). One codeword per leaf, so a tree's entry count is
+    its leaf count.
+
+    Computed ONCE at entry and never updated: alignment relocates thresholds
+    and never deletes one from its own model, so it changes neither a tree's
+    leaf count nor the tree count (invariant 4's sibling).
+
+    Without this, a range step (1 block) and a ternary step (8-80 blocks across
+    the golden fixture) cannot be weighed against each other at all -- audit
+    §8.2 item 6.
+    """
+    return entries_across_trees_to_blocks(
+        int((estimator.tree_.children_left == -1).sum())
+        for forest in forests for estimator in forest.estimators_)
+
+
+def total_blocks(widths, multiplier):
+    """Every TCAM block a joint design of these per-feature widths costs.
+
+    Option A of the audit's §5, and THE quantity alignment optimises after
+    2026-09-14. Both terms are blocks, so they ADD -- this reintroduces no
+    trade-off axis, unlike the retired blocks-vs-stages pair which lived in
+    different domains.
+
+    A feature's width is its interval count minus one, hence the `+ 1`.
+
+    Equals ResourceUsage.blocks exactly on every joint row of
+    tests/fixtures/resource_model_golden.json (design §7.4). Without that
+    invariant this prices a table the switch does not build -- the exact
+    failure mode the superseded band_factor identity had.
+
+    What this REPLACES is `_factor` alone, which was blind to range blocks
+    entirely: a feature four intervals from a free range block could not open
+    the budget gate, and could not outrank a feature one bit from a byte
+    boundary that bought nothing (Gap 1).
+    """
+    return (sum(range_blocks(width + 1) for width in widths.values())
+            + _factor(widths) * multiplier)
+
+
+def blocks_bought_by(widths, floors, feature, multiplier):
+    """(blocks_bought, bits_spent) for the CHEAPEST block-buying shed on one
+    feature, or (0, 0) when no shed within that feature's own room buys
+    anything.
+
+    The quantity feature_order ranks on. It is evaluated on the FULL width dict
+    with this feature substituted, not on the feature alone, and that is forced
+    rather than stylistic: version_block_penalty depends on the width MULTISET,
+    so no per-feature quantity can price a ternary step (design §1.3).
+
+    The scan is exact rather than closed-form because the two ladders step for
+    different reasons -- a byte completion moves the ternary factor, a 206th
+    interval moves a range block -- and the cheapest of the two is the answer.
+    Bounded by this feature's own room (pooled width minus floor width), one
+    total_blocks evaluation per bit, each a pass over <= ~15 features. That is
+    the same order as the `_factor` call it replaces, and negligible beside the
+    model evaluation every candidate already pays for.
+    """
+    room = widths[feature] - floors[feature]
+    if room <= 0:
+        return 0, 0
+    before = total_blocks(widths, multiplier)
+    probe = dict(widths)
+    for shed in range(1, room + 1):
+        probe[feature] = widths[feature] - shed
+        bought = before - total_blocks(probe, multiplier)
+        if bought > 0:
+            return bought, shed
+    return 0, 0
 
 
 def pooled_key_bytes(intervals1, intervals2):

@@ -263,3 +263,114 @@ def test_the_budget_does_not_alias_the_callers_width_dict():
     budget = ab.BlockBudget(caller, _block_widths(8, 8, 8), 0.05)
     budget.note_shed(0, 32)
     assert caller[0] == 40
+
+
+def test_range_blocks_steps_at_the_measured_interval_capacity():
+    """compiler_range_rows, delegated not restated. A range table is sized by
+    p4c at COMPILE time from the DECLARED interval count, giving 206 intervals
+    per block at this project's 16-bit keys -- never from the expanded physical
+    row count, which answers a different question and lives in
+    range_deployment_overflow.
+    """
+    assert ab.range_blocks(1) == 1
+    assert ab.range_blocks(206) == 1
+    assert ab.range_blocks(207) == 2
+
+
+def test_total_blocks_equals_the_assembled_usage_on_every_joint_fixture_row():
+    """The E1 sibling (design §7.4), and the prerequisite for trusting Option A
+    at all: without it, alignment prices a table the switch does not build --
+    the exact failure mode the superseded band_factor identity had.
+
+    Joint rows only. A disjoint pool carries two models' differently-sized
+    tables and two distinct key sets, so a single width dict cannot describe
+    it; those rows are "not applicable", never "predicted wrong".
+
+    joint_low_sd12 is the live witness that range blocks are NOT
+    alignment-invariant: ONE feature and TWO range blocks, so its interval
+    count exceeds the 206-per-block ladder. That is Gap 1, in the fixture.
+    """
+    from tests.test_resource_model_golden import load_fixture, rebuild_pool
+    from src.p4model.usage import assemble_usage
+
+    checked = 0
+    for row in load_fixture()['rows']:
+        if not row['row_id'].startswith('joint'):
+            continue
+        pool = rebuild_pool(row)
+        usage, _range_plan, _ternary_plan = assemble_usage(pool)
+        widths = {i: bits for i, bits in enumerate(pool['ternary_key_bits'][0])}
+        multiplier = sum(1 for _ in pool['ternary_table_specs'])
+        assert ab.total_blocks(widths, multiplier) == usage.blocks, row['row_id']
+        checked += 1
+    assert checked == 8
+
+
+def test_the_range_half_equals_the_generators_own_range_accounting():
+    """§7.4's first clause, stated separately from the total.
+
+    The total could be right by two errors cancelling. This pins the range term
+    against tables.range_matching_resource_usage on the same merged intervals,
+    so a drift in either half is attributable.
+    """
+    from src.p4model.tables import range_matching_resource_usage
+    from src.p4gen.build_p4_script import INFINITE
+
+    # A gap-free tiling of n intervals, which is what the generator emits.
+    def tiling(n):
+        return [(i * 10, i * 10 + 9) for i in range(n - 1)] + [((n - 1) * 10,
+                                                                INFINITE)]
+
+    for counts in ([3, 40], [207], [206, 25, 300]):
+        intervals = {'f{}'.format(i): tiling(n) for i, n in enumerate(counts)}
+        _entries, generator_blocks, _specs = range_matching_resource_usage(
+            intervals)
+        widths = {name: len(rows) - 1 for name, rows in intervals.items()}
+        assert sum(ab.range_blocks(w + 1)
+                   for w in widths.values()) == generator_blocks, counts
+
+
+def test_the_tree_multiplier_is_what_one_factor_step_is_worth():
+    """audit §8.1. A block is memory, charged once per TREE. At this project's
+    tree sizes every tree costs exactly one block-row, so the multiplier is the
+    two forests' tree counts added together -- but the ceil is what stops that
+    coincidence being baked in.
+    """
+    class _Tree:
+        def __init__(self, leaves):
+            self.tree_ = type('T', (), {
+                'children_left': np.array([-1] * leaves)})()
+
+    class _Forest:
+        def __init__(self, *leaf_counts):
+            self.estimators_ = [_Tree(n) for n in leaf_counts]
+
+    assert ab.tree_multiplier(_Forest(10, 20), _Forest(30)) == 3
+    assert ab.tree_multiplier(_Forest(513), _Forest(10)) == 3
+
+
+def test_blocks_bought_by_finds_the_cheapest_block_buying_shed():
+    """The quantity feature_order ranks on (Task 12). Returns what the shed
+    BUYS and what it COSTS, so a feature that can buy nothing within its own
+    room is (0, 0) rather than an arbitrary distance.
+    """
+    #  8 bits -> 1 byte; shedding to 0 frees that byte.
+    widths = {0: 8, 1: 8, 2: 8, 3: 8, 4: 8, 5: 8}
+    floors = {f: 0 for f in widths}
+    bought, spent = ab.blocks_bought_by(widths, floors, 0, multiplier=4)
+    assert bought > 0 and spent > 0
+
+    # No room at all: nothing can be bought at any price.
+    assert ab.blocks_bought_by(widths, dict(widths), 0, multiplier=4) == (0, 0)
+
+
+def test_blocks_bought_by_sees_a_range_step_a_byte_rule_cannot():
+    """Gap 1's mechanism, as a unit. A feature at 207 intervals (width 206) is
+    ONE interval from a free range block -- a saving no byte-completion rule
+    can see, because 206 is not a byte boundary and the ternary factor does not
+    move.
+    """
+    widths = {0: 206, 1: 8}
+    floors = {0: 0, 1: 0}
+    bought, spent = ab.blocks_bought_by(widths, floors, 0, multiplier=1)
+    assert (bought, spent) == (1, 1)
