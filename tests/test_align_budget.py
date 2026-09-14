@@ -233,16 +233,11 @@ def test_note_shed_narrows_one_features_width_and_moves_the_factor():
     assert budget.factor() <= before
 
 
-def test_crossed_compares_against_the_entry_factor():
-    """crossed() is the rollback's question: did this run buy a block? The
-    baseline is the factor at ENTRY, captured once, never the floor."""
-    budget = ab.BlockBudget(_block_widths(40, 40, 40), _block_widths(8, 8, 8), 0.05)
-    assert budget.crossed() is False
-    budget.note_shed(0, 32)
-    budget.note_shed(1, 32)
-    budget.note_shed(2, 32)
-    assert budget.factor() < ab._factor(_block_widths(40, 40, 40))
-    assert budget.crossed() is True
+def test_the_budget_has_only_one_crossing_test():
+    """Audit §8.2 item 8. BlockBudget.crossed() was dead and computed the same
+    thing as crossed_a_boundary(stats); two copies of one predicate is how the
+    superseded band gate survived a repair."""
+    assert not hasattr(ab.BlockBudget, 'crossed')
 
 
 def test_the_floor_factor_is_immutable_across_shedding():

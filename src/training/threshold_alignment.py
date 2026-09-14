@@ -490,6 +490,14 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         # recomputed sweep returns the identical list, every member of which
         # is already in `seen`, so the next round would do zero work.
         # MAX_RECOMPUTE_ROUNDS is only the backstop for genuine cycling.
+        # audit §8.2 item 4. What this feature costs before it is worked, so an
+        # accepted move that BUYS a block can end the feature instead of
+        # shedding on past the ladder step it just crossed. Priceable only now
+        # that per-feature overshoot has a cost: every extra accepted move
+        # ratchets the ONE global accuracy budget that later features need.
+        feature_entry_total = total_blocks(budget.widths, multiplier)
+        bought_here = False
+
         seen = set()
         progressed = True
         rounds = 0
@@ -650,15 +658,26 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
                     budget.note_shed(feature_idx, pooled_before - pooled_after)
 
+                    if total_blocks(budget.widths, multiplier) < feature_entry_total:
+                        bought_here = True
+                        break
+
                     # First acceptance wins: the ranking already put the
                     # cheapest admissible corner first, and the tuples this
                     # pair was named by no longer exist.
                     break
 
-        if progressed and rounds > 1:
+            if bought_here:
+                break
+
+        if progressed and rounds > 1 and not bought_here:
             # Truncated while still accepting moves: the loop never reached a
             # fixpoint, so the result depends on where it was cut off. That is
             # an invariant violation, not a slower run.
+            #
+            # `not bought_here` is the third condition: leaving early because
+            # this feature bought its block is a DELIBERATE exit, not a
+            # truncation, so the fixpoint claim does not apply to it.
             #
             # `rounds > 1` is the "recomputation was actually running" test:
             # at MAX_RECOMPUTE_ROUNDS == 1 the loop is DELIBERATELY reduced to

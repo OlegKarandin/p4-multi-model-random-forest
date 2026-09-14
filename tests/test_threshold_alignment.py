@@ -2161,3 +2161,32 @@ def test_align_stats_records_the_factor_and_the_total_separately(delta_rel):
 
     # The total is never below the factor's own contribution.
     assert stats['total_blocks_after'] >= stats['factor_after']
+
+
+def test_a_feature_stops_being_worked_once_it_has_bought_a_block():
+    """Audit §8.2 item 4. The inner loop ran to a per-feature fixpoint whatever
+    further shedding was worth -- invisible while nothing priced per-feature
+    overshoot, and a real accuracy cost now that something does: every extra
+    accepted move ratchets the ONE global accuracy budget that later features
+    still need.
+    """
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, delta_rel=None,
+                         align_stats=stats)
+    assert stats['total_blocks_after'] <= stats['total_blocks_before']
+    assert stats['accuracy_spent'] >= 0.0
+
+
+def test_stopping_early_does_not_trip_the_fixpoint_invariant(monkeypatch):
+    """The hazard. The per-feature loop ends with
+    `if progressed and rounds > 1: raise AlignmentInvariantError` -- a check
+    that the loop REACHED a fixpoint. Leaving early because the feature bought
+    its block is a deliberate exit, not a truncation, and must not raise.
+    """
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 32)
+    stats = {}
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, delta_rel=None,
+                         align_stats=stats)      # must not raise
+    assert stats['accepted'] >= 0

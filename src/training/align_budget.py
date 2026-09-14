@@ -378,7 +378,6 @@ class BlockBudget:
         # Invariant 4: computed once at entry, never updated. Nothing
         # alignment does can lower it.
         self._floor_factor = _factor(floor_widths)
-        self._start_factor = _factor(self.widths)
 
     def factor(self):
         return _factor(self.widths)
@@ -407,8 +406,3 @@ class BlockBudget:
         _rank_targets already hands back.
         """
         self.widths[feature] -= bits
-
-    def crossed(self):
-        """Did this run buy a block? Compared against the factor at ENTRY --
-        never against the floor, which is what could still be reached."""
-        return self.factor() < self._start_factor
