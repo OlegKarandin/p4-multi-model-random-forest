@@ -59,8 +59,8 @@ def derive_columns(frame):
     would be two places to get it wrong.
 
     wasted_bits is now rebased on the BLOCK FACTOR (§4.6): a shed bit bought
-    something only if it actually lowered align_blocks_after below
-    align_blocks_before -- the same test the corrected gate uses. Otherwise
+    something only if it actually lowered align_factor_after below
+    align_factor_before -- the same test the corrected gate uses. Otherwise
     every bit shed on that run bought nothing.
 
     policy='none' rows are dropped here: 'none' is a pseudo-policy that skips
@@ -80,7 +80,7 @@ def derive_columns(frame):
     # charges. Under the superseded band model this was the overshoot past a
     # 44-bit boundary, and that UNDERSTATED the waste wherever the crossbar
     # arm bound: bits that did cross a band still bought nothing there.
-    bought = out['align_blocks_after'] < out['align_blocks_before']
+    bought = out['align_factor_after'] < out['align_factor_before']
     out['wasted_bits'] = out['bits_shed'].where(~bought, 0)
 
     # The band-derived figure, kept so the campaign's published 57.8% stays

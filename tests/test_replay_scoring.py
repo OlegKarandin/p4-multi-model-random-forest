@@ -19,7 +19,7 @@ def _replay_frame():
                          'k': pair, 'overlap_threshold': 0.5, 'policy': policy,
                          'align_codeword_before': before,
                          'align_codeword_after': after, 'blocks': blocks,
-                         'align_blocks_before': 6, 'align_blocks_after': blocks_after,
+                         'align_factor_before': 6, 'align_factor_after': blocks_after,
                          'acc_app': 0.90, 'acc_ddos': 0.95})
     return pd.DataFrame(rows)
 
@@ -50,7 +50,7 @@ def test_s5_uses_the_tightest_swept_threshold_as_the_reference_not_literal_0_5()
                      'k': 0, 'overlap_threshold': threshold, 'policy': 'aligned',
                      'align_codeword_before': 100,
                      'align_codeword_after': after, 'blocks': blocks,
-                     'align_blocks_before': 6, 'align_blocks_after': 6,
+                     'align_factor_before': 6, 'align_factor_after': 6,
                      'acc_app': 0.90, 'acc_ddos': 0.95})
     frame = pd.DataFrame(rows)
     verdict = rs.score(rs.derive_columns(frame))
@@ -119,14 +119,14 @@ def test_score_accepts_a_frame_with_a_single_objective_value():
 
 
 def test_wasted_bits_charges_every_shed_bit_when_no_block_was_bought():
-    """§4.6: bits shed that did not lower blocks_after bought nothing. The
+    """§4.6: bits shed that did not lower factor_after bought nothing. The
     band-derived version charged only the overshoot past a band boundary,
     which understated the waste wherever the crossbar arm bound -- exactly
     the high-k cells where alignment's benefit is measured to grow."""
     frame = pd.DataFrame([{
         'policy': 'aligned', 'align_codeword_before': 88,
-        'align_codeword_after': 60, 'align_blocks_before': 6,
-        'align_blocks_after': 6}])
+        'align_codeword_after': 60, 'align_factor_before': 6,
+        'align_factor_after': 6}])
     out = derive_columns(frame)
     assert out['bits_shed'].iloc[0] == 28
     assert out['wasted_bits'].iloc[0] == 28
@@ -135,8 +135,8 @@ def test_wasted_bits_charges_every_shed_bit_when_no_block_was_bought():
 def test_wasted_bits_is_zero_when_a_block_was_bought():
     frame = pd.DataFrame([{
         'policy': 'aligned', 'align_codeword_before': 88,
-        'align_codeword_after': 60, 'align_blocks_before': 6,
-        'align_blocks_after': 5}])
+        'align_codeword_after': 60, 'align_factor_before': 6,
+        'align_factor_after': 5}])
     assert derive_columns(frame)['wasted_bits'].iloc[0] == 0
 
 
@@ -146,8 +146,8 @@ def test_the_legacy_band_column_survives_alongside_it():
     longer applies, not a number to quietly overwrite."""
     frame = pd.DataFrame([{
         'policy': 'aligned', 'align_codeword_before': 88,
-        'align_codeword_after': 60, 'align_blocks_before': 6,
-        'align_blocks_after': 6}])
+        'align_codeword_after': 60, 'align_factor_before': 6,
+        'align_factor_after': 6}])
     out = derive_columns(frame)
     assert 'legacy_band_wasted_bits' in out.columns
 

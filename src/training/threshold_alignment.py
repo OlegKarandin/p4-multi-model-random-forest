@@ -5,7 +5,8 @@ from src.training.align_budget import (BlockBudget, _factor,
                                        bits_to_next_byte, bits_to_reach,
                                        codeword_floor,
                                        key_bytes_floor, pooled_interval_count,
-                                       pooled_key_bytes)
+                                       pooled_key_bytes, total_blocks,
+                                       tree_multiplier)
 from src.training.align_targets import (boundary_moves, candidate_targets,
                                         hypothetical_ranges, neighbour_writes)
 from src.training.errors import AlignmentInvariantError
@@ -390,8 +391,17 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # §4.6. The per-table block factor at entry, at exit (below), and at the
     # floor -- the best any alignment of this pair could reach, since a common
     # feature's pooled width can never drop below max(own1, own2).
-    stats['blocks_before'] = _factor(pooled_widths)
-    stats['blocks_floor'] = _factor(own_floor_widths)
+    #
+    # audit §8.2 item 7. `factor_*` is the per-TABLE block factor -- the ternary
+    # key's own width in blocks. `total_blocks_*` is what ResourceUsage.blocks
+    # charges: that factor times the tree multiplier, plus every feature's range
+    # table. Two names because they are two quantities; archived CSVs carry the
+    # factor under the old `blocks_*` name and must never be read as totals.
+    multiplier = tree_multiplier(rf1, rf2)
+    stats['factor_before'] = _factor(pooled_widths)
+    stats['factor_floor'] = _factor(own_floor_widths)
+    stats['total_blocks_before'] = total_blocks(pooled_widths, multiplier)
+    stats['total_blocks_floor'] = total_blocks(own_floor_widths, multiplier)
 
     # §4.6. bits_to_reach survives, aimed at the next cheaper BLOCK factor
     # instead of the retired stage step. A factor of f - 1 is fed by f - 1
@@ -400,10 +410,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # version_block_penalty can hold the factor up past that width, and the
     # cheapest bits are not necessarily the least damaging ones. Reported,
     # never enforced -- no run is skipped on it.
-    block_target = (11 * (stats['blocks_before'] - 1)) // 2
+    block_target = (11 * (stats['factor_before'] - 1)) // 2
     stats['bits_to_reach'] = (
         bits_to_reach(pooled_widths, own_floor_widths, block_target)
-        if stats['blocks_before'] > 1 else None)
+        if stats['factor_before'] > 1 else None)
 
     # §4.1. The budget prices what ResourceUsage charges: the per-table block
     # factor over the pooled width dict, gated against the floor width vector
@@ -634,8 +644,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                                                     intervals2_after)
     stats['codeword_after'] = stats['intervals_after'] - n_features
     stats['key_bytes_after'] = pooled_key_bytes(intervals1_after, intervals2_after)
-    stats['blocks_after'] = _factor(_pooled_widths(intervals1_after,
-                                                   intervals2_after))
+    widths_after = _pooled_widths(intervals1_after, intervals2_after)
+    stats['factor_after'] = _factor(widths_after)
+    stats['total_blocks_after'] = total_blocks(widths_after, multiplier)
     stats['spent_budget'] = budget.spent_budget
 
     # §2.4: what this run gave away, in the same units accept_alignment uses,
@@ -1197,16 +1208,17 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
 
 
 def crossed_a_boundary(stats):
-    """Did this run buy a cheaper block factor?
+    """Did this run buy a cheaper block FACTOR?
 
-    Compares the per-table BLOCK FACTOR, not the codeword band. The band was
-    the wrong step function wherever the crossbar arm binds -- which is every
-    many-feature design measured (design 2026-09-07 §1.3) -- and it failed in
-    both directions: a band crossing that bought no block kept a run that spent
-    accuracy for nothing, and a real block saving that crossed no band got the
-    whole run discarded.
+    Still the factor, not total blocks, and deliberately so: audit §8.2 item 2
+    shows this test is insufficient (a run can pass it while landing on
+    strictly more total blocks than the free alternative for the same pair),
+    but the fix is only reachable when spent_budget is True, which requires
+    delta > 0. Whether this becomes `total_blocks_after < total_blocks_before`
+    or is DELETED along with the whole rollback is exactly what the
+    live-Optuna delta trial decides (design §3, §8.2).
     """
-    return stats['blocks_after'] < stats['blocks_before']
+    return stats['factor_after'] < stats['factor_before']
 
 
 def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,

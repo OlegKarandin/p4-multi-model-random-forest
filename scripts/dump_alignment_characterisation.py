@@ -79,10 +79,14 @@ def main():
         json.dump(data, handle, indent=1, sort_keys=True)
         handle.write('\n')
     for row in data['rows']:
-        print('delta={!r:>5}  accepted={:<4} blocks {}->{} (floor {})'.format(
+        print('delta={!r:>5}  accepted={:<4} factor {}->{} (floor {})  '
+              'total {}->{} (floor {})'.format(
             row['config']['delta_rel'],
-            len(row['accepted']), row['stats']['blocks_before'],
-            row['stats']['blocks_after'], row['stats']['blocks_floor']))
+            len(row['accepted']), row['stats']['factor_before'],
+            row['stats']['factor_after'], row['stats']['factor_floor'],
+            row['stats']['total_blocks_before'],
+            row['stats']['total_blocks_after'],
+            row['stats']['total_blocks_floor']))
     print('wrote', os.path.normpath(FIXTURE))
     return 0
 

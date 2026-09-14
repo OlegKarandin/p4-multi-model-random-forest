@@ -1360,16 +1360,18 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     # No new stats key from C3 itself -- 'round' lives in the candidate_log
     # instead. key_bytes_before/after/floor and bits_to_reach are recorded
     # unconditionally regardless of C3 round depth. 'accuracy_spent' is
-    # recorded on every run. blocks_before/after/floor are the block-domain
-    # keys; the 'stages'-era ternary_stages_*/stage_target keys and the
-    # objective axis itself are retired (design 2026-09-07 §4.3/§4.5).
+    # recorded on every run. factor_before/after/floor are the per-table
+    # block-factor keys and total_blocks_before/after/floor are the block-total
+    # keys (Task 11); the 'stages'-era ternary_stages_*/stage_target keys and
+    # the objective axis itself are retired (design 2026-09-07 §4.3/§4.5).
     assert set(stats_c3) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
         'codeword_before', 'codeword_after', 'codeword_floor',
         'spent_budget', 'rolled_back', 'accuracy_spent',
         'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
         'bits_to_reach',
-        'blocks_before', 'blocks_after', 'blocks_floor'}
+        'factor_before', 'factor_after', 'factor_floor',
+        'total_blocks_before', 'total_blocks_after', 'total_blocks_floor'}
     assert stats_c3['intervals_before'] == stats_r1['intervals_before']
     assert stats_c3['attempted'] >= stats_r1['attempted']
     assert stats_c3['accepted'] >= stats_r1['accepted']
@@ -1419,7 +1421,8 @@ def test_align_stats_records_the_codeword_length_it_optimises():
         'spent_budget', 'rolled_back', 'accuracy_spent',
         'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
         'bits_to_reach',
-        'blocks_before', 'blocks_after', 'blocks_floor'}
+        'factor_before', 'factor_after', 'factor_floor',
+        'total_blocks_before', 'total_blocks_after', 'total_blocks_floor'}
 
     n_features = len(set(ta.extract_feature_intervals(rf1))
                      | set(ta.extract_feature_intervals(rf2)))
@@ -1813,12 +1816,12 @@ def test_align_rf_thresholds_no_longer_accepts_an_objective():
                                align_objective='stages')
 
 
-def _boundary_stats(blocks_before, blocks_after):
+def _boundary_stats(factor_before, factor_after):
     """The keys crossed_a_boundary reads (design 2026-09-07 §4.5): the block
     factor is now its only input. codeword_before/after and the byte-domain
     keys are no longer read by the function under test -- the repair's whole
     point."""
-    return {'blocks_before': blocks_before, 'blocks_after': blocks_after}
+    return {'factor_before': factor_before, 'factor_after': factor_after}
 
 
 def test_crossed_a_boundary_reports_a_real_block_crossing():
@@ -1833,9 +1836,9 @@ def test_crossed_a_boundary_takes_only_the_stats():
     """§4.5: the objective and n_tables parameters go away with the stage
     arm."""
     assert ta.crossed_a_boundary(
-        {'blocks_before': 6, 'blocks_after': 5}) is True
+        {'factor_before': 6, 'factor_after': 5}) is True
     assert ta.crossed_a_boundary(
-        {'blocks_before': 6, 'blocks_after': 6}) is False
+        {'factor_before': 6, 'factor_after': 6}) is False
 
 
 def test_the_byte_domain_stats_are_recorded():
@@ -1931,23 +1934,24 @@ def test_shedding_a_bit_never_raises_the_block_factor(seed):
 
 @pytest.mark.parametrize('delta_rel', [0.0, 0.05, None])
 def test_align_stats_records_the_block_factor_at_entry_exit_and_floor(delta_rel):
-    """§4.6's three added keys. blocks_floor is what NO alignment of this pair
-    could beat, blocks_before what it starts at, blocks_after what it reached
-    -- so a run is sandwiched between them. A violation means either the floor
-    is not a floor (invariant 4) or shedding raised the factor (invariant 7)."""
+    """§4.6's three added keys (renamed factor_* by Task 11). factor_floor is
+    what NO alignment of this pair could beat, factor_before what it starts
+    at, factor_after what it reached -- so a run is sandwiched between them. A
+    violation means either the floor is not a floor (invariant 4) or shedding
+    raised the factor (invariant 7)."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
     ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                            delta_rel=delta_rel, align_stats=stats)
-    for key in ('blocks_before', 'blocks_after', 'blocks_floor'):
+    for key in ('factor_before', 'factor_after', 'factor_floor'):
         assert isinstance(stats[key], int), key
-    assert stats['blocks_floor'] <= stats['blocks_after'] <= stats['blocks_before']
+    assert stats['factor_floor'] <= stats['factor_after'] <= stats['factor_before']
 
 
-def _crossing_stats(codeword_before, codeword_after, blocks_before, blocks_after):
+def _crossing_stats(codeword_before, codeword_after, factor_before, factor_after):
     """The keys crossed_a_boundary reads."""
     return {'codeword_before': codeword_before, 'codeword_after': codeword_after,
-            'blocks_before': blocks_before, 'blocks_after': blocks_after}
+            'factor_before': factor_before, 'factor_after': factor_after}
 
 
 def test_a_band_crossing_that_buys_no_block_no_longer_counts_as_crossing():
@@ -2109,3 +2113,33 @@ def test_a_real_fitted_pair_aligns_without_an_invariant_error():
                          delta_rel=0.0,
                          align_stats=stats)
     assert stats['intervals_after'] <= stats['intervals_before']
+
+
+@pytest.mark.parametrize('delta_rel', [0.0, 0.05, None])
+def test_align_stats_records_the_factor_and_the_total_separately(delta_rel):
+    """Audit §8.2 item 7. `blocks_*` held the ternary FACTOR, not a block
+    count, and archived campaign CSVs carry it under that name. Renaming those
+    three to factor_* and adding total_blocks_* as NEW names means an old CSV
+    can never be read as though it held totals -- a silent repurpose would make
+    pre- and post-repair campaigns look comparable when they are not.
+    """
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    stats = {}
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, delta_rel=delta_rel,
+                         align_stats=stats)
+
+    assert 'blocks_before' not in stats
+    for key in ('factor_before', 'factor_after', 'factor_floor',
+                'total_blocks_before', 'total_blocks_after',
+                'total_blocks_floor'):
+        assert isinstance(stats[key], int), key
+
+    # Sandwiched between entry and floor in BOTH domains: a violation means
+    # either the floor is not a floor (invariant 4) or shedding raised the cost
+    # (invariant 7).
+    assert stats['factor_floor'] <= stats['factor_after'] <= stats['factor_before']
+    assert (stats['total_blocks_floor'] <= stats['total_blocks_after']
+            <= stats['total_blocks_before'])
+
+    # The total is never below the factor's own contribution.
+    assert stats['total_blocks_after'] >= stats['factor_after']

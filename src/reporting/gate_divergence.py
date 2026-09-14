@@ -3,7 +3,7 @@
 The measurement design 2026-09-07 §7 step 1 asks for, and the one number this
 repair is justified by. Both verdicts are read off columns the run itself
 recorded, so this is a measurement rather than a reconstruction:
-align_blocks_before/after are the real per-table factors, and
+align_factor_before/after are the real per-table factors, and
 align_codeword_before/after are the scalars the band gate actually consulted.
 
 NOTE ON PROVENANCE. The design says "re-score archived replay CSVs". There are
@@ -40,13 +40,13 @@ def score_gate_divergence(frame):
                     & frame['align_spent_budget'].astype(bool)].copy()
     band = (aligned['align_codeword_after'].apply(codeword_bits_to_blocks)
             < aligned['align_codeword_before'].apply(codeword_bits_to_blocks))
-    block = aligned['align_blocks_after'] < aligned['align_blocks_before']
+    block = aligned['align_factor_after'] < aligned['align_factor_before']
     judged = frame[frame['policy'] == 'aligned']
     return {
         'n': int(len(aligned)),
         'false_positive': int((band & ~block).sum()),
         'false_negative': int((~band & block).sum()),
         'agree': int((band == block).sum()),
-        'gate_can_open': int((judged['align_blocks_floor']
-                              < judged['align_blocks_before']).sum()),
+        'gate_can_open': int((judged['align_factor_floor']
+                              < judged['align_factor_before']).sum()),
     }

@@ -5,14 +5,14 @@ import pandas as pd
 from src.reporting.gate_divergence import score_gate_divergence
 
 
-def _row(codeword_before, codeword_after, blocks_before, blocks_after,
-         spent=True, policy='aligned', blocks_floor=1):
+def _row(codeword_before, codeword_after, factor_before, factor_after,
+         spent=True, policy='aligned', factor_floor=1):
     return {'policy': policy, 'align_spent_budget': spent,
             'align_codeword_before': codeword_before,
             'align_codeword_after': codeword_after,
-            'align_blocks_before': blocks_before,
-            'align_blocks_after': blocks_after,
-            'align_blocks_floor': blocks_floor}
+            'align_factor_before': factor_before,
+            'align_factor_after': factor_after,
+            'align_factor_floor': factor_floor}
 
 
 def test_a_band_crossing_that_buys_no_block_is_a_false_positive():
@@ -56,6 +56,6 @@ def test_the_gate_can_open_only_where_the_floor_is_strictly_cheaper():
     """§8's risk, answered directly: BlockBudget.spending() is
     factor(current) > factor(floor), so a pair already at its floor can never
     authorise spending however generous delta is."""
-    frame = pd.DataFrame([_row(88, 88, 6, 6, blocks_floor=6),
-                          _row(88, 88, 6, 6, blocks_floor=4)])
+    frame = pd.DataFrame([_row(88, 88, 6, 6, factor_floor=6),
+                          _row(88, 88, 6, 6, factor_floor=4)])
     assert score_gate_divergence(frame)['gate_can_open'] == 1
