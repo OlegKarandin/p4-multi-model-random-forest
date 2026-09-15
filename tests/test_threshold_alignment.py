@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, normalise_feature_name
-from src.p4gen.evaluation import codeword_bits_to_blocks
 from src.training import align_budget as ab
 from src.training import align_targets as at
 from src.training import threshold_alignment as ta
@@ -815,52 +814,25 @@ _ALIGNMENT_GOLDEN_C1C2 = {
              -2],
         ],
     },
-    # Task 12: no longer more permissive than 0.0 -- see the module comment
-    # above. This arm attempts far MORE candidates than 0.0 (117 vs 41)
-    # because the new visiting order reaches admissible-but-eventually-dead
-    # corners 0.0's order never opened, and accepts far FEWER (10 vs 27)
-    # because the accuracy budget is one global ratchet a bad early move can
-    # exhaust (D6) -- exactly the shape this golden pin now demonstrates
-    # rather than merely asserts.
-    0.05: {
-        'stats': {'attempted': 117, 'accepted': 10,
-                  'intervals_before': 91, 'intervals_after': 81},
-        't1': [
-            [50135, 37970, -2, 64068, 30850, -2, -2, -2, 29481, -2, 36261, -2,
-             -2],
-            [25153, 17534, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
-             -2],
-            [9867, -2, 41694, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
-             -2],
-            [11493, -2, 15571, -2, 26336, -2, 43169, 33744, -2, -2, 26063, -2,
-             -2],
-            [45724, 14536, 48924, -2, -2, 25535, -2, 48261, -2, -2, 53373, -2,
-             49629, -2, -2],
-            [40514, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 28712, -2,
-             50610, -2, -2, -2],
-            [40996, 17244, -2, 35130, -2, 58798, -2, -2, 52649, 65407, -2, -2,
-             -2],
-        ],
-        't2': [
-            [8902, -2, 58514, 50135, 29400, -2, -2, 30237, -2, -2, 33384, -2,
-             -2],
-            [14536, -2, 26063, -2, 40514, -2, 61298, 38258, -2, -2, -2],
-            [27458, 47461, -2, -2, 58452, 65407, 33860, -2, -2, -2, 61513, -2,
-             -2],
-            [61422, 45058, 26424, 15571, -2, -2, -2, 16443, -2, 57942, -2, -2,
-             53373, -2, -2],
-            [27321, 53909, 39702, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
-             60939, -2, -2],
-            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 18076, -2, 41360, -2,
-             48048, -2, -2],
-            [54766, 44845, 24115, -2, -2, 38129, -2, -2, 49965, 25535, -2, -2,
-             -2],
-        ],
-    },
+    # The 0.05 arm was deleted here on 2026-09-15 with the delta_align
+    # mechanism (Track 5: delta_helps = FALSE -- mean_d000 0.7956173344395895
+    # vs mean_d020 0.7861922400433382, cells_favouring_d020 14/24). Its last
+    # recorded state was attempted 117, accepted 10, intervals_after 81.
+    #
+    # Removing BlockBudget changes what a non-zero delta DOES: the budget used
+    # to clamp the effective delta to 0.0 once the floor factor was reached,
+    # and nothing clamps it now, so this arm would move to attempted 30,
+    # accepted 29, intervals_after 62. That is a legitimate behavioural change
+    # on an unreachable input -- no caller can supply a non-zero delta any more
+    # -- but this literal predates the change it is supposed to gate and must
+    # NOT be regenerated from post-change code (see the test's docstring), so
+    # the arm is dropped rather than refreshed. The 0.0 arm, which is the only
+    # one the pipeline can produce, comes through bit-identical and keeps the
+    # gate's whole T2b/C3 job.
 }
 
 
-@pytest.mark.parametrize('delta_rel', [0.0, 0.05])
+@pytest.mark.parametrize('delta_rel', [0.0])
 def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
         delta_rel, monkeypatch):
     """The end-to-end numeric-neutrality gate for T2b, and the REGRESSION side
@@ -887,6 +859,11 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
     historical pre-C3 literal it pinned is preserved in git history at the
     commit before the deletion, and its role is taken over by the c1c2
     literal, which came through the deletion bit-identical.
+
+    Parametrized over one value since 2026-09-15: the 0.05 arm went with the
+    delta_align mechanism (see the literal's own comment). delta_rel = 0.0 is
+    the only value any caller can now produce, and it came through that
+    deletion bit-identical too.
     """
     golden = _ALIGNMENT_GOLDEN_C1C2[delta_rel]
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 1)
@@ -1377,11 +1354,13 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     # recorded on every run. factor_before/after/floor are the per-table
     # block-factor keys and total_blocks_before/after/floor are the block-total
     # keys (Task 11); the 'stages'-era ternary_stages_*/stage_target keys and
-    # the objective axis itself are retired (design 2026-09-07 §4.3/§4.5).
+    # the objective axis itself are retired (design 2026-09-07 §4.3/§4.5), and
+    # 'spent_budget'/'rolled_back' went with the delta_align mechanism on
+    # 2026-09-15 (Track 5: delta_helps = FALSE).
     assert set(stats_c3) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
         'codeword_before', 'codeword_after', 'codeword_floor',
-        'spent_budget', 'rolled_back', 'accuracy_spent',
+        'accuracy_spent',
         'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
         'bits_to_reach',
         'factor_before', 'factor_after', 'factor_floor',
@@ -1432,7 +1411,7 @@ def test_align_stats_records_the_codeword_length_it_optimises():
     assert set(stats) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
         'codeword_before', 'codeword_after', 'codeword_floor',
-        'spent_budget', 'rolled_back', 'accuracy_spent',
+        'accuracy_spent',
         'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
         'bits_to_reach',
         'factor_before', 'factor_after', 'factor_floor',
@@ -1443,7 +1422,6 @@ def test_align_stats_records_the_codeword_length_it_optimises():
     assert stats['codeword_before'] == stats['intervals_before'] - n_features
     assert stats['codeword_after'] == stats['intervals_after'] - n_features
     assert stats['codeword_floor'] <= stats['codeword_after']
-    assert stats['rolled_back'] is False
 
 
 def test_accuracy_spent_is_zero_when_no_move_is_accepted(monkeypatch):
@@ -1502,122 +1480,95 @@ def test_the_recorded_codeword_is_the_one_the_block_cost_was_computed_from():
 
 
 # ---------------------------------------------------------------------------
-# Task 7: BandBudget wiring.
+# Budget wiring.
+#
+# Three tests stood here until 2026-09-15 and went with the mechanism (Track
+# 5's pre-registered live-Optuna trial returned delta_helps = FALSE: mean_d000
+# 0.7956173344395895 vs mean_d020 0.7861922400433382, cells_favouring_d020
+# 14/24):
+#
+#   test_an_unreachable_boundary_is_identical_to_spending_nothing -- C1's
+#     no-loss guarantee, that an unreachable boundary made a delta-0.20 run
+#     prediction-identical to a delta-0 one. Vacuous once every run IS a
+#     delta-0 run.
+#   test_the_oracle_is_built_even_at_an_unbounded_delta -- delta_rel=None was
+#     the only path that could have skipped the metric machinery, and it is no
+#     longer reachable from any caller. The surviving statement of the same
+#     property is test_train_model_contract.py's
+#     test_the_joint_arm_always_builds_the_metric_oracle.
+#   test_a_rollback_never_fires_when_no_budget_was_spent, and with it
+#     test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves --
+#     see the align_with_policy section below.
 # ---------------------------------------------------------------------------
-
-def test_an_unreachable_boundary_is_identical_to_spending_nothing():
-    """The strongest statement of C1's no-loss guarantee: when the floor puts
-    the next band out of reach, C1 must be prediction-identical to delta = 0,
-    not merely close to it."""
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    stats_c1 = {}
-    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    delta_rel=0.20,
-                                    align_stats=stats_c1)
-
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    stats_zero = {}
-    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    delta_rel=0.0,
-                                    align_stats=stats_zero)
-
-    if stats_c1['spent_budget']:
-        pytest.skip('this fixture can reach a band; the identity does not apply')
-
-    for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
-        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
-    assert stats_c1['codeword_after'] == stats_zero['codeword_after']
-
 
 def test_the_per_move_sheds_sum_to_the_whole_runs_shed():
-    """C1 decrements the budget's width state per accepted move instead of
-    recomputing the joint count thousands of times. The two must agree
-    exactly, or every reachability decision after the first accepted move is
+    """Alignment decrements its live per-feature width dict once per accepted
+    move instead of recomputing the joint count thousands of times. The two
+    must agree exactly, or every cost decision after the first accepted move is
     made on a stale number.
 
-    Rewritten for BlockBudget (design 2026-09-07 §4.1): note_shed now takes a
-    feature argument alongside the bit count, but the VALUE recorded is
-    unchanged from BandBudget's -- width = intervals - 1 makes
+    The recorded VALUE has survived two rewrites unchanged -- BandBudget's
+    scalar length, then BlockBudget.note_shed's (feature, bits) pair, now a
+    plain dict decrement -- because width = intervals - 1 makes
     dwidth == dintervals, which is exactly what pooled_before - pooled_after
-    already measured."""
-    sheds = []
-    original = ab.pooled_interval_count
+    already measures.
 
-    def spy(r1, r2):
-        return original(r1, r2)
+    There is no longer a method to patch, so the live dict is captured by
+    identity instead: align_rf_thresholds hands it to feature_order as
+    `widths=`, unchanged object, on every pass. Holding that reference lets the
+    test read the dict's FINAL state and compare it against the from-scratch
+    recomputation align_rf_thresholds reports -- which is a stronger statement
+    than the old sum-of-sheds one, since it pins the whole dict's total rather
+    than the decrements in isolation.
 
+    codeword_before/after are exactly sum(widths): a feature's width is its
+    pooled interval count minus one, and the interval count is summed over the
+    same feature set the codeword length subtracts n_features from.
+    """
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     stats = {}
-    budget_lengths = []
-    real_note_shed = ab.BlockBudget.note_shed
+    captured = {}
+    real_feature_order = ta.feature_order
 
-    def record(self, feature, bits):
-        budget_lengths.append(bits)
-        return real_note_shed(self, feature, bits)
+    def spy(*args, **kwargs):
+        captured['live_widths'] = kwargs['widths']
+        return real_feature_order(*args, **kwargs)
 
-    with mock.patch.object(ab.BlockBudget, 'note_shed', record):
+    with mock.patch.object(ta, 'feature_order', spy):
         ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                               delta_rel=0.05, align_stats=stats)
+                               delta_rel=0.0, align_stats=stats)
 
-    assert sum(budget_lengths) == stats['codeword_before'] - stats['codeword_after']
-
-
-def test_the_oracle_is_built_even_at_an_unbounded_delta():
-    """delta_rel=None normally skips the metric machinery entirely
-    (threshold_alignment.py:345-348), which is what makes the dinf arm
-    cheapest. C1's non-spending state needs delta=0, which needs the oracle --
-    so now that gating is unconditional it must always be built. The dinf arm
-    therefore loses its cost advantage; that is expected and must show up in
-    the runtime budget."""
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                           delta_rel=None, align_stats=stats)
-    # With the oracle live, some candidate must have been judged rather than
-    # waved through, so accepted cannot equal attempted on a reject-capable
-    # fixture unless the budget was genuinely unbounded throughout.
-    assert stats['attempted'] > 0
+    live_widths = captured['live_widths']
+    assert sum(live_widths.values()) == stats['codeword_after']
+    assert stats['codeword_after'] < stats['codeword_before'], (
+        'the fixture must shed something, or this test is vacuous')
 
 
 # ---------------------------------------------------------------------------
-# Task 8: align_with_policy -- commit or roll back.
+# align_with_policy.
+#
+# It was C1's commit-or-rollback wrapper until 2026-09-15. Two tests pinned
+# that and are gone with it:
+#
+#   test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves
+#   test_a_rollback_never_fires_when_no_budget_was_spent
+#
+# Neither can be written any more: the rollback fired only when budget was
+# genuinely spent, which required a non-zero delta, and there is no longer a
+# caller that can supply one. What the wrapper still guarantees -- that it
+# clears the caller's stats dict before the run -- is pinned below.
 # ---------------------------------------------------------------------------
 
-def test_spending_that_crosses_no_band_is_rolled_back_to_the_free_moves():
-    """S1 by construction rather than by measurement: if budget was spent and
-    the block factor did not fall, the accuracy was given away for nothing, so
-    the run is redone at delta = 0 and THAT result is returned."""
+def test_align_with_policy_clears_a_reused_stats_dict():
+    """A caller passing the same dict twice must not read a previous run's keys
+    back out of it. This is the whole of what the wrapper does now that the
+    rollback is gone, so it is also the whole of what there is to pin."""
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    stats = {}
-    a1, a2 = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
-                                  delta_rel=0.20,
-                                  align_stats=stats)
-    from src.p4gen.evaluation import codeword_bits_to_blocks
-    if not stats['rolled_back']:
-        assert (codeword_bits_to_blocks(stats['codeword_after'])
-                < codeword_bits_to_blocks(stats['codeword_before'])
-                or not stats['spent_budget'])
-        pytest.skip('this fixture crossed a band or never spent; nothing to roll back')
+    stats = {'left_over_from_an_earlier_run': 'stale'}
+    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats)
 
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    free = {}
-    b1, b2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                                    delta_rel=0.0,
-                                    align_stats=free)
-    for x, y in zip(a1.estimators_ + a2.estimators_, b1.estimators_ + b2.estimators_):
-        assert np.array_equal(x.tree_.threshold, y.tree_.threshold)
-    assert stats['codeword_after'] == free['codeword_after']
-
-
-def test_a_rollback_never_fires_when_no_budget_was_spent():
-    """delta_rel = 0 gives nothing away, so there is never anything to undo and
-    the second pass must not be paid for."""
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    stats = {}
-    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
-                         delta_rel=0.0, align_stats=stats)
-    assert stats['spent_budget'] is False
-    assert stats['rolled_back'] is False
+    assert 'left_over_from_an_earlier_run' not in stats
+    assert stats['intervals_after'] <= stats['intervals_before']
 
 
 # ---------------------------------------------------------------------------
@@ -1811,29 +1762,20 @@ def test_align_rf_thresholds_no_longer_accepts_an_objective():
                                align_objective='stages')
 
 
-def _boundary_stats(factor_before, factor_after):
-    """The keys crossed_a_boundary reads (design 2026-09-07 §4.5): the block
-    factor is now its only input. codeword_before/after and the byte-domain
-    keys are no longer read by the function under test -- the repair's whole
-    point."""
-    return {'factor_before': factor_before, 'factor_after': factor_after}
+def test_crossed_a_boundary_is_gone():
+    """Deleted 2026-09-15 with the rest of the delta_align mechanism (Track 5:
+    delta_helps = FALSE -- mean_d000 0.7956173344395895 vs mean_d020
+    0.7861922400433382, cells_favouring_d020 14/24).
 
-
-def test_crossed_a_boundary_reports_a_real_block_crossing():
-    assert ta.crossed_a_boundary(_boundary_stats(6, 5))    # a real block saved
-
-
-def test_crossed_a_boundary_reports_nothing_when_nothing_moved():
-    assert not ta.crossed_a_boundary(_boundary_stats(6, 6))
-
-
-def test_crossed_a_boundary_takes_only_the_stats():
-    """§4.5: the objective and n_tables parameters go away with the stage
-    arm."""
-    assert ta.crossed_a_boundary(
-        {'factor_before': 6, 'factor_after': 5}) is True
-    assert ta.crossed_a_boundary(
-        {'factor_before': 6, 'factor_after': 6}) is False
+    It answered "did this run buy a cheaper block FACTOR?" and existed only so
+    align_with_policy could decide whether to roll a speculative run back. Both
+    were unreachable without a non-zero delta. Asserted ABSENT rather than
+    simply untested, so a future reviewer reinstating it as a gate has to argue
+    for it rather than restore it quietly -- review finding 2.1 was that this
+    test priced the factor where feature_order and the per-feature early exit
+    price total blocks, and the resolution was deletion, not repricing.
+    """
+    assert not hasattr(ta, 'crossed_a_boundary')
 
 
 def test_the_byte_domain_stats_are_recorded():
@@ -1943,31 +1885,12 @@ def test_align_stats_records_the_block_factor_at_entry_exit_and_floor(delta_rel)
     assert stats['factor_floor'] <= stats['factor_after'] <= stats['factor_before']
 
 
-def _crossing_stats(codeword_before, codeword_after, factor_before, factor_after):
-    """The keys crossed_a_boundary reads."""
-    return {'codeword_before': codeword_before, 'codeword_after': codeword_after,
-            'factor_before': factor_before, 'factor_after': factor_after}
-
-
-def test_a_band_crossing_that_buys_no_block_no_longer_counts_as_crossing():
-    """§1.4's FALSE POSITIVE, as an explicit regression test. Under the
-    superseded gate a run that crossed a 44-bit band kept its result even
-    where the crossbar arm bound and the block factor never moved -- so
-    accuracy was spent for nothing, the exact failure C1 exists to prevent.
-    88 -> 40 is a real band crossing (codeword_bits_to_blocks 3 -> 1)."""
-    stats = _crossing_stats(88, 40, 6, 6)
-    assert codeword_bits_to_blocks(stats['codeword_after']) < codeword_bits_to_blocks(stats['codeword_before'])
-    assert ta.crossed_a_boundary(stats) is False
-
-
-def test_a_block_saving_without_a_band_crossing_now_counts_as_crossing():
-    """§1.4's FALSE NEGATIVE. A move that drops some feature's own
-    ceil(w/8) saves a real block while crossing no band; under the superseded
-    gate the whole run was discarded and re-run at delta = 0, throwing the
-    saving away."""
-    stats = _crossing_stats(88, 86, 6, 5)
-    assert codeword_bits_to_blocks(stats['codeword_after']) == codeword_bits_to_blocks(stats['codeword_before'])
-    assert ta.crossed_a_boundary(stats) is True
+# Two more crossed_a_boundary tests stood here until 2026-09-15 and went with
+# it: test_a_band_crossing_that_buys_no_block_no_longer_counts_as_crossing
+# (§1.4's false positive -- a 44-bit band crossing that moved no block) and
+# test_a_block_saving_without_a_band_crossing_now_counts_as_crossing (§1.4's
+# false negative). Both pinned the 2026-09-07 band-to-factor repair of a gate
+# that no longer exists.
 
 
 def _order_fixture_pair():
@@ -2210,7 +2133,7 @@ def test_a_late_round_block_purchase_does_not_trip_the_fixpoint_invariant(monkey
     takes two rounds: 5 accepted moves land in round 1, and a 6th lands only
     in round 2 after round 1's moves expose a new overlap. `total_blocks` is
     monkeypatched (module-level, exactly like MAX_RECOMPUTE_ROUNDS above) to
-    watch feature 2's own width in the live budget: the first 5 times it
+    watch feature 2's own width in the live width dict: the first 5 times it
     changes (round 1's moves) the fake reports no cheaper total -- `bought_
     here` stays False, matching the real dynamics -- and only the 6th change
     (round 2's move) reports a drop. That is round 2, so at the moment
@@ -2218,15 +2141,15 @@ def test_a_late_round_block_purchase_does_not_trip_the_fixpoint_invariant(monkey
     the state the raise's `and not bought_here` clause exists to wave through
     without an AlignmentInvariantError.
 
-    Calls align_rf_thresholds directly (not align_with_policy) so the
-    monkeypatched total_blocks cannot trigger align_with_policy's separate
-    rollback-and-rerun path, which would call it again under different
-    conditions and make the intended collision unreproducible.
+    Calls align_rf_thresholds directly rather than align_with_policy. That
+    mattered while align_with_policy could roll a run back and re-run it,
+    calling the fake again under different conditions; the rollback is gone
+    (2026-09-15), but the direct call is still the narrower thing to test.
 
     The two setup calls before the per-feature loop (`total_blocks_before`,
     `total_blocks_floor`) are passed through to the REAL total_blocks
     unmodified -- they are computed once, over different width dicts
-    (pooled/floor, not the live budget), and are not part of what this test
+    (pooled/floor, not the live dict), and are not part of what this test
     is isolating.
     """
     from sklearn.ensemble import RandomForestClassifier

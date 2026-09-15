@@ -470,8 +470,6 @@
     "key_bytes_after": 9,
     "key_bytes_before": 13,
     "key_bytes_floor": 8,
-    "rolled_back": false,
-    "spent_budget": false,
     "total_blocks_after": 32,
     "total_blocks_before": 46,
     "total_blocks_floor": 32

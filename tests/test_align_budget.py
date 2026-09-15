@@ -169,95 +169,20 @@ def test_factor_of_an_empty_width_dict_is_the_empty_key_factor():
 
 
 # ---------------------------------------------------------------------------
-# BlockBudget (design 2026-09-07 §4.1). Widths below (3 fields of 40 bits
-# each, vs. a floor of 8 bits each) put both models comfortably past a block
-# boundary in codeword_to_blocks -- band and crossbar arms agree exactly at
-# these widths, so what matters is only that factor(current) > factor(floor),
-# not which arm binds.
-
-def _block_widths(*widths):
-    return {i: w for i, w in enumerate(widths)}
-
-
-def test_a_block_budget_spends_while_a_cheaper_factor_is_reachable():
-    """spending() is factor(current) > factor(floor) -- an EXACT reachability
-    test with no inverse of the step function required, because the floor
-    width vector IS the best attainable case (alignment can relocate a
-    threshold but never delete one)."""
-    current = _block_widths(40, 40, 40)          # 15 bytes
-    floor = _block_widths(8, 8, 8)               #  3 bytes
-    budget = ab.BlockBudget(current, floor, 0.05)
-    assert ab._factor(current) > ab._factor(floor)
-    assert budget.spending() is True
-    assert budget.delta_for_candidate() == 0.05
-    assert budget.spent_budget is True
-
-
-def test_a_block_budget_declines_when_the_floor_is_already_the_factor():
-    """§8's risk as a unit test: a pair whose floor costs what it already
-    costs can never authorise spending, however generous delta is. The run
-    collapses to free moves, which is CORRECT behaviour."""
-    widths = _block_widths(40, 40, 40)
-    budget = ab.BlockBudget(widths, dict(widths), 0.05)
-    assert budget.spending() is False
-    assert budget.delta_for_candidate() == 0.0
-    assert budget.spent_budget is False
-
-
-def test_a_zero_delta_is_not_recorded_as_spending_block_budget():
-    """Carried over verbatim from BandBudget: a delta of exactly 0.0 gives
-    nothing away, so recording it would make the wasted-bit share
-    uninterpretable."""
-    budget = ab.BlockBudget(_block_widths(40, 40, 40), _block_widths(8, 8, 8), 0.0)
-    assert budget.spending() is True
-    assert budget.delta_for_candidate() == 0.0
-    assert budget.spent_budget is False
-
-
-def test_an_unbounded_delta_is_recorded_as_spending_block_budget():
-    """delta_rel=None is the accept-everything anchor and gives away the most
-    of all, so it must count as spending."""
-    budget = ab.BlockBudget(_block_widths(40, 40, 40), _block_widths(8, 8, 8), None)
-    assert budget.delta_for_candidate() is None
-    assert budget.spent_budget is True
-
-
-def test_note_shed_narrows_one_features_width_and_moves_the_factor():
-    """note_shed gains a feature argument because the factor needs the width
-    MULTISET; the VALUE passed is unchanged from BandBudget's, since
-    width = intervals - 1 makes dwidth == dintervals."""
-    budget = ab.BlockBudget(_block_widths(40, 40, 40), _block_widths(8, 8, 8), 0.05)
-    before = budget.factor()
-    budget.note_shed(0, 32)
-    assert budget.widths[0] == 8
-    assert budget.factor() <= before
-
-
-def test_the_budget_has_only_one_crossing_test():
-    """Audit §8.2 item 8. BlockBudget.crossed() was dead and computed the same
-    thing as crossed_a_boundary(stats); two copies of one predicate is how the
-    superseded band gate survived a repair."""
-    assert not hasattr(ab.BlockBudget, 'crossed')
-
-
-def test_the_floor_factor_is_immutable_across_shedding():
-    """Invariant 4: nothing alignment does can lower blocks_floor. The floor
-    widths are copied at entry and never touched by note_shed."""
-    floor = _block_widths(8, 8, 8)
-    budget = ab.BlockBudget(_block_widths(40, 40, 40), floor, 0.05)
-    frozen = budget._floor_factor
-    budget.note_shed(0, 32)
-    budget.note_shed(1, 32)
-    assert budget._floor_factor == frozen
-
-
-def test_the_budget_does_not_alias_the_callers_width_dict():
-    """align_rf_thresholds reuses pooled_widths for feature_order and for
-    stats; a budget mutating it in place would silently rewrite both."""
-    caller = _block_widths(40, 40, 40)
-    budget = ab.BlockBudget(caller, _block_widths(8, 8, 8), 0.05)
-    budget.note_shed(0, 32)
-    assert caller[0] == 40
+# BlockBudget's own eight tests stood here until 2026-09-15 -- spending(),
+# delta_for_candidate()'s zero/None cases, spent_budget, note_shed, the
+# single-crossing-test guard, the immutable floor factor and the no-aliasing
+# guard. The class is gone: Track 5's pre-registered live-Optuna trial returned
+# delta_helps = FALSE (mean_d000 0.7956173344395895 vs mean_d020
+# 0.7861922400433382, cells_favouring_d020 14/24), so there is no accuracy
+# tolerance left for a budget to gate, and align_rf_thresholds now keeps the
+# live width dict itself.
+#
+# Nothing here replaces them, and nothing is left untested by their removal:
+# the arithmetic they exercised is _factor / total_blocks / _own_floor_widths,
+# which have their own tests above and below, and the live-width bookkeeping is
+# pinned end-to-end by test_threshold_alignment.py's
+# test_the_per_move_sheds_sum_to_the_whole_runs_shed.
 
 
 def test_range_blocks_steps_at_the_measured_interval_capacity():

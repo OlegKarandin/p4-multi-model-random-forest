@@ -340,69 +340,23 @@ def bits_to_reach(pooled_widths, own_floors, target_bytes):
     return sum(costs[:need]) if need <= len(costs) else None
 
 
-class BlockBudget:
-    """Decides, per candidate, whether alignment may spend accuracy.
-
-    The C1 rule, repriced (design 2026-09-07): spend the configured tolerance
-    only while a CHEAPER BLOCK FACTOR is still reachable, otherwise judge
-    candidates at delta = 0.0 and keep collecting the free moves. Replaces
-    BandBudget, which gated on `band_target(L) >= floor` -- a step function the
-    hardware does not have wherever the crossbar arm binds, which is every
-    many-feature design measured (§1.3: 0 of 14 high-k key sets).
-
-    Carries the per-feature WIDTH DICT rather than a scalar length, and that is
-    forced rather than stylistic: version_block_penalty depends on the width
-    MULTISET, so no scalar can carry the cost (§1.3).
-
-    Reachability is simpler here than it was in the band domain, not harder.
-    BandBudget needed band_target -- an INVERSE of the step function. Here the
-    floor width vector IS the best attainable case (alignment relocates a
-    threshold but never deletes one, so a common feature's pooled width can
-    never drop below max(own1, own2)), so `factor(current) > factor(floor)` is
-    an exact reachability test with no inverse required. It is also the most
-    permissive CORRECT gate: it stays open while any block remains
-    theoretically reachable.
-
-    Reachability is NECESSARY, not sufficient -- the candidate generator can
-    still run dry before a block is bought, which is what
-    threshold_alignment.align_with_policy's rollback exists to undo.
-    """
-
-    def __init__(self, pooled_widths, floor_widths, delta_rel):
-        # Copied, not aliased: align_rf_thresholds keeps its own pooled_widths
-        # for feature_order and for the stats, and a budget mutating it in
-        # place would silently rewrite both.
-        self.widths = dict(pooled_widths)
-        self.delta_rel = delta_rel
-        self.spent_budget = False
-        # Invariant 4: computed once at entry, never updated. Nothing
-        # alignment does can lower it.
-        self._floor_factor = _factor(floor_widths)
-
-    def factor(self):
-        return _factor(self.widths)
-
-    def spending(self):
-        return self.factor() > self._floor_factor
-
-    def delta_for_candidate(self):
-        """The delta the NEXT candidate is judged by. Records that real budget
-        was offered -- a delta of exactly 0.0 gives nothing away and does not
-        count, or the wasted-bit share becomes uninterpretable. Semantics
-        carried over verbatim from BandBudget."""
-        if not self.spending():
-            return 0.0
-        if self.delta_rel is None or self.delta_rel > 0.0:
-            self.spent_budget = True
-        return self.delta_rel
-
-    def note_shed(self, feature, bits):
-        """Record an accepted move's realised shed on the ONE feature that
-        moved, so the next reachability test sees the current widths.
-
-        The feature argument is what the width dict needs; the VALUE is
-        unchanged from BandBudget's, because width = intervals - 1 makes
-        dwidth == dintervals == pooled_before - pooled_after, which
-        _rank_targets already hands back.
-        """
-        self.widths[feature] -= bits
+# DELETED 2026-09-15: class BlockBudget.
+#
+# It decided, per candidate, whether alignment might spend accuracy: offer the
+# configured tolerance while a cheaper block factor was still REACHABLE
+# (`factor(current) > factor(floor)`, exact because the floor width vector is
+# the best attainable case), otherwise judge at delta = 0.0. It carried the live
+# per-feature width dict, a `spent_budget` flag and `note_shed`, and its
+# reachability test was necessary but not sufficient -- the candidate generator
+# could run dry before a block was bought, which is what
+# threshold_alignment.align_with_policy's rollback existed to undo.
+#
+# Track 5's pre-registered live-Optuna trial returned delta_helps = FALSE
+# (mean_d000 0.7956173344395895 vs mean_d020 0.7861922400433382,
+# cells_favouring_d020 14/24), so there is no tolerance left to gate: alignment
+# keeps the free moves and nothing else. align_rf_thresholds now carries the
+# live width dict itself, which is all the class did that anything still needs.
+#
+# codeword_floor / _own_floor_widths / _factor / total_blocks survive -- the
+# floor is still reported in the stats and still ranks features in
+# feature_order.

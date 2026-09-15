@@ -1,5 +1,5 @@
 from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
-from src.training.align_budget import (BlockBudget, _factor,
+from src.training.align_budget import (_factor,
                                        _own_floor_widths,
                                        _pooled_widths,
                                        bits_to_reach,
@@ -256,9 +256,10 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
     old_range, new_range) whenever nothing has mutated `ranges1`/`ranges2` in
     between (true here: only an ACCEPTED move mutates them, and the caller's
     loop over `ranked` stops at the first accept). Handing both numbers back
-    lets the caller's post-acceptance shed bookkeeping (BlockBudget.note_shed)
-    read counts already paid for while ranking, instead of recomputing
-    pooled_interval_count a second time around the mutation it predicted.
+    lets the caller's post-acceptance shed bookkeeping (the `live_widths`
+    decrement) read counts already paid for while ranking, instead of
+    recomputing pooled_interval_count a second time around the mutation it
+    predicted.
     """
     before = pooled_interval_count(ranges1, ranges2)
     scored = []
@@ -398,7 +399,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     n_features = len(set(intervals1) | set(intervals2))
     stats['codeword_before'] = stats['intervals_before'] - n_features
     stats['codeword_floor'] = codeword_floor(intervals1, intervals2)
-    stats['rolled_back'] = False
 
     # The byte domain, recorded unconditionally.
     stats['key_bytes_before'] = pooled_key_bytes(intervals1, intervals2)
@@ -437,22 +437,30 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         bits_to_reach(pooled_widths, own_floor_widths, block_target)
         if stats['factor_before'] > 1 else None)
 
-    # §4.1. The budget prices what ResourceUsage charges: the per-table block
-    # factor over the pooled width dict, gated against the floor width vector
-    # -- the best case any alignment of this pair could reach.
-    budget = BlockBudget(pooled_widths, own_floor_widths, delta_rel)
+    # The width dict alignment actually works on, decremented per accepted move
+    # so feature_order and the per-feature early exit see the CURRENT cost.
+    #
+    # Copied, not aliased: `pooled_widths` above is the entry snapshot that
+    # `stats` and the floor comparison are computed from, and mutating it in
+    # place would silently rewrite both.
+    #
+    # Until 2026-09-15 this dict lived inside a BlockBudget, which also decided
+    # whether a candidate could be judged at a non-zero delta. Track 5 returned
+    # delta_helps = FALSE and the whole tolerance axis went; every candidate is
+    # now judged at the caller's delta, which the campaign always leaves at 0.
+    live_widths = dict(pooled_widths)
 
-    # Recomputed per feature against the budget's LIVE widths (audit §8.2 item
-    # 9). Computing it once at entry was justified by features being
-    # structurally independent in the loop below -- true of the loop, false of
-    # the cost. `remaining` and the total order inside feature_order keep this
+    # Recomputed per feature against the LIVE widths (audit §8.2 item 9).
+    # Computing it once at entry was justified by features being structurally
+    # independent in the loop below -- true of the loop, false of the cost.
+    # `remaining` and the total order inside feature_order keep this
     # deterministic, which the refit assertion depends on.
     remaining = set(intervals1) & set(intervals2)
 
     while remaining:
         feature_idx = feature_order(intervals1, intervals2,
                                     multiplier=multiplier,
-                                    widths=budget.widths,
+                                    widths=live_widths,
                                     floors=own_floor_widths,
                                     features=remaining)[0]
         remaining.discard(feature_idx)
@@ -500,7 +508,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         # shedding on past the ladder step it just crossed. Priceable only now
         # that per-feature overshoot has a cost: every extra accepted move
         # ratchets the ONE global accuracy budget that later features need.
-        feature_entry_total = total_blocks(budget.widths, multiplier)
+        feature_entry_total = total_blocks(live_widths, multiplier)
         bought_here = False
 
         seen = set()
@@ -580,8 +588,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
                     stats['attempted'] += 1
 
-                    effective_delta = budget.delta_for_candidate()
-
                     # IncrementalMetrics' ordering contract: apply reads the NEW
                     # per-tree predictions out of tree_predictions and the OLD
                     # ones out of undo_info, so it must run AFTER
@@ -590,7 +596,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     mtoken1 = metrics1.apply(tree_predictions1, undo_info1)
                     mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
                     after = metrics1.metrics() + metrics2.metrics()
-                    accepted = accept_alignment(marks, after, effective_delta)
+                    accepted = accept_alignment(marks, after, delta_rel)
 
                     if candidate_log is not None:
                         candidate_log.append({
@@ -661,9 +667,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         current_ranges2, idx2, range2, target,
                         feature_idx, threshold_index2)
 
-                    budget.note_shed(feature_idx, pooled_before - pooled_after)
+                    live_widths[feature_idx] -= pooled_before - pooled_after
 
-                    if total_blocks(budget.widths, multiplier) < feature_entry_total:
+                    if total_blocks(live_widths, multiplier) < feature_entry_total:
                         bought_here = True
                         break
 
@@ -704,15 +710,16 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     widths_after = _pooled_widths(intervals1_after, intervals2_after)
     stats['factor_after'] = _factor(widths_after)
     stats['total_blocks_after'] = total_blocks(widths_after, multiplier)
-    stats['spent_budget'] = budget.spent_budget
 
     # §2.4: what this run gave away, in the same units accept_alignment uses,
     # priced as a MAX across the four metrics rather than a sum or a mean --
     # the standard this module already applies in accept_alignment's all(),
     # in ratchet, and in _rank_targets' damage. Recorded unconditionally
     # (design spec: "Unchanged, still written with exactly today's values")
-    # so a campaign always has this stat to compare runs against, regardless
-    # of which objective or delta_align produced them.
+    # so a campaign always has this stat to compare runs against. With the
+    # delta_align axis deleted (2026-09-15) alignment only ever accepts free
+    # moves, so this is 0.0 on every campaign run; it is kept as the check
+    # that this really is so, rather than as a swept quantity's record.
     stats['accuracy_spent'] = max(0.0, max(rel_deg(b, a)
                                            for b, a in zip(started_at, current)))
 
@@ -1266,64 +1273,46 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
         threshold_index[(feature_idx, new_threshold)] = nodes
 
 
-def crossed_a_boundary(stats):
-    """Did this run buy a cheaper block FACTOR?
-
-    Still the factor, not total blocks, and deliberately so: audit §8.2 item 2
-    shows this test is insufficient (a run can pass it while landing on
-    strictly more total blocks than the free alternative for the same pair),
-    but the fix is only reachable when spent_budget is True, which requires
-    delta > 0. Whether this becomes `total_blocks_after < total_blocks_before`
-    or is DELETED along with the whole rollback is exactly what the
-    live-Optuna delta trial decides (design §3, §8.2).
-    """
-    return stats['factor_after'] < stats['factor_before']
+# DELETED 2026-09-15: crossed_a_boundary(stats), and with it
+# align_with_policy's commit-or-rollback.
+#
+# crossed_a_boundary asked `stats['factor_after'] < stats['factor_before']` --
+# did this run buy a cheaper block FACTOR? -- and align_with_policy used it to
+# undo a speculative run: BlockBudget's reachability test proved a cheaper
+# factor was REACHABLE, not that it would be REACHED, so a run could pay
+# accuracy and buy nothing, and the rollback re-ran the same pair at delta = 0
+# and kept that instead (recorded as stats['rolled_back']).
+#
+# Both were unreachable without a non-zero delta -- align_with_policy returned
+# the speculative result untouched whenever spent_budget was False -- and
+# Track 5's pre-registered live-Optuna trial returned delta_helps = FALSE
+# (mean_d000 0.7956173344395895 vs mean_d020 0.7861922400433382,
+# cells_favouring_d020 14/24). Review finding 2.1 -- that this test priced the
+# factor where feature_order and the per-feature early exit price total blocks
+# -- is closed by deleting the test, not by repricing it.
 
 
 def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
                       delta_rel=0.0,
                       align_stats=None, candidate_log=None):
-    """align_rf_thresholds with C1's commit-or-rollback guarantee.
+    """align_rf_thresholds, with `align_stats` cleared first.
 
-    `factor(current) > factor(floor)` proves a cheaper block factor is
-    REACHABLE, not that it will be REACHED: the candidate generator can run dry
-    mid-flight, leaving a run that paid accuracy and bought nothing -- exactly
-    the waste C1 exists to remove. So: run at the configured delta; if budget
-    was genuinely spent and the run bought no block (`crossed_a_boundary`),
-    discard that result and re-run the same pair at delta = 0, keeping only the
-    free moves.
+    Kept under its own name because train_model.py and
+    scripts/replay_alignment.py both call it, and because a caller passing a
+    reused stats dict must not be able to read a previous run's keys back out
+    of it.
 
-    A whole-function retry rather than in-loop state surgery, because
-    align_rf_thresholds is already a pure function of (models, validation data,
-    params) and already deep-copies its inputs (C8) -- so re-running it from
-    the caller's untouched forests IS the rollback. Cost is 2x alignment
-    runtime on exactly the runs where the speculation failed, 1x everywhere
-    else.
-
-    Keeping a "best intermediate state" instead was considered and rejected
-    (design §4.5): a run that bought no block bought nothing by definition, so
-    there is nothing to keep, and the accuracy is better returned.
+    It used to be C1's commit-or-rollback wrapper: run at the configured delta,
+    and if budget was genuinely spent while the run bought no block, discard
+    that result and re-run at delta = 0 keeping only the free moves. There is
+    no configured delta any more (2026-09-15, Track 5's delta_helps = FALSE),
+    so the speculation the rollback protected against cannot happen and there
+    is nothing left to undo -- which is why this is a single call and no longer
+    costs 2x alignment runtime on the runs where the speculation failed.
     """
     stats = align_stats if align_stats is not None else {}
     stats.clear()
-    speculative = align_rf_thresholds(
+    return align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         delta_rel=delta_rel,
         align_stats=stats, candidate_log=candidate_log)
-
-    if not stats['spent_budget'] or crossed_a_boundary(stats):
-        return speculative
-
-    # Spent and bought nothing. Redo at delta = 0 and keep THAT.
-    if candidate_log is not None:
-        # The speculative run's candidates never happened as far as the
-        # returned models are concerned, so its log must not be reported
-        # alongside them.
-        del candidate_log[:]
-    stats.clear()
-    result = align_rf_thresholds(
-        rf1, rf2, X_val1, y_val1, X_val2, y_val2,
-        delta_rel=0.0,
-        align_stats=stats, candidate_log=candidate_log)
-    stats['rolled_back'] = True
-    return result

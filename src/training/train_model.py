@@ -277,8 +277,7 @@ def train_multi_RF_Optuna_multi_constrained(
 
         Fully deterministic given (params, data): random_state is fixed above,
         and align_with_policy is a deterministic function of the two models
-        and val_align (it is a wrapper that may run the same pure function
-        twice). That determinism is what lets the winner be REFIT below
+        and val_align. That determinism is what lets the winner be REFIT below
         instead of cached (F8) -- a measured 401 KB per model pair, ~100 pairs
         per search, per worker.
         """
