@@ -54,9 +54,11 @@ def derive_columns(frame):
     """factor / bits_shed / wasted_bits, derived rather than stored.
 
     align_stats deliberately records only the primitives (codeword_before,
-    codeword_after, codeword_floor, spent_budget, rolled_back); everything here
-    is a pure function of those plus the band arithmetic, so storing it twice
-    would be two places to get it wrong.
+    codeword_after, codeword_floor, and the factor/total_blocks triples);
+    everything here is a pure function of those plus the band arithmetic, so
+    storing it twice would be two places to get it wrong. Two more primitives
+    stood in that list until 2026-09-15 -- spent_budget and rolled_back -- and
+    went with the delta_align mechanism (Track 5: delta_helps = FALSE).
 
     wasted_bits is now rebased on the BLOCK FACTOR (§4.6): a shed bit bought
     something only if it actually lowered align_factor_after below

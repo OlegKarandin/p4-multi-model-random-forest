@@ -88,8 +88,9 @@ _NO_PREFILTER_NOTE = (
     "pre-filters existed historically and both are gone: the original "
     "endpoint_ratio_cap ratio-based cap (removed P3 Task 7, replaced by a "
     "delta-derived shift_mass_cap veto) and that veto itself (removed P3 "
-    "Task 8, because it silently discarded confirmed-harmless moves at "
-    "delta_align=0). shift_mass_cap's now-dead implementation lingered as "
+    "Task 8, because it silently discarded confirmed-harmless moves at the "
+    "zero alignment tolerance). shift_mass_cap's now-dead implementation "
+    "lingered as "
     "unused code after Task 8 until this cleanup campaign's own Task 6 "
     "deleted it outright. overlap_threshold itself is gone too (removed "
     "this campaign's Task 7): every alignment candidate is now admitted by "
@@ -118,14 +119,20 @@ _NO_PREFILTER_NOTE = (
 def build_manifest(arms, M_values, n_splits, n_rows_app, n_rows_ddos, cwd=None):
     """The JSON-able dict for one campaign invocation.
 
-    arms : list of (arm, TrainConfig) pairs, the same shape PRIMARY_ARMS /
-        SENSITIVITY_ARMS use. Each is recorded as dataclasses.asdict(cfg) --
-        NOT via the CSV-row label helpers (delta_align_label etc.), which
-        deliberately collapse None/off/suppressed cases to '' for the row
-        schema. The manifest wants the raw config: delta_align: None must
-        stay distinguishable from delta_align: 0.0, which is the entire
-        joint-dinf (accept every move) vs joint-d000 (accept only harmless
-        moves) distinction, and asdict() does not coerce None to anything.
+    arms : list of (arm, TrainConfig) pairs, the same shape PRIMARY_ARMS uses.
+        Each is recorded as dataclasses.asdict(cfg) -- the RAW config, not the
+        CSV-row label helpers, which deliberately collapse off/suppressed cases
+        to '' for the row schema.
+
+        The sharpest case for that choice is gone: until 2026-09-15 the config
+        carried `delta_align`, where None (accept every move -- joint-dinf) had
+        to stay distinguishable from 0.0 (accept only harmless moves --
+        joint-d000), and asdict() is what does not coerce None to anything.
+        Track 5's pre-registered verdict was delta_helps = FALSE (mean_d000
+        0.7956173344395895 vs mean_d020 0.7861922400433382,
+        cells_favouring_d020 14/24), the field is gone, and no Optional field
+        remains for an encoder to flatten. The rule stands anyway: a label is
+        for the row schema, a manifest is for provenance.
     """
     encoded_arms = []
     for arm, cfg in arms:

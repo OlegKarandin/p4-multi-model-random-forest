@@ -103,12 +103,14 @@ def _independent_pairs(subset, policy):
     model pairs, not sweep cells.
 
     'none' is the only policy proven to ignore overlap_threshold entirely
-    (run_one_policy skips align_with_policy -- the only place
-    overlap_threshold is used -- for 'none'), so replaying one pair at N
-    swept --overlap-thresholds values produces N identical 'none' rows that
-    differ only in that column. An aligned policy like 'aligned' can
-    genuinely produce different results at different overlap_threshold
-    values, so it is never deduped here."""
+    (run_one_policy skips alignment altogether for 'none', and alignment was
+    the only reader of overlap_threshold), so replaying one pair at N swept
+    --overlap-thresholds values produces N identical 'none' rows that differ
+    only in that column. An aligned policy like 'aligned' could genuinely
+    produce different results at different overlap_threshold values, so it is
+    never deduped here. This only ever applies to ARCHIVED replay frames:
+    overlap_threshold has not been written since 2026-09-14, so a fresh frame
+    has no such column and pair_keys narrows it away."""
     if policy != 'none':
         return subset
     dedupe_keys = [k for k in pair_keys(subset) if k != 'overlap_threshold']

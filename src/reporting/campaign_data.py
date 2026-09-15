@@ -27,10 +27,15 @@ its own, both produce a plausible wrong answer:
    never ran for the independent arm) never gets confused with an
    infeasible row's `''` (meaning "this k was infeasible, ignore this row
    entirely").
-2. `delta_align` is a string column (`''`, `'0'`, `'0.05'`, `'inf'`,
-   `TrainConfig.delta_align_label`) carrying two non-numeric sentinels:
-   `''` (alignment did not run) and `'inf'` (accept every move -- the
-   accept-all anchor, not a numeric value). `load_campaign` never compares
+2. `delta_align` is a string column (`''`, `'0'`, `'0.05'`, `'inf'`, written
+   by the retired `TrainConfig.delta_align_label`) carrying two non-numeric
+   sentinels: `''` (alignment did not run, or -- on a file written after
+   2026-09-15 -- ran with no tolerance axis to record) and `'inf'` (accept
+   every move, the accept-all anchor, not a numeric value). It is OPTIONAL,
+   the second archive boundary after `overlap_threshold`: nothing has written
+   it since Track 5's delta_helps = FALSE verdict, and `load_campaign`
+   materialises it as `''` when no loaded file has it, so the three
+   delta columns are always present. `load_campaign` never compares
    this raw string on any code path: it parses unconditionally into
    `delta_align_num` (float, NaN for both sentinels) plus
    `delta_align_is_inf` (bool, the only way to tell the two sentinels
@@ -43,9 +48,9 @@ its own, both produce a plausible wrong answer:
    switches to scientific notation under about `1e-4`, e.g.
    `'{:g}'.format(5.19e-05) == '5.19e-05'`, which sorts lexicographically
    *above* an ordinary `'0.78...'` string while being numerically far
-   below it. `TrainConfig.delta_align` (`src/training/config.py`) also
-   enforces no upper bound beyond >= 0, so no fixed domain could have
-   supported the claim regardless. Corrected here rather than repeated.)
+   below it. The retired `TrainConfig.delta_align` field also enforced no
+   upper bound beyond >= 0, so no fixed domain could have supported the
+   claim regardless. Corrected here rather than repeated.)
    The genuine, reproducible hazard on this column is different: pandas'
    own CSV dtype inference silently turns a column that is ENTIRELY the
    literal text `'inf'` (true of every real `joint-dinf` file, since the
@@ -82,9 +87,13 @@ Identity / provenance
 
 Alignment configuration
     alignment_enabled bool
-    delta_align       str    raw label as written ('', '0', '0.05', 'inf').
-                              Kept for provenance / display; never compare
-                              this numerically.
+    delta_align       str    OPTIONAL (the 2026-09-15 archive boundary): the
+                              raw label as written ('', '0', '0.05', 'inf'),
+                              or '' for EVERY row when no loaded file's
+                              header has the column -- true of every file
+                              written after Track 5's delta_helps = FALSE
+                              verdict retired the axis. Kept for provenance /
+                              display; never compare this numerically.
     delta_align_num   float64  NaN when delta_align is '' (alignment did not
                               run) or 'inf' (accept-all anchor); otherwise
                               the parsed float.
@@ -233,6 +242,21 @@ _FLOAT_COLUMNS = [
 # all-NaN float64 column, never a KeyError.
 OPTIONAL_COLUMNS = ('overlap_threshold',)
 
+# The SECOND archive boundary, 2026-09-15: delta_align, on Track 5's
+# pre-registered verdict delta_helps = FALSE (mean_d000 0.7956173344395895 vs
+# mean_d020 0.7861922400433382, cells_favouring_d020 14/24). Every archived
+# campaign CSV carries it; nothing written after that date does, because
+# TrainConfig no longer has the field and src/main.py no longer stamps the
+# column.
+#
+# Handled separately from OPTIONAL_COLUMNS rather than added to it, because it
+# is a STRING column with two non-numeric sentinels (trap 2 in the module
+# docstring) and must never go through pd.to_numeric as loaded. When a file's
+# header omits it, every row of that file reads as '' -- the same value an
+# archived independent / joint-off row already carries, and the same value
+# _expected_arm_slug already reads as "no delta in this slug".
+ARCHIVED_DELTA_ALIGN_COLUMN = 'delta_align'
+
 
 def _parse_filename(path):
     """Parse (n_trees, max_depth, M, arm_slug) out of a
@@ -256,10 +280,21 @@ def _parse_filename(path):
 def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
                         overlap_threshold_label=''):
     """Recompute the arm slug from the in-file identity columns, mirroring
-    `TrainConfig.arm_slug` / `delta_align_label` / `overlap_threshold_label`'s
-    own logic (src/training/config.py) without needing a TrainConfig instance
-    -- the row only carries the already-labelled columns, not the config
-    object that produced them."""
+    `TrainConfig.arm_slug` (src/training/config.py) and the two label helpers
+    it has since lost -- `delta_align_label` and `overlap_threshold_label` --
+    without needing a TrainConfig instance: the row only carries the
+    already-labelled columns, not the config object that produced them.
+
+    The aligned joint arm has TWO correct answers, and which one applies is
+    decided by the row, not by a flag. A fresh file (2026-09-15 onward) has no
+    `delta_align` column at all, so its label arrives as '' and the slug is
+    plain `joint`. An archived file always carried a numeric or 'inf' label on
+    its aligned rows, so it reconstructs to `joint-d{:03d}` / `joint-dinf` as
+    it always did. The two cannot collide: an archived aligned row never
+    carried '' (TrainConfig.delta_align_label only returned '' for the
+    independent arm or for alignment_enabled=False, both of which return
+    above).
+    """
     if arm == 'independent':
         return 'independent'
     if arm != 'joint':
@@ -268,15 +303,19 @@ def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
             "'independent' or 'joint')".format(arm))
     if not alignment_enabled:
         return 'joint-off'
-    if delta_align_label == 'inf':
+    if pd.isna(delta_align_label) or delta_align_label == '':
+        # Post-2026-09-15: no tolerance axis, so no suffix.
+        slug = 'joint'
+    elif delta_align_label == 'inf':
         slug = 'joint-dinf'
     else:
         try:
             delta = float(delta_align_label)
         except (TypeError, ValueError):
             raise MislabelledArtifactError(
-                "arm='joint' with alignment_enabled=True must carry a numeric "
-                "or 'inf' delta_align, got {!r}".format(delta_align_label))
+                "arm='joint' with alignment_enabled=True must carry an empty, "
+                "numeric or 'inf' delta_align, got {!r}".format(
+                    delta_align_label))
         slug = 'joint-d{:03d}'.format(int(round(delta * 100)))
     return slug + _expected_overlap_suffix(overlap_threshold_label)
 
@@ -313,10 +352,12 @@ def _cross_check_identity(path, parsed, file_df):
     match the filename exactly and be constant within the file. arm_slug is
     not stored directly -- it is recomputed from the four columns that
     together determine it (arm, alignment_enabled, delta_align,
-    overlap_threshold), which are exactly the columns TrainConfig.arm_slug
-    itself was derived from, so a mismatch here can only mean the file was
-    mislabelled (wrong filename) or corrupted (inconsistent columns), not a
-    legitimate new arm shape.
+    overlap_threshold), which are exactly the columns TrainConfig.arm_slug and
+    its two retired label helpers were derived from, so a mismatch here can
+    only mean the file was mislabelled (wrong filename) or corrupted
+    (inconsistent columns), not a legitimate new arm shape. Two of the four
+    are archive boundaries, stood in for by '' when a fresh file omits them
+    entirely; see _expected_arm_slug.
     """
     for field, col in (('n_trees', 'n_trees'), ('max_depth', 'max_depth'), ('M', 'M')):
         values = pd.unique(file_df[col])
@@ -327,12 +368,14 @@ def _cross_check_identity(path, parsed, file_df):
 
     arm_values = pd.unique(file_df['arm'])
     align_values = pd.unique(file_df['alignment_enabled'])
-    delta_values = pd.unique(file_df['delta_align'])
-    # overlap_threshold is the archive boundary (Task 9): every archived file
-    # has it, no fresh file does. '' -- the same "no suffix" sentinel
-    # _expected_overlap_suffix already treats a suppressed arm's raw CSV text
-    # as meaning -- stands in for the whole column when it is absent, rather
-    # than this check reading a column that is not there.
+    # overlap_threshold (Task 9) and delta_align (2026-09-15) are the two
+    # archive boundaries: every archived file has both, no fresh file has
+    # either. '' -- the same "no suffix" sentinel _expected_overlap_suffix and
+    # _expected_arm_slug already treat a suppressed arm's raw CSV text as
+    # meaning -- stands in for the whole column when it is absent, rather than
+    # this check reading a column that is not there.
+    has_delta = 'delta_align' in file_df.columns
+    delta_values = pd.unique(file_df['delta_align']) if has_delta else ['']
     has_overlap = 'overlap_threshold' in file_df.columns
     overlap_values = pd.unique(file_df['overlap_threshold']) if has_overlap else ['']
     if (len(arm_values) != 1 or len(align_values) != 1 or len(delta_values) != 1
@@ -430,6 +473,17 @@ def load_campaign(results_dir='results'):
             # way, to an all-NaN float64 column, rather than the column
             # missing from the returned frame altogether.
             df[col] = float('nan')
+
+    # The 2026-09-15 archive boundary: nothing writes delta_align any more, so
+    # a frame built entirely from fresh files has no such column. Materialise
+    # it as '' -- "alignment ran, at no tolerance" -- so the parse below, and
+    # every downstream reader of delta_align / delta_align_num /
+    # delta_align_is_inf, sees the same three columns whatever the frame was
+    # built from. Done BEFORE the parse rather than special-cased inside it,
+    # for the same reason the missing-column branch above exists: a column's
+    # presence must not depend on which files happened to be loaded.
+    if ARCHIVED_DELTA_ALIGN_COLUMN not in df.columns:
+        df[ARCHIVED_DELTA_ALIGN_COLUMN] = ''
 
     # Trap 2: delta_align is a string column; never compare it numerically
     # as loaded. Parse into a nullable-by-NaN float plus an explicit is_inf

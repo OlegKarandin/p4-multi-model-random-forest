@@ -201,6 +201,18 @@ INDEPENDENT_ARM_SLUG = 'independent'
 # arms every contrast in the pre-registered family is built from. Order is
 # the sweep order (the two anchors first, then increasing delta), so tables
 # and figures come out in a readable order without re-sorting.
+#
+# DELIBERATELY UNCHANGED by the 2026-09-15 deletion of the delta_align axis
+# (Track 5: delta_helps = FALSE -- mean_d000 0.7956173344395895 vs mean_d020
+# 0.7861922400433382, cells_favouring_d020 14/24), even though six of the
+# seven can no longer be produced. This tuple is the PRE-REGISTERED family:
+# it fixes the 35 comparisons `paired_tests` runs and the Holm correction
+# over them, and it names the arms of the archive those comparisons were
+# registered against. Adding the surviving `joint` slug here would silently
+# restate the plan as 40 comparisons over an eighth arm with no archived
+# data, which is a campaign-design decision and not a consequence of deleting
+# a mechanism. `figures.ordered_arms` APPENDS an unrecognised slug rather
+# than dropping it, so a fresh `joint` arm still appears in every figure.
 JOINT_ARM_SLUGS = (
     'joint-off',
     'joint-d000',

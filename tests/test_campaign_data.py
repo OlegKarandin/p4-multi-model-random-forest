@@ -473,6 +473,52 @@ def test_a_fresh_file_without_the_column_validates_too():
     assert _expected_arm_slug('joint', True, '0.2', None) == 'joint-d020'
 
 
+def test_an_archived_slug_still_validates_from_its_own_delta_align_column():
+    """The 2026-09-15 archive boundary, the same shape as the overlap one
+    above. campaign_backup_20260825's files are named joint-d000 ... joint-dinf
+    and each row carries the delta_align label that reproduces the name.
+    TrainConfig no longer has the field and src/main.py no longer writes the
+    column (Track 5: delta_helps = FALSE), but that reconstruction must keep
+    working or the whole archive stops being readable."""
+    assert _expected_arm_slug('joint', True, '0') == 'joint-d000'
+    assert _expected_arm_slug('joint', True, '0.05') == 'joint-d005'
+    assert _expected_arm_slug('joint', True, '0.2') == 'joint-d020'
+    assert _expected_arm_slug('joint', True, 'inf') == 'joint-dinf'
+
+
+def test_a_fresh_aligned_row_without_a_delta_column_is_the_plain_joint_arm():
+    """The other half. A file written after 2026-09-15 has no delta_align
+    column, so the label arrives as '' (or NaN) and the slug is plain `joint`
+    -- TrainConfig.arm_slug's own answer for the same config. No collision
+    with the archived branch: an archived ALIGNED row never carried '', since
+    the retired delta_align_label only returned '' for the independent arm or
+    for alignment_enabled=False, both of which return earlier."""
+    assert _expected_arm_slug('joint', True, '') == 'joint'
+    assert _expected_arm_slug('joint', True, None) == 'joint'
+    assert _expected_arm_slug('joint', False, '') == 'joint-off'
+    assert _expected_arm_slug('independent', True, '') == 'independent'
+
+
+def test_a_fresh_campaign_file_loads_without_a_delta_align_column(tmp_path):
+    """End-to-end for the same boundary: nothing writes delta_align any more,
+    so load_campaign must not require it -- and must still expose the three
+    delta columns, so a downstream reader's shape does not depend on which
+    files happened to be loaded."""
+    rows = [_feasible_row(k=17), _feasible_row(k=9)]
+    for row in rows:
+        del row['delta_align']
+        del row['overlap_threshold']
+    _write_arm_file(tmp_path, 11, 14, 25, 'joint', rows)
+
+    df = load_campaign(results_dir=str(tmp_path / 'results'))
+
+    assert len(df) == 2
+    assert (df['arm_slug'] == 'joint').all()
+    assert (df['delta_align'] == '').all()
+    assert df['delta_align_num'].isna().all()
+    assert (~df['delta_align_is_inf']).all()
+
+
 def test_pair_arms_returns_empty_frame_for_an_arm_slug_present_in_neither_arm(tmp_path):
     df = _build_paired_campaign(tmp_path)
 
