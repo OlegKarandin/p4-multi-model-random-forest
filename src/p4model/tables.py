@@ -39,8 +39,16 @@ def range_deployment_overflow(feature_intervals,
   this project's 16-bit key width, while a single maximally-misaligned range
   costs up to 7. Measured reality averages ~1.96 rows/entry and every row of
   the calibration study clears its allocation by at least 1.66x, so this is a
-  guard against a tail, not a routine constraint -- which is exactly why it
-  belongs here as an assertion rather than inside the block cost."""
+  guard against a tail, not a routine constraint.
+
+  Deliberately caller-less, the same precedent exact_match_resource_usage
+  sets: nothing in the Optuna loop or the P4 generator calls this as a
+  build-time assertion -- its only callers are the evaluation.py re-export
+  and tests/test_evaluation.py. It answers the deployability question
+  analytically and is kept for review and tests, not wired into the commit
+  path where a design is actually accepted. If the tail above is ever
+  observed to bind in practice, this is where the guard would be added;
+  until then it is a documented oracle, not an enforced one."""
   nibble_widths = nibble_widths_for(key_bit_width)
   overflow = {}
   for feature, intervals in feature_intervals.items():

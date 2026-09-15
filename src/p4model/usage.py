@@ -165,6 +165,14 @@ def assemble_usage(pool):
                                       readiness_levels=range_levels,
                                       key_fields=range_fields,
                                       unavailable_stages=interior_stages)
+  # Deliberate over-prediction, the safe direction: every classification
+  # table starts at the FULL range pool's depth, even under 'disjoint'
+  # encoding where a ddos tree only reads ddos features' code fields and
+  # could in principle start as soon as just the ddos range tables have
+  # landed, not the app ones too. Not modelled -- doing so would need
+  # per-task range levels threaded through this pool -- and the 18/19
+  # stage_depth calibration result (scripts/validation_table.py) suggests
+  # the case rarely binds in practice.
   ternary_level = range_plan.depth if range_table_specs else FLOW_HASH_LEVEL + 1
   # Only the classification pool gets key_field_bits. A range table keys one
   # meta.<feature>_val field of FEATURE_VALUE_BIT_WIDTH bits -- 2 whole bytes

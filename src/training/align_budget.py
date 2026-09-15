@@ -207,8 +207,17 @@ def tree_multiplier(*forests):
 
     A block is MEMORY, so it is charged once per TREE -- the exact opposite of
     the crossbar's byte slots, which a stage charges once however many tables
-    read them (audit §8.1). One codeword per leaf, so a tree's entry count is
-    its leaf count.
+    read them (audit §8.1).
+
+    Counts leaves (children_left == -1), which is an UPPER BOUND on a tree's
+    real entry count, not an exact one: the generator keys each tree's
+    codewords in a dict by the codeword STRING (build_p4_script.py:540), so
+    two leaves that happen to produce the identical codeword collapse into
+    one entry there. len(codewords[tree]) <= this tree's leaf count always,
+    with equality the common case; the two disagree only when a tree
+    straddles a 512-entry boundary, where the leaves this over-counts could
+    shift which side of that boundary -- and so which block-sharding step --
+    the tree lands on.
 
     Computed ONCE at entry and never updated: alignment relocates thresholds
     and never deletes one from its own model, so it changes neither a tree's
@@ -264,6 +273,19 @@ def blocks_bought_by(widths, floors, feature, multiplier):
     total_blocks evaluation per bit, each a pass over <= ~15 features. That is
     the same order as the `_factor` call it replaces, and negligible beside the
     model evaluation every candidate already pays for.
+
+    KNOWN BLIND SPOT (audit finding 2.4): the scan probes ONE feature's shed
+    at a time, holding every other feature's width fixed. Two features that
+    are each one bit over the same byte or range-block boundary can only buy
+    that block TOGETHER -- shedding either alone leaves total_blocks
+    unchanged, so both score (0, 0) here and feature_order falls back to its
+    combined-interval-count tiebreak instead of ranking them by the joint
+    opportunity. This costs ranking quality only, not a lost block: the
+    budget gate itself evaluates the full width dict once both features have
+    actually been shed, not this function's per-feature probe, so the block
+    still gets bought when both candidates are eventually accepted -- just
+    possibly after spending accuracy budget on a feature that, ranked
+    correctly, would not have gone first.
     """
     room = widths[feature] - floors[feature]
     if room <= 0:

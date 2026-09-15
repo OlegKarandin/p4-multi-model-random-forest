@@ -670,6 +670,21 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     live_widths[feature_idx] -= pooled_before - pooled_after
 
                     if total_blocks(live_widths, multiplier) < feature_entry_total:
+                        # KNOWN LIMITATION (audit finding 2.3): this break,
+                        # together with `remaining.discard(feature_idx)`
+                        # above, retires the feature for the rest of THIS
+                        # run after its FIRST block purchase. A feature able
+                        # to buy a range block here and a byte-boundary step
+                        # later (via further overlap resolution) is only
+                        # ever credited for the first -- the second
+                        # opportunity is left unbought. A fix would need to
+                        # re-rank the feature back into consideration
+                        # instead of unconditionally discarding it, and MUST
+                        # preserve the total order `remaining` yields: the
+                        # refit determinism assertion depends on features
+                        # being processed in one fixed order, not on this
+                        # break's current all-or-nothing retirement. Left
+                        # open -- spec §8.
                         bought_here = True
                         break
 
