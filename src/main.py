@@ -87,6 +87,36 @@ def select_arms(which):
     raise ValueError("arms must be 'primary', 'sensitivity' or 'all', got {!r}".format(which))
 
 
+def select_arm_slugs(slugs):
+    """The (arm, cfg) pairs named by these arm slugs, in the order asked.
+
+    `--arms`' presets are the campaign's own groupings; this is the escape
+    hatch for an arm SET that crosses them. Track 5 (spec 2026-09-15 §2.2)
+    needs exactly {joint-d000, joint-d020, joint-dinf}, which is neither
+    preset, and needs its six cells run in a pre-registered ORDER that the
+    M-outer/arm-inner loop in compare_independent_joint_mapping cannot emit --
+    so each cell is launched as its own invocation, and this is how a single
+    cell is named.
+
+    Order is the CALLER's, not the catalogue's, because that order is the
+    wall-clock hedge: spec §2.4 ranks the cells so a timeout costs context
+    rather than the answer.
+    """
+    catalogue = {}
+    for arm, cfg in PRIMARY_ARMS + SENSITIVITY_ARMS:
+        encoding = 'disjoint' if arm == 'independent' else 'joint'
+        catalogue[cfg.arm_slug(encoding)] = (arm, cfg)
+
+    chosen = []
+    for slug in slugs:
+        if slug not in catalogue:
+            raise ValueError(
+                "unknown arm slug {!r}; known slugs are {}".format(
+                    slug, ', '.join(sorted(catalogue))))
+        chosen.append(catalogue[slug])
+    return chosen
+
+
 def arm_result_path(arm, cfg, max_blocks):
     """One file per (arm, M): self-describing, globbable, and resumable.
 
@@ -114,6 +144,14 @@ def parse_args(argv=None):
              "and joint@delta=0 at each of 3 overlap thresholds); "
              "'sensitivity' is the fifteen swept arms (5 tolerances x 3 "
              "overlap thresholds)")
+    parser.add_argument(
+        "--arm-slugs", dest="arm_slugs", type=_parse_arm_slugs, default=None,
+        help="run exactly these arms, named by slug (e.g. "
+             "'--arm-slugs joint-d000,joint-d020'), in the order given. "
+             "Overrides --arms. Exists because an arm SET can cross the "
+             "--arms presets and because cell ORDER is sometimes "
+             "pre-registered; pass an unknown slug to see the known ones in "
+             "the error message")
     parser.add_argument(
         "--redo", action="store_true",
         help="recompute (arm, M) cells whose result file already exists. The "
@@ -156,6 +194,17 @@ def _parse_M_grid(value):
     pilot cell as short as --M 25 while a partial sweep stays one greppable
     token."""
     return [int(v) for v in value.split(',')]
+
+
+def _parse_arm_slugs(value):
+    """--arm-slugs' argparse type: comma-separated arm slugs, e.g.
+    'joint-d000' or 'joint-d000,joint-d020'. Same comma convention as --M, so a
+    single-cell launch stays one short token."""
+    slugs = [slug.strip() for slug in value.split(',') if slug.strip()]
+    if not slugs:
+        raise argparse.ArgumentTypeError(
+            "--arm-slugs needs at least one slug, got {!r}".format(value))
+    return slugs
 
 
 def _parse_n_splits(value):
@@ -573,7 +622,8 @@ def run_main():
         compare_independent_joint_mapping(
             M_values=M,
             n_splits=n_splits,
-            arms=select_arms(args.arms),
+            arms=(select_arm_slugs(args.arm_slugs) if args.arm_slugs is not None
+                  else select_arms(args.arms)),
             max_workers=max_workers,
             skip_existing=not args.redo,
         )

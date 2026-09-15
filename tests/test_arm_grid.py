@@ -171,3 +171,47 @@ def test_the_default_M_grid_is_the_archive_grid():
     args = parse_args([])
     M = args.M if args.M is not None else main_mod.DEFAULT_M_GRID
     assert M == [25, 50, 100, 150, 250]
+
+
+def test_select_arm_slugs_returns_the_named_arms_in_the_order_asked():
+    """Track 5's arm set straddles both presets, and its cell ORDER is
+    pre-registered (spec 2.4), so selection must preserve the caller's order
+    rather than the catalogue's."""
+    chosen = m.select_arm_slugs(['joint-dinf', 'joint-d000', 'joint-d020'])
+
+    assert [cfg.arm_slug('joint') for _arm, cfg in chosen] == [
+        'joint-dinf', 'joint-d000', 'joint-d020',
+    ]
+    assert all(arm == 'joint' for arm, _cfg in chosen)
+
+
+def test_select_arm_slugs_can_name_the_independent_arm():
+    """The independent arm's slug ignores the alignment fields, so it must be
+    reachable by its own name and must carry encoding 'disjoint'."""
+    chosen = m.select_arm_slugs(['independent'])
+
+    assert len(chosen) == 1
+    arm, cfg = chosen[0]
+    assert arm == 'independent'
+    assert cfg.arm_slug('disjoint') == 'independent'
+
+
+def test_select_arm_slugs_rejects_an_unknown_slug_and_names_the_known_ones():
+    """A typo in a six-hour campaign launch must fail at argument parse time,
+    not silently run a different arm than the pre-registered one."""
+    import pytest
+
+    with pytest.raises(ValueError) as excinfo:
+        m.select_arm_slugs(['joint-d20'])
+
+    message = str(excinfo.value)
+    assert 'joint-d20' in message
+    assert 'joint-d020' in message
+
+
+def test_every_track5_arm_slug_resolves():
+    """The three slugs Task 2 and Task 10 pass on the command line."""
+    slugs = ['joint-d000', 'joint-d020', 'joint-dinf']
+
+    assert [cfg.arm_slug('joint')
+            for _arm, cfg in m.select_arm_slugs(slugs)] == slugs

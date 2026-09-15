@@ -780,3 +780,16 @@ def test_load_campaign_data_returns_aligned_columns_and_names():
     assert X_ddos.shape[1] == len(names)
     assert len(y_app) == X_app.shape[0]
     assert len(y_ddos) == X_ddos.shape[0]
+
+
+def test_arm_slugs_flag_parses_a_comma_separated_list():
+    args = m.parse_args(['--mode', 'compute', '--arm-slugs', 'joint-d000,joint-d020'])
+
+    assert args.arm_slugs == ['joint-d000', 'joint-d020']
+
+
+def test_arm_slugs_defaults_to_none_so_arms_presets_still_apply():
+    args = m.parse_args(['--mode', 'compute'])
+
+    assert args.arm_slugs is None
+    assert args.arms == 'primary'
