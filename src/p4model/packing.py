@@ -319,6 +319,37 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     bits is None for any caller that names no field widths (the range pool),
     and then the key's byte width is all there is; a range key is one
     whole-byte field with slack to spare, so no version charge is due.
+
+    KNOWN GAP (safe today, disclosed rather than swept under the rug): this
+    always prices a key at OFFSET 0 (`codeword_to_blocks(bits, 0)`), but a
+    key's real crossbar width is offset-dependent (finding 1.2, tables.py) --
+    a run starting on an odd group owns no full midbyte and can cost one more
+    block than the same key priced at offset 0. `offsets_for` below chains
+    these offset-0 widths to place each key in turn, so it never re-derives a
+    LATER key's width at the offset it will actually land at once earlier
+    keys have shifted it. For a stage with 3+ distinct keys this can
+    UNDER-predict the stage's total blocks. Concretely: three distinct keys
+    -- (5,)*11 [11 bytes, 3 blocks], (77, 42) [16 bytes, 3 blocks at an even
+    offset / 4 at an odd one] x2 -- this model reports 10 blocks total, while
+    the true worst-case chain (0->3, 3->4, 7->4) needs 11. An under-prediction
+    is the unsafe direction (monotonicity, spec Sec 3.6), so this is flagged
+    as a known gap rather than left implicit -- but it is structurally
+    UNREACHABLE by anything this pipeline produces today: no real design puts
+    3+ distinct keys in one stage (joint encoding keys 1, disjoint keys 2),
+    and the range pool -- the one caller that could otherwise stack many keys
+    -- always passes bits=None, so it never reaches codeword_to_blocks(bits,
+    s) with a real offset at all.
+
+    Same seam, one more corner, folded in here rather than documented
+    separately: `if bits:` is a truthiness check, not `is not None`. An empty
+    tuple `bits = ()` -- a degenerate all-single-leaf forest -- falls through
+    to the `bits is None` branch and returns 0 via
+    `crossbar_bytes(())`/`codeword_bytes_to_blocks`, instead of the 1 that
+    `codeword_to_blocks((), s)` documents as its empty-key special case. Also
+    unreachable today by the same "no design has produced this yet"
+    reasoning; left alongside the offset gap rather than patched separately,
+    since a real fix would want to re-derive width at the key's landed offset
+    for both cases at once.
     """
     if bits:
       return codeword_to_blocks(bits, 0)
@@ -332,7 +363,12 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     when a tree exceeds 512 entries or is sharded. A table's own extra depth
     stores more rows through the SAME key and does not move the crossbar
     along; only the version-block charge folded into key_width does that
-    (finding 1.4 -- see key_width above)."""
+    (finding 1.4 -- see key_width above).
+
+    Those widths are key_width's OFFSET-0 estimates, not each key's real
+    width at the offset it ends up landing at once earlier keys in key_order
+    have run -- see key_width's KNOWN GAP note for when that under-counts
+    (3+ distinct keys in one stage; unreachable by today's designs)."""
     offsets, running = {}, 0
     for key, key_blocks in key_order:
       offsets[key] = running
