@@ -4,8 +4,7 @@ from src.training.align_budget import (_factor,
                                        _pooled_widths,
                                        bits_to_reach,
                                        blocks_bought_by,
-                                       codeword_floor,
-                                       key_bytes_floor, pooled_interval_count,
+                                       pooled_interval_count,
                                        pooled_key_bytes, total_blocks,
                                        tree_multiplier)
 from src.training.align_targets import (boundary_moves, candidate_targets,
@@ -398,11 +397,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # of L and nothing else, and until now L appeared in no artifact at all.
     n_features = len(set(intervals1) | set(intervals2))
     stats['codeword_before'] = stats['intervals_before'] - n_features
-    stats['codeword_floor'] = codeword_floor(intervals1, intervals2)
 
     # The byte domain, recorded unconditionally.
     stats['key_bytes_before'] = pooled_key_bytes(intervals1, intervals2)
-    stats['key_bytes_floor'] = key_bytes_floor(intervals1, intervals2)
     # §4.1: computed unconditionally at entry. The BLOCK factor needs them on
     # every path, because the version-block charge is a function of the width
     # MULTISET and cannot be recovered from any scalar (design §1.3). Cheap
@@ -545,11 +542,11 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                 if not structurally_alignable(range1, range2):
                     continue
 
-                # Computed for candidate_log only: nothing compares it to a
-                # threshold any more. The three checks above are what admission
-                # actually is (design §6.1).
-                overlap_ratio = calculate_range_overlap(range1, range2)
-
+                # The three checks above are what admission actually is
+                # (design §6.1); calculate_range_overlap and endpoint_ratio,
+                # which used to be computed here purely for candidate_log, were
+                # pruned 2026-09-15 (task 14) once nothing compared them to a
+                # threshold any more.
                 pooled_before, ranked_targets = _rank_targets(
                     range1, range2, current_ranges1, current_ranges2,
                     idx1, idx2, feature_idx, sorted_cols1, sorted_cols2)
@@ -605,8 +602,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                             'range1': tuple(range1),
                             'range2': tuple(range2),
                             'target': tuple(target),
-                            'overlap_ratio': float(overlap_ratio),
-                            'endpoint_ratio': float(endpoint_ratio(range1, range2)),
                             'error_app': 1.0 - current[0],
                             'error_ddos': 1.0 - current[2],
                             'shift_mass_1': mass1,
@@ -897,7 +892,7 @@ def find_partially_overlapping_ranges(ranges1, ranges2):
         nested loop's order, which align_stats and candidate_log rely on.
 
     The end <= start filter also excludes (0,0) intervals -- consistent, not
-    a bug: calculate_range_overlap already vetoes any pair where exactly one
+    a bug: structurally_alignable already vetoes any pair where exactly one
     side starts at 0, and adjust_range_boundaries refuses to move a boundary
     at 0, so a (0,0) interval could never be aligned anyway.
 
@@ -925,29 +920,14 @@ def find_partially_overlapping_ranges(ranges1, ranges2):
     return overlaps
 
 
-def endpoint_ratio(range1, range2):
-    """The larger of the two endpoint ratios -- the quantity the historic
-    `endpoint_ratio_cap = 5` thresholds. A pure diagnostic after Task 7; kept
-    so the instrumented run can quantify how often it disagreed with the oracle.
-    """
-    min1, max1 = range1
-    min2, max2 = range2
-
-    ratios = [1.0]
-    if min1 and min2:
-        ratios.append(max(min1, min2) / min(min1, min2))
-    if max1 and max2:
-        ratios.append(max(max1, max2) / min(max1, max2))
-    return max(ratios)
-
-
 def shift_mass(sorted_col, old_thr, new_thr):
     """Fraction of validation rows that change side when a split moves.
 
     sklearn sends x <= threshold left, so the affected set is (lo, hi]. This is
-    the quantity the endpoint ratio was a proxy for -- and the proxy is exact
-    only when the feature is log-distributed. It is O(log n) per candidate
-    against the O(n_trees x n_samples) oracle.
+    the quantity the endpoint ratio (a pure diagnostic, pruned 2026-09-15
+    once its `endpoint_ratio_cap` admission role was gone) used to be a proxy
+    for -- and the proxy was exact only when the feature is log-distributed.
+    It is O(log n) per candidate against the O(n_trees x n_samples) oracle.
     """
     lo, hi = (old_thr, new_thr) if old_thr <= new_thr else (new_thr, old_thr)
     return float(np.searchsorted(sorted_col, hi, 'right')
@@ -965,7 +945,7 @@ def still_overlaps(range1, range2):
     `AlignmentInvariantError: (0, 700) missing from threshold_index` (audit
     §8.3).
 
-    Until 2026-09-14 this job was done only INCIDENTALLY, by
+    Until 2026-09-14 this job was done only INCIDENTALLY, by the since-pruned
     `calculate_range_overlap(...) < overlap_threshold` returning 0.0 for a
     non-overlapping pair -- which is why setting that threshold to 0.0 disabled
     a correctness check along with the similarity heuristic. Unconditional now,
@@ -986,8 +966,8 @@ def structurally_alignable(range1, range2):
     key: the C5 bug. dataset.py clips every feature at INFINITE, so a
     (m, INFINITE) interval is common, not exotic.
 
-    Extracted verbatim from calculate_range_overlap's two early returns, whose
-    0.0 made them indistinguishable from "no overlap".
+    Extracted verbatim from the since-pruned calculate_range_overlap's two
+    early returns, whose 0.0 made them indistinguishable from "no overlap".
     """
     (min1, max1), (min2, max2) = range1, range2
     return ((min1 == 0) == (min2 == 0)
@@ -1005,63 +985,6 @@ def target_is_well_formed(target):
     """
     low, high = target
     return low <= high
-
-
-def calculate_range_overlap(range1, range2):
-    """Similarity ratio between two ranges -- a diagnostic only; admission no
-    longer interprets it (see still_overlaps / structurally_alignable /
-    target_is_well_formed).
-
-    NOTE this function's 0.0 return is overloaded: it means both "no overlap"
-    and "vetoed". The zero-side and INFINITE-side vetoes below are structural
-    -- as of Task 7 they are duplicated (not delegated) by
-    `structurally_alignable`, which is what align_rf_thresholds actually
-    consults; this function's own vetoes are now dead code from admission's
-    point of view, kept only because the ratio itself is still computed and
-    returned for candidate_log. The old endpoint-ratio-cap heuristic
-    pre-filter that used to live here is gone as of Task 7; align_rf_thresholds
-    does not veto candidates on shift_mass either (removed in P3 Task 8), and
-    since Task 7 it does not compare this ratio to a threshold at all -- the
-    returned value is uninterpreted, a diagnostic only.
-    """
-    min1, max1 = range1
-    min2, max2 = range2
-
-    # Early exit if either range starts at 0 but not both
-    if (min1 == 0) != (min2 == 0):
-        return 0.0
-
-    # C5: the mirror of the above at the top end. adjust_range_boundaries
-    # refuses to move a threshold at INFINITE (its max-side guard) exactly as
-    # it refuses to move one at 0 -- but nothing vetoed the PAIR, so
-    # update_neighboring_ranges_and_index wrote the shrunk boundary into
-    # `ranges` while the model kept splitting at INFINITE and the index kept
-    # the true key. Every later decision on that feature was then wrong, and
-    # nothing covered the tail. dataset.py clips every feature at INFINITE, so
-    # a (m, INFINITE) interval is common, not exotic.
-    if (max1 == INFINITE) != (max2 == INFINITE):
-        return 0.0
-
-    # Calculate intersection
-    intersection_start = max(min1, min2)
-    intersection_end = min(max1, max2)
-    
-    # No overlap if intersection is invalid
-    if intersection_start >= intersection_end:
-        return 0.0
-    
-    intersection_length = intersection_end - intersection_start
-    
-    # Calculate lengths and return ratio
-    range1_length = max1 - min1
-    range2_length = max2 - min2
-    
-    return intersection_length / max(range1_length, range2_length)
-
-
-def calculate_target_range(range1, range2):
-    """Calculate the target range for alignment"""
-    return (max(range1[0], range2[0]), min(range1[1], range2[1]))
 
 
 def adjust_range_boundaries(rf, feature_idx, source_range, target_range, threshold_index):

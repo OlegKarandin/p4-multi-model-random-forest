@@ -14,10 +14,7 @@ one swept threshold but not the other is dropped from that comparison, never
 averaged around, and the verdict reports the surviving pair count first, so a
 result on three pairs cannot be read as one that held on three hundred.
 """
-import pandas as pd
-
 from src.p4gen.evaluation import codeword_bits_to_blocks
-from src.training.align_budget import band_ceiling
 
 # One model pair. overlap_threshold is part of the identity because the same
 # (arm, M, split, k) refit is replayed once per threshold.
@@ -54,11 +51,12 @@ def derive_columns(frame):
     """factor / bits_shed / wasted_bits, derived rather than stored.
 
     align_stats deliberately records only the primitives (codeword_before,
-    codeword_after, codeword_floor, and the factor/total_blocks triples);
-    everything here is a pure function of those plus the band arithmetic, so
-    storing it twice would be two places to get it wrong. Two more primitives
-    stood in that list until 2026-09-15 -- spent_budget and rolled_back -- and
-    went with the delta_align mechanism (Track 5: delta_helps = FALSE).
+    codeword_after, and the factor/total_blocks triples); everything here is
+    a pure function of those, so storing it twice would be two places to get
+    it wrong. Three more primitives stood in that list until 2026-09-15 --
+    spent_budget and rolled_back went with the delta_align mechanism (Track 5:
+    delta_helps = FALSE), and codeword_floor was pruned the same day as a
+    stats-only diagnostic (task 14) once nothing read it for a decision.
 
     wasted_bits is now rebased on the BLOCK FACTOR (§4.6): a shed bit bought
     something only if it actually lowered align_factor_after below
@@ -85,13 +83,13 @@ def derive_columns(frame):
     bought = out['align_factor_after'] < out['align_factor_before']
     out['wasted_bits'] = out['bits_shed'].where(~bought, 0)
 
-    # The band-derived figure, kept so the campaign's published 57.8% stays
-    # reproducible beside the corrected one. LEGACY: measured against a step
-    # function the hardware does not have. Do not score new work on it.
-    overshoot = (out['band_factor_after'].apply(band_ceiling)
-                 - out['align_codeword_after']).clip(lower=0)
-    out['legacy_band_wasted_bits'] = pd.concat(
-        [out['bits_shed'], overshoot], axis=1).min(axis=1)
+    # legacy_band_wasted_bits (the band-derived figure that reproduced the
+    # campaign's published 57.8% baseline against a step function the
+    # hardware does not have) and the band_ceiling import it needed were
+    # pruned 2026-09-15 (task 14): band_ceiling had no other caller left, and
+    # the corrected, block-derived wasted_bits above is what S3 actually
+    # scores -- this column was never read by score(), only carried for a
+    # side-by-side comparison the campaign no longer needs reproduced.
     return out
 
 

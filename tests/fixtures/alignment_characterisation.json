@@ -461,7 +461,6 @@
     "bits_to_reach": 4,
     "codeword_after": 57,
     "codeword_before": 87,
-    "codeword_floor": 47,
     "factor_after": 2,
     "factor_before": 3,
     "factor_floor": 2,
@@ -469,7 +468,6 @@
     "intervals_before": 91,
     "key_bytes_after": 9,
     "key_bytes_before": 13,
-    "key_bytes_floor": 8,
     "total_blocks_after": 32,
     "total_blocks_before": 46,
     "total_blocks_floor": 32

@@ -140,18 +140,6 @@ def test_wasted_bits_is_zero_when_a_block_was_bought():
     assert derive_columns(frame)['wasted_bits'].iloc[0] == 0
 
 
-def test_the_legacy_band_column_survives_alongside_it():
-    """The 57.8% campaign figure must stay reproducible next to the corrected
-    one -- it is a published result measured under a step function that no
-    longer applies, not a number to quietly overwrite."""
-    frame = pd.DataFrame([{
-        'policy': 'aligned', 'align_codeword_before': 88,
-        'align_codeword_after': 60, 'align_factor_before': 6,
-        'align_factor_after': 6}])
-    out = derive_columns(frame)
-    assert 'legacy_band_wasted_bits' in out.columns
-
-
 def test_an_archived_frame_and_a_fresh_frame_both_score():
     """The archive boundary (design §6.3). New output stops carrying
     overlap_threshold; every archived CSV still has it. Reporting ACCEPTS the

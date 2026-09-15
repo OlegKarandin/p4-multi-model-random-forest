@@ -13,6 +13,14 @@ from src.training import threshold_alignment as ta
 from src.training.errors import AlignmentInvariantError
 
 
+def _target_range(range1, range2):
+    """Test-local stand-in for the pruned calculate_target_range (task 14):
+    the intersection of two ranges, exactly as align_rf_thresholds's own
+    _rank_targets/hypothetical_ranges machinery would compute it for the
+    plain intersection case these fixtures exercise."""
+    return (max(range1[0], range2[0]), min(range1[1], range2[1]))
+
+
 def _one_split_forest():
     """One tree, one split at threshold 10 on feature 0."""
     from sklearn.ensemble import RandomForestClassifier
@@ -62,22 +70,6 @@ def test_update_threshold_index_raises_on_a_missing_key():
     """C2, third site."""
     with pytest.raises(AlignmentInvariantError):
         ta.update_threshold_index({}, feature_idx=0, old_threshold=10, new_threshold=15)
-
-
-def test_overlap_vetoes_a_pair_where_exactly_one_side_is_unbounded():
-    """C5: adjust_range_boundaries refuses to move an INFINITE boundary, but
-    update_neighboring_ranges_and_index wrote the shrunk value into `ranges`
-    anyway, leaving ranges / thresholds / index disagreeing and the tail
-    uncovered. The pair must never become a candidate.
-
-    Mirrors the existing veto for exactly-one-side-starts-at-0 two lines up."""
-    assert ta.calculate_range_overlap((30000, INFINITE), (30000, 40000)) == 0.0
-    assert ta.calculate_range_overlap((30000, 40000), (30000, INFINITE)) == 0.0
-
-
-def test_overlap_still_accepts_a_pair_where_both_sides_are_unbounded():
-    """Both unbounded is fine: neither max boundary needs to move."""
-    assert ta.calculate_range_overlap((30000, INFINITE), (32000, INFINITE)) > 0.0
 
 
 def test_neighbor_update_refuses_to_write_a_boundary_that_was_not_moved():
@@ -648,7 +640,7 @@ def test_the_sweep_does_not_drop_a_pair_at_the_end1_equals_end2_tie():
 def test_degenerate_zero_zero_and_t_t_intervals_are_excluded_by_choice_not_accident():
     """find_partially_overlapping_ranges filters end <= start, which drops
     (0, 0) AND (t, t) intervals for t > 0. That is consistent, not a bug:
-    calculate_range_overlap already vetoes any pair where exactly one side
+    structurally_alignable already vetoes any pair where exactly one side
     starts at 0, and adjust_range_boundaries refuses to move a boundary at 0
     -- so a degenerate interval could never be aligned anyway. This test
     documents the exclusion as a choice, and pins it against the nested
@@ -679,30 +671,31 @@ def test_merely_touching_intervals_are_not_overlaps():
 def test_a_zero_zero_candidate_produces_no_modifications_either_way():
     """The consistency argument made executable: a (0, 0) source_range can
     never produce a modification, whether the other side's min is also 0 or
-    is positive. target_range is computed via calculate_target_range exactly
-    as align_rf_thresholds would, so this exercises the real shape of a call,
-    not a contrived one. threshold_index is deliberately empty -- if either
+    is positive. target_range is computed via _target_range (the plain
+    intersection, matching what a call from align_rf_thresholds would produce
+    in this case), so this exercises the real shape of a call, not a
+    contrived one. threshold_index is deliberately empty -- if either
     branch DID try to look up a threshold, that would raise rather than
     silently pass, so an empty modifications list is real evidence of the
     refusal, not an accident of a missing key."""
     rf = _one_split_forest()
 
-    # Other side's min is 0: calculate_target_range((0,0), (0, 10)) == (0, 0),
+    # Other side's min is 0: _target_range((0,0), (0, 10)) == (0, 0),
     # so both the min- and max-side checks in adjust_range_boundaries see no
     # change and refuse.
     other_min_zero = (0, 10)
-    target_a = ta.calculate_target_range((0, 0), other_min_zero)
+    target_a = _target_range((0, 0), other_min_zero)
     modifications_a = ta.adjust_range_boundaries(
         rf, feature_idx=0, source_range=(0, 0), target_range=target_a,
         threshold_index={})
     assert modifications_a == []
 
-    # Other side's min is not 0: calculate_target_range((0,0), (5, 10)) ==
+    # Other side's min is not 0: _target_range((0,0), (5, 10)) ==
     # (5, 0) -- the min-side check is refused because threshold_source_min is
     # 0, and the max-side check sees threshold_source_max == threshold_target
     # _max == 0.
     other_min_nonzero = (5, 10)
-    target_b = ta.calculate_target_range((0, 0), other_min_nonzero)
+    target_b = _target_range((0, 0), other_min_nonzero)
     modifications_b = ta.adjust_range_boundaries(
         rf, feature_idx=0, source_range=(0, 0), target_range=target_b,
         threshold_index={})
@@ -1015,7 +1008,7 @@ def _isolate_c3(monkeypatch):
         # computed for real via the same pure helpers _rank_targets itself
         # uses, not faked, so the caller's shed bookkeeping stays numerically
         # sound even though these C3 tests don't assert on it.
-        target = ta.calculate_target_range(range1, range2)
+        target = _target_range(range1, range2)
         before = ta.pooled_interval_count(ranges1, ranges2)
         hypo1 = ta.hypothetical_ranges(ranges1, idx1, range1, target)
         hypo2 = ta.hypothetical_ranges(ranges2, idx2, range2, target)
@@ -1140,13 +1133,18 @@ def test_the_recompute_never_evaluates_the_same_value_pair_twice(monkeypatch):
     later round and the same candidate can move to a different index. Without
     it every round would re-offer every pair it had already judged."""
     judged = []
-    real = ta.calculate_range_overlap
+    real = ta.structurally_alignable
 
     def spy(range1, range2):
         judged.append((range1, range2))
         return real(range1, range2)
 
-    monkeypatch.setattr(ta, 'calculate_range_overlap', spy)
+    # structurally_alignable is the last of the two unconditional correctness
+    # checks the loop runs on a non-seen pair -- exactly the position the
+    # since-pruned calculate_range_overlap (task 14) used to sit in, so
+    # spying here counts the same "one judgement per non-seen candidate pair"
+    # this test was built to pin.
+    monkeypatch.setattr(ta, 'structurally_alignable', spy)
     _isolate_c3(monkeypatch)
     # The motivating fixture plus two intervals well above the region the
     # accepted moves touch:
@@ -1225,8 +1223,7 @@ def test_a_single_accepted_move_can_leave_the_joint_interval_count_flat():
     assert ta.joint_interval_count({0: I1}, {0: I2}) == 5
 
     range1, range2 = (10, 49), (20, 44)
-    assert ta.calculate_range_overlap(range1, range2) == pytest.approx(0.6153846)
-    target = ta.calculate_target_range(range1, range2)
+    target = _target_range(range1, range2)
     assert target == (20, 44)
 
     # The nodes those two boundaries come from; only (0, 9) and (0, 49) are
@@ -1349,19 +1346,21 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     stats_c3, log_c3 = _align_golden_pair(delta_rel, ta.MAX_RECOMPUTE_ROUNDS, monkeypatch)
 
     # No new stats key from C3 itself -- 'round' lives in the candidate_log
-    # instead. key_bytes_before/after/floor and bits_to_reach are recorded
+    # instead. key_bytes_before/after and bits_to_reach are recorded
     # unconditionally regardless of C3 round depth. 'accuracy_spent' is
     # recorded on every run. factor_before/after/floor are the per-table
     # block-factor keys and total_blocks_before/after/floor are the block-total
     # keys (Task 11); the 'stages'-era ternary_stages_*/stage_target keys and
-    # the objective axis itself are retired (design 2026-09-07 §4.3/§4.5), and
+    # the objective axis itself are retired (design 2026-09-07 §4.3/§4.5),
     # 'spent_budget'/'rolled_back' went with the delta_align mechanism on
-    # 2026-09-15 (Track 5: delta_helps = FALSE).
+    # 2026-09-15 (Track 5: delta_helps = FALSE), and codeword_floor /
+    # key_bytes_floor were pruned the same day as stats-only diagnostics
+    # (task 14).
     assert set(stats_c3) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
-        'codeword_before', 'codeword_after', 'codeword_floor',
+        'codeword_before', 'codeword_after',
         'accuracy_spent',
-        'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
+        'key_bytes_before', 'key_bytes_after',
         'bits_to_reach',
         'factor_before', 'factor_after', 'factor_floor',
         'total_blocks_before', 'total_blocks_after', 'total_blocks_floor'}
@@ -1410,9 +1409,9 @@ def test_align_stats_records_the_codeword_length_it_optimises():
 
     assert set(stats) == {
         'attempted', 'accepted', 'intervals_before', 'intervals_after',
-        'codeword_before', 'codeword_after', 'codeword_floor',
+        'codeword_before', 'codeword_after',
         'accuracy_spent',
-        'key_bytes_before', 'key_bytes_after', 'key_bytes_floor',
+        'key_bytes_before', 'key_bytes_after',
         'bits_to_reach',
         'factor_before', 'factor_after', 'factor_floor',
         'total_blocks_before', 'total_blocks_after', 'total_blocks_floor'}
@@ -1421,7 +1420,6 @@ def test_align_stats_records_the_codeword_length_it_optimises():
                      | set(ta.extract_feature_intervals(rf2)))
     assert stats['codeword_before'] == stats['intervals_before'] - n_features
     assert stats['codeword_after'] == stats['intervals_after'] - n_features
-    assert stats['codeword_floor'] <= stats['codeword_after']
 
 
 def test_accuracy_spent_is_zero_when_no_move_is_accepted(monkeypatch):
@@ -1786,10 +1784,9 @@ def test_the_byte_domain_stats_are_recorded():
     stats = {}
     ta.align_with_policy(rf1, rf2, X1, y1, X2, y2,
                          delta_rel=0.05, align_stats=stats)
-    for key in ('key_bytes_before', 'key_bytes_after', 'key_bytes_floor'):
+    for key in ('key_bytes_before', 'key_bytes_after'):
         assert isinstance(stats[key], int), key
     assert stats['key_bytes_after'] <= stats['key_bytes_before']
-    assert stats['key_bytes_floor'] <= stats['key_bytes_after']
 
 
 def test_pooled_key_bytes_equals_the_evaluators_codeword_fields_to_bytes():
@@ -2019,7 +2016,7 @@ def test_target_is_well_formed_rejects_the_inverted_target():
     assert ta.target_is_well_formed((701, 1005))
     assert ta.target_is_well_formed((700, 700))
     assert not ta.target_is_well_formed(
-        ta.calculate_target_range((581, 700), (701, 1005)))     # (701, 700)
+        _target_range((581, 700), (701, 1005)))     # (701, 700)
 
 
 def test_the_stale_pair_leaves_the_tiling_and_the_index_intact():

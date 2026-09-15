@@ -1,28 +1,18 @@
-"""endpoint_ratio and shift_mass as pure diagnostics (no filtering happens on
-them -- the endpoint-ratio-cap heuristic was replaced in Task 7 and the
+"""shift_mass as a pure diagnostic (no filtering happens on it -- the
 shift_mass-based veto was removed outright in P3 Task 8), plus
-calculate_range_overlap's remaining structural-only vetoes and
-align_rf_thresholds' candidate_log."""
+align_rf_thresholds' candidate_log.
+
+endpoint_ratio (the endpoint-ratio-cap heuristic's replaced quantity) and
+calculate_range_overlap (its remaining structural-only vetoes, since
+duplicated by structurally_alignable -- see
+test_structurally_alignable_vetoes_a_lone_sentinel in
+test_threshold_alignment.py) were pruned outright 2026-09-15 (task 14) once
+neither had any admission role or reader left."""
 import numpy as np
 import pytest
 
 from src.p4gen.build_p4_script import INFINITE
 from src.training import threshold_alignment as ta
-
-
-def test_endpoint_ratio_is_tiny_for_a_far_larger_absolute_shift():
-    """(1000, 4000) vs (3900, 4000): endpoint ratio 3.9, so the cap passes it,
-    despite a 2900-unit drag on a 3%-overlapping pair. Backwards near zero."""
-    assert ta.endpoint_ratio((1000, 4000), (3900, 4000)) < 5.0
-    assert ta.endpoint_ratio((1, 100), (10, 100)) > 5.0
-
-
-def test_endpoint_ratio_is_near_one_at_the_clip_atom():
-    """dataset.py clips every feature at INFINITE = 65535, so a large fraction
-    of rows sit at exactly that value. Moving 65534 -> 65535 has an endpoint
-    ratio of ~1.00002 -- the most permissive reading available -- while
-    relocating the entire clip atom. No tuned constant fixes this."""
-    assert ta.endpoint_ratio((40000, 65534), (40000, INFINITE)) < 1.001
 
 
 def test_shift_mass_counts_the_validation_rows_that_change_side():
@@ -36,14 +26,17 @@ def test_shift_mass_counts_the_validation_rows_that_change_side():
 
 
 def test_shift_mass_is_enormous_at_the_clip_atom():
-    """The property endpoint ratio gets exactly backwards."""
+    """dataset.py clips every feature at INFINITE = 65535, so a large fraction
+    of rows sit at exactly that value: moving the clip boundary relocates
+    almost the whole atom, which is a large physical effect the (since-pruned)
+    endpoint ratio measured as barely more than 1.0 -- backwards, which is why
+    shift_mass replaced it as the damage predictor."""
     col = np.sort(np.array([1.0, 2.0] + [65535.0] * 98))
 
     assert ta.shift_mass(col, 65534, 65535) == pytest.approx(0.98)
-    assert ta.endpoint_ratio((0, 65534), (0, 65535)) < 1.001
 
 
-def test_the_candidate_log_records_one_row_per_candidate_with_both_predictors():
+def test_the_candidate_log_records_one_row_per_candidate_with_shift_mass():
     from sklearn.ensemble import RandomForestClassifier
     from src.p4gen.build_p4_script import dt_thresholds_float_to_int
 
@@ -61,10 +54,12 @@ def test_the_candidate_log_records_one_row_per_candidate_with_both_predictors():
                            candidate_log=log)
 
     assert log, 'the fixture must produce candidates'
-    # Every entry carries both predictors regardless of how it was decided.
+    # Every entry carries shift_mass regardless of how it was decided.
+    # overlap_ratio and endpoint_ratio were dropped from this dict 2026-09-15
+    # (task 14) along with the functions that computed them.
     for entry in log:
         assert set(entry) == {'feature_idx', 'range1', 'range2', 'target',
-                             'overlap_ratio', 'endpoint_ratio', 'shift_mass_1',
+                             'shift_mass_1',
                              'shift_mass_2', 'rel_deg', 'accepted', 'error_app',
                              'error_ddos', 'round'}
         assert 0.0 <= entry['shift_mass_1'] <= 1.0
@@ -76,15 +71,6 @@ def test_the_candidate_log_records_one_row_per_candidate_with_both_predictors():
         assert entry['round'] >= 1
         assert len(entry['rel_deg']) == 4
         assert isinstance(entry['accepted'], bool)
-
-
-def test_calculate_range_overlap_is_a_pure_measurement_again():
-    """The heuristic veto is gone; only the two STRUCTURAL vetoes remain --
-    adjust_range_boundaries genuinely cannot move a boundary at 0 or at
-    INFINITE, so those pairs can never be aligned."""
-    assert ta.calculate_range_overlap((1, 100), (10, 100)) > 0.9
-    assert ta.calculate_range_overlap((0, 100), (10, 100)) == 0.0
-    assert ta.calculate_range_overlap((10, INFINITE), (10, 40000)) == 0.0
 
 
 def test_the_candidate_log_is_off_by_default():

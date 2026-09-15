@@ -16,51 +16,12 @@ def test_pooled_interval_count_is_the_common_refinement():
     assert ab.pooled_interval_count([(0, INFINITE)], [(0, INFINITE)]) == 1
 
 
-def test_band_ceiling_is_the_highest_length_still_in_a_band():
-    """Used by the scoring module to price how far past a boundary a run
-    overshot -- bits below the ceiling of the band it landed in bought
-    nothing."""
-    from src.p4gen.evaluation import codeword_bits_to_blocks
-    for factor in (1, 2, 3, 7):
-        ceiling = ab.band_ceiling(factor)
-        assert codeword_bits_to_blocks(ceiling) == factor
-        assert codeword_bits_to_blocks(ceiling + 1) == factor + 1
-
-
-def test_band_target_is_the_highest_length_one_band_cheaper():
-    """Boundaries sit at length + 4 == 44k. band_target must land exactly on
-    the highest length in the next band down, never one off."""
-    for length in (41, 60, 84, 85, 128, 300):
-        target = ab.band_target(length)
-        from src.p4gen.evaluation import codeword_bits_to_blocks
-        assert codeword_bits_to_blocks(target) == codeword_bits_to_blocks(length) - 1
-        assert codeword_bits_to_blocks(target + 1) == codeword_bits_to_blocks(length)
-
-
-def test_band_target_is_unreachable_in_the_first_band():
-    """factor == 1 is already the cheapest band; the target must be negative so
-    `target >= floor` is False for any non-negative floor."""
-    assert ab.band_target(0) < 0
-    assert ab.band_target(40) < 0
-
-
-def test_codeword_floor_is_reached_when_both_models_already_agree():
-    """L_floor is exact, not a heuristic: alignment only RELOCATES a threshold,
-    never deletes one from its own model (threshold_alignment.py:106-111), so a
-    common feature's pooled set can never drop below the larger of the two
-    models' own counts. Constructive check: make the two identical and the
-    floor must equal the actual pooled count."""
-    intervals = {0: [(0, 10), (11, 20), (21, INFINITE)],
-                 1: [(0, 5), (6, INFINITE)]}
-    assert ab.codeword_floor(intervals, intervals) == 2 + 1
-
-
-def test_codeword_floor_counts_exclusive_features_in_full():
-    iv1 = {0: [(0, 10), (11, INFINITE)], 1: [(0, 7), (8, INFINITE)]}
-    iv2 = {0: [(0, 4), (5, 9), (10, INFINITE)]}
-    # feature 0 common: max(2, 3) - 1 == 2 ; feature 1 exclusive: 2 - 1 == 1
-    assert ab.codeword_floor(iv1, iv2) == 3
-
+# band_ceiling, band_target, codeword_floor and key_bytes_floor and their
+# tests were deleted 2026-09-15 (task 14): each survived only as a stats
+# column (or, for band_ceiling, in src/reporting/replay_scoring.py's since-
+# also-pruned legacy_band_wasted_bits), with no caller reading it for a
+# decision. The arithmetic they wrapped -- _own_floor_widths, byte_width --
+# has its own tests below.
 
 # BandBudget's own spending/delta/shed/crossed unit tests were deleted here
 # 2026-09-07 (gate repair): BlockBudget replaced it as the wired gate and
@@ -84,24 +45,6 @@ def test_bits_to_next_byte_frees_exactly_one_byte_and_one_fewer_frees_none():
         assert ab.byte_width(width - step + 1) == ab.byte_width(width)
     assert ab.bits_to_next_byte(24) == 8          # w = 8k costs a full byte
     assert ab.bits_to_next_byte(25) == 1          # w = 8k+1 costs one bit
-
-
-def test_key_bytes_floor_is_reached_when_both_models_already_agree():
-    """Exact for the same reason codeword_floor is: alignment relocates a
-    threshold and never deletes one, so a common feature's pooled set can
-    never drop below the larger of the two models' own counts."""
-    intervals = {0: [(0, 10), (11, 20), (21, INFINITE)],
-                 1: [(0, 5), (6, INFINITE)]}
-    assert ab.key_bytes_floor(intervals, intervals) == ab.pooled_key_bytes(
-        intervals, intervals)
-
-
-def test_key_bytes_floor_counts_exclusive_features_in_full():
-    iv1 = {0: [(0, 10), (11, INFINITE)], 1: [(0, 7), (8, INFINITE)]}
-    iv2 = {0: [(0, 4), (5, 9), (10, INFINITE)]}
-    # feature 0 common: max(2, 3) - 1 == 2 bits -> 1 byte
-    # feature 1 exclusive: 2 - 1 == 1 bit -> 1 byte
-    assert ab.key_bytes_floor(iv1, iv2) == 2
 
 
 def test_bits_to_reach_prices_the_same_starting_width_very_differently():
@@ -129,9 +72,10 @@ def test_bits_to_reach_returns_zero_when_already_at_or_below_target():
 
 @pytest.mark.parametrize('seed', range(20))
 def test_bits_to_reach_is_none_exactly_when_the_floor_blocks_the_target(seed):
-    """E1c. `None` means unreachable at any delta, and must agree with
-    key_bytes_floor > target -- otherwise the bound and the floor would
-    disagree about which cells can win at all."""
+    """E1c. `None` means unreachable at any delta, and must agree with the
+    floor byte width (sum(byte_width(w) for w in floors.values())) exceeding
+    target -- otherwise the bound and the floor would disagree about which
+    cells can win at all."""
     rng = np.random.default_rng(seed)
     widths = {f: int(rng.integers(1, 40)) for f in range(8)}
     floors = {f: int(rng.integers(1, widths[f] + 1)) for f in widths}

@@ -5,21 +5,25 @@ its cap was found to be identically 0 at a zero alignment tolerance,
 discarding confirmed-harmless moves); this script remains useful purely as a
 measurement tool.
 
-Answers the three questions the pre-filter's replacement turns on, from ONE
+Answers the questions the pre-filter's replacement turns on, from ONE
 labelled dataset. Cheap because alignment runs AFTER fitting: one fitted model
 pair is aligned in seconds -- no refits, no Optuna.
 
   1. Does shift_mass predict rel_deg? Scatter one against the other. A tight
      relationship confirms the bound empirically and licenses the derived cap.
-  2. Was the ratio cap wrong? Count candidates with endpoint_ratio > 5 that the
-     oracle ACCEPTED -- alignments silently discarded across every result to
-     date. Prediction, not a finding: non-empty, and concentrated on
-     small-valued features such as Fwd.Packet.Length.Min / Min.Packet.Length.
-  3. Is any filter worth keeping? Measure oracle cost per candidate now that
+  2. Is any filter worth keeping? Measure oracle cost per candidate now that
      the hot path is vectorised. If filtering saves little, deletion is
      defensible -- and provable rather than assumed.
 
-Writes results/alignment_filter_log.csv and prints the three answers.
+Q2's original question ("was the ratio cap wrong?") was already answered by
+the endpoint_ratio > 5 count this script used to print: non-empty, and
+concentrated on small-valued features such as Fwd.Packet.Length.Min /
+Min.Packet.Length. That answer is what motivated deleting the cap in P3 Task
+7, and endpoint_ratio itself -- the diagnostic left behind to let a run
+re-measure the question -- was pruned 2026-09-15 (task 14) once nothing
+outside this already-answered question read it.
+
+Writes results/alignment_filter_log.csv and prints the two answers.
 
 Run:
   "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" scripts/instrument_alignment_filter.py
@@ -50,7 +54,7 @@ SELECTED_FEATURES = [
 # started from unmutated models. Track 5's pre-registered live-Optuna trial
 # returned delta_helps = FALSE (mean_d000 0.7956173344395895 vs mean_d020
 # 0.7861922400433382, cells_favouring_d020 14/24) and the axis was deleted on
-# 2026-09-15, leaving one alignment behaviour and therefore one run. The three
+# 2026-09-15, leaving one alignment behaviour and therefore one run. The two
 # questions this script answers are about shift_mass as a damage predictor, not
 # about the tolerance, so they survive the collapse unchanged.
 
@@ -106,14 +110,7 @@ def main():
         print('    {:<5} candidates where rel_deg > shift_mass/error (bound violated) = {}'
               .format(task, violations))
 
-    print('\nQ2  was the ratio cap wrong?')
-    wrongly_vetoed = frame[(frame['endpoint_ratio'] > 5.0) & frame['accepted']]
-    print('    candidates with endpoint_ratio > 5 that the oracle ACCEPTED: {}'
-          .format(len(wrongly_vetoed)))
-    if len(wrongly_vetoed):
-        print(wrongly_vetoed['feature'].value_counts().to_string())
-
-    print('\nQ3  is any filter worth keeping? -- see the ms/candidate above.')
+    print('\nQ2  is any filter worth keeping? -- see the ms/candidate above.')
 
 
 if __name__ == '__main__':

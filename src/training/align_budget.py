@@ -26,12 +26,15 @@ many-feature design measured: the crossbar allocates per key FIELD and
 byte-rounds each one, so a 13-field 84-bit key really presents 16 bytes = 3
 blocks where codeword_bits_to_blocks says 2. It looked right for years only
 because on few wide fields byte-rounding is nearly a no-op.
-codeword_bits_to_blocks survives here as one ARM of codeword_to_blocks and
-in src/reporting/replay_scoring.py's legacy columns; it no longer gates
-anything.
+codeword_bits_to_blocks no longer appears in this module at all -- band_ceiling
+and band_target, its only callers here, were pruned once the block-domain
+repair made them stats-only; codeword_bits_to_blocks itself survives as one
+ARM of codeword_to_blocks (src/p4gen/evaluation.py) and in
+src/reporting/replay_scoring.py's band_factor_before/after columns. It no
+longer gates anything.
 
 The byte-domain helpers below (byte_width, bits_to_next_byte, bits_to_reach,
-key_bytes_floor, pooled_key_bytes) are MORE central after the repair, not
+pooled_key_bytes) are MORE central after the repair, not
 less: blocks now live in the byte domain too. The stage-domain twins that
 once sat beside them -- tables_per_stage, ternary_stages, stage_step_target,
 StageBudget -- are gone, because classification-pool stages are derivable
@@ -41,10 +44,8 @@ pinned by tests/test_resource_model_golden.py).
 Imports from p4gen only, so both threshold_alignment and the replay harness
 can use it without importing the mutation loop.
 """
-from src.p4gen.build_p4_script import INFINITE, TCAM_BLOCK_KEY_LENGTH
-from src.p4gen.evaluation import (CODEWORD_KEY_OVERHEAD_BITS,
-                                  codeword_bits_to_blocks,
-                                  codeword_fields_to_bytes_from_bits,
+from src.p4gen.build_p4_script import INFINITE
+from src.p4gen.evaluation import (codeword_fields_to_bytes_from_bits,
                                   codeword_to_blocks,
                                   entries_across_trees_to_blocks)
 from src.p4model.ranges import compiler_range_rows
@@ -69,44 +70,6 @@ def pooled_interval_count(ranges1, ranges2):
     bounds = {hi for _, hi in ranges1 if hi != INFINITE}
     bounds |= {hi for _, hi in ranges2 if hi != INFINITE}
     return len(bounds) + 1
-
-
-def codeword_floor(intervals1, intervals2):
-    """The lowest codeword length ANY alignment of this pair could reach.
-
-    Exact and invariant, not a heuristic. Alignment only ever relocates a
-    threshold, never deletes one from its own model
-    (threshold_alignment.py:106-111), so each model's own per-feature interval
-    count is constant for the whole run and a common feature's pooled
-    threshold set can never drop below the larger of the two. Perfect
-    coincidence on every common feature is therefore the floor.
-
-    Computed once at entry: nothing alignment does can move it.
-    """
-    # sum over common features of max(own1, own2) - 1, plus each exclusive
-    # feature's own count - 1: exactly _own_floor_widths, in the bit domain.
-    return sum(_own_floor_widths(intervals1, intervals2).values())
-
-
-def band_ceiling(factor):
-    """The highest codeword length that still fits in `factor` key blocks.
-
-    codeword_bits_to_blocks(L) == ceil((L + 4) / 44), so the largest L in a given band
-    satisfies L + 4 <= 44 * factor. src/reporting/replay_scoring.py uses this
-    to price overshoot: bits shed below the ceiling of the band a run actually
-    landed in bought nothing.
-    """
-    return TCAM_BLOCK_KEY_LENGTH * factor - CODEWORD_KEY_OVERHEAD_BITS
-
-
-def band_target(codeword_length):
-    """The highest codeword length that sits one band cheaper than this one.
-
-    In the first band the result is negative, which correctly makes
-    `target >= floor` False for every non-negative floor -- there is no
-    cheaper band to reach.
-    """
-    return band_ceiling(codeword_bits_to_blocks(codeword_length) - 1)
 
 
 def byte_width(bits):
@@ -314,16 +277,6 @@ def pooled_key_bytes(intervals1, intervals2):
         _pooled_widths(intervals1, intervals2).values())
 
 
-def key_bytes_floor(intervals1, intervals2):
-    """The lowest key width ANY alignment at ANY delta could reach.
-
-    Exact for the same reason codeword_floor is, and computed once at entry:
-    nothing alignment does can move it.
-    """
-    return codeword_fields_to_bytes_from_bits(
-        _own_floor_widths(intervals1, intervals2).values())
-
-
 def bits_to_reach(pooled_widths, own_floors, target_bytes):
     """Fewest bits that could bring sum(ceil(w/8)) down to target_bytes.
 
@@ -338,8 +291,8 @@ def bits_to_reach(pooled_widths, own_floors, target_bytes):
     each feature's width sits modulo 8.
 
     None means unreachable at any delta, and agrees exactly with
-    key_bytes_floor > target_bytes (required test E1c). Reported, never
-    enforced: no run is skipped on this bound.
+    sum(byte_width(w) for w in own_floors.values()) > target_bytes (required
+    test E1c). Reported, never enforced: no run is skipped on this bound.
     """
     costs = []
     for feature, width in pooled_widths.items():
@@ -379,6 +332,11 @@ def bits_to_reach(pooled_widths, own_floors, target_bytes):
 # keeps the free moves and nothing else. align_rf_thresholds now carries the
 # live width dict itself, which is all the class did that anything still needs.
 #
-# codeword_floor / _own_floor_widths / _factor / total_blocks survive -- the
-# floor is still reported in the stats and still ranks features in
-# feature_order.
+# _own_floor_widths / _factor / total_blocks survive -- they still feed
+# factor_floor/total_blocks_floor in the stats and still underlie the width
+# dicts feature_order and blocks_bought_by rank on. codeword_floor and
+# key_bytes_floor -- the two convenience wrappers that summed
+# _own_floor_widths into a single reported scalar -- were themselves pruned
+# 2026-09-15 once they were confirmed to be stats-only (task 14: no caller
+# read them for a decision, only stats['codeword_floor'] /
+# stats['key_bytes_floor']).
