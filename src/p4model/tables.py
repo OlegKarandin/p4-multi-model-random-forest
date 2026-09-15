@@ -231,6 +231,61 @@ def _clean_byte_can_reach_a_midbyte(byte_widths, nibble_clean, slots):
   return False
 
 
+def _run_capacity(start_group, groups, nibble_clean_count):
+  """Key BYTES the crossbar run [start_group, start_group + groups - 1] can hold.
+
+  Three kinds of slot, and they are not interchangeable:
+    * CROSSBAR_PRIVATE_BYTES_PER_GROUP private bytes per group, always whole;
+    * the midbytes both of whose groups lie inside the run (_full_midbytes),
+      also whole;
+    * the HALF midbyte the run exposes at its low end when it starts on an odd
+      group, and at its high end when it ends on an even one. Half a midbyte is
+      one nibble: a whole byte can never ride it, and only a field whose last
+      byte uses a single nibble (`1 <= bits % 8 <= 4`) can -- so at most
+      nibble_clean_count of them are usable, however many are exposed.
+  """
+  last = start_group + groups - 1
+  whole = (CROSSBAR_PRIVATE_BYTES_PER_GROUP * groups
+           + _full_midbytes(start_group, groups))
+  halves = ((1 if start_group % 2 == 1 else 0)
+            + (1 if last % 2 == 0 else 0))
+  return whole + min(halves, nibble_clean_count)
+
+
+def crossbar_groups_needed(field_bit_widths, start_group=0):
+  """Consecutive crossbar groups this key's bytes occupy starting at start_group.
+
+  codeword_bytes_to_blocks answers this at offset 0 and ONLY at offset 0. A run
+  of g groups from group 0 owns 5g + floor(g/2) = floor(5.5g) whole byte slots,
+  which is exactly the widest key ceil(key_bytes / 5.5) assigns to g groups --
+  so the two agree there by arithmetic, not by coincidence, and this function
+  is a strict generalisation rather than a replacement. Shifted runs are
+  poorer: a 2-group run starting ODD owns no full midbyte at all, so it holds
+  10 bytes where the same run at 0 holds 11.
+
+  EVIDENCE STATE. The offset-0 agreement is proved above and property-tested
+  (test_a_run_at_offset_zero_takes_exactly_the_byte_derived_group_count). The
+  SHIFTED arm is first-principles geometry, NOT hardware-confirmed: Task 5's
+  spacer sweep (scripts/tcam_spacer_sweep.py) ran 12 real p4c compiles looking
+  for a non-ambiguous odd-offset triple and got zero -- every point came back
+  start_group_ambiguous=True (see that task's report). So this arm ships on
+  geometry and property tests alone. The change is MONOTONE by construction --
+  the loop only ever grows the run -- which is the safe direction under spec
+  3.6: it can over-predict and reject a feasible design, never under-predict
+  and admit an infeasible one.
+  """
+  byte_widths = [math.ceil(bits / 8) for bits in field_bit_widths]
+  key_bytes = sum(byte_widths)
+  if key_bytes == 0:
+    return 0
+  nibble_clean_count = sum(1 for bits in field_bit_widths
+                           if 1 <= bits % 8 <= 4)
+  groups = codeword_bytes_to_blocks(key_bytes)
+  while _run_capacity(start_group, groups, nibble_clean_count) < key_bytes:
+    groups += 1
+  return groups
+
+
 def codeword_to_blocks(field_bit_widths, start_group=0):
   """TCAM blocks ONE table word of this key spans, version field included.
 
@@ -256,12 +311,29 @@ def codeword_to_blocks(field_bit_widths, start_group=0):
   test_factor_of_an_empty_width_dict_is_the_empty_key_factor -- violates it
   without any randomness at all (bit-bound 1 vs crossbar-plus-version 0).
 
-  D5's demotion is therefore DECLINED here, not adopted: a hard assertion that
-  crashes on a reachable, already-tested input is a worse regression than
-  keeping the max(). Repairing version_block_penalty's clause (a) so the bound
-  really is provable is out of this track's scope (no cost-rule changes
-  permitted here) and is left as a follow-up task."""
-  blocks = (codeword_bytes_to_blocks(codeword_fields_to_bytes_from_bits(field_bit_widths))
+  D5's demotion is therefore DECLINED here, not adopted -- but only half of the
+  original reason still holds. The clause-(a) hole IS now repaired
+  (`crossbar_groups_needed` grows the run until the key's own bytes actually
+  fit before asking whether a nibble is left for --version--), so start_group=3
+  odd-offset counterexamples like widths (38, 48) no longer violate the bound.
+  What remains is the empty-key case: `codeword_to_blocks((), s) == 1` from the
+  bit arm vs 0 from the crossbar arm, reachable whenever every tree in a forest
+  is a single leaf (test_factor_of_an_empty_width_dict_is_the_empty_key_factor).
+  A hard assertion would crash on that reachable, already-tested input, so the
+  max() stays.
+
+  Re-measured against the repaired code, same 500 000-trial generator as
+  before (`random.seed(0)`, field counts 0-15, widths 1-80 bits, offsets 0-7):
+  31 524 trials still violate the naive bound, but every single one is the
+  empty-key case above (0 fields, so the crossbar arm is 0 and the bit arm is
+  still >= 1) -- confirmed by re-running with the violations partitioned on
+  `len(widths) == 0`. Non-empty violations, the shape this task fixes, are
+  0/500 000, down from 328/500 000 measured against the pre-fix code with the
+  identical generator (the closest comparable figure to this docstring's
+  previous stale "272"). So the fix closes the odd-offset hole completely on
+  this generator; only the structural empty-key case remains, which max()
+  already covers and no test here claims otherwise."""
+  blocks = (crossbar_groups_needed(field_bit_widths, start_group)
             + version_block_penalty(field_bit_widths, start_group))
   return max(codeword_bits_to_blocks(sum(field_bit_widths)), blocks)
 
@@ -324,7 +396,11 @@ def version_block_penalty(field_bit_widths, start_group=0):
   if key_bytes == 0:
     return 0
   nibble_clean = [1 <= (bits % 8) <= 4 for bits in field_bit_widths]
-  groups = codeword_bytes_to_blocks(key_bytes)
+  # The run the key REALLY occupies at this offset, which is the run whose
+  # midbytes version has to find a nibble in. Asking codeword_bytes_to_blocks
+  # here was finding 1.2: clause (a) below would let a run off the hook for
+  # ending on a half midbyte without ever checking the key fit inside it.
+  groups = crossbar_groups_needed(field_bit_widths, start_group)
   last = start_group + groups - 1
 
   if last % 2 == 0:

@@ -20,8 +20,9 @@ import math
 import numpy as np
 import pytest
 
-from src.p4model.tables import (codeword_bytes_to_blocks, codeword_to_blocks,
-                                version_block_penalty)
+from src.p4model.tables import (codeword_bits_to_blocks, codeword_bytes_to_blocks,
+                                codeword_fields_to_bytes_from_bits, codeword_to_blocks,
+                                crossbar_groups_needed, version_block_penalty)
 
 
 # --------------------------------------------------------------------------
@@ -284,3 +285,75 @@ def test_the_entry_to_block_arithmetic_has_a_name():
     assert entries_across_trees_to_blocks([100, 200, 300]) == 3
     assert entries_across_trees_to_blocks([600, 100]) == 3
     assert entries_across_trees_to_blocks([]) == 0
+
+
+def test_an_odd_offset_never_costs_less_than_an_even_one():
+    """The shape finding 1.2 names. Eleven 5-bit fields are 11 crossbar bytes
+    with no nibble-clean byte among them (5 % 8 == 5, outside 1..4), so nothing
+    can ride a half midbyte. A 2-group run starting ODD owns 10 whole byte
+    slots, not 11 -- the key does not fit and needs a third group. Before this
+    fix the odd offsets came back CHEAPER (3, 2, 3, 2, 3, 2)."""
+    costs = [codeword_to_blocks((5,) * 11, s) for s in range(6)]
+
+    assert costs == [3, 3, 3, 3, 3, 3]
+
+
+def test_a_run_at_offset_zero_takes_exactly_the_byte_derived_group_count():
+    """The invariant that keeps every joint row and every offset-0 table
+    unchanged, and with them the 17/17 validation gate. A run of g groups from
+    group 0 owns floor(5.5g) whole byte slots, which is exactly the largest key
+    codeword_bytes_to_blocks assigns to g groups, so the feasibility loop can
+    never fire at offset 0."""
+    import random
+
+    random.seed(1)
+    for _ in range(2000):
+        widths = tuple(random.randint(1, 80)
+                       for _ in range(random.randint(0, 15)))
+        expected = codeword_bytes_to_blocks(
+            codeword_fields_to_bytes_from_bits(widths))
+
+        assert crossbar_groups_needed(widths, 0) == expected, widths
+
+
+def test_the_repair_only_ever_raises_a_cost():
+    """Spec 3.6's monotonicity rule, as a test rather than a promise: a key at
+    any offset must cost at least what the byte-derived group count plus the
+    version penalty would have charged."""
+    import random
+
+    random.seed(7)
+    for _ in range(2000):
+        widths = tuple(random.randint(1, 80)
+                       for _ in range(random.randint(0, 12)))
+        start = random.randint(0, 7)
+        floor_cost = max(
+            codeword_bits_to_blocks(sum(widths)),
+            codeword_bytes_to_blocks(
+                codeword_fields_to_bytes_from_bits(widths))
+            + version_block_penalty(widths, start))
+
+        assert codeword_to_blocks(widths, start) >= floor_cost, (widths, start)
+
+
+def test_a_solid_key_is_still_priced_the_same_at_every_offset():
+    """The control the stretch sweep measured: a SOLID key has no nibble-clean
+    byte to consume a half midbyte, so shifting it changes nothing. Measured on
+    hardware at 49 bytes (9 blocks at offset 0 and at offset 3); this is the
+    11-byte analogue."""
+    costs = [codeword_to_blocks((88,), s) for s in range(6)]
+
+    assert costs == [3, 3, 3, 3, 3, 3]
+
+
+def test_a_nibble_clean_byte_can_ride_the_low_half_midbyte():
+    """A run starting on an ODD group exposes a half midbyte at its LOW end.
+    A whole byte can never sit there, but a field whose last byte uses only a
+    nibble can -- so a key with one such field fits where the all-5-bit key of
+    the first test does not."""
+    # Ten 5-bit fields (10 bytes, none nibble-clean) plus one 4-bit field
+    # (1 byte, nibble-clean) = 11 bytes, same as (5,) * 11.
+    widths = (5,) * 10 + (4,)
+
+    assert crossbar_groups_needed(widths, 1) == 2
+    assert crossbar_groups_needed((5,) * 11, 1) == 3
