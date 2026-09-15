@@ -236,6 +236,12 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   reviews/t12_required_changes.md Section 1.3, confirmed across key widths
   8-512 bits.)
 
+  A per-stage crossbar group cap was probed and not found: two solid keys of
+  34 and 30 crossbar bytes need 7+6=13 groups in a stage that has 12, pass
+  the 64-byte cap at exactly 64, and p4c placed them in one stage
+  (scripts/tcam_group_cap_probe.py, point groups_13_bytes_64, with
+  groups_12_bytes_59 as the control, probed 2026-09-15).
+
   These constraints are NOT separable: solving each relaxation alone and
   taking the max can under-count. Counterexample -- tables
   (20 blocks, 5 B), (20, 5), (1, 60): the blocks-only bound is
