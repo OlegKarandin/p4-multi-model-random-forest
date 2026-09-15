@@ -462,7 +462,11 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
         # C3. Candidate ORDER, stated once because nothing documented it
         # before:
-        #   features, descending by combined interval count (unchanged);
+        #   features, ranked by feature_order (blocks a shed would buy,
+        #     descending; bits it would cost, ascending; combined interval
+        #     count, descending; feature index -- the last two only as
+        #     tiebreaks now that the ranking is cost-aware, not the primary
+        #     key);
         #   then ROUNDS, each recomputing the overlap list from the CURRENT,
         #     already-mutated interval lists -- this is what makes an overlap
         #     CREATED by an earlier accepted move reachable at all. Aligning
@@ -490,6 +494,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         # recomputed sweep returns the identical list, every member of which
         # is already in `seen`, so the next round would do zero work.
         # MAX_RECOMPUTE_ROUNDS is only the backstop for genuine cycling.
+
         # audit §8.2 item 4. What this feature costs before it is worked, so an
         # accepted move that BUYS a block can end the feature instead of
         # shedding on past the ladder step it just crossed. Priceable only now
@@ -981,7 +986,9 @@ def target_is_well_formed(target):
 
 
 def calculate_range_overlap(range1, range2):
-    """Overlap ratio between two ranges; 0.0 also means 'vetoed'.
+    """Similarity ratio between two ranges -- a diagnostic only; admission no
+    longer interprets it (see still_overlaps / structurally_alignable /
+    target_is_well_formed).
 
     NOTE this function's 0.0 return is overloaded: it means both "no overlap"
     and "vetoed". The zero-side and INFINITE-side vetoes below are structural

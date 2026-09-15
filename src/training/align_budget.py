@@ -1,4 +1,4 @@
-"""Block-factor arithmetic for cost-aware threshold alignment (C1).
+"""Total-blocks arithmetic for cost-aware threshold alignment (C1).
 
 The joint block cost is
 
