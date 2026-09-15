@@ -17,22 +17,24 @@ explained is the bug this fixture exists to catch.
 The capture function lives here and is imported by the replay test, so the
 dumper and the checker cannot drift apart.
 
-Run (from the repository root; ~1 minute -- 6 alignment runs over a 7-tree
-pair, no Optuna search and no p4c):
+Run (from the repository root; well under a minute -- one alignment run over a
+7-tree pair, no Optuna search and no p4c):
   PYTHONPATH=. "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" \\
       scripts/dump_alignment_characterisation.py
 """
 import json
 import os
 
-from src.main import DELTA_ALIGNS
-
-# The configurations: one row per delta value the campaign actually sweeps
-# (src.main.DELTA_ALIGNS), imported rather than duplicated so this fixture
-# cannot silently drift from the real arm grid. The overlap_threshold axis
-# that used to multiply this grid by three is gone (Task 7, design D4): the
-# tunable it swept no longer exists.
-CONFIGS = [{'delta_rel': d} for d in DELTA_ALIGNS]
+# One configuration, because the campaign has one: alignment keeps the FREE
+# moves and nothing else.
+#
+# This used to be `[{'delta_rel': d} for d in src.main.DELTA_ALIGNS]` -- six
+# rows, one per swept tolerance. Track 5's pre-registered live-Optuna trial
+# returned delta_helps = FALSE (mean_d000 0.7956173344395895 vs mean_d020
+# 0.7861922400433382, cells_favouring_d020 14/24), so that axis is gone and
+# with it every row but this one. The overlap_threshold axis that used to
+# multiply the grid by three went the same way in Task 7 (design D4).
+CONFIGS = [{'delta_rel': 0.0}]
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        os.pardir, 'tests', 'fixtures',

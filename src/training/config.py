@@ -7,16 +7,18 @@ self-describing: the arm cannot be misidentified from its artifact because the
 filename is derived from the config that produced it.
 """
 from dataclasses import dataclass
-from typing import Optional
 
 from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
 
 def _validate_encoding(encoding):
-    """Shared guard for `TrainConfig.arm_slug` / `delta_align_label`: both
-    branch on `encoding == 'disjoint'` vs. everything else, so an
-    unrecognized string (a typo, say) used to fall through to the joint-arm
-    behaviour silently instead of failing loudly."""
+    """Shared guard for `TrainConfig.arm_slug`, which branches on
+    `encoding == 'disjoint'` vs. everything else, so an unrecognized string (a
+    typo, say) used to fall through to the joint-arm behaviour silently instead
+    of failing loudly.
+
+    It guarded `delta_align_label` too until the 2026-09-15 deletion of the
+    delta_align axis, which took that method with it."""
     if encoding not in ('joint', 'disjoint'):
         raise ValueError("encoding must be 'joint' or 'disjoint', got {!r}".format(encoding))
 
@@ -26,13 +28,18 @@ class TrainConfig:
     """Frozen so a ProcessPoolExecutor worker cannot mutate the arm it is
     running, which would silently mix two treatments into one output file.
 
-    delta_align : SWEPT. Permitted relative-error degradation per task when a
-        model is perturbed to make its thresholds shareable. None means
-        accept-all (the "inf" anchor, which also skips the accuracy
-        evaluation entirely). Applies to the JOINT arm only.
+    There is no `delta_align` field. It was SWEPT -- the permitted
+    relative-error degradation per task while perturbing a model to make its
+    thresholds shareable -- until Track 5's pre-registered live-Optuna trial
+    returned delta_helps = FALSE (mean_d000 0.7956173344395895 vs mean_d020
+    0.7861922400433382, cells_favouring_d020 14/24), and the whole axis was
+    deleted on 2026-09-15. Alignment now always runs at delta = 0, i.e. free
+    moves only.
+
     alignment_enabled : False is the ablation arm -- align_rf_thresholds is not
         called at all, so the arm is provably prediction-identical to the
-        unaligned models. This is NOT the same as delta_align = 0.
+        unaligned models. This is NOT the same as accepting only free moves,
+        which is what True now does.
     delta_select : FIXED at 0.02 for every arm. How far the chosen trial may
         fall below the best achievable balance in exchange for fewer blocks.
         Not a treatment: it moves the baseline as well as the treatment, so
@@ -96,7 +103,6 @@ class TrainConfig:
         absent (today's unmodified behaviour).
     """
 
-    delta_align: Optional[float] = 0.0
     alignment_enabled: bool = True
     delta_select: float = 0.02
     align_objective: str = 'blocks'
@@ -109,9 +115,6 @@ class TrainConfig:
     ccp_alpha_max: float = 0.0
 
     def __post_init__(self):
-        if self.delta_align is not None and self.delta_align < 0:
-            raise ValueError(
-                'delta_align must be None or >= 0, got {!r}'.format(self.delta_align))
         if self.delta_select < 0:
             raise ValueError(
                 'delta_select must be >= 0, got {!r}'.format(self.delta_select))
@@ -130,35 +133,22 @@ class TrainConfig:
         """Filename-safe arm identity, per spec C.2.
 
         The independent arm's slug deliberately ignores the alignment fields:
-        alignment runs in the joint arm only, so two independent runs differing
-        only in delta_align are the SAME arm and must share one output file.
+        alignment runs in the joint arm only, so two independent runs must
+        share one output file.
 
-        Until 2026-09-14 this appended a conditional `-o{:03d}` suffix for a
-        swept overlap_threshold. That axis is gone (design D4), so the slug is
-        unambiguous again -- but archived filenames still carry the suffix, and
-        src/reporting/campaign_data.py reconstructs it from an archived row's
-        own column. Reporting ACCEPTS the column; nothing WRITES it.
+        Three slugs, not eight. Until 2026-09-15 the aligned joint arm's slug
+        carried the swept tolerance -- `joint-d000` ... `joint-d020`,
+        `joint-dinf` -- and the arm that survives the axis's deletion (free
+        moves only, the old `joint-d000`) is now plain `joint`. Archived
+        filenames still carry the old suffixes, and
+        src/reporting/campaign_data.py reconstructs them from an archived row's
+        own `delta_align` column. Reporting ACCEPTS that column; nothing WRITES
+        it. The same is true of the `-o{:03d}` overlap_threshold suffix retired
+        in 2026-09-14.
         """
         _validate_encoding(encoding)
         if encoding == 'disjoint':
             return 'independent'
         if not self.alignment_enabled:
             return 'joint-off'
-        if self.delta_align is None:
-            return 'joint-dinf'
-        return 'joint-d{:03d}'.format(int(round(self.delta_align * 100)))
-
-    def delta_align_label(self, encoding='joint'):
-        """What goes in the row's `delta_align` column (spec C.1): the float,
-        "inf" for accept-all, or "" when alignment did not run.
-
-        encoding='disjoint' suppresses this the same way `arm_slug` does:
-        alignment runs in the joint arm only, so an independent-arm row must
-        not carry the joint arm's alignment settings.
-        """
-        _validate_encoding(encoding)
-        if encoding == 'disjoint' or not self.alignment_enabled:
-            return ''
-        if self.delta_align is None:
-            return 'inf'
-        return '{:g}'.format(self.delta_align)
+        return 'joint'

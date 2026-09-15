@@ -310,12 +310,15 @@ def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, m
 
 
 def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp_path, monkeypatch):
-    """Regression: TrainConfig() defaults to alignment_enabled=True,
-    delta_align=0.0 -- the SAME values joint-d000 uses -- so writing them
-    unconditionally for every arm made the independent baseline's rows
-    byte-identical to joint-d000's on these two columns, even though
-    alignment never runs for the independent arm (spec A.2/C.1:
-    delta_align='' and alignment_enabled should read as "off" there)."""
+    """Regression: TrainConfig() defaults to alignment_enabled=True -- the SAME
+    value the aligned joint arm uses -- so writing it unconditionally for every
+    arm made the independent baseline's rows byte-identical to the joint arm's
+    on this column, even though alignment never runs for the independent arm
+    (spec A.2/C.1: alignment_enabled should read as "off" there).
+
+    The `delta_align` column this test also covered is no longer written at all
+    (2026-09-15, Track 5's delta_helps = FALSE verdict), so it is asserted
+    ABSENT here, the same way `overlap_threshold` already is."""
     import numpy as np
     import pandas as pd
     from unittest.mock import patch
@@ -343,23 +346,24 @@ def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp
             M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
 
     independent_df = next(df for p, df in written.items() if 'independent' in p)
-    joint_d000_df = next(df for p, df in written.items() if 'joint-d000' in p)
+    # '_joint.csv' rather than 'joint' alone: the joint-off arm's path also
+    # contains 'joint', and the write is temp-then-rename so the path seen here
+    # carries a '.partial' suffix.
+    joint_df = next(df for p, df in written.items() if '_joint.csv' in p)
 
     assert (~independent_df['alignment_enabled']).all()
-    assert (independent_df['delta_align'] == '').all()
-    assert joint_d000_df['alignment_enabled'].all()
-    assert (joint_d000_df['delta_align'] == '0').all()
+    assert joint_df['alignment_enabled'].all()
 
-    # overlap_threshold is no longer written at all (Task 7, design D4): the
-    # tunable it recorded is gone from TrainConfig, so there is nothing left
-    # to suppress or distinguish per arm.
-    assert 'overlap_threshold' not in independent_df.columns
-    assert 'overlap_threshold' not in joint_d000_df.columns
+    # Neither overlap_threshold (Task 7, design D4) nor delta_align
+    # (2026-09-15) is written at all any more: both tunables are gone from
+    # TrainConfig, so there is nothing left to suppress or distinguish per arm.
+    for column in ('overlap_threshold', 'delta_align'):
+        assert column not in independent_df.columns
+        assert column not in joint_df.columns
 
     # The two arms must actually differ -- guards against a fix that makes
-    # both columns constant across arms instead of correctly arm-dependent.
-    assert not independent_df['alignment_enabled'].equals(joint_d000_df['alignment_enabled'])
-    assert not independent_df['delta_align'].equals(joint_d000_df['delta_align'])
+    # the column constant across arms instead of correctly arm-dependent.
+    assert not independent_df['alignment_enabled'].equals(joint_df['alignment_enabled'])
 
 
 def test_a_cell_whose_file_already_exists_is_skipped():

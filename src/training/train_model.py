@@ -290,17 +290,15 @@ def train_multi_RF_Optuna_multi_constrained(
         model_B = dt_thresholds_float_to_int(model_B)
 
         if encoding == 'joint' and cfg.alignment_enabled:
-            # align_with_policy, not align_rf_thresholds: the direct call gave
-            # this path no commit-or-rollback at all, so a run that spent
-            # accuracy and crossed no boundary kept the loss. Design
-            # 2026-08-30 §2.7 -- NOT behaviour-preserving relative to the
-            # archive, and deliberately so; §2.9(d) records what it costs and
-            # why a rerun settles it.
+            # No delta is passed: the swept `cfg.delta_align` tolerance was
+            # deleted on 2026-09-15 after Track 5's pre-registered live-Optuna
+            # trial returned delta_helps = FALSE (mean_d000 0.7956173344395895
+            # vs mean_d020 0.7861922400433382, cells_favouring_d020 14/24), so
+            # alignment keeps only the moves that cost no accuracy at all.
             model_A, model_B = align_with_policy(
                 model_A, model_B,
                 val_align_A[0], val_align_A[1],
                 val_align_B[0], val_align_B[1],
-                delta_rel=cfg.delta_align,
                 align_stats=align_stats)
 
         return model_A, model_B

@@ -5,59 +5,38 @@ from src import main as m
 from src.training.config import TrainConfig
 
 
-def test_primary_grid_is_three_arms_two_anchors_plus_delta_zero():
-    """independent, joint with alignment OFF, and joint at delta = 0. The two
-    constant anchors bracket the frontier: `off` is a genuine skip of the
-    align_rf_thresholds call, provably prediction-identical to the unaligned
-    models, and it doubles as the ablation the reviewer asked for.
+def test_primary_grid_is_three_arms():
+    """independent, joint with alignment OFF, and joint. `off` is a genuine
+    skip of the align_rf_thresholds call, provably prediction-identical to the
+    unaligned models, and it doubles as the ablation the reviewer asked for.
 
     Until 2026-09-14 the third arm was swept across three overlap thresholds
-    (design §2.4), giving five primary arms. Task 7 (design D4) removed the
-    overlap_threshold tunable those three arms varied, so there is now only
-    one delta-zero joint arm.
+    (design §2.4), giving five primary arms; Task 7 (design D4) removed that
+    tunable. Until 2026-09-15 it was additionally the delta = 0 member of a
+    six-value tolerance sweep, so its slug read 'joint-d000'; Track 5 returned
+    delta_helps = FALSE and the sweep is gone, leaving one aligned joint arm
+    whose slug is plain 'joint'.
     """
     slugs = [cfg.arm_slug('disjoint' if arm == 'independent' else 'joint')
              for arm, cfg in m.PRIMARY_ARMS]
 
-    assert slugs == ['independent', 'joint-off', 'joint-d000']
-
-
-def test_sensitivity_grid_is_the_five_swept_tolerances():
-    """5 delta_align values (0.01 is deliberately absent: it permits at most
-    one DDoS sample to flip -- one flip = 0.83% relative error at val_align
-    ~3000, error ~0.04, so it is operationally identical to delta = 0).
-
-    Until 2026-09-14 each was also swept across three overlap thresholds
-    (design §2.4), giving fifteen sensitivity arms; that axis is gone (Task
-    7, design D4)."""
-    slugs = [cfg.arm_slug('joint') for arm, cfg in m.SENSITIVITY_ARMS]
-
-    assert slugs == [
-        'joint-d002', 'joint-d005', 'joint-d010', 'joint-d020', 'joint-dinf',
-    ]
-
-
-def test_every_sensitivity_arm_is_a_joint_arm():
-    assert all(arm == 'joint' for arm, _ in m.SENSITIVITY_ARMS)
+    assert slugs == ['independent', 'joint-off', 'joint']
 
 
 def test_delta_select_is_identical_across_every_arm():
     """It is a constant of the setup, not a treatment: it moves the baseline as
     well as the treatment, so any variation across arms would shift the
     comparison under its own control variable."""
-    every = m.PRIMARY_ARMS + m.SENSITIVITY_ARMS
-
-    assert {cfg.delta_select for _, cfg in every} == {0.02}
+    assert {cfg.delta_select for _, cfg in m.PRIMARY_ARMS} == {0.02}
 
 
 def test_result_paths_are_self_describing_and_unique_per_arm():
-    paths = {m.arm_result_path(arm, cfg, 25)
-             for arm, cfg in m.PRIMARY_ARMS + m.SENSITIVITY_ARMS}
+    paths = {m.arm_result_path(arm, cfg, 25) for arm, cfg in m.PRIMARY_ARMS}
 
-    assert len(paths) == 8
+    assert len(paths) == 3
     assert any(p.endswith('rf_t7_d14_M25_independent.csv') for p in paths)
-    assert any(p.endswith('rf_t7_d14_M25_joint-d002.csv') for p in paths)
-    assert any(p.endswith('rf_t7_d14_M25_joint-dinf.csv') for p in paths)
+    assert any(p.endswith('rf_t7_d14_M25_joint-off.csv') for p in paths)
+    assert any(p.endswith('rf_t7_d14_M25_joint.csv') for p in paths)
 
 
 def test_result_paths_record_the_effective_search_bounds():
@@ -65,7 +44,7 @@ def test_result_paths_record_the_effective_search_bounds():
     sentinel recorded neither the effective n_trees nor max_depth (F10i)."""
     path = m.arm_result_path('joint', TrainConfig(n_trees=5, max_depth=8), 40)
 
-    assert path.endswith('rf_t5_d8_M40_joint-d000.csv')
+    assert path.endswith('rf_t5_d8_M40_joint.csv')
     assert '-1' not in path
 
 
@@ -73,33 +52,40 @@ def test_arms_flag_defaults_to_primary():
     assert m.parse_args([]).arms == 'primary'
 
 
-def test_arms_flag_selects_the_grid():
-    assert m.parse_args(['--arms', 'sensitivity']).arms == 'sensitivity'
-    assert m.parse_args(['--arms', 'all']).arms == 'all'
+def test_arms_flag_rejects_the_retired_sensitivity_grids():
+    """'sensitivity' and 'all' existed only to name the delta_align sweep. A
+    launch script still passing them must fail at parse time rather than
+    silently run the primary grid instead."""
+    import pytest
+
+    for retired in ('sensitivity', 'all'):
+        with pytest.raises(SystemExit):
+            m.parse_args(['--arms', retired])
 
 
 def test_select_arms_returns_the_requested_grid():
+    import pytest
+
     assert m.select_arms('primary') == m.PRIMARY_ARMS
-    assert m.select_arms('sensitivity') == m.SENSITIVITY_ARMS
-    assert m.select_arms('all') == m.PRIMARY_ARMS + m.SENSITIVITY_ARMS
+    with pytest.raises(ValueError):
+        m.select_arms('all')
 
 
-def test_the_grid_is_eight_arms_with_eight_distinct_slugs():
-    """independent (1) + joint-off (1) + 6 delta_align (6).
+def test_the_grid_is_three_arms_with_three_distinct_slugs():
+    """independent (1) + joint-off (1) + joint (1).
 
-    Until 2026-09-14 each of the 6 delta_align values (join-off excepted) was
-    also swept across 3 overlap thresholds, giving 20 arms (independent (1) +
-    joint-off (1) + 6 delta_align x 3 overlap (18)). Task 7 (design D4)
-    removed that axis; the real multiplier over the archive's 8 arms is now
-    1x, not 2.5x."""
+    Until 2026-09-14 the aligned arms were also swept across 3 overlap
+    thresholds, and until 2026-09-15 across 6 delta_align tolerances -- 20 arms
+    at the peak (independent + joint-off + 6 deltas x 3 overlaps). Both axes
+    are gone, so the grid is smaller than the archive's 8, not larger."""
     from src.main import select_arms
 
-    arms = select_arms('all')
-    assert len(arms) == 8
+    arms = select_arms('primary')
+    assert len(arms) == 3
 
     slugs = {cfg.arm_slug('joint' if arm == 'joint' else 'disjoint')
              for arm, cfg in arms}
-    assert len(slugs) == 8
+    assert len(slugs) == 3
 
 
 def test_every_campaign_arm_enables_ccp_alpha():
@@ -110,7 +96,7 @@ def test_every_campaign_arm_enables_ccp_alpha():
     from src.main import select_arms, CAMPAIGN_CCP_ALPHA_MAX
 
     assert CAMPAIGN_CCP_ALPHA_MAX == 0.05
-    for _, cfg in select_arms('all'):
+    for _, cfg in select_arms('primary'):
         assert cfg.ccp_alpha_max == CAMPAIGN_CCP_ALPHA_MAX
 
 
@@ -122,7 +108,7 @@ def test_align_objective_stays_at_blocks_on_every_arm():
     test_align_objective_does_not_enter_the_arm_slug)."""
     from src.main import select_arms
 
-    assert {cfg.align_objective for _, cfg in select_arms('all')} == {'blocks'}
+    assert {cfg.align_objective for _, cfg in select_arms('primary')} == {'blocks'}
 
 
 def test_delta_select_stays_out_of_the_sweep():
@@ -130,16 +116,14 @@ def test_delta_select_stays_out_of_the_sweep():
     treatment in a joint-vs-independent comparison."""
     from src.main import select_arms
 
-    assert {cfg.delta_select for _, cfg in select_arms('all')} == {0.02}
+    assert {cfg.delta_select for _, cfg in select_arms('primary')} == {0.02}
 
 
-def test_the_arm_grid_lost_the_overlap_axis():
-    """D4: 21 aligned arms collapse to 6, one per delta value. The overlap axis
-    multiplied every delta by three thresholds; with the tunable gone there is
-    one alignment behaviour and the product term disappears.
-
-    (And to 1 if Track 5 retires delta too -- a separate plan, gated on a
-    pre-registered live-Optuna verdict.)
+def test_the_arm_grid_lost_the_overlap_and_delta_axes():
+    """D4: 21 aligned arms collapsed to 6, one per delta value, when the
+    overlap axis went. Track 5's delta_helps = FALSE verdict then collapsed
+    those 6 to 1: there is one alignment behaviour, free moves only, and both
+    product terms are gone.
 
     The brief's own draft of this test asserted `not any('-o' in slug for
     slug in slugs)`, which false-positives on 'joint-off' ('-o' is a
@@ -150,11 +134,12 @@ def test_the_arm_grid_lost_the_overlap_axis():
     from src import main
 
     assert not hasattr(main, 'OVERLAP_THRESHOLDS')
+    assert not hasattr(main, 'DELTA_ALIGNS')
+    assert not hasattr(main, 'SENSITIVITY_ARMS')
     assert len(main.PRIMARY_ARMS) == 3
-    assert len(main.SENSITIVITY_ARMS) == len(main.DELTA_ALIGNS) - 1 == 5
 
     slugs = [cfg.arm_slug('joint' if arm == 'joint' else 'disjoint')
-             for arm, cfg in main.select_arms('all')]
+             for arm, cfg in main.select_arms('primary')]
     assert len(slugs) == len(set(slugs)), slugs
     assert not any(re.search(r'-o\d{3}\b', slug) for slug in slugs), slugs
     # 'joint-off' is the genuine skip-alignment anchor, not a retired
@@ -174,13 +159,14 @@ def test_the_default_M_grid_is_the_archive_grid():
 
 
 def test_select_arm_slugs_returns_the_named_arms_in_the_order_asked():
-    """Track 5's arm set straddles both presets, and its cell ORDER is
+    """Track 5's arm set straddled both presets and its cell ORDER was
     pre-registered (spec 2.4), so selection must preserve the caller's order
-    rather than the catalogue's."""
-    chosen = m.select_arm_slugs(['joint-dinf', 'joint-d000', 'joint-d020'])
+    rather than the catalogue's. Its own three slugs are gone with the delta
+    axis; the ordering contract they motivated is not."""
+    chosen = m.select_arm_slugs(['joint', 'joint-off'])
 
     assert [cfg.arm_slug('joint') for _arm, cfg in chosen] == [
-        'joint-dinf', 'joint-d000', 'joint-d020',
+        'joint', 'joint-off',
     ]
     assert all(arm == 'joint' for arm, _cfg in chosen)
 
@@ -202,16 +188,19 @@ def test_select_arm_slugs_rejects_an_unknown_slug_and_names_the_known_ones():
     import pytest
 
     with pytest.raises(ValueError) as excinfo:
-        m.select_arm_slugs(['joint-d20'])
+        m.select_arm_slugs(['joint-d020'])
 
     message = str(excinfo.value)
-    assert 'joint-d20' in message
     assert 'joint-d020' in message
+    assert 'joint-off' in message
 
 
-def test_every_track5_arm_slug_resolves():
-    """The three slugs Task 2 and Task 10 pass on the command line."""
-    slugs = ['joint-d000', 'joint-d020', 'joint-dinf']
+def test_the_retired_delta_slugs_no_longer_resolve():
+    """The three slugs Track 5 launched its cells with. They must fail loudly,
+    not quietly resolve to the one surviving aligned arm -- a stale launch
+    script would otherwise run something the pre-registration never named."""
+    import pytest
 
-    assert [cfg.arm_slug('joint')
-            for _arm, cfg in m.select_arm_slugs(slugs)] == slugs
+    for retired in ('joint-d000', 'joint-d020', 'joint-dinf'):
+        with pytest.raises(ValueError):
+            m.select_arm_slugs([retired])

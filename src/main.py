@@ -34,12 +34,6 @@ import numpy as np
 # add dead space at the degenerate-pruning end.
 CAMPAIGN_CCP_ALPHA_MAX = 0.05
 
-# §2.3: unchanged from the archive's own arm set. The sweep replicated cleanly
-# there -- the feasibility-rate effect is monotone in delta_align to 0.20 and
-# falls back at inf -- and dinf earns its place as the anchor that shows the
-# mechanism has a cost.
-DELTA_ALIGNS = (0.0, 0.02, 0.05, 0.10, 0.20, None)
-
 # §2.5: the ARCHIVE's grid, not the code's previous default
 # [25,40,50,60,75,90,100]. C3 and C4 are matched-(M,k) comparisons against the
 # archive; the old default shared only {25,50,100} with it and would leave
@@ -47,63 +41,52 @@ DELTA_ALIGNS = (0.0, 0.02, 0.05, 0.10, 0.20, None)
 DEFAULT_M_GRID = [25, 50, 100, 150, 250]
 
 
-def _joint(delta_align):
-    return ('joint', TrainConfig(delta_align=delta_align,
-                                 ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
-
-
-# Two anchors bracket the frontier: `joint-off` is a genuine SKIP of the
-# align_rf_thresholds call -- not delta = 0 -- so the arm is provably
-# prediction-identical to the unaligned models and doubles as the requested
-# ablation; `joint-dinf` accepts every alignment unconditionally and bounds the
-# maximum achievable sharing.
+# `joint-off` is a genuine SKIP of the align_rf_thresholds call, so that arm is
+# provably prediction-identical to the unaligned models and doubles as the
+# requested ablation; `joint` runs alignment and keeps only the FREE moves.
 #
-# Until 2026-09-14 this also swept an `overlap_threshold` axis (design §2.4)
-# across the aligned joint arms. That axis is gone (Task 7, design D4): the
-# tunable it swept no longer exists, its loosest setting strictly dominated
-# the others, and TrainConfig no longer accepts the keyword at all -- so
-# _joint(0.0) below now names one arm where it used to name three identical
-# arm SLUGS with (formerly) different overlap_threshold field values.
+# There is no swept tolerance axis any more, and therefore only one grid.
+# Until 2026-09-15 this module also defined DELTA_ALIGNS = (0.0, 0.02, 0.05,
+# 0.10, 0.20, None) and a SENSITIVITY_ARMS grid built from it; Track 5's
+# pre-registered live-Optuna trial returned delta_helps = FALSE (mean_d000
+# 0.7956173344395895 vs mean_d020 0.7861922400433382, cells_favouring_d020
+# 14/24), so the axis and every arm that existed only to sweep it are gone --
+# as is the `joint-dinf` accept-everything anchor, which only bounded the
+# maximum sharing that axis could buy. Until 2026-09-14 the same arms were
+# additionally crossed with an `overlap_threshold` axis, retired by design D4.
 PRIMARY_ARMS = [
     ('independent', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
     ('joint', TrainConfig(alignment_enabled=False,
                           ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
-    _joint(0.0),
+    ('joint', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
 ]
-
-# The swept variable. delta = 0.01 is deliberately excluded: at val_align
-# ~3000 and DDoS error ~0.04, one flipped sample is 0.83% relative error, so 1%
-# permits at most one flip and is operationally identical to 0.
-SENSITIVITY_ARMS = [_joint(delta) for delta in DELTA_ALIGNS[1:]]
 
 
 def select_arms(which):
     if which == 'primary':
         return list(PRIMARY_ARMS)
-    if which == 'sensitivity':
-        return list(SENSITIVITY_ARMS)
-    if which == 'all':
-        return PRIMARY_ARMS + SENSITIVITY_ARMS
-    raise ValueError("arms must be 'primary', 'sensitivity' or 'all', got {!r}".format(which))
+    raise ValueError("arms must be 'primary', got {!r}".format(which))
 
 
 def select_arm_slugs(slugs):
     """The (arm, cfg) pairs named by these arm slugs, in the order asked.
 
     `--arms`' presets are the campaign's own groupings; this is the escape
-    hatch for an arm SET that crosses them. Track 5 (spec 2026-09-15 §2.2)
-    needs exactly {joint-d000, joint-d020, joint-dinf}, which is neither
-    preset, and needs its six cells run in a pre-registered ORDER that the
-    M-outer/arm-inner loop in compare_independent_joint_mapping cannot emit --
-    so each cell is launched as its own invocation, and this is how a single
-    cell is named.
+    hatch for naming a single cell, or an arm SET that crosses them. Track 5
+    (spec 2026-09-15 §2.2) needed exactly {joint-d000, joint-d020, joint-dinf}
+    -- neither preset -- run in a pre-registered ORDER that the M-outer /
+    arm-inner loop in compare_independent_joint_mapping cannot emit, so each
+    cell was launched as its own invocation and this is how one was named.
+    Those three slugs no longer exist (Track 5 returned delta_helps = FALSE and
+    the tolerance axis was deleted on 2026-09-15); the flag itself stays,
+    because naming one cell is independently useful.
 
     Order is the CALLER's, not the catalogue's, because that order is the
     wall-clock hedge: spec §2.4 ranks the cells so a timeout costs context
     rather than the answer.
     """
     catalogue = {}
-    for arm, cfg in PRIMARY_ARMS + SENSITIVITY_ARMS:
+    for arm, cfg in PRIMARY_ARMS:
         encoding = 'disjoint' if arm == 'independent' else 'joint'
         catalogue[cfg.arm_slug(encoding)] = (arm, cfg)
 
@@ -138,16 +121,15 @@ def parse_args(argv=None):
              "'plot' loads and analyzes already-computed results (default, matches "
              "today's checked-in new_results=False behavior)")
     parser.add_argument(
-        "--arms", choices=["primary", "sensitivity", "all"], default="primary",
-        help="which arm grid to run in compute mode. 'primary' is the five "
-             "arms the headline comparison needs (independent, joint@off, "
-             "and joint@delta=0 at each of 3 overlap thresholds); "
-             "'sensitivity' is the fifteen swept arms (5 tolerances x 3 "
-             "overlap thresholds)")
+        "--arms", choices=["primary"], default="primary",
+        help="which arm grid to run in compute mode. 'primary' is the three "
+             "arms the headline comparison needs (independent, joint@off and "
+             "joint). The 'sensitivity'/'all' grids are gone with the "
+             "delta_align tolerance axis they swept (2026-09-15)")
     parser.add_argument(
         "--arm-slugs", dest="arm_slugs", type=_parse_arm_slugs, default=None,
         help="run exactly these arms, named by slug (e.g. "
-             "'--arm-slugs joint-d000,joint-d020'), in the order given. "
+             "'--arm-slugs independent,joint'), in the order given. "
              "Overrides --arms. Exists because an arm SET can cross the "
              "--arms presets and because cell ORDER is sometimes "
              "pre-registered; pass an unknown slug to see the known ones in "
@@ -198,7 +180,7 @@ def _parse_M_grid(value):
 
 def _parse_arm_slugs(value):
     """--arm-slugs' argparse type: comma-separated arm slugs, e.g.
-    'joint-d000' or 'joint-d000,joint-d020'. Same comma convention as --M, so a
+    'joint' or 'independent,joint'. Same comma convention as --M, so a
     single-cell launch stays one short token."""
     slugs = [slug.strip() for slug in value.split(',') if slug.strip()]
     if not slugs:
@@ -492,16 +474,16 @@ def compare_independent_joint_mapping(M_values, n_splits, arms=None,
             # flatten any future heterogeneity in that column instead of
             # surfacing it.
             results_df['alignment_enabled'] = cfg.alignment_enabled and arm == 'joint'
-            results_df['delta_align'] = cfg.delta_align_label(encoding)
             results_df['delta_select'] = cfg.delta_select
             results_df['M'] = max_blocks
             results_df['n_trees'] = cfg.n_trees
             results_df['max_depth'] = cfg.max_depth
-            # No longer written (Task 7, design D4): the overlap_threshold
-            # tunable is gone from TrainConfig, so there is nothing left to
-            # stamp here. src/reporting/campaign_data.py still ACCEPTS the
-            # column on archived rows written before this change; nothing
-            # WRITES it any more.
+            # Two columns are no longer written: `overlap_threshold` (Task 7,
+            # design D4) and `delta_align` (2026-09-15, Track 5's
+            # delta_helps = FALSE verdict). Both tunables are gone from
+            # TrainConfig, so there is nothing left to stamp here.
+            # src/reporting/campaign_data.py still ACCEPTS either column on
+            # archived rows written before those changes; nothing WRITES them.
 
             # Overwrite, NOT append -- and write atomically.
             #

@@ -100,9 +100,9 @@ def test_an_impossible_block_budget_raises_no_feasible_solution():
 
 
 def test_alignment_enabled_false_never_calls_align_with_policy(monkeypatch):
-    """Spec A.2: the ablation arm is a genuine SKIP of the call, not
-    delta_align = 0, so the arm is provably prediction-identical to the
-    unaligned models."""
+    """Spec A.2: the ablation arm is a genuine SKIP of the call, not an
+    alignment run that happens to accept nothing, so the arm is provably
+    prediction-identical to the unaligned models."""
     import src.training.train_model as tm
 
     calls = []
@@ -298,17 +298,14 @@ def test_the_winner_is_refit_deterministically_not_cached(monkeypatch):
     assert out.n_feasible == len(feasible)
 
 
-def test_delta_align_none_still_builds_the_oracle_now_that_gating_is_unconditional(monkeypatch):
-    """Spec A.2's inf-anchor claim -- that delta_rel=None skips the
-    predict/restore/undo machinery entirely, making it the cheapest arm --
-    no longer holds after the 2026-08-30 policy-ladder deletion: C1's
-    non-spending state judges candidates at delta=0, which needs the oracle
-    even when the caller asked for delta_rel=None, and that gating is now
-    unconditional (see threshold_alignment.align_rf_thresholds and
-    test_the_oracle_is_built_even_at_an_unbounded_delta in
-    test_threshold_alignment.py). So the inf arm no longer skips scoring at
-    this level either -- the number moved because target ranking and budget
-    gating are now unconditional."""
+def test_the_joint_arm_always_builds_the_metric_oracle(monkeypatch):
+    """Spec A.2 once claimed an inf anchor -- `delta_rel=None` skipping the
+    predict/restore/undo machinery entirely, making it the cheapest arm. That
+    stopped holding at the 2026-08-30 policy-ladder deletion, and the arm
+    itself is gone as of 2026-09-15 (Track 5's delta_helps = FALSE verdict).
+    Alignment now judges every candidate at delta = 0, which needs the oracle,
+    so the joint arm always pays for it -- pinned here at the train_model level
+    and in test_threshold_alignment.py at the alignment level."""
     from src.training import threshold_alignment as ta
 
     scored = []
@@ -321,10 +318,10 @@ def test_delta_align_none_still_builds_the_oracle_now_that_gating_is_uncondition
     monkeypatch.setattr(ta.IncrementalMetrics, '__init__', spy)
 
     _call(encoding='joint',
-          cfg=TrainConfig(delta_align=None, n_trials=6,
+          cfg=TrainConfig(n_trials=6,
                           min_feasible_before_stop=2, lookback=2))
 
-    assert scored, 'delta_align=None must still build the oracle now that gating is unconditional'
+    assert scored, 'the joint arm must build the oracle now that gating is unconditional'
     assert set(scored) == {'app', 'ddos'}
 
 
@@ -396,8 +393,9 @@ def test_alignment_fields_are_none_not_zero_on_the_disjoint_arm():
 
 def test_alignment_fields_are_none_not_zero_when_the_joint_arm_disables_alignment():
     """Same None sentinel applies to the joint arm's own ablation: A.2's
-    alignment_enabled=False is a genuine skip of align_rf_thresholds, not
-    delta_align=0, so it must be just as distinguishable from a real zero."""
+    alignment_enabled=False is a genuine skip of align_rf_thresholds, not a
+    run that accepted nothing, so it must be just as distinguishable from a
+    real zero."""
     out = _call(encoding='joint',
                 cfg=TrainConfig(alignment_enabled=False, n_trials=6,
                                 min_feasible_before_stop=2, lookback=2))

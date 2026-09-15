@@ -23,7 +23,7 @@ def _expected():
 
 @pytest.fixture(scope='module')
 def observed():
-    """One capture for the whole module -- six alignment runs over a 7-tree
+    """One capture for the whole module -- the alignment run over a 7-tree
     pair is the expensive part, and every test below reads the same result."""
     return capture()
 

@@ -3,12 +3,18 @@ invocation of compare_independent_joint_mapping, so a reader can confirm the
 arms differ as claimed and which code produced which numbers.
 
 Nothing anywhere in this repo wrote JSON provenance or read a git SHA before
-this. Three things this module must get right, each with its own test group
-below: delta_align: None must survive JSON round-tripping distinguishably
-from 0.0 (the whole joint-dinf vs joint-d000 distinction); git provenance
-must degrade to a recorded None rather than raise, both when the tree is
-merely dirty (the NORMAL state here) and when git/the repo is unavailable
-entirely; and two close-together invocations must not collide on a filename.
+this. Two things this module must get right, each with its own test group
+below: git provenance must degrade to a recorded None rather than raise, both
+when the tree is merely dirty (the NORMAL state here) and when git/the repo is
+unavailable entirely; and two close-together invocations must not collide on a
+filename.
+
+A third group is gone as of 2026-09-15: `delta_align: None` had to survive JSON
+round-tripping distinguishably from `0.0`, because that was the whole
+joint-dinf vs joint-d000 distinction. Track 5's pre-registered live-Optuna
+trial returned delta_helps = FALSE (mean_d000 0.7956173344395895 vs mean_d020
+0.7861922400433382, cells_favouring_d020 14/24), the axis was deleted, and
+TrainConfig now has no Optional field for the encoder to flatten.
 """
 import json
 import subprocess
@@ -28,7 +34,7 @@ from src.training.config import TrainConfig
 PRIMARY_ARMS = [
     ('independent', TrainConfig()),
     ('joint', TrainConfig(alignment_enabled=False)),
-    ('joint', TrainConfig(delta_align=0.0)),
+    ('joint', TrainConfig()),
 ]
 
 
@@ -76,50 +82,21 @@ def test_manifest_records_library_versions():
 
 
 # ---------------------------------------------------------------------------
-# delta_align: None vs 0.0 -- the whole joint-dinf vs joint-d000 distinction
+# The config dict itself
 # ---------------------------------------------------------------------------
 
-def test_delta_align_none_survives_the_round_trip_distinguishable_from_zero(tmp_path):
-    arms = [
-        ('joint', TrainConfig(delta_align=None)),
-        ('joint', TrainConfig(delta_align=0.0)),
-    ]
-    path = write_run_manifest(
-        arms=arms, M_values=[25], n_splits=2,
-        n_rows_app=10, n_rows_ddos=10,
-        directory=str(tmp_path / 'manifests'), cwd=str(tmp_path))
-
-    with open(path) as f:
-        loaded = json.load(f)
-
-    dinf_config = loaded['arms'][0]['config']
-    d000_config = loaded['arms'][1]['config']
-
-    assert dinf_config['delta_align'] is None
-    assert d000_config['delta_align'] == 0.0
-    assert dinf_config['delta_align'] != d000_config['delta_align']
-    # Not stringified either -- a naive str(cfg.delta_align) would make both
-    # "None" and "0.0" survive as strings, which is a subtler way to lose the
-    # distinction than outright coercion to a shared sentinel.
-    assert not isinstance(d000_config['delta_align'], str)
-
-    # And the raw JSON text itself must contain a real `null`, not the string
-    # "null" or "None" -- guards against a stringifying encoder.
-    raw = path
-    with open(raw) as f:
-        text = f.read()
-    assert '"delta_align": null' in text or '"delta_align":null' in text
-
-
-def test_delta_align_of_zero_is_not_coerced_to_none_or_dropped():
+def test_the_arm_config_is_recorded_field_by_field_not_as_a_label():
+    """What the deleted delta_align round-trip group really guarded: the
+    manifest records `dataclasses.asdict(cfg)`, the RAW config, not the CSV-row
+    label helpers that deliberately collapse cases to ''."""
     manifest = build_manifest(
-        arms=[('joint', TrainConfig(delta_align=0.0))],
+        arms=[('joint', TrainConfig(alignment_enabled=False))],
         M_values=[25], n_splits=2, n_rows_app=10, n_rows_ddos=10)
 
     cfg_dict = manifest['arms'][0]['config']
-    assert 'delta_align' in cfg_dict
-    assert cfg_dict['delta_align'] == 0.0
-    assert cfg_dict['delta_align'] is not None
+    assert cfg_dict['alignment_enabled'] is False
+    assert cfg_dict['delta_select'] == 0.02
+    assert 'delta_align' not in cfg_dict
 
 
 # ---------------------------------------------------------------------------
