@@ -537,6 +537,11 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
           for c in code:
             codeword.append(c)
 
+      # Known open item (spec 2026-09-15 §4.4, review finding 2.2's side note):
+      # This dict is keyed by codeword string, and two leaves with the same codeword
+      # but different predicted classes silently keep the last one written. This is a
+      # generator correctness question (not a cost question) and is deliberately NOT
+      # fixed here because a partial fix would make the item look closed when it isn't.
       codewords[tree][''.join(codeword)]=current_leaf_node['class']
 
   return codewords
