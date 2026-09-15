@@ -13,7 +13,8 @@ import math
 from dataclasses import dataclass
 
 from src.p4model.errors import CrossbarKeyTooWide
-from src.p4model.tables import version_block_delta
+from src.p4model.tables import (codeword_bytes_to_blocks, codeword_to_blocks,
+                                version_block_delta)
 from src.p4model.target import (
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
@@ -286,12 +287,33 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   def crossbar_bytes(fields):
     return sum(field_bytes for _, field_bytes in fields)
 
+  def key_width(fields, bits):
+    """Crossbar groups this KEY occupies, version block included.
+
+    Not the table's block count: a table two blocks deep stores more rows
+    through the same key, and depth does not move the next key along the
+    crossbar (finding 1.4). The version block DOES -- p4c starts
+    independent_low_sd5's app key at group 3 behind an 11-byte ddos key that
+    buys 2 groups and pays a third for --version-- (see
+    scripts/tcam_offset_harvest.py).
+
+    bits is None for any caller that names no field widths (the range pool),
+    and then the key's byte width is all there is; a range key is one
+    whole-byte field with slack to spare, so no version charge is due.
+    """
+    if bits:
+      return codeword_to_blocks(bits, 0)
+    return codeword_bytes_to_blocks(crossbar_bytes(fields))
+
   def offsets_for(key_order):
     """Group offset each key starts at, given the order the crossbar hands
-    groups out in. One group feeds one block and a key's groups are
-    consecutive, so a key set's group count IS its per-table block count --
-    counted once however many tables share it, since the crossbar charges per
-    field, not per (table, field)."""
+    groups out in. One group feeds one block, so a key's start is the running
+    sum of the WIDTHS (key_width) of the keys ahead of it -- never their
+    tables' block counts, which can run deeper than one group's worth of rows
+    when a tree exceeds 512 entries or is sharded. A table's own extra depth
+    stores more rows through the SAME key and does not move the crossbar
+    along; only the version-block charge folded into key_width does that
+    (finding 1.4 -- see key_width above)."""
     offsets, running = {}, 0
     for key, key_blocks in key_order:
       offsets[key] = running
@@ -330,7 +352,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     # this is a handful of permutations.
     keys = list(stage[4])
     if all(key != fields for key, _ in keys):
-      keys.append((fields, blocks))
+      keys.append((fields, key_width(fields, bits)))
     if (crossbar_bytes(stage[1] | fields) > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
         or stage[2] + 1 > TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE):
       return False
@@ -351,11 +373,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     stage[2] += 1
     stage[3].append((blocks, fields, bits))
     if all(key != fields for key, _ in stage[4]):
-      stage[4].append((fields, blocks))
+      stage[4].append((fields, key_width(fields, bits)))
 
   def opened(blocks, fields, bits):
     return [blocks, set(fields), 1, [(blocks, fields, bits)],
-            [(fields, blocks)]]
+            [(fields, key_width(fields, bits))]]
 
   def stage_charged_blocks(stage):
     """The TCAM blocks ONE finished stage actually costs, version-block

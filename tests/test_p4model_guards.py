@@ -306,3 +306,54 @@ def test_the_cost_decomposition_names_say_what_they_take():
     for retired in ('ternary_table_key_bytes', 'crossbar_block_width',
                     'band_factor'):
         assert not hasattr(tables, retired), retired
+
+
+def test_a_deep_table_does_not_push_the_next_key_further_along_the_crossbar():
+    """Finding 1.4. A table two blocks DEEP stores more rows through the same
+    key; a key is one indivisible match and occupies one run of crossbar
+    groups. Charging row depth to the next key's start group is a bug --
+    latent, because no calibration tree exceeds 512 entries.
+
+    The second key is chosen so the difference is VISIBLE: (77, 42) is 16
+    crossbar bytes wide and costs 3 blocks at an even group offset, 4 at an
+    odd one. The first key is 3 blocks wide either way.
+
+      correct: key B starts at key A's WIDTH,  3 -> odd  -> B costs 4
+      buggy:   key B starts at key A's BLOCKS, 6 -> even -> B costs 3
+
+    Measured on the fixed code: shallow 7, deep 10, delta 3. On the shipped
+    code the deep stage comes out at 9 and the delta at 2.
+    """
+    from src.p4model.packing import crossbar_stages_needed
+
+    key_a = (5,) * 11                    # 11 crossbar bytes, 3 blocks wide
+    key_b = (77, 42)                     # 16 crossbar bytes, 3 at even / 4 at odd
+    fields = [frozenset({(('a', 0), 11)}), frozenset({(('b', 0), 16)})]
+
+    shallow = crossbar_stages_needed(
+        [(3, 11), (3, 16)], key_fields=fields, key_field_bits=[key_a, key_b])
+    deep = crossbar_stages_needed(
+        [(6, 11), (3, 16)], key_fields=fields, key_field_bits=[key_a, key_b])
+
+    assert (shallow.blocks, deep.blocks) == (7, 10), (shallow, deep)
+
+
+def test_the_second_keys_offset_parity_is_what_the_previous_key_decides():
+    """The property the test above exercises, stated directly so a future
+    reader can see why (77, 42) was chosen rather than any 16-byte key."""
+    from src.p4model.tables import codeword_to_blocks
+
+    assert [codeword_to_blocks((77, 42), s) for s in range(6)] == [3, 4, 3, 4, 3, 4]
+    assert [codeword_to_blocks((5,) * 11, s) for s in range(6)] == [3, 3, 3, 3, 3, 3]
+
+
+def test_the_version_block_does_advance_the_next_keys_offset():
+    """The other half of the ruling, and the half the archive measured:
+    independent_low_sd5's ddos key is 11 bytes = 2 crossbar groups, costs 3
+    blocks because it saturates, and p4c starts the app key at group 3 -- the
+    key's block WIDTH, not its group count. So the version block consumes a
+    group and the advance must include it."""
+    from src.p4model.tables import codeword_to_blocks, crossbar_groups_needed
+
+    assert crossbar_groups_needed((5,) * 11, 0) == 2
+    assert codeword_to_blocks((5,) * 11, 0) == 3
