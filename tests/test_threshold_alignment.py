@@ -998,10 +998,10 @@ def _isolate_c3(monkeypatch):
     -- round-by-round rescanning -- rather than incidentally re-deriving
     whether THIS hand-built fixture's candidates clear the (now-mandatory)
     accuracy gate or the gain filter. Both are covered by their own tests
-    (test_delta_align_none_still_builds_the_oracle_now_that_gating_is_
-    unconditional in test_train_model_contract.py, which actually proves the
-    oracle is always built by spying IncrementalMetrics.__init__ and
-    asserting both tasks were scored, and the C2 tests respectively);
+    (test_the_joint_arm_always_builds_the_metric_oracle in
+    test_train_model_contract.py, which actually proves the oracle is always
+    built by spying IncrementalMetrics.__init__ and asserting both tasks were
+    scored, and the C2 tests respectively);
     restoring the pre-ladder single-target, always-accept shape here
     reproduces this file's pre-Task-3 recompute numbers exactly.
     """
@@ -1693,13 +1693,13 @@ def test_rank_targets_orders_equal_gain_corners_by_max_damage_not_sum():
 
 
 # ---------------------------------------------------------------------------
-# Feature ordering and crossed_a_boundary after the align_objective axis was
-# retired (design 2026-09-07): feature_order now has one behaviour, not a
-# choice between a 'blocks' and a 'stages' branch, and crossed_a_boundary
-# reads only the block factor. As of Task 12, feature_order's one behaviour
-# ranks by the blocks a shed would actually buy (audit Gaps 1+2), recomputed
-# per feature against the budget's live widths -- superseding the
-# byte-completion order this comment used to describe.
+# Feature ordering after the align_objective axis was retired (design
+# 2026-09-07): feature_order has one behaviour, not a choice between a
+# 'blocks' and a 'stages' branch. As of Task 12 that one behaviour ranks by
+# the blocks a shed would actually buy (audit Gaps 1+2), recomputed per
+# feature against the live widths -- superseding the byte-completion order
+# this comment used to describe. crossed_a_boundary was the other subject of
+# this section and is gone (2026-09-15).
 # ---------------------------------------------------------------------------
 
 def _ordering_fixture():

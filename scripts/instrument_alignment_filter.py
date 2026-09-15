@@ -1,12 +1,13 @@
 """Instrumented alignment run: characterises shift_mass as a predictor of
 alignment damage (P3 Task 6/7). The shift_mass-derived pre-filter this script
 originally evaluated was later REMOVED from align_rf_thresholds (P3 Task 8 --
-its cap was found to be identically 0 at delta_align=0, discarding confirmed-
-harmless moves); this script remains useful purely as a measurement tool.
+its cap was found to be identically 0 at a zero alignment tolerance,
+discarding confirmed-harmless moves); this script remains useful purely as a
+measurement tool.
 
 Answers the three questions the pre-filter's replacement turns on, from ONE
 labelled dataset. Cheap because alignment runs AFTER fitting: one fitted model
-pair is re-aligned under several settings in seconds -- no refits, no Optuna.
+pair is aligned in seconds -- no refits, no Optuna.
 
   1. Does shift_mass predict rel_deg? Scatter one against the other. A tight
      relationship confirms the bound empirically and licenses the derived cap.
@@ -44,7 +45,14 @@ SELECTED_FEATURES = [
     'Bwd.IAT.Mean', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
     'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
 
-DELTAS = (0.0, 0.02, 0.05, 0.10, 0.20)
+# There is no DELTAS tuple any more. It was (0.0, 0.02, 0.05, 0.10, 0.20) --
+# one instrumented run per swept tolerance, refitting between runs so each
+# started from unmutated models. Track 5's pre-registered live-Optuna trial
+# returned delta_helps = FALSE (mean_d000 0.7956173344395895 vs mean_d020
+# 0.7861922400433382, cells_favouring_d020 14/24) and the axis was deleted on
+# 2026-09-15, leaving one alignment behaviour and therefore one run. The three
+# questions this script answers are about shift_mass as a damage predictor, not
+# about the tolerance, so they survive the collapse unchanged.
 
 
 def main():
@@ -59,39 +67,30 @@ def main():
             n_estimators=7, max_depth=10, min_samples_leaf=5,
             random_state=seed, n_jobs=1).fit(X, y))
 
+    rf1 = fit(app.X_train, app.y_train, 0)
+    rf2 = fit(ddos.X_train, ddos.y_train, 1)
+
+    log = []
+    start = time.perf_counter()
+    ta.align_rf_thresholds(
+        rf1, rf2,
+        app.X_val_align, app.y_val_align,
+        ddos.X_val_align, ddos.y_val_align,
+        candidate_log=log)
+    elapsed = time.perf_counter() - start
+
     rows = []
-    for delta in DELTAS:
-        # Refit per delta so each run starts from identical, unmutated models.
-        # align_rf_thresholds now deepcopies rf1/rf2 on entry and mutates only
-        # the copies (C8), so this refit is no longer needed for THAT reason;
-        # it stays because this loop discards align_rf_thresholds' return
-        # value and only reads the candidate_log side effect, so rf1/rf2
-        # still have to be fresh, unaligned models going into each delta.
-        rf1 = fit(app.X_train, app.y_train, 0)
-        rf2 = fit(ddos.X_train, ddos.y_train, 1)
+    for entry in log:
+        entry = dict(entry)
+        entry['feature'] = names[entry['feature_idx']]
+        entry['rel_deg_acc_app'], entry['rel_deg_f1_app'], \
+            entry['rel_deg_acc_ddos'], entry['rel_deg_f1_ddos'] = entry.pop('rel_deg')
+        rows.append(entry)
 
-        log = []
-        start = time.perf_counter()
-        ta.align_rf_thresholds(
-            rf1, rf2,
-            app.X_val_align, app.y_val_align,
-            ddos.X_val_align, ddos.y_val_align,
-            delta_rel=delta,
-            candidate_log=log)
-        elapsed = time.perf_counter() - start
-
-        for entry in log:
-            entry = dict(entry)
-            entry['delta_align'] = delta
-            entry['feature'] = names[entry['feature_idx']]
-            entry['rel_deg_acc_app'], entry['rel_deg_f1_app'], \
-                entry['rel_deg_acc_ddos'], entry['rel_deg_f1_ddos'] = entry.pop('rel_deg')
-            rows.append(entry)
-
-        print('delta={:<5} candidates={:<6} accepted={:<6} wall={:.1f}s  '
-              '{:.2f} ms/candidate'.format(
-                  delta, len(log), sum(e['accepted'] for e in log), elapsed,
-                  1000 * elapsed / max(1, len(log))))
+    print('candidates={:<6} accepted={:<6} wall={:.1f}s  '
+          '{:.2f} ms/candidate'.format(
+              len(log), sum(e['accepted'] for e in log), elapsed,
+              1000 * elapsed / max(1, len(log))))
 
     frame = pd.DataFrame(rows)
     os.makedirs('results', exist_ok=True)

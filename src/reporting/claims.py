@@ -72,9 +72,11 @@ two-sided, and the two are not interchangeable:
   as well as save them (alignment adds intervals before it merges any), so
   assuming a direction here would be assuming the result.
 
-**The correction family, stated explicitly.** The arm grid
-(`src/main.py`'s `PRIMARY_ARMS + SENSITIVITY_ARMS`) is one independent arm
-plus seven joint arms. The pre-registered family is therefore
+**The correction family, stated explicitly.** The arm grid this family was
+pre-registered against -- `src/main.py`'s `PRIMARY_ARMS + SENSITIVITY_ARMS`
+before the 2026-09-15 deletion of the delta_align sweep, and the archive that
+grid produced -- is one independent arm plus seven joint arms. The
+pre-registered family is therefore
 
     7 contrasts   joint-off, joint-d000, joint-d002, joint-d005,
                   joint-d010, joint-d020, joint-dinf -- each against

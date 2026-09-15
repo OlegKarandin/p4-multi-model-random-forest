@@ -63,12 +63,11 @@ def test_codeword_floor_counts_exclusive_features_in_full():
 
 
 # BandBudget's own spending/delta/shed/crossed unit tests were deleted here
-# 2026-09-07 (gate repair): BlockBudget replaces it as the wired gate, and
-# BlockBudget carries the identical-shaped tests below (search "BlockBudget
-# (design 2026-09-07"), so keeping both would be duplication, not coverage.
-# BandBudget the CLASS was itself deleted from align_budget.py in a later
-# commit of this same repair -- BlockBudget's own tests below are its
-# replacement, not merely a stand-in for tests of a still-importable class.
+# 2026-09-07 (gate repair): BlockBudget replaced it as the wired gate and
+# carried the identical-shaped tests. BandBudget the CLASS was deleted from
+# align_budget.py in a later commit of the same repair. BlockBudget and its
+# eight tests then went the same way on 2026-09-15 -- see the note further
+# down this file -- so there is no budget class in this module at all now.
 #
 # ---------------------------------------------------------------------------
 # Byte-domain arithmetic (design 2026-08-30 §2.2): the twin of the block-domain

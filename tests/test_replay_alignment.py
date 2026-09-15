@@ -50,7 +50,7 @@ def test_run_one_policy_none_skips_alignment_and_reports_both_encodings():
 
     result = ra.run_one_policy(
         (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-        'none', delta_rel=0.0)
+        'none')
 
     assert not any(k.startswith('align_') for k in result)
     assert result['blocks'] == result['joint_blocks']
@@ -66,7 +66,7 @@ def test_run_one_policy_aligned_runs_alignment_and_reports_align_stats():
 
     result = ra.run_one_policy(
         (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-        'aligned', delta_rel=0.0)
+        'aligned')
 
     assert any(k.startswith('align_') for k in result)
     assert 'align_codeword_before' in result
@@ -84,7 +84,7 @@ def test_run_one_policy_none_never_calls_align_with_policy():
     with mock.patch.object(ra, 'align_with_policy') as mocked:
         ra.run_one_policy(
             (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-            'none', delta_rel=0.0)
+            'none')
     mocked.assert_not_called()
 
 
@@ -161,7 +161,7 @@ def test_replay_row_skips_a_failing_swept_cell_but_keeps_the_rest(capsys):
     row, refit_result = _replay_row_fixture()
 
     def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
-                            names_app, names_ddos, policy, delta_rel):
+                            names_app, names_ddos, policy):
         if policy == 'aligned':
             # Stand-in for a real evaluation.CrossbarKeyTooWide -- any
             # exception at this call site must be caught, so the fixture
@@ -172,7 +172,7 @@ def test_replay_row_skips_a_failing_swept_cell_but_keeps_the_rest(capsys):
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=fake_run_one_policy):
         results = ra.replay_row(row, data=None, policies=['none', 'aligned'],
-                                ladder_delta=0.20, verify=False)
+                                verify=False)
 
     assert len(results) == 1
     assert results[0]['policy'] == 'none'
@@ -194,7 +194,7 @@ def test_replay_row_reports_a_failing_verify_call_distinctly(capsys):
          mock.patch.object(ra, 'run_one_policy',
                            side_effect=RuntimeError('boom')):
         results = ra.replay_row(row, data=None, policies=[],
-                                ladder_delta=0.20, verify=True)
+                                verify=True)
 
     assert results == []
     out = capsys.readouterr().out
@@ -215,7 +215,7 @@ def test_replay_row_verify_failure_does_not_block_later_swept_cells(capsys):
     calls = []
 
     def side_effect(models, app, ddos, cols_app, cols_ddos, names_app,
-                    names_ddos, policy, delta_rel):
+                    names_ddos, policy):
         calls.append(policy)
         if len(calls) == 1:
             raise RuntimeError('verify broke')
@@ -224,7 +224,7 @@ def test_replay_row_verify_failure_does_not_block_later_swept_cells(capsys):
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=side_effect):
         results = ra.replay_row(row, data=None, policies=['aligned'],
-                                ladder_delta=0.20, verify=True)
+                                verify=True)
 
     assert len(calls) == 2
     assert len(results) == 1
@@ -241,7 +241,7 @@ def test_replay_row_skip_counts_accumulate_by_policy_across_calls():
     row, refit_result = _replay_row_fixture()
 
     def fake_run_one_policy(models, app, ddos, cols_app, cols_ddos,
-                            names_app, names_ddos, policy, delta_rel):
+                            names_app, names_ddos, policy):
         if policy == 'aligned':
             raise RuntimeError('infeasible cell')
         return {'policy': policy, 'blocks': 10}
@@ -250,9 +250,9 @@ def test_replay_row_skip_counts_accumulate_by_policy_across_calls():
     with mock.patch.object(ra, 'refit_pair', return_value=refit_result), \
          mock.patch.object(ra, 'run_one_policy', side_effect=fake_run_one_policy):
         ra.replay_row(row, data=None, policies=['none', 'aligned'],
-                      ladder_delta=0.20, verify=False, skip_counts=skip_counts)
+                      verify=False, skip_counts=skip_counts)
         ra.replay_row(row, data=None, policies=['aligned'],
-                      ladder_delta=0.20, verify=False, skip_counts=skip_counts)
+                      verify=False, skip_counts=skip_counts)
 
     assert skip_counts == Counter({'aligned': 2})
 
@@ -266,18 +266,36 @@ def test_replay_row_skip_counts_default_to_a_throwaway_counter():
          mock.patch.object(ra, 'run_one_policy',
                            side_effect=RuntimeError('boom')):
         results = ra.replay_row(row, data=None, policies=['aligned'],
-                                ladder_delta=0.20, verify=False)
+                                verify=False)
 
     assert results == []
 
 
-def test_run_one_policy_no_longer_accepts_an_objective():
-    """The axis is retired (design 2026-09-07 §4.3): a caller still passing
-    it must fail loudly rather than have the argument silently ignored."""
+def test_run_one_policy_no_longer_accepts_an_objective_or_a_delta():
+    """Two retired axes, same rule: a caller still passing one must fail
+    loudly rather than have the argument silently ignored. `objective` went
+    with design 2026-09-07 §4.3; `delta_rel` went on 2026-09-15 with the
+    delta_align mechanism (Track 5: delta_helps = FALSE)."""
     clf_app, clf_ddos, app, ddos, cols, names = _tiny_pair()
 
-    with pytest.raises(TypeError):
-        ra.run_one_policy(
-            (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
-            'aligned', delta_rel=0.0,
-            objective='blocks')
+    for retired in ({'objective': 'blocks'}, {'delta_rel': 0.0}):
+        with pytest.raises(TypeError):
+            ra.run_one_policy(
+                (clf_app, clf_ddos), app, ddos, cols, cols, names, names,
+                'aligned', **retired)
+
+
+def test_replay_row_no_longer_accepts_a_ladder_delta():
+    """--ladder-delta chose the tolerance every replayed policy ran at. The
+    flag and the parameter are gone with the mechanism; a stale launch script
+    must fail rather than quietly replay at delta 0 under a name that promised
+    0.20."""
+    row, refit_result = _replay_row_fixture()
+
+    with mock.patch.object(ra, 'refit_pair', return_value=refit_result):
+        with pytest.raises(TypeError):
+            ra.replay_row(row, data=None, policies=[], ladder_delta=0.20,
+                          verify=False)
+
+    assert not hasattr(ra, 'ARM_DELTA')
+    assert not hasattr(ra.parse_args([]), 'ladder_delta')

@@ -40,6 +40,16 @@ from src.training import threshold_alignment as ta
 from src.training.errors import AlignmentInvariantError
 
 SEEDS = range(6)
+
+# DELIBERATELY KEPT after the 2026-09-15 deletion of the delta_align axis
+# (Track 5: delta_helps = FALSE -- mean_d000 0.7956173344395895 vs mean_d020
+# 0.7861922400433382, cells_favouring_d020 14/24). No campaign can produce a
+# non-zero tolerance any more, but `align_rf_thresholds` still TAKES delta_rel
+# and this is a STRESS probe, not a campaign: a loose tolerance accepts more
+# moves and therefore reaches deeper fixpoints, so 0.05 and None are what make
+# the measured maximum of 10 rounds -- and MAX_RECOMPUTE_ROUNDS = 32 -- a
+# conservative bound rather than a bound measured only on the easiest arm.
+# Collapsing this to (0.0,) would weaken the very number it justifies.
 ARMS = (0.05, 0.0, None)
 
 # ~4x the shipped cap (32). Large enough that a run reaching it would be

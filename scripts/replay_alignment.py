@@ -68,10 +68,14 @@ ALIGNED_ARM_SLUGS = ('joint-d000', 'joint-d002', 'joint-d005',
 # the c1c2 numbers quoted throughout the design document.
 REPLAY_POLICIES = ('none', 'aligned')
 
-# The delta_align each arm slug was run at, needed by --verify to reproduce a
-# row under its own settings. 'joint-dinf' is the accept-everything anchor.
-ARM_DELTA = {'joint-d000': 0.0, 'joint-d002': 0.02, 'joint-d005': 0.05,
-             'joint-d010': 0.10, 'joint-d020': 0.20, 'joint-dinf': None}
+# There is no delta axis any more. ARM_DELTA mapped each archived arm slug to
+# the delta_align it was run at, so --verify could reproduce a row under its
+# own settings, and --ladder-delta chose the delta every replayed policy ran
+# at. Track 5's pre-registered live-Optuna trial returned delta_helps = FALSE
+# (mean_d000 0.7956173344395895 vs mean_d020 0.7861922400433382,
+# cells_favouring_d020 14/24) and the mechanism is gone, so every replay --
+# --verify included -- runs the one surviving alignment behaviour: free moves
+# only. See --verify's own help text for what that costs it.
 
 DEFAULT_K = (17, 13, 9, 5, 2)
 
@@ -150,7 +154,7 @@ def refit_pair(row, data):
 
 
 def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos,
-                   policy, delta_rel):
+                   policy):
     """One policy on one already-fit pair. Returns a result dict.
 
     Evaluates the resulting model pair under BOTH encodings -- 'joint' (the
@@ -177,13 +181,13 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
             model_app, model_ddos,
             app.X_val_align[:, cols_app], app.y_val_align,
             ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
-            delta_rel=delta_rel,
             align_stats=stats)
     elapsed = time.time() - started
 
-    out = {'policy': policy,
-           'delta_rel': 'inf' if delta_rel is None else delta_rel,
-           'runtime_s': elapsed}
+    # No 'delta_rel' column: the axis is gone (2026-09-15), so every aligned
+    # row in a fresh replay is a free-moves run and a constant column would
+    # only invite a reader to compare it against an archived replay's.
+    out = {'policy': policy, 'runtime_s': elapsed}
 
     for encoding, prefix in (('joint', 'joint_'),
                              ('disjoint', 'counterfactual_disjoint_')):
@@ -216,8 +220,7 @@ def run_one_policy(models, app, ddos, cols_app, cols_ddos, names_app, names_ddos
     return out
 
 
-def replay_row(row, data, policies, ladder_delta, verify,
-               skip_counts=None):
+def replay_row(row, data, policies, verify, skip_counts=None):
     """Every policy cell for one campaign row.
 
     skip_counts, if given, is a collections.Counter (or any Counter-like
@@ -236,12 +239,14 @@ def replay_row(row, data, policies, ladder_delta, verify,
 
     results = []
     if verify:
-        # Reproduce the row under ITS OWN arm settings. If `blocks` disagrees,
-        # the refit is not reproducing the campaign and nothing below is valid.
+        # Reproduce the row under the CURRENT alignment behaviour. If `blocks`
+        # disagrees, the refit is not reproducing the campaign and nothing
+        # below is valid -- but see the flag's help text: since 2026-09-15 that
+        # is a real reproduction only for rows the archive ran at delta 0
+        # (joint-d000), because the other arms' delta cannot be reinstated.
         try:
             own = run_one_policy(models, app, ddos, cols_app, cols_ddos,
-                                 names_app, names_ddos, 'aligned',
-                                 ARM_DELTA[row['arm_slug']])
+                                 names_app, names_ddos, 'aligned')
         except Exception as exc:
             # This row's OWN recorded settings failed to reproduce -- that is
             # a break in the harness's determinism claim, not merely "this
@@ -261,7 +266,7 @@ def replay_row(row, data, policies, ladder_delta, verify,
         try:
             result = run_one_policy(
                 models, app, ddos, cols_app, cols_ddos, names_app,
-                names_ddos, policy, ladder_delta)
+                names_ddos, policy)
         except Exception as exc:
             # An exploratory sweep cell landed outside the feasible
             # region for this refit pair (e.g. CrossbarKeyTooWide at a
@@ -294,12 +299,13 @@ def parse_args(argv=None):
     parser.add_argument('--n-splits', type=int, default=3)
     parser.add_argument('--policies', default='aligned',
                         help="comma-separated subset of {}".format(REPLAY_POLICIES))
-    parser.add_argument('--ladder-delta', default='0.20',
-                        help="delta_rel every policy in the ladder runs at; 'inf' for accept-all")
     parser.add_argument('--verify', action='store_true',
-                        help="reproduce each row under its own arm settings and check `blocks`"
-                             " (reproduces the row under 'aligned', not the 'legacy' the 20260825"
-                             " archive was produced with -- see that archive's attestation)")
+                        help="re-run each row under the current alignment behaviour and check"
+                             " `blocks`. Reproduces the row under 'aligned', not the 'legacy' the"
+                             " 20260825 archive was produced with -- see that archive's"
+                             " attestation -- and, since the delta_align axis was deleted"
+                             " (2026-09-15), only a joint-d000 row can reproduce at all: the"
+                             " other arms' tolerance no longer exists to replay at")
     parser.add_argument('--limit', type=int, default=None)
     parser.add_argument('--timing', action='store_true',
                         help='print a per-row timing summary and an extrapolation')
@@ -324,12 +330,11 @@ def main(argv=None):
     print('replaying {} rows x {} policies'.format(len(rows), len(policies)))
 
     data = load_campaign_data()
-    ladder_delta = None if args.ladder_delta == 'inf' else float(args.ladder_delta)
 
     skip_counts = collections.Counter()
     out, started = [], time.time()
     for i, (_, row) in enumerate(rows.iterrows()):
-        out.extend(replay_row(row, data, policies, ladder_delta,
+        out.extend(replay_row(row, data, policies,
                               args.verify, skip_counts=skip_counts))
         print('  [{}/{}] {} M={} split={} k={}  ({:.1f}s elapsed)'.format(
             i + 1, len(rows), row['arm_slug'], row['M'], row['split'], row['k'],

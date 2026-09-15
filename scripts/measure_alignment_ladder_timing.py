@@ -38,6 +38,15 @@ table without disturbing the main checkout:
 Usage: python measure_alignment_ladder_timing.py <deltas-as-python-literal> <reps>
   e.g. python measure_alignment_ladder_timing.py "[0.05]" 7
        python measure_alignment_ladder_timing.py "[0.05, 0.0, None]" 7
+
+The delta argument DELIBERATELY survives the 2026-09-15 deletion of the
+delta_align axis (Track 5: delta_helps = FALSE -- mean_d000 0.7956173344395895
+vs mean_d020 0.7861922400433382, cells_favouring_d020 14/24). No campaign can
+produce a non-zero tolerance any more, but `align_rf_thresholds` still TAKES
+delta_rel, and the whole point of this file is to run UNMODIFIED at old
+commits (see the worktree recipe above) so the archived ladder table stays
+reproducible. Removing the argument would break that at every commit it was
+measured on. A fresh timing run should pass "[0.0]".
 """
 import ast
 import statistics
