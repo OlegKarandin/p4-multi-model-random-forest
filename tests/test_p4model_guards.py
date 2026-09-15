@@ -357,3 +357,39 @@ def test_the_version_block_does_advance_the_next_keys_offset():
 
     assert crossbar_groups_needed((5,) * 11, 0) == 2
     assert codeword_to_blocks((5,) * 11, 0) == 3
+
+
+def test_a_table_is_sharded_as_full_columns_plus_a_remainder():
+    """Finding 1.5a. The equal split rounded each piece up, so a 13-block table
+    was charged 14. A column holds TCAM_ROWS_PER_STAGE blocks; fill columns and
+    leave the remainder, and the shards sum to the table."""
+    from src.p4model.packing import _stage_shards
+
+    assert _stage_shards(13, 30) == [(12, 30), (1, 30)]
+    assert _stage_shards(23, 30) == [(12, 30), (11, 30)]
+    assert _stage_shards(25, 30) == [(12, 30), (12, 30), (1, 30)]
+
+
+def test_shards_always_sum_to_the_table_and_fit_a_column():
+    """The two invariants the split must never break, over the whole reachable
+    range: nothing is lost, and no shard is wider than one column."""
+    from src.p4model.packing import _stage_shards
+    from src.p4model.target import TCAM_ROWS_PER_STAGE
+
+    for blocks in range(0, 60):
+        shards = _stage_shards(blocks, 30)
+
+        assert sum(b for b, _w in shards) == blocks, blocks
+        assert all(b <= TCAM_ROWS_PER_STAGE for b, _w in shards), blocks
+        assert shards, blocks
+
+
+def test_a_table_inside_one_column_is_not_sharded():
+    """The common case, and the one the whole 19-row archive lives in: no
+    archived table exceeds 12 blocks, so this path is the only one the
+    calibration ever exercises."""
+    from src.p4model.packing import _stage_shards
+
+    assert _stage_shards(12, 30) == [(12, 30)]
+    assert _stage_shards(1, 30) == [(1, 30)]
+    assert _stage_shards(0, 30) == [(0, 30)]

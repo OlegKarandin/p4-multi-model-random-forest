@@ -113,14 +113,27 @@ def _stage_shards(block_count, byte_width):
   unplaceable shard would advance its stage index without end. Column-sized
   shards also reproduce the measurement: a 24-block table becomes 12 | 12,
   which fills both columns of ONE stage, exactly as real p4c does with single
-  tables of 14, 16 and 24 blocks."""
+  tables of 14, 16 and 24 blocks.
+
+  Prior to finding 1.5a, the split was into n equal pieces, each rounded up.
+  This charged a 13-block table as 14 and a 23-block one as 24, an arithmetic
+  artifact of the equal split. Filling columns and leaving a remainder ensures
+  the shards sum to the table. No table in the 19-row archive exceeds 12 blocks,
+  so this path is unexercised by the calibration and therefore unvalidated
+  against hardware -- it is the one non-monotone (cost-lowering) change in this
+  work, licensed because it corrects rounding rather than relaxing a measured
+  limit."""
   if byte_width > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
     raise CrossbarKeyTooWide(
         "table key is %d crossbar bytes; no stage supplies more than %d, so the "
         "compiler rejects this table rather than splitting it across stages"
         % (byte_width, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), byte_width)
-  n = max(1, math.ceil(block_count / TCAM_ROWS_PER_STAGE)) if block_count > 0 else 1
-  return [(math.ceil(block_count / n), byte_width)] * n
+  shards, remaining = [], block_count
+  while remaining > TCAM_ROWS_PER_STAGE:
+    shards.append((TCAM_ROWS_PER_STAGE, byte_width))
+    remaining -= TCAM_ROWS_PER_STAGE
+  shards.append((remaining, byte_width))
+  return shards
 
 
 def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
