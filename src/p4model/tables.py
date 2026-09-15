@@ -304,12 +304,15 @@ def codeword_to_blocks(field_bit_widths, start_group=0):
   crossbar run for a free half-midbyte, missing (1) the LOW end when
   `start_group` is odd, and (2) the empty-key case, where a version field still
   needs a physical block even though the byte-domain arm claims 0 blocks
-  suffice. Measured directly against this code: 272 of 500 000 random
-  field-width trials violate the "provable" bound (e.g. widths (38, 48) at
-  start_group=3: bit-bound 3 vs crossbar-plus-version 2), and the empty tuple
-  -- reachable whenever every tree in a forest is a single leaf, see
+  suffice. PRE-FIX FIGURE, SUPERSEDED (kept only for the historical shape of
+  the bug, not as a fact about the code below): measured against the
+  now-replaced clause-(a) logic, 272 of 500 000 random field-width trials
+  violated the "provable" bound this way (e.g. widths (38, 48) at
+  start_group=3: bit-bound 3 vs crossbar-plus-version 2). The empty tuple --
+  reachable whenever every tree in a forest is a single leaf, see
   test_factor_of_an_empty_width_dict_is_the_empty_key_factor -- violates it
-  without any randomness at all (bit-bound 1 vs crossbar-plus-version 0).
+  without any randomness at all (bit-bound 1 vs crossbar-plus-version 0), and
+  this part is NOT superseded; see the current numbers a few paragraphs below.
 
   D5's demotion is therefore DECLINED here, not adopted -- but only half of the
   original reason still holds. The clause-(a) hole IS now repaired
@@ -360,11 +363,18 @@ def version_block_penalty(field_bit_widths, start_group=0):
   midbyte the format falls through and `TableFormat::ternary_version()`
   push_back()s a whole extra TCAM to hold two bits.
 
-  A key of `key_bytes` crossbar bytes takes `g = codeword_bytes_to_blocks`
-  groups starting at `start_group`. Those groups supply `5g` private byte slots plus
-  `_full_midbytes` fully-owned midbytes; the run additionally exposes a HALF
-  midbyte at its low end when it starts on an odd group, and at its high end
-  when it ends on an even one. Version has a home when any of:
+  A key of `key_bytes` crossbar bytes takes `g = crossbar_groups_needed(
+  field_bit_widths, start_group)` groups starting at `start_group` -- NOT a
+  fixed `codeword_bytes_to_blocks(key_bytes)` count, because that ignores the
+  offset. `crossbar_groups_needed` starts from that byte-derived count and
+  grows the run one group at a time until the key's own bytes actually fit
+  the slots the run owns at THIS start_group (finding 1.2: a run starting on
+  an odd group owns no full midbyte, so it holds fewer whole byte slots per
+  group than the same-size run at offset 0). Those `g` groups supply `5g`
+  private byte slots plus `_full_midbytes` fully-owned midbytes; the run
+  additionally exposes a HALF midbyte at its low end when it starts on an odd
+  group, and at its high end when it ends on an even one. Version has a home
+  when any of:
 
     (a) the run ENDS on a half midbyte -- a whole byte can never ride it, so
         it survives whatever the key does;
