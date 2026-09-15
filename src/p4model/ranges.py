@@ -90,7 +90,7 @@ def compiler_range_rows(entry_count, key_bit_width=FEATURE_VALUE_BIT_WIDTH):
   blocks end up in the binary.
 
   The compiler never sees the interval bounds (this project's range tables are
-  populated at runtime via the control plane, never `const entries` -- §2.4),
+  populated at runtime via the control plane, never `const entries` -- §4.4),
   so it cannot cost them exactly. It applies a fixed distributional
   guess instead: a quarter of the declared entries are priced at the
   worst-case row count for the key's nibble geometry, the rest at one row
@@ -101,9 +101,10 @@ def compiler_range_rows(entry_count, key_bit_width=FEATURE_VALUE_BIT_WIDTH):
   time; this one models the compiler's pessimistic pre-allocation. Blocks are
   the compiler's question -- using the driver's number to answer it
   under-counts (measured: a 478-entry table priced at 1 block against p4c's
-  committed 3). §2.2 and Appendix B "Mechanism E".
+  committed 3). reviews/p4_tofino_reference.md §4.2 and Appendix B
+  "Mechanism E".
 
-  Reproduces all five of §2.2's independently measured per-block
+  Reproduces all five of §4.2's independently measured per-block
   capacities as the largest entry_count whose rows still fit 512: 512 (4-bit
   key), 342 (8-bit), 256 (12-bit), 206 (16-bit), 187 (19-bit)."""
   worst = min(RANGE_WORST_CASE_ROWS_CAP,

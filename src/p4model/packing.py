@@ -162,7 +162,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   select the feature with identical intervals).
 
   Measured against 19 real p4c compiles (results/compiler_calibration/, and
-  reviews/p4_tofino_reference.md Appendix B): joint_low_sd7's stage 7 holds four
+  reviews/p4_tofino_reference.md §4.3): joint_low_sd7's stage 7 holds four
   tables on one 32-byte codeword and the compiler reports 32 crossbar bytes,
   not 128; independent_low_sd6's stage 7 holds two 19-byte and two 4-byte
   tables and reports 23, not 46. Summing per table over-counted stages by up
@@ -233,8 +233,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                                                key_fields above; without it,
                                                each table's key is its own)
   (the table-count and byte caps are RM-5/RM-6/RM-7,
-  reviews/t12_required_changes.md Section 1.3, confirmed across key widths
-  8-512 bits.)
+  reviews/archive/t12_required_changes.md Section 1.3, confirmed across key
+  widths 8-512 bits; summarised in reviews/p4_tofino_reference.md §4.3.)
 
   A per-stage crossbar group cap was probed and not found: two solid keys of
   34 and 30 crossbar bytes need 7+6=13 groups in a stage that has 12, pass

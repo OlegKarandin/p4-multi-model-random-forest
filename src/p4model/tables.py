@@ -31,7 +31,7 @@ def range_deployment_overflow(feature_intervals,
   The second of two independent constraints, and the one blocks does not
   subsume. A committed block count is fixed in the binary -- the control
   plane cannot grow a table, it just gets "[Not enough space]" partway
-  through insertion (§2.2; that failure is literally how range_entry_count
+  through insertion (§4.2; that failure is literally how range_entry_count
   was validated, since bf_rt exposes no per-entry row visibility). So a design
   can be perfectly feasible on blocks and still be undeployable.
 
@@ -83,7 +83,7 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   computation -- nibble_widths_for() raises first, since the SDE would
   refuse such a table outright and pricing it is meaningless.
 
-  IMPORTANT (measured, reviews/p4_tofino_reference.md §2.2): this
+  IMPORTANT (measured, reviews/p4_tofino_reference.md §4.2): this
   correctness depends on the @pa_container_size pragma. A bit<16> range key
   that the compiler parks in a 32-bit W container really costs TWO TCAM
   words per entry ("1 in 2 (88)"), not one; without those pragmas this
@@ -437,7 +437,8 @@ def codeword_bytes_to_blocks(key_bytes):
 
   One block is fed by exactly one crossbar group, and a group delivers 5
   private bytes + 1 midbyte nibble = TCAM_BLOCK_KEY_LENGTH bits = 5.5 BYTES
-  (§2.1.2). The crossbar allocates per FIELD and byte-rounds each one, so
+  (reviews/p4_tofino_reference.md §4.1.1). The crossbar allocates per FIELD
+  and byte-rounds each one, so
   what it charges is key_bytes (codeword_fields_to_bytes), not the raw
   codeword length -- a table keying 15 separate code_<feature> fields
   totalling 205 bits really presents 33 bytes = 264 bits and needs 6 blocks,
@@ -501,7 +502,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   The COUNT is taken, not the rule that produced it. Which leaves get folded is
   an encoding convention -- this project uses Planter RF_EB's majority-class
   rule (build_p4_script.most_common_class_and_dropped_codewords, and see
-  reviews/p4_tofino_reference.md §2.5, which also records that at the scales
+  reviews/p4_tofino_reference.md §4.5, which also records that at the scales
   tested this reduces control-plane load without crossing a physical
   block-packing boundary). Keeping the rule on the caller's side is what lets
   this module model a table's cost without knowing anything about decision

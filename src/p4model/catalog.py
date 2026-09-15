@@ -124,12 +124,30 @@ Do not add entries for features not yet validated by a real p4c compile --
 resolving those is explicitly deferred to whichever later milestone needs
 them, not guessed up front.
 
-Note: the `flows` bookkeeping register (fwd/bwd/new-flow tracking) is NOT
-a catalog entry. It is a fixed, generator-level requirement whenever the
-resolved feature set is non-empty -- see generate_P4_registers_and_apply's
-docstring in build_p4_script.py -- because it is the only thing that
-produces the canonical, direction-independent flow index (meta.flow_hash)
-every other per-flow register (in this catalog or not) relies on.
+Note: two things the generator always emits are NOT catalog entries, and
+neither goes through the register_order/_note_touch dedup machinery. Both are
+fixed, generator-level requirements whenever the resolved feature set is
+non-empty (see generate_P4_registers_and_apply's docstring in
+build_p4_script.py):
+
+  * the single `flow_hash_calc` Hash<> instance, whose `calc_flow_hash`
+    action produces the canonical, direction-independent flow index
+    meta.flow_hash that every per-flow register is indexed by. It is a Hash<>,
+    not a register.
+  * `flow_forward_srcaddr_reg` (build_p4_script.py:2048), the one register
+    backing `flow_orientation_action` (build_p4_script.py:2087), which
+    resolves meta.fwd. Its .execute() is emitted unconditionally, so it always
+    claims a stateful ALU in the first register stage and every fwd-/bwd-gated
+    register waits a stage on it -- which is why program.ORIENTATION_REGISTER
+    exists and why the schedule has to add it by hand.
+
+An earlier note here described a `flows` bookkeeping register (fwd/bwd/new-flow
+tracking) as the thing producing meta.flow_hash. The generator no longer emits
+any such register, and the description was wrong about the hash besides: the
+symmetric-hash change (build_p4_script.py:1849-1866) replaced the old two-touch
+direction logic with the single flow_orientation_action touch above, and
+meta.flow_hash comes from the XOR-symmetric calc_flow_hash action, not from a
+register.
 
 register_width_bits has no reader inside the model itself -- its only
 one, register_sram_bits, was dropped in Task 1 -- but it is kept here as

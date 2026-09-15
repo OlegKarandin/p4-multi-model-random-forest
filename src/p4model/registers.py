@@ -148,7 +148,7 @@ def register_stage_schedule(features, catalog=None,
   each of the six k>=13 rows. Adding the per-block floor left all 18 of those
   intact while raising per-register agreement from 88 to 148 of 170, and it
   is what makes gated_block_interior_stages exact -- see
-  reviews/p4_tofino_reference.md Appendix B.
+  reviews/p4_tofino_reference.md §4.6.
   """
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG

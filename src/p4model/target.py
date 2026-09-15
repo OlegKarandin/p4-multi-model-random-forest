@@ -36,13 +36,15 @@ TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
 # stage's crossbar regardless of TCAM row/block capacity. That 64-byte figure is a measured
 # hardware constant -- validated by a sweep of key widths from 8 to 512 bits with two exact
 # saturations observed (including one table at exactly 64 bytes); see
-# reviews/p4_tofino_reference.md §2.3. (No repo history was found recording an earlier,
+# reviews/p4_tofino_reference.md §4.3. (No repo history was found recording an earlier,
 # independent provenance for the 512-bit figure beyond this derivation.)
 MAX_CODEWORD_LENGTH = TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE * 8
 
-TOFINO_PIPELINE_STAGES = 12   # §3; hard, per Appendix B's tofino2h failure
+# §5's constants table (device.h:186); hard, per §7's real tofino2h compile
+# failure -- a 9-stage program is rejected outright by the backend assembler.
+TOFINO_PIPELINE_STAGES = 12
 
-# p4c's compile-time sizing rule for a range table (§2.2, Appendix B "Mechanism
+# p4c's compile-time sizing rule for a range table (§4.2, Appendix B "Mechanism
 # E"): one entry in every RANGE_WORST_CASE_ENTRY_FRACTION is assumed to need
 # the worst-case row count for the key's nibble geometry, capped at
 # RANGE_WORST_CASE_ROWS_CAP; the rest are priced at one row. See
@@ -51,7 +53,7 @@ RANGE_WORST_CASE_ENTRY_FRACTION = 4
 RANGE_WORST_CASE_ROWS_CAP = 8
 
 
-MAX_RANGE_KEY_BITS = 19   # §2.2: a 20-bit range key does not compile at all
+MAX_RANGE_KEY_BITS = 19   # §4.2: a 20-bit range key does not compile at all
 
 # The non-codeword key bits every classification-table row carries alongside
 # the codeword itself. Factored out of the inline `codeword_length + 4` this

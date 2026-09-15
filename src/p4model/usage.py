@@ -154,7 +154,8 @@ def assemble_usage(pool):
   # then schedule a classification table into a stage a range table still
   # occupies.
   #
-  # Mechanism B on top of that: both pools are emitted AFTER the gated
+  # Mechanism B (reviews/p4_tofino_reference.md §4.6, Appendix B
+  # "Mechanism B") on top of that: both pools are emitted AFTER the gated
   # register blocks, so neither can occupy a stage the placer spends wholly
   # inside one -- a control-flow constraint, not a capacity one, and the
   # reason a stage can sit at 0/24 TCAM blocks and still take no table. It is
@@ -208,8 +209,9 @@ def assemble_usage(pool):
 
   # ternary_plan.blocks, not ternary_blocks: the latter is the naive
   # per-table sum computed above, before the version-block charge
-  # (Mechanism G) that only crossbar_stages_needed's stage packing knows
-  # about -- see StagePlan.blocks. range_blocks needs no such substitution:
+  # (tables.version_block_penalty; reviews/p4_tofino_reference.md §4.1.1 and
+  # Appendix B "Mechanism G") that only crossbar_stages_needed's stage packing
+  # knows about -- see StagePlan.blocks. range_blocks needs no substitution:
   # a range table's key always leaves spare crossbar byte slots,
   # so range_plan.blocks is provably identical to range_blocks.
   usage = ResourceUsage(
