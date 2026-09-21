@@ -47,7 +47,7 @@ import pandas as pd
 from scripts.tcam_stretch_sweep import as_fields, key_bytes_for, synthetic_program
 from scripts.tcam_version_sweep import measured_start_group, read_committed
 from src.p4gen.p4_compile import compile_p4
-from src.p4model.tables import codeword_to_blocks, version_block_delta
+from src.p4model.tables import codeword_to_blocks
 
 DEFAULT_OUT = 'results/tcam_offset_scan.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_offset_scan'
@@ -92,9 +92,13 @@ def run_one(point_id, spacer_bytes, probe_fields, output_root, size):
 
     start, ambiguous = (measured_start_group(a_rec['xbar_bytes'])
                         if a_rec else (None, None))
-    predicted_at_0 = codeword_to_blocks(probe_fields, 0)
-    delta_at_measured = (version_block_delta(probe_fields, start)
-                         if start is not None else None)
+    predicted_at_0 = codeword_to_blocks(probe_fields)
+    # Offset-dependent pricing was retired (2026-09-20 rewrite design Sec
+    # 13.1): a key's price no longer depends on start_group at all, so the
+    # delta between "at 0" and "at measured" is always 0 by construction.
+    # Column kept only for CSV-schema stability with the archived
+    # results/tcam_offset_scan.csv.
+    delta_at_measured = 0 if start is not None else None
 
     return {
         'point_id': point_id,

@@ -43,7 +43,7 @@ import pandas as pd
 from scripts.tcam_stretch_sweep import as_fields, key_bytes_for, synthetic_program
 from scripts.tcam_version_sweep import measured_start_group, read_committed
 from src.p4gen.p4_compile import compile_p4
-from src.p4model.tables import codeword_to_blocks, version_block_penalty
+from src.p4model.tables import codeword_to_blocks
 
 DEFAULT_OUT = 'results/tcam_ledger_divergence_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_ledger_divergence_sweep'
@@ -75,12 +75,32 @@ def ledger_blocks(field_bit_widths):
 def is_divergence_point(field_bit_widths):
     """Saturated (our rule charges the version penalty), has a nibble-clean
     field to make clause (d) relevant, and our rule prices strictly ABOVE the
-    ledger -- the exact class N4 measured at 7.9% of random keys."""
+    ledger -- the exact class N4 measured at 7.9% of random keys.
+
+    STALE (2026-09-21, whole-branch review cleanup): `version_block_penalty`
+    was deleted along with the offset-taking `codeword_to_blocks` this
+    function was built to interrogate (2026-09-20 rewrite design Sec 13.1) --
+    the entire mechanism this comparison exists to test (a hand-coded
+    reference `ledger_blocks()` vs. the old per-clause version-block penalty)
+    no longer has a live counterpart in any form, so there is nothing left to
+    compare. `find_divergence_points` (below) is `main()`'s default
+    point-generation path, so calling `main()` fresh now raises `NameError`
+    at this line the moment it runs -- this is the same honest "module
+    imports cleanly, but this specific stale codepath loudly fails if
+    actually invoked" state `scripts/tcam_version_sweep.py`'s `predict()`
+    already established as this repo's precedent for retired one-shot
+    instruments. This script's already-collected data lives in the
+    gitignored `results/tcam_ledger_divergence_sweep.csv`, which
+    `scripts/tcam_table_scoreboard.py` scores directly from the CSV and does
+    NOT call back into these functions. Do not resurrect this comparison
+    against the current `codeword_to_blocks`/its isolation-credit logic --
+    that would be new, unvalidated modelling work, out of scope for a
+    cleanup."""
     if not any(1 <= b % 8 <= 4 for b in field_bit_widths):
         return False
-    if version_block_penalty(field_bit_widths, 0) != 1:
+    if version_block_penalty(field_bit_widths, 0) != 1:  # noqa: F821 -- see docstring
         return False
-    ours = codeword_to_blocks(field_bit_widths, 0)
+    ours = codeword_to_blocks(field_bit_widths)
     ledger = ledger_blocks(field_bit_widths)
     return ours > ledger
 
@@ -88,7 +108,12 @@ def is_divergence_point(field_bit_widths):
 def find_divergence_points(n=12, seed=0, max_fields=4, max_bits=88, tries=2_000_000):
     """A deterministic, diverse sample of `n` divergence-class field-width
     tuples: varied field counts and varied group counts `g`, not n copies of
-    the same shape."""
+    the same shape.
+
+    STALE (2026-09-21): calls `is_divergence_point`, whose whole mechanism
+    was retired along with `version_block_penalty` -- see that function's
+    docstring. Invoking this (via `main()`'s default path) raises
+    `NameError`; not fixed to run again, out of scope for this cleanup."""
     rng = random.Random(seed)
     found = {}
     for _ in range(tries):
@@ -96,7 +121,7 @@ def find_divergence_points(n=12, seed=0, max_fields=4, max_bits=88, tries=2_000_
         fields = tuple(sorted(rng.randint(1, max_bits) for _ in range(n_fields)))
         if not is_divergence_point(fields):
             continue
-        groups = codeword_to_blocks(fields, 0)
+        groups = codeword_to_blocks(fields)
         key = (len(fields), groups)
         found.setdefault(key, fields)
         if len(found) >= n:
@@ -131,7 +156,7 @@ def run_point(point_id, fields, output_root, size):
         'point_id': point_id,
         'fields': ','.join(str(b) for b in fields),
         'key_bytes': key_bytes_for(fields),
-        'our_blocks_at_0': codeword_to_blocks(fields, 0),
+        'our_blocks_at_0': codeword_to_blocks(fields),
         'ledger_blocks': ledger_blocks(fields),
         'measured_start_group': start,
         'start_group_ambiguous': ambiguous,
@@ -196,7 +221,7 @@ def main(argv=None):
     wanted = set(args.only.split(',')) if args.only else None
     for i, fields in enumerate(points):
         point_id = 'div%02d_n%d_g%d' % (
-            i, len(fields), codeword_to_blocks(fields, 0))
+            i, len(fields), codeword_to_blocks(fields))
         if point_id in done or (wanted and point_id not in wanted):
             continue
         print('=== %s -- fields=%s' % (point_id, fields), flush=True)

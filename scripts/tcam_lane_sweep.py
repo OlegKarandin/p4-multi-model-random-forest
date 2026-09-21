@@ -149,7 +149,7 @@ def run_point(point_id, fields, a, output_root, size):
         'lane_reaches_midbyte': lane_free,
         'pred_lane_model': lane_pred,
         'pred_ledger': ledger_blocks(fields),
-        'pred_current': codeword_to_blocks(fields, 0),
+        'pred_current': codeword_to_blocks(fields),
         'real_blocks': rec['blocks'] if rec else None,
         'measured_start_group': start,
         'start_group_ambiguous': ambiguous,

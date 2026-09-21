@@ -355,7 +355,9 @@ def codeword_bytes_to_blocks(key_bytes):
   (Was `crossbar_block_width` until 2026-09-14. Renamed, not changed: the name
   now states what it takes -- crossbar key BYTES -- so the decomposition
   fields -> bytes -> blocks reads in one direction. It carries NO version
-  charge; see version_block_penalty for why that charge cannot live here.)
+  charge: this function prices a key standalone, and the stage-sharing margin
+  a key pays when it shares a stage with an already-placed one is a different
+  quantity computed by a different module -- see packing.charged.)
 
   One block is fed by exactly one crossbar group, and a group delivers 5
   private bytes + 1 midbyte nibble = TCAM_BLOCK_KEY_LENGTH bits = 5.5 BYTES

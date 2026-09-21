@@ -223,7 +223,7 @@ def run_point(point_id, clean_bits, output_root, size):
         'tail_byte_index': -(-tail // 8) - 1,
         'containers': 'single' if clean_bits <= 32 else 'multi',
         'phv_containers': read_phv_container(logs),
-        'pred_current': codeword_to_blocks(fields, 0),
+        'pred_current': codeword_to_blocks(fields),
         'real_blocks': rec['blocks'] if rec else None,
         'compile_errors': result.errors if result.errors is not None else 0,
         'seconds': round(time.time() - started, 1),

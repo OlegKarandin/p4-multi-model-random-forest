@@ -115,7 +115,7 @@ def run_point(point_id, fields, note, output_root, size):
         'key_bytes': key_bytes_for(fields),
         'pred_fitted_branch': 2 if len(fields) > 2 else 3,
         'pred_unified_isolation': 3,
-        'pred_current': codeword_to_blocks(fields, 0),
+        'pred_current': codeword_to_blocks(fields),
         'real_blocks': rec['blocks'] if rec else None,
         'phv_containers': read_phv_container(logs),
         'compile_errors': result.errors if result.errors is not None else 0,
