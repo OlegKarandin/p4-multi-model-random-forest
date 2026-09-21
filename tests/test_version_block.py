@@ -26,6 +26,10 @@ now lives -- `src/p4model/packing.py`'s stage-sharing margin, spec Sec 13.2 --
 since there is no offset parameter left on this module's functions to test it
 with. See this task's report for the full accounting of what moved versus
 what was retired outright.
+
+2026-09-21 (Task 4): those sharing tests are now restored, against the margin
+rather than against an offset, in `tests/test_p4model_guards.py` alongside its
+other packing-level guards. This file stays per-table.
 """
 import math
 

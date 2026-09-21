@@ -20,6 +20,18 @@
      "independent_high_sd8"
     ],
     "summary": "The 5-row over-application recorded here as 'mechanism_g_over_application_2026_09_07' is RESOLVED, and this fixture is re-pinned against the rule that resolved it. Mechanism G charged +1 TCAM block to any ragged key landing on an odd crossbar group offset. Scored against p4c's own per-table numbers -- the TCAM units in tcams.tcams and the crossbar bytes in xbar_bytes, over the 100 classification tables of the 19 compiles in results/compiler_calibration_v6/ -- that predicate fired on 5 stages where the compiler charged nothing, and on the one stage where the compiler DID charge a block it named the wrong table: independent_low_sd5's resources.json shows the three ddos trees at 3 blocks each at group offset 0, and the app tree free at offset 3. tables.version_block_penalty replaces it and asks the physical question instead -- does any crossbar midbyte in the key's group run keep a free nibble for the mandatory 2-bit --version-- field? That rule predicts all 100 tables exactly (3 penalties predicted, 3 observed, no false alarms, no misses) and takes usage.blocks to 17/17 exact against tcam_real, from 12/17. stage_depth is unchanged at 18/19, the sole miss still being independent_high_sd12, which over-predicts by 1 on a design already past the 12-stage ceiling. FOLLOW-UP 2026-09-07: a 12-compile out-of-sample sweep (scripts/tcam_version_sweep.py, results/tcam_version_sweep.csv) confirmed the rule on geometries chosen to sit on its decision boundary, and caught one composition bug it had not exposed: band_factor's +4 overhead bits ARE the version/valid field, so the block count must be max(band, xbar + penalty), not max(band, xbar) + penalty. Measured: a solid 11-byte key is 3 TCAMs not 4, 22 bytes is 5 not 6, 33 bytes is 7 not 8. Fixed via tables.ternary_block_factor; the packer now charges version_block_delta (the offset's effect) rather than the penalty itself, since a table's declared blocks already price it at offset 0."
+   },
+   {
+    "id": "stage_sharing_margin_2026_09_21",
+    "row_deltas": {
+     "independent_high_sd7": 1,
+     "independent_high_sd8": 3
+    },
+    "rows": [
+     "independent_high_sd7",
+     "independent_high_sd8"
+    ],
+    "summary": "RE-PINNED, and the delta is an OVER-prediction -- read this before treating these two rows as ground truth. The 2026-09-20 TCAM block model rewrite deleted the per-table offset mechanism (tables.codeword_to_blocks has no start_group parameter any more; version_block_penalty and version_block_delta are gone) and replaced the real effect it was chasing with a stage-PLACEMENT margin in src/p4model/packing.py's charged(): a table whose key is not the first distinct key in its stage, and whose standalone price leaves no spare whole-byte crossbar slot (crossbar_capacity(g) == B), pays one extra TCAM block for the mandatory 2-bit --version-- field. Spec docs/superpowers/specs/2026-09-20-tcam-block-model-rewrite-design.md Sec 13.2 'Effect 4'. The margin is REQUIRED: without it independent_low_sd9's stage_depth under-predicts (10 against p4c's 11), which this project forbids. Its cost is these two rows. Both are disjoint designs whose classification stage really does hold two keys in p4c's own committed placement (resources.json stage 9 in each), and in both p4c charged NOTHING extra: independent_high_sd7's 10-byte app key is crossbar_capacity(2) == 10, and independent_high_sd8's 16-byte ddos key is crossbar_capacity(3) == 16, so the margin fires on each and the model now reports 28 against tcam_real 27 and 41 against 38. That contradicts Sec 13.2's own prose ('on the 9 mixed archived stages no second key is saturated'), which was not re-scored against the archive under this spelling of the saturation test. blocks therefore goes from 17/17 exact to 15/17, 0 under, 2 over; stage_depth stays 18/19, 0 under, and independent_low_sd9 is reproduced. Never under-predicting outranks exactness in this model, so the margin lands and the fixture follows it -- but the two rows are a known, quantified over-prediction, not a correction, and scripts/validation_table.py still reports both as OVER."
    }
   ],
   "note": "Inputs captured at evaluation._pool_inputs; outputs from usage.assemble_usage.",
@@ -2018,7 +2030,7 @@
      "occupied": 5
     },
     "ternary_plan": {
-     "blocks": 5,
+     "blocks": 6,
      "depth": 10,
      "indices": [
       9
@@ -2026,7 +2038,7 @@
      "occupied": 1
     },
     "usage": {
-     "blocks": 27,
+     "blocks": 28,
      "codeword_length": 30,
      "range_depth": 9,
      "range_entries": 270,
@@ -2540,7 +2552,7 @@
      "occupied": 4
     },
     "ternary_plan": {
-     "blocks": 13,
+     "blocks": 16,
      "depth": 10,
      "indices": [
       9
@@ -2548,7 +2560,7 @@
      "occupied": 1
     },
     "usage": {
-     "blocks": 38,
+     "blocks": 41,
      "codeword_length": 108,
      "range_depth": 9,
      "range_entries": 682,

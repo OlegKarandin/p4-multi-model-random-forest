@@ -56,6 +56,18 @@ takes usage.blocks from 12/17 to 17/17 against tcam_real with no
 under-prediction. See tests/test_version_block.py and
 reviews/p4_tofino_reference.md Appendix B "Mechanism G".
 
+SUPERSEDED IN TURN (2026-09-21). `tables.version_block_penalty` and the whole
+offset premise under it are gone -- reading p4c's own assembly showed a block
+may pair with ANY of a stage's midbytes and groups need not be consecutive, so
+a key's own price cannot depend on where it starts. The paragraph above is
+kept as the record of how the earlier retraction was settled, not as a
+description of live code. What prices a key now is `tables.codeword_to_blocks`
+(no offset argument), and the sharing effect lives in
+`src/p4model/packing.py`'s stage-sharing margin. That change re-pinned two of
+this fixture's rows: see `known_findings` entry
+`stage_sharing_margin_2026_09_21` below, which records an OVER-prediction
+rather than a correction.
+
 `ternary_ragged` is no longer serialized: the penalty prices a key by its
 field BIT widths, and key_field_sets already carries those.
 """
@@ -276,6 +288,46 @@ def _metadata(campaign_dir):
                     "gone, and so is the accident that made it look right on "
                     "independent_low_sd5: p4c charges that stage's ddos key at "
                     "group offset 0, not its app key at offset 3."),
+            },
+            {
+                'id': 'stage_sharing_margin_2026_09_21',
+                'rows': ['independent_high_sd7', 'independent_high_sd8'],
+                'row_deltas': {'independent_high_sd7': 1,
+                               'independent_high_sd8': 3},
+                'summary': (
+                    "RE-PINNED, and the delta is an OVER-prediction -- read "
+                    "this before treating these two rows as ground truth. The "
+                    "2026-09-20 TCAM block model rewrite deleted the "
+                    "per-table offset mechanism (codeword_to_blocks has no "
+                    "start_group parameter any more; version_block_penalty "
+                    "and version_block_delta are gone) and moved the real "
+                    "effect it was chasing into a stage-PLACEMENT margin in "
+                    "src/p4model/packing.py's charged(): a table whose key is "
+                    "not the first distinct key in its stage, and whose "
+                    "standalone price leaves no spare whole-byte crossbar "
+                    "slot (crossbar_capacity(g) == B), pays one extra TCAM "
+                    "block for the mandatory 2-bit --version-- field (spec "
+                    "Sec 13.2 'Effect 4'). The margin is REQUIRED: without it "
+                    "independent_low_sd9's stage_depth under-predicts, 10 "
+                    "against p4c's 11, which this project forbids. Its cost "
+                    "is these two rows, both disjoint designs whose "
+                    "classification stage really does hold two keys in p4c's "
+                    "own committed placement (resources.json stage 9) and "
+                    "where p4c charged nothing extra: sd7's 10-byte app key "
+                    "is crossbar_capacity(2) == 10 and sd8's 16-byte ddos key "
+                    "is crossbar_capacity(3) == 16, so the margin fires on "
+                    "each and the model reports 28 against tcam_real 27 and "
+                    "41 against 38. That contradicts Sec 13.2's own prose "
+                    "('on the 9 mixed archived stages no second key is "
+                    "saturated'), which was never re-scored against the "
+                    "archive under this spelling of the saturation test. "
+                    "usage.blocks goes from 17/17 exact to 15/17, 0 under, 2 "
+                    "over; stage_depth stays 18/19, 0 under. Never "
+                    "under-predicting outranks exactness here, so the margin "
+                    "lands and the fixture follows it -- but these are a "
+                    "known, quantified over-prediction, not a correction, and "
+                    "scripts/validation_table.py still reports both as "
+                    "OVER."),
             },
         ],
     }

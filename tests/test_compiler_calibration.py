@@ -859,17 +859,27 @@ def test_independent_low_sd9_costs_the_stage_the_version_charge_buys():
     # crossbar bytes, 9 blocks) and its ddos trees 37 + 49 bits (12 bytes, 3
     # blocks). 2 app + 2 ddos is 24 blocks and packs both columns cleanly as
     # 9+3 | 9+3, so every limit this model knows says they may share a stage --
-    # and p4c still refuses. The version charge is why: whichever key the
-    # crossbar hands the later groups pays one extra TCAM for the --version--
-    # field, so the mixed stage really prices at 26, not 24.
+    # and p4c still refuses.
+    #
+    # What reproduces that today is the stage-sharing MARGIN (spec Sec 13.2
+    # "Effect 4", src/p4model/packing.py's `charged`): a table whose key is not
+    # the first distinct key in its stage, and whose standalone price leaves no
+    # spare whole-byte crossbar slot, pays one extra TCAM block for the 2-bit
+    # --version-- field. The app key is exactly saturated (crossbar_capacity(9)
+    # == 49 bytes), so a mixed stage prices at 26, not 24, and the two tasks
+    # stay apart. Measured on the same key by scripts/tcam_stretch_sweep.py: 9
+    # blocks alone (ragged_ax1_bx5), 10 sharing (ragged_ax1_bx4).
     #
     # Note what the committed artifact does NOT show: any table at 10 blocks.
     # resources.json has all five app trees at 9 and all five ddos at 3, in
-    # four stages (5 ddos | 2 app | 2 app | 1 app). The charge decides the
-    # PLACEMENT and the placement it settles on puts each key at group 0,
-    # where nothing is owed. Reading that artifact is what falsified the older
-    # "ragged key at an odd group offset" rule, which claimed these tables
-    # cost 10 -- see tests/test_version_block.py.
+    # four stages (5 ddos | 2 app | 2 app | 1 app). The margin decides the
+    # PLACEMENT, and the placement it settles on gives every stage a single
+    # key, where nothing is owed. Reading that artifact is also what falsified
+    # the older "ragged key at an odd group offset" rule, which claimed these
+    # tables cost 10 unconditionally -- that mechanism is retired outright
+    # (rewrite design Sec 2). The margin is pinned in
+    # tests/test_p4model_guards.py's
+    # test_two_different_ragged_keys_do_not_share_a_stage.
     root = _CURRENT_ARTIFACTS['independent_low_sd9']
     if not os.path.isdir(os.path.join(root, 'compiles', 'independent_low_sd9')):
         pytest.skip('needs %s (gitignored; run collect() first)' % root)

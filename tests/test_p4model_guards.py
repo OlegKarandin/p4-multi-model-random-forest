@@ -308,25 +308,31 @@ def test_the_cost_decomposition_names_say_what_they_take():
 
 
 def test_a_deep_table_does_not_push_the_next_key_further_along_the_crossbar():
-    """Finding 1.4. A table two blocks DEEP stores more rows through the same
-    key; a key is one indivisible match and occupies one run of crossbar
-    groups. Charging row depth to the next key's start group is a bug --
-    latent, because no calibration tree exceeds 512 entries.
+    """Finding 1.4. A table two blocks DEEP stores more rows through the SAME
+    key. Depth must not move the next key along `offsets_for`'s running sum --
+    only the key's own width may. Charging row depth there is a bug, latent
+    because no calibration tree exceeds 512 entries.
 
-    The second key is chosen so the difference is VISIBLE: (77, 42) is 16
-    crossbar bytes wide and costs 3 blocks at an even group offset, 4 at an
-    odd one. The first key is 3 blocks wide either way.
+    What makes the difference visible is the stage-sharing margin (packing.py
+    `charged`, spec Sec 13.2): key B, (77, 42), is 16 crossbar bytes priced at
+    3 blocks, and crossbar_capacity(3) is exactly 16 -- a SATURATED key, so it
+    pays one extra block in every ordering where it is not served first. Key A
+    is 11 bytes at 3 blocks against a capacity of 16, so it never pays. Both
+    stages below therefore cost `A + B + 1` in the worst ordering, and the
+    only thing that may change between them is A's own declared depth:
 
-      correct: key B starts at key A's WIDTH,  3 -> odd  -> B costs 4
-      buggy:   key B starts at key A's BLOCKS, 6 -> even -> B costs 3
+      shallow: A 3 + B 3 + margin 1 = 7
+      deep:    A 6 + B 3 + margin 1 = 10   (delta 3 == A's extra depth, exactly)
 
-    Measured on the fixed code: shallow 7, deep 10, delta 3. On the shipped
-    code the deep stage comes out at 9 and the delta at 2.
+    A model that charged A's block count instead of A's width would still land
+    on 7 and 10 here, because there is no longer any quantity the running sum
+    feeds other than "is this offset 0" -- so the guard is now that the delta
+    between the two is A's depth and NOTHING else, i.e. deep - shallow == 3.
     """
     from src.p4model.packing import crossbar_stages_needed
 
-    key_a = (5,) * 11                    # 11 crossbar bytes, 3 blocks wide
-    key_b = (77, 42)                     # 16 crossbar bytes, 3 at even / 4 at odd
+    key_a = (5,) * 11                    # 11 crossbar bytes, 3 blocks, 5 spare
+    key_b = (77, 42)                     # 16 crossbar bytes, 3 blocks, saturated
     fields = [frozenset({(('a', 0), 11)}), frozenset({(('b', 0), 16)})]
 
     shallow = crossbar_stages_needed(
@@ -335,21 +341,105 @@ def test_a_deep_table_does_not_push_the_next_key_further_along_the_crossbar():
         [(6, 11), (3, 16)], key_fields=fields, key_field_bits=[key_a, key_b])
 
     assert (shallow.blocks, deep.blocks) == (7, 10), (shallow, deep)
+    assert deep.blocks - shallow.blocks == 3, (shallow, deep)
 
 
-# test_the_second_keys_offset_parity_is_what_the_previous_key_decides and
-# test_the_version_block_does_advance_the_next_keys_offset stood here until
-# the 2026-09-20 TCAM block model rewrite (Task 2): both pinned
-# `codeword_to_blocks(bits, start_group)`'s offset sensitivity and
-# `crossbar_groups_needed`, which reading p4c's own assembly showed rested on
-# a false premise (a block may pair with ANY of a stage's midbytes, not a
-# fixed partner; groups need not be consecutive -- 2026-09-20 rewrite design
-# Sec 2). `codeword_to_blocks` has no `start_group` parameter any more, and
-# `crossbar_groups_needed` is deleted outright, so there is nothing left in
-# tables.py for these tests to assert against. The real effect they were
-# chasing -- a key costing more because a DIFFERENT key shares its stage --
-# is not gone; it now belongs entirely to src/p4model/packing.py's
-# stage-sharing margin (spec Sec 13.2, "Effect 4"), which Task 4 owns.
+# --------------------------------------------------------------------------
+# The stage-sharing margin (src/p4model/packing.py `charged`, spec Sec 13.2
+# "Effect 4"): a table whose key is not the first distinct key in its stage,
+# and whose standalone price leaves no spare whole-byte crossbar slot
+# (`crossbar_capacity(g) == B`), pays one extra TCAM block for the mandatory
+# 2-bit --version-- field.
+#
+# These four tests stood in tests/test_version_block.py until the 2026-09-20
+# TCAM block model rewrite. That file was re-scoped by Task 2 to PER-TABLE
+# facts only -- a key's price alone, which no longer depends on where the key
+# sits -- so the sharing tests move here, alongside the other packing-level
+# guards. Two further tests that stood here
+# (test_the_second_keys_offset_parity_is_what_the_previous_key_decides and
+# test_the_version_block_does_advance_the_next_keys_offset) are NOT restored:
+# they pinned `codeword_to_blocks(bits, start_group)`'s offset sensitivity and
+# `crossbar_groups_needed`, and reading p4c's own assembly showed that premise
+# false (a block may pair with ANY of a stage's midbytes, not a fixed partner;
+# groups need not be consecutive -- rewrite design Sec 2). There is no offset
+# parameter left anywhere for them to assert against.
+# --------------------------------------------------------------------------
+def test_the_packer_charges_sd5s_stage_the_twelve_blocks_p4c_charged():
+    # Modelled on independent_low_sd5's stage 6, where p4c charged its app and
+    # ddos trees 3 TCAM blocks each (resources.json): one app table plus three
+    # ddos tables is 12. Both keys price at 3 blocks in
+    # tables.codeword_to_blocks -- the ddos key's 11 bytes saturate two blocks
+    # and the version bits push it to three, which is a per-TABLE fact, not a
+    # placement one. Neither key is saturated AT three blocks
+    # (crossbar_capacity(3) = 16, against 11 and 14 bytes), so the margin stays
+    # silent and the stage costs exactly the declared sum. This is the shape
+    # that used to be cited as the retired offset mechanism's proof; the new
+    # model reaches the same 12 with no placement term involved at all.
+    from src.p4model.packing import crossbar_stages_needed
+    from src.p4model.tables import codeword_to_blocks
+
+    app = frozenset({(("code", "app_flm"), 7), (("code", "app_plm"), 7)})
+    ddos = frozenset({(("code", "ddos_bplm"), 4), (("code", "ddos_plm"), 7)})
+    assert codeword_to_blocks((27, 52)) == 3
+    plan = crossbar_stages_needed(
+        [(3, 14), (3, 11), (3, 11), (3, 11)],
+        key_fields=[app, ddos, ddos, ddos],
+        key_field_bits=[(54, 56), (27, 52), (27, 52), (27, 52)])
+    assert plan.blocks == 12
+
+
+def test_a_stage_of_one_shared_key_is_never_charged_the_sharing_margin():
+    # Every 'joint' design keys every tree on the identical field set, so a
+    # joint stage has exactly ONE distinct key and that key is first in every
+    # ordering -- the margin cannot fire, however saturated the key is. The
+    # key below IS saturated (32 bytes, 6 blocks, crossbar_capacity(6) = 32),
+    # so this pins the "not first" half of the rule rather than the "spare
+    # slot" half. None of the 8 joint calibration rows shows a single table
+    # charged above its declared width.
+    from src.p4model.packing import crossbar_stages_needed
+    from src.p4model.tables import codeword_to_blocks, crossbar_capacity
+
+    key = frozenset({(("code", "f"), 32)})
+    assert crossbar_capacity(codeword_to_blocks((256,))) == 32
+    plan = crossbar_stages_needed(
+        [(6, 32)] * 3, key_fields=[key] * 3,
+        key_field_bits=[(256,)] * 3)
+    assert plan.blocks == 18
+
+
+def test_omitting_key_field_bits_prices_every_table_at_its_declared_width():
+    # Without field widths there is no way to ask whether a key is saturated,
+    # so the margin is skipped entirely and every table costs what it declares.
+    # That is what keeps the range pool -- the one caller that passes no bits
+    # -- on exactly its pre-existing pricing.
+    from src.p4model.packing import crossbar_stages_needed
+
+    plan = crossbar_stages_needed([(3, 14), (2, 11), (2, 11), (2, 11)])
+    assert plan.blocks == 9
+
+
+def test_two_different_ragged_keys_do_not_share_a_stage():
+    # independent_low_sd9, the row the margin exists for. Its app trees key
+    # 179 + 204 bits = 49 crossbar bytes at 9 blocks, and crossbar_capacity(9)
+    # is exactly 49 -- saturated. Its ddos trees key 37 + 49 bits = 12 bytes at
+    # 3 blocks against a capacity of 16 -- five slots spare. 2 app + 2 ddos is
+    # exactly 24 blocks and packs both columns as 9+3 | 9+3, so every capacity
+    # limit this model knows would let them share a stage; p4c refuses, and
+    # charging the app key its margin in any ordering where it is not served
+    # first is what reproduces that. The measurement behind it:
+    # scripts/tcam_stretch_sweep.py's ragged_ax1_bx5 puts the 49-byte key alone
+    # at 9 blocks and ragged_ax1_bx4 puts it beside a 12-byte key at 10.
+    from src.p4model.packing import crossbar_stages_needed
+
+    app = frozenset({(("code", "app_a"), 23), (("code", "app_b"), 26)})
+    ddos = frozenset({(("code", "ddos_a"), 5), (("code", "ddos_b"), 7)})
+    plan = crossbar_stages_needed(
+        [(9, 49)] * 5 + [(3, 12)] * 5,
+        readiness_levels=[0] * 10,
+        key_fields=[app] * 5 + [ddos] * 5,
+        key_field_bits=[(179, 204)] * 5 + [(37, 49)] * 5)
+    assert plan.occupied == 4
+    assert plan.blocks == 61
 
 
 def test_a_table_is_sharded_as_full_columns_plus_a_remainder():
@@ -386,3 +476,84 @@ def test_a_table_inside_one_column_is_not_sharded():
     assert _stage_shards(12, 30) == [(12, 30)]
     assert _stage_shards(1, 30) == [(1, 30)]
     assert _stage_shards(0, 30) == [(0, 30)]
+
+
+def _parity_feasible_under_some_order(heights, rows, columns):
+    """Is there ANY order and column assignment placing all of `heights` under
+    p4c's row-parity rule -- a run of EVEN height may only start on an EVEN
+    row, a run of odd height may start anywhere
+    (Memories::find_ternary_stretch, rewrite design Sec 6.2/13.2)?
+
+    Exhaustive with memoisation on (tables left, column loads); a column's
+    load IS the next free row in it, since runs are placed bottom-up with no
+    deliberate holes."""
+    seen = set()
+
+    def search(remaining, loads):
+        if not remaining:
+            return True
+        if (remaining, loads) in seen:
+            return False
+        seen.add((remaining, loads))
+        for i, height in enumerate(remaining):
+            if i and remaining[i - 1] == height:
+                continue                       # same multiset branch already tried
+            rest = remaining[:i] + remaining[i + 1:]
+            for column in range(columns):
+                if loads[column] + height > rows:
+                    continue
+                if height % 2 == 0 and loads[column] % 2:
+                    continue                   # even run may not start on an odd row
+                bumped = list(loads)
+                bumped[column] += height
+                if search(rest, tuple(bumped)):
+                    return True
+        return False
+
+    return search(tuple(sorted(heights)), (0,) * columns)
+
+
+def test_row_parity_never_rejects_a_stage_that_fits_by_size():
+    """Step 3a. p4c's row-parity rule costs this packer nothing, so
+    fits_two_columns is right to model column LOADS and ignore rows.
+
+    Proof by exhaustion over every multiset of block heights 1..12 that is
+    size-feasible in two 12-row columns: parity-feasible-under-some-order is
+    EQUIVALENT to fits_two_columns on all 8 618 of them, with no disagreement
+    in either direction. The reason it must be so: place every EVEN height
+    first, and the prefix sums of even numbers stay even, so every even run
+    lands on an even row; odd runs then go anywhere. A multiset that fits by
+    size therefore always fits under parity for SOME order.
+
+    A superset of a size-infeasible multiset is size-infeasible and
+    parity-infeasible alike (both tests are monotone in the multiset), so
+    pruning there loses no case.
+
+    Confirmed against the archive, not just by construction: over the 20
+    compiles the rewrite design cites, 317 committed runs include 103 that
+    start on an ODD row and ZERO even-height odd starts -- the rule itself
+    holds without exception -- and exactly 2 of 183 committed columns contain
+    a parity gap at all (independent_high_sd6 and _sd7, stage 9: a 3-high ddos
+    run at rows 0-2, then a 2-high app run forced off row 3 to row 4). Both
+    gaps sit in columns using 6 of 12 rows, so neither spilled anything.
+    """
+    from src.p4model.packing import fits_two_columns
+    from src.p4model.target import TCAM_COLUMNS_PER_STAGE, TCAM_ROWS_PER_STAGE
+
+    rows, columns = TCAM_ROWS_PER_STAGE, TCAM_COLUMNS_PER_STAGE
+    checked = 0
+
+    def walk(prefix, largest):
+        nonlocal checked
+        if prefix:
+            checked += 1
+            by_size = fits_two_columns(prefix)
+            assert by_size == _parity_feasible_under_some_order(
+                prefix, rows, columns), prefix
+            if not by_size:
+                return                        # monotone: every superset fails both
+        for height in range(min(largest, rows), 0, -1):
+            walk(prefix + [height], height)   # non-increasing, so each multiset once
+
+    walk([], rows)
+    assert checked == 8618, checked
