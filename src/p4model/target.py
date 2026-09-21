@@ -17,16 +17,36 @@ TCAM_BLOCKS_PER_STAGE = 24
 TCAM_ROWS_PER_STAGE = 12
 TCAM_COLUMNS_PER_STAGE = 2
 TCAM_BLOCK_KEY_LENGTH = 44
-# ...and those 44 bits are 5 PRIVATE bytes plus one nibble of a MIDBYTE the group
-# shares with its pair partner (5 x 8 + 4 = 44). The ternary input crossbar is
-# 12 groups x 5 private bytes + 6 midbytes = 66 bytes total, so group 2i and
-# group 2i+1 are fed from one 11-byte span laid out private-x5, midbyte,
-# private-x5. The split matters because the mandatory 2-bit --version-- field
-# may live ONLY in a midbyte nibble: a key that consumes every midbyte its
-# groups reach costs an extra TCAM block to hold two bits. See
-# tables.version_block_penalty and reviews/github_issue_tcam_version_bit_packing.md
+# ...and those 44 bits are 5 PRIVATE bytes plus one nibble of a MIDBYTE (5 x 8 + 4
+# = 44). The ternary input crossbar is 12 groups x 5 private bytes + 6 midbytes =
+# 66 bytes total. The split matters because the mandatory 2-bit --version-- field
+# may live ONLY in a midbyte nibble: a key that leaves no nibble free costs an
+# extra TCAM block to hold two bits. See tables.crossbar_capacity /
+# tables.codeword_to_blocks and reviews/github_issue_tcam_version_bit_packing.md
 # Sec 1.2-1.3.
+#
+# A note this comment used to carry and that is now RETRACTED (2026-09-21): that
+# a midbyte is owned exclusively by its "pair partner" groups 2i / 2i+1, laid out
+# private-x5 | midbyte | private-x5. p4c's own assembly says otherwise -- a block
+# may pair with ANY of a stage's 6 midbytes, and a key's groups need not even be
+# consecutive (measured runs {0,1,3,4}, {0,3}). Only the resulting COUNT survives,
+# as tables.crossbar_capacity; the geometry, and with it the whole start_group /
+# version_block_penalty apparatus it justified, is gone. reviews/
+# p4_tofino_reference.md Sec 4.1.1 and Appendix B "Mechanism G".
 CROSSBAR_PRIVATE_BYTES_PER_GROUP = 5
+# The stage's crossbar, in the two units the groups above come in. Documentation
+# and provenance ONLY -- deliberately consumed by nothing, because no group-BUDGET
+# term exists in this model (spec Sec 6.3; a budget is deferred to experiment E1).
+#
+# Provenance, and a retraction. scripts/tcam_group_cap_probe.py's point
+# `groups_13_bytes_64` was read for months as "a per-stage group cap was probed
+# and NOT found -- two keys needing 7 + 6 = 13 groups landed in one stage that has
+# 12". That reading was wrong on its own evidence: 7 and 6 are BLOCK counts, the
+# two tables share group 5, and the probe's assembly uses groups 0-11 -- exactly
+# 12 of 12, landing ON the cap rather than past it. The cap is real and is this
+# constant.
+TERNARY_CROSSBAR_GROUPS_PER_STAGE = 12      # 5 private bytes each
+TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE = 6  # midbytes, 2 nibbles each
 TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
 TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
