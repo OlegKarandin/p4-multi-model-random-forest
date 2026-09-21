@@ -112,8 +112,13 @@ def harvest_row(row_id):
             'measured_start_group': start_group,
             'start_group_ambiguous': ambiguous,
             'observed_blocks': rec['blocks'],
-            'predicted_blocks': codeword_to_blocks(field_bits, start_group),
-            'predicted_blocks_at_0': codeword_to_blocks(field_bits, 0),
+            # codeword_to_blocks no longer takes an offset -- the mechanism it
+            # priced was retired (2026-09-20 rewrite design Sec 13.1); a key's
+            # own price no longer depends on start_group, so both columns are
+            # now identical. Kept as two columns rather than restructuring the
+            # CSV schema, since a later scoreboard may reference either name.
+            'predicted_blocks': codeword_to_blocks(field_bits),
+            'predicted_blocks_at_0': codeword_to_blocks(field_bits),
             'distinct_keys_in_stage': len(stage_key_bytes[rec['stage']]),
         })
     return rows

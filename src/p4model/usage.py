@@ -7,7 +7,6 @@ the physics that produces one) can import it without pulling in the rest of
 the model."""
 from dataclasses import dataclass
 
-from src.p4model.packing import crossbar_stages_needed
 from src.p4model.program import FLOW_HASH_LEVEL, VOTE_EPILOGUE_STAGES
 
 
@@ -118,6 +117,17 @@ def assemble_usage(pool):
   Nothing here touches sklearn or a fitted forest, which is what lets the golden
   test and scripts/validation_table.py replay a serialized pool with no models
   and no campaign data."""
+  # Imported here, not at module scope (2026-09-21, TCAM block model rewrite
+  # Task 2): packing.py currently references version_block_delta and the
+  # offset-taking codeword_to_blocks, both retired from tables.py by that
+  # task, and stays broken until Task 4 repairs it. A module-scope import
+  # would make even DEFINING ResourceUsage fail while packing.py is broken,
+  # which nothing needs; this function's own actual dependency on packing.py
+  # is unchanged, and calling it while packing.py is broken still raises the
+  # same ImportError it always would, just at call time instead of at
+  # `import src.p4model.usage` time.
+  from src.p4model.packing import crossbar_stages_needed
+
   range_table_specs = pool["range_table_specs"]
   ternary_table_specs = pool["ternary_table_specs"]
   range_levels = pool["range_levels"]

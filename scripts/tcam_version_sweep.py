@@ -56,8 +56,7 @@ import pandas as pd
 
 from scripts.tcam_stretch_sweep import as_fields, key_bytes_for, synthetic_program
 from src.p4gen.p4_compile import compile_p4
-from src.p4model.tables import (codeword_bits_to_blocks, codeword_bytes_to_blocks,
-                                version_block_penalty)
+from src.p4model.tables import codeword_bits_to_blocks, codeword_bytes_to_blocks
 
 DEFAULT_OUT = 'results/tcam_version_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_version_sweep'
@@ -105,16 +104,28 @@ def predict(field_bits, start_group):
     """Both compositions, so the compiler can choose between them.
 
     `shipped`   = max(codeword_bits_to_blocks, codeword_bytes_to_blocks) + version penalty
-                  -- what the code does today.
+                  -- what the code did before the 2026-09-20 tables.py rewrite.
     `corrected` = max(codeword_bits_to_blocks, codeword_bytes_to_blocks + version penalty)
                   -- codeword_bits_to_blocks's own +4 version/valid bits stop
                   being charged a second time.
-    They differ only where the band arm wins AND the penalty fires."""
+    They differ only where the band arm wins AND the penalty fires.
+
+    STALE (2026-09-21, Task 2): `version_block_penalty` was retired along with
+    the offset-taking `codeword_to_blocks` this sweep was scoring -- the
+    mechanism it priced (a version block's home depending on `start_group`)
+    is no longer part of the per-table price at all (2026-09-20 rewrite
+    design Sec 13.1). This is a one-shot instrument script already run to
+    produce the gitignored results/tcam_version_sweep.csv (see Task 2's
+    report); `main()`/`run_point()` -> `predict()` is dead code left
+    unexecuted, not fixed, the same way scripts/tcam_offset_scan.py was left
+    -- nothing imports this function, only the module-level `measured_start_group`
+    and `read_committed` it sits beside, which scripts/tcam_offset_harvest.py
+    (and its test suite) still use."""
     bits = list(field_bits)
     key_bytes = sum(math.ceil(b / 8) for b in bits)
     band = codeword_bits_to_blocks(sum(bits))
     xbar = codeword_bytes_to_blocks(key_bytes)
-    penalty = version_block_penalty(bits, start_group)
+    penalty = version_block_penalty(bits, start_group)  # noqa: F821 -- see docstring
     return {
         'key_bytes': key_bytes,
         'groups': xbar,

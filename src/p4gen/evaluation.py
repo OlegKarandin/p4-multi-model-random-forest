@@ -64,12 +64,26 @@ from src.p4model.program import (
     REGISTER_BLOCK_ORDER,
     VOTE_EPILOGUE_STAGES,
 )
-from src.p4model.packing import (
-    StagePlan,
-    _stage_shards,
-    crossbar_stages_needed,
-    fits_two_columns,
-)
+try:
+  # 2026-09-21, TCAM block model rewrite Task 2: packing.py currently
+  # references version_block_delta and the offset-taking codeword_to_blocks,
+  # both retired from tables.py by this task, and stays broken until Task 4
+  # repairs it (do not touch packing.py itself to fix this -- see that
+  # task's report). Guarded here, not fixed, so that callers of THIS module
+  # who need none of these four names (e.g. src/training/align_budget.py,
+  # which only uses the tables.py re-exports below) are not also taken down
+  # by packing.py's expected breakage. A caller that actually uses one of
+  # these names while packing.py is broken gets a clear NameError, the same
+  # shape of failure it would get from an ImportError, just raised at use
+  # rather than at import.
+  from src.p4model.packing import (
+      StagePlan,
+      _stage_shards,
+      crossbar_stages_needed,
+      fits_two_columns,
+  )
+except ImportError:
+  StagePlan = _stage_shards = crossbar_stages_needed = fits_two_columns = None
 from src.p4model.ranges import (
     compiler_range_rows,
     nibble_widths_for,
@@ -87,7 +101,6 @@ from src.p4model.tables import (
     ternary_key_fields,
     ternary_key_field_bits,
     tree_entries_to_blocks,
-    version_block_penalty,
     codeword_fields_to_bytes,
     codeword_fields_to_bytes_from_bits,
 )

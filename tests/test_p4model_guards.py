@@ -162,7 +162,6 @@ TABLES_REEXPORTS = (
     "range_matching_resource_usage", "range_deployment_overflow",
     "codeword_fields_to_bytes", "codeword_fields_to_bytes_from_bits",
     "codeword_bits_to_blocks", "ternary_key_field_bits",
-    "version_block_penalty",
     "codeword_bytes_to_blocks", "exact_match_resource_usage",
     "range_key_fields_for", "ternary_key_fields",
     "tree_entries_to_blocks", "entries_across_trees_to_blocks",
@@ -338,25 +337,19 @@ def test_a_deep_table_does_not_push_the_next_key_further_along_the_crossbar():
     assert (shallow.blocks, deep.blocks) == (7, 10), (shallow, deep)
 
 
-def test_the_second_keys_offset_parity_is_what_the_previous_key_decides():
-    """The property the test above exercises, stated directly so a future
-    reader can see why (77, 42) was chosen rather than any 16-byte key."""
-    from src.p4model.tables import codeword_to_blocks
-
-    assert [codeword_to_blocks((77, 42), s) for s in range(6)] == [3, 4, 3, 4, 3, 4]
-    assert [codeword_to_blocks((5,) * 11, s) for s in range(6)] == [3, 3, 3, 3, 3, 3]
-
-
-def test_the_version_block_does_advance_the_next_keys_offset():
-    """The other half of the ruling, and the half the archive measured:
-    independent_low_sd5's ddos key is 11 bytes = 2 crossbar groups, costs 3
-    blocks because it saturates, and p4c starts the app key at group 3 -- the
-    key's block WIDTH, not its group count. So the version block consumes a
-    group and the advance must include it."""
-    from src.p4model.tables import codeword_to_blocks, crossbar_groups_needed
-
-    assert crossbar_groups_needed((5,) * 11, 0) == 2
-    assert codeword_to_blocks((5,) * 11, 0) == 3
+# test_the_second_keys_offset_parity_is_what_the_previous_key_decides and
+# test_the_version_block_does_advance_the_next_keys_offset stood here until
+# the 2026-09-20 TCAM block model rewrite (Task 2): both pinned
+# `codeword_to_blocks(bits, start_group)`'s offset sensitivity and
+# `crossbar_groups_needed`, which reading p4c's own assembly showed rested on
+# a false premise (a block may pair with ANY of a stage's midbytes, not a
+# fixed partner; groups need not be consecutive -- 2026-09-20 rewrite design
+# Sec 2). `codeword_to_blocks` has no `start_group` parameter any more, and
+# `crossbar_groups_needed` is deleted outright, so there is nothing left in
+# tables.py for these tests to assert against. The real effect they were
+# chasing -- a key costing more because a DIFFERENT key shares its stage --
+# is not gone; it now belongs entirely to src/p4model/packing.py's
+# stage-sharing margin (spec Sec 13.2, "Effect 4"), which Task 4 owns.
 
 
 def test_a_table_is_sharded_as_full_columns_plus_a_remainder():

@@ -132,9 +132,12 @@ def run_point(point, output_root, size):
     start, ambiguous = (measured_start_group(a_rec['xbar_bytes'])
                         if a_rec else (None, None))
 
-    predicted_blocks_at_0 = codeword_to_blocks(fields_a, 0)
-    predicted_blocks_at_measured = (
-        codeword_to_blocks(fields_a, start) if start is not None else None)
+    # codeword_to_blocks no longer takes an offset (2026-09-20 rewrite design
+    # Sec 13.1 retired the mechanism it priced), so both columns are now
+    # identical regardless of the measured start group. Kept as two columns
+    # rather than restructuring the CSV schema.
+    predicted_blocks_at_0 = codeword_to_blocks(fields_a)
+    predicted_blocks_at_measured = predicted_blocks_at_0
 
     return {
         'point_id': point_id,
