@@ -331,9 +331,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
 
     Not the table's block count: a table two blocks DEEP stores more rows
     through the same key, and depth does not move the next key along. That is
-    finding 1.4, pinned by tests/test_p4model_guards.py's
-    test_a_deep_table_does_not_push_the_next_key_further_along_the_crossbar;
-    only the key's own width may move the crossbar along.
+    finding 1.4, and keeping it right is why this function exists at all.
 
     What the result is used for is narrow. offsets_for chains these widths so
     that charged() can ask one question -- is this key the FIRST distinct key
@@ -345,6 +343,20 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     running sum is kept rather than an ordinal because every price this branch
     returns is >= 1, so "offset 0" and "first" are the same predicate and the
     sum states the intent without introducing a second concept.
+
+    HONEST LIMIT, so nobody mistakes finding 1.4 for something that is still
+    guarded: that same ">= 1" makes the width-vs-blocks distinction
+    UNOBSERVABLE from outside crossbar_stages_needed. Any positive advance
+    gives every key the same first/not-first verdict, so replacing all three
+    key_width call sites with `blocks` -- the exact finding 1.4 bug -- changes
+    no occupied, blocks or depth over 79 916 random multi-key configurations,
+    and reproduces test_a_deep_table_costs_only_its_own_extra_depth's 7 and 10
+    unchanged. That test therefore pins the margin arithmetic, not this
+    invariant; the invariant is held by construction here and by this comment,
+    since key_width and offsets_for are closures with no reachable surface of
+    their own. It becomes observable again the moment anything downstream
+    reads an offset as a POSITION rather than as a boolean, which is exactly
+    when it would need a test.
 
     bits is None for any caller that names no field widths (the range pool),
     and then the key's byte width is all there is; a range key is one

@@ -307,27 +307,48 @@ def test_the_cost_decomposition_names_say_what_they_take():
         assert not hasattr(tables, retired), retired
 
 
-def test_a_deep_table_does_not_push_the_next_key_further_along_the_crossbar():
-    """Finding 1.4. A table two blocks DEEP stores more rows through the SAME
-    key. Depth must not move the next key along `offsets_for`'s running sum --
-    only the key's own width may. Charging row depth there is a bug, latent
-    because no calibration tree exceeds 512 entries.
+def test_a_deep_table_costs_only_its_own_extra_depth():
+    """Finding 1.4's two measured points, and an honest note about what this
+    test does NOT protect any more.
 
-    What makes the difference visible is the stage-sharing margin (packing.py
-    `charged`, spec Sec 13.2): key B, (77, 42), is 16 crossbar bytes priced at
-    3 blocks, and crossbar_capacity(3) is exactly 16 -- a SATURATED key, so it
-    pays one extra block in every ordering where it is not served first. Key A
-    is 11 bytes at 3 blocks against a capacity of 16, so it never pays. Both
-    stages below therefore cost `A + B + 1` in the worst ordering, and the
-    only thing that may change between them is A's own declared depth:
+    Finding 1.4 is that a table two blocks DEEP stores more rows through the
+    SAME key, so its depth must not move the next key along `offsets_for`'s
+    running sum -- only the key's own width may. Under the OLD offset model
+    that was observable, because a key's price depended on the group it
+    started at: this pair of stages came out 7 and 10 when the sum chained
+    widths and 7 and 9 when it wrongly chained block counts.
+
+    THAT IS NO LONGER TRUE, and the values below no longer detect it.
+    `offsets_for`'s sum is now read only through `!= 0` (charged(): is this
+    key the first distinct key in the ordering under test?), and both a key's
+    width and a table's block count are >= 1, so any advance function that is
+    positive gives every key the same first/not-first verdict. Measured, not
+    assumed: re-running this module's whole fuzz shape with all three
+    `key_width(fields, bits)` call sites in packing.py replaced by `blocks` --
+    the exact Finding 1.4 bug -- reproduces 7 and 10 here, and agrees with the
+    correct code on occupied/blocks/depth across 79 916 random multi-key
+    configurations. The distinction is currently UNOBSERVABLE at
+    `crossbar_stages_needed`'s public surface. `key_width` and `offsets_for`
+    are closures inside it and cannot be reached directly, which is precisely
+    why the guard has nowhere to stand; exposing them just to assert this is
+    not worth the API.
+
+    (The one shape that would discriminate is a table declaring ZERO blocks,
+    where the buggy sum leaves the next key at offset 0 and suppresses its
+    margin. Not pinned here: no table the generator emits has zero blocks, and
+    a guard resting on a degenerate input would assert `_stage_shards`'s
+    handling of it rather than finding 1.4.)
+
+    What the two values below DO still pin is the arithmetic of the
+    stage-sharing margin over a depth change, which is worth keeping. Key B,
+    (77, 42), is 16 crossbar bytes priced at 3 blocks and crossbar_capacity(3)
+    is exactly 16 -- SATURATED -- so it pays one extra block in every ordering
+    where it is not served first. Key A is 11 bytes at 3 blocks against that
+    same capacity of 16 and never pays. So both stages cost `A + B + 1` in the
+    worst ordering and differ by A's declared depth alone:
 
       shallow: A 3 + B 3 + margin 1 = 7
-      deep:    A 6 + B 3 + margin 1 = 10   (delta 3 == A's extra depth, exactly)
-
-    A model that charged A's block count instead of A's width would still land
-    on 7 and 10 here, because there is no longer any quantity the running sum
-    feeds other than "is this offset 0" -- so the guard is now that the delta
-    between the two is A's depth and NOTHING else, i.e. deep - shallow == 3.
+      deep:    A 6 + B 3 + margin 1 = 10
     """
     from src.p4model.packing import crossbar_stages_needed
 
@@ -341,7 +362,6 @@ def test_a_deep_table_does_not_push_the_next_key_further_along_the_crossbar():
         [(6, 11), (3, 16)], key_fields=fields, key_field_bits=[key_a, key_b])
 
     assert (shallow.blocks, deep.blocks) == (7, 10), (shallow, deep)
-    assert deep.blocks - shallow.blocks == 3, (shallow, deep)
 
 
 # --------------------------------------------------------------------------
