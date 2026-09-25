@@ -174,12 +174,11 @@ def assemble_usage(pool):
   # stage_depth calibration result (scripts/validation_table.py) suggests
   # the case rarely binds in practice.
   ternary_level = range_plan.depth if range_table_specs else FLOW_HASH_LEVEL + 1
-  # Only the classification pool gets key_field_bits. A range table keys one
-  # meta.<feature>_val field of FEATURE_VALUE_BIT_WIDTH bits -- 2 whole bytes
-  # in 1 crossbar group, which supplies 5 private byte slots, so it never
-  # saturates its own crossbar capacity (tables.crossbar_capacity), and the
-  # Sec 13.2 stage-sharing margin (packing.charged) can therefore never fire
-  # on it either. Passing it would be noise.
+  # Only the classification pool gets key_field_bits, which is what switches
+  # on the crowded-stage rules (packing.charged/fits). A range table keys one
+  # meta.<feature>_val field of FEATURE_VALUE_BIT_WIDTH bits -- 2 bytes -- and
+  # the 8-table cap holds a stage to 16 of them, nowhere near crowding it.
+  # Passing it would be noise.
   ternary_plan = crossbar_stages_needed(
       ternary_table_specs,
       readiness_levels=[ternary_level] * len(ternary_table_specs),
@@ -217,7 +216,7 @@ def assemble_usage(pool):
   register_count = len(register_names)
 
   # ternary_plan.blocks, not ternary_blocks: the latter is the naive
-  # per-table sum computed above, before the Sec 13.2 stage-sharing margin
+  # per-table sum computed above, before the crowded-stage margin
   # (packing.charged) that only crossbar_stages_needed's stage packing knows
   # about -- see StagePlan.blocks. range_blocks needs no substitution:
   # a range table's key always leaves spare crossbar byte slots,

@@ -1731,28 +1731,24 @@ def test_stage_depth_counts_the_vote_epilogue_stage():
                                  + ev.VOTE_EPILOGUE_STAGES)
 
 
-# --- The stage-sharing margin (src/p4model/packing.py's `charged`)
+# --- The crowded-stage margin (src/p4model/packing.py's `charged`)
 #
-# A table whose key is not the first distinct key in its stage, and whose
-# standalone price leaves no spare whole-byte crossbar slot
-# (`crossbar_capacity(g) == B`), pays one extra TCAM block for the mandatory
-# 2-bit --version-- field. Spec Sec 13.2 "Effect 4"; the measurement is
-# scripts/tcam_stretch_sweep.py's ragged 49-byte key at 9 blocks alone and 10
-# sharing. The rule is deliberately ONE-SIDED: it can over-charge a key whose
-# real layout kept a slot, and never under-charges.
+# When two DIFFERENT keys fill more than 58 of a stage's 64 crossbar bytes,
+# every table of the non-first key pays one extra TCAM block, and above 62 the
+# stage is refused (src/p4model/target.py has the measurements). The rule is
+# deliberately ONE-SIDED: it can over-charge a stage p4c happened to share for
+# free, and never under-charges.
 #
-# TWO SUPERSEDED RULES stood here before it. The first asserted "a ragged key
-# at an ODD crossbar group offset costs +1 block", which over-fired on 5 of the
-# 6 calibration stages where it was live and named the wrong table on the one
-# it appeared to fix. Its replacement priced the same effect per TABLE from the
-# key's group offset (tables.version_block_penalty); reading p4c's own assembly
-# showed the consecutive-run/paired-midbyte premise under BOTH to be false (a
-# block may pair with any of a stage's midbytes; groups need not be
-# consecutive -- 2026-09-20 rewrite design Sec 2), and there is no offset
-# parameter anywhere any more. The effect itself is real and belongs to stage
-# PLACEMENT, which is what the margin models. See
-# tests/test_p4model_guards.py for its packing-level measurement set and
-# tests/test_version_block.py for the per-table price it sits on top of.
+# THREE SUPERSEDED RULES stood here before it. A ragged key at an ODD crossbar
+# group offset costing +1 (over-fired on 5 of 6 live calibration stages); a
+# per-table price from the key's group offset (tables.version_block_penalty),
+# whose consecutive-run/paired-midbyte premise p4c's own assembly falsified
+# (2026-09-20 rewrite design Sec 2); and, until 2026-09-25, a per-key
+# SATURATION margin (+1 to a non-first key with no spare byte slot in any
+# shared stage), retired because every observation on disk showed crowding,
+# not saturation, deciding who pays. See tests/test_p4model_guards.py for the
+# packing-level measurement set and tests/test_version_block.py for the
+# per-table price it sits on top of.
 
 APP_49 = (179, 204)      # 23 + 26 = 49 crossbar bytes, 9 blocks, ragged
 DDOS_12 = (37, 49)       # 5 + 7 = 12 crossbar bytes, 3 blocks
@@ -1760,15 +1756,22 @@ SOLID_49 = (392,)        # one dense field: 49 bytes, no part-used byte at all
 APP_19 = (146,)          # independent_low_sd6's app key: 19 bytes, 4 blocks
 
 
-def test_a_saturated_key_that_shares_a_stage_pays_the_sharing_margin():
-    # Measured, scripts/tcam_stretch_sweep.py: a table keying 179+204 bits
-    # (49 crossbar bytes) costs 9 TCAMs alone in a stage (ragged_ax1_bx5) and
-    # 10 when a 12-byte key shares it (ragged_ax1_bx4). 49 is exactly
-    # crossbar_capacity(9), so the key has no spare whole-byte slot, the
-    # allocator's one extra half-byte leaves the 2-bit --version-- field
-    # nowhere to sit, and p4c gives it a TCAM block of its own (the waste
-    # reviews/github_issue_tcam_version_bit_packing.md documents). 10 + 15 no
-    # longer fits one stage's 24 blocks.
+# The four tests below replay scripts/tcam_stretch_sweep.py's 49-byte-key +
+# 12-byte-key probes. 49 + 12 = 61 crossbar bytes of two DIFFERENT keys is a
+# CROWDED stage (> 58, target.TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE),
+# so the packer charges every table of the non-first key +1 and, not knowing
+# which key p4c serves second, takes the WORST order. Here that is the
+# 12-byte key's four or five tables, +1 each. p4c instead charged the single
+# 49-byte table (ragged: 10 blocks; solid control: nothing). So the model
+# over-predicts these probes, by blocks and at this exact fill by a stage --
+# the crowded-stage rule's accepted, one-sided cost. Values are pinned at the
+# model's figure with p4c's measurement beside them, so the deviation stays
+# visible.
+
+
+def test_a_crowded_stage_with_five_narrow_tables_needs_two_stages():
+    # ragged_ax1_bx5: p4c needed 2 stages (wide table 9 alone, 10 shared).
+    # The model agrees on 2.
     ragged = ev.crossbar_stages_needed(
         [(9, 49)] + [(3, 12)] * 5,
         key_fields=[frozenset({(('a',), 49)})] +
@@ -1776,18 +1779,8 @@ def test_a_saturated_key_that_shares_a_stage_pays_the_sharing_margin():
         key_field_bits=[APP_49] + [DDOS_12] * 5)
     assert ragged.occupied == 2
 
-    # The SOLID control measured 9 blocks either way (probe points a49x1_b12x4
-    # and a49x1_b12x5): one bit<392> field has no nibble-clean byte for the
-    # allocator to spend a half-byte slot on, so its version bits never lose
-    # their seat. The margin does not model that distinction -- it charges
-    # every saturated non-first key, and 49 bytes saturates 9 blocks whatever
-    # the field split -- so it OVER-predicts here, by one block and, at this
-    # exact fill, by one stage. Spec Sec 13.2 accepts that in as many words
-    # ("over only on 7 solid synthetic keys that real forests do not
-    # produce", the a49x* points among them): the margin is one-sided by
-    # construction and over is the safe direction. Asserted at the model's
-    # value with the measurement recorded beside it, so the deviation stays
-    # visible rather than becoming folklore.
+    # The SOLID control (a49x1_b12x5) p4c fit in 1 stage; the model's
+    # worst-order crowded charge does not.
     solid = ev.crossbar_stages_needed(
         [(9, 49)] + [(3, 12)] * 5,
         key_fields=[frozenset({(('a',), 49)})] +
@@ -1796,50 +1789,43 @@ def test_a_saturated_key_that_shares_a_stage_pays_the_sharing_margin():
     assert solid.occupied == 2          # p4c measured 1
 
 
-def test_the_same_key_pays_nothing_when_it_starts_at_group_zero():
-    # 21 blocks, same two keys: measured to fit one stage (probe point
-    # ragged_ax1_bx4), with the wide table charged 10 and the four narrow
-    # ones 3 each -- 10 | 12 across the two columns.
+def test_a_crowded_stage_is_priced_at_its_worst_key_order():
+    # ragged_ax1_bx4: 21 declared blocks, measured by p4c to fit ONE stage
+    # (wide table charged 10, narrow ones 3 each: 10 | 12). The worst order
+    # charges the four narrow tables instead: 9 | 4 x 4 = 16 overflows a
+    # 12-row column, so the model needs 2 stages.
     plan = ev.crossbar_stages_needed(
         [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
         key_field_bits=[APP_49] + [DDOS_12] * 4)
-    assert plan.occupied == 1
+    assert plan.occupied == 2           # p4c measured 1
 
 
-def test_stage_plan_blocks_reflects_the_version_charge_not_the_naive_sum():
-    # Same ragged_ax1_bx4 ground truth as the test above -- real p4c charges
-    # the wide table 10 blocks and each narrow table its declared 3, for 22
-    # total. independent_low_sd5 is the same mechanism at production scale:
-    # multi_model_memory_evaluation reported 13 blocks (the naive per-table
-    # sum) where p4c used 16, because the charge was only ever wired into
-    # stage PLACEMENT, never into a total a caller could read.
+def test_stage_plan_blocks_carries_the_crowded_charge_not_the_naive_sum():
+    # Same ragged_ax1_bx4 shape. StagePlan.blocks reports what the placement
+    # it chose actually charges, never the naive per-table sum (21) -- the
+    # rule independent_low_sd5 established when multi_model_memory_evaluation
+    # reported 13 where p4c used 16. Here the model's 2-stage placement
+    # charges 24 against p4c's 22.
     plan = ev.crossbar_stages_needed(
         [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
         key_field_bits=[APP_49] + [DDOS_12] * 4)
-    assert plan.blocks == 22            # not 21, the naive sum
+    assert plan.blocks == 24            # p4c measured 22
 
 
 def test_stage_plan_blocks_over_charges_a_solid_key_that_shares_a_stage():
-    # The sweep's solid control arm: a key of whole-byte fields presents no
-    # nibble-clean byte, so p4c's allocator has no half-byte slot to spend on
-    # it and the version bits keep their seat -- 9 blocks either way, measured
-    # (a49x1_b12x4, a49x1_b12x5), for a stage total of 9 + 4*3 = 21.
-    #
-    # The margin charges it anyway, because 49 bytes saturates 9 blocks
-    # whatever the field split and it is not the first key here. 22, not 21 --
-    # the same accepted, one-sided over-prediction documented on
-    # test_a_saturated_key_that_shares_a_stage_pays_the_sharing_margin, spec
-    # Sec 13.2. Pinned so the deviation cannot grow unnoticed.
+    # The solid control of the same shape: p4c measured 9 + 4 x 3 = 21 with
+    # nothing extra charged. The crowded-stage rule cannot see the field
+    # split, so it prices it like the ragged key: 24.
     plan = ev.crossbar_stages_needed(
         [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
         key_field_bits=[SOLID_49] + [DDOS_12] * 4)
-    assert plan.blocks == 22            # p4c measured 9 + 4 * 3 == 21
+    assert plan.blocks == 24            # p4c measured 21
 
 
 def test_stage_plan_blocks_is_inert_on_a_single_key_stage():
@@ -1864,11 +1850,10 @@ def test_the_version_penalty_never_fires_on_a_single_key_stage():
 
 
 def test_key_field_bits_defaults_to_the_pre_existing_pricing():
-    # Naming the field widths changes nothing unless some key is BOTH
-    # saturated and not first in its stage. Neither key here is saturated --
-    # 19 bytes against crossbar_capacity(4) = 21, 12 against
-    # crossbar_capacity(3) = 16 -- so the bits-aware call reproduces the
-    # default exactly, which is what keeps every pre-margin caller unaffected.
+    # Naming the field widths changes nothing unless two different keys crowd
+    # a stage (> 58 bytes). 19 + 12 = 31 bytes does not, so the bits-aware call
+    # reproduces the default exactly, which is what keeps every pre-margin
+    # caller unaffected.
     specs = [(4, 19)] + [(3, 12)] * 5
     fields = [frozenset({(('a',), 19)})] + [frozenset({(('b',), 12)})] * 5
     default = ev.crossbar_stages_needed(specs, key_fields=fields)
@@ -1878,11 +1863,11 @@ def test_key_field_bits_defaults_to_the_pre_existing_pricing():
 
 
 def test_naming_key_field_bits_can_only_raise_the_price():
-    # And when a key IS saturated, the margin only ever adds: the default is
-    # the pre-existing, cheaper answer and the bits-aware call may never fall
-    # below it. One-sidedness is the property spec Sec 13.2 asks for, and it
-    # is what makes omitting key_field_bits safe for the range pool rather
-    # than merely convenient.
+    # And when the stage IS crowded (49 + 12 = 61 bytes), the margin only ever
+    # adds: the default is the pre-existing, cheaper answer and the bits-aware
+    # call may never fall below it. One-sidedness is the property spec Sec
+    # 13.2 asks for, and it is what makes omitting key_field_bits safe for the
+    # range pool rather than merely convenient.
     specs = [(9, 49)] + [(3, 12)] * 5
     fields = [frozenset({(('a',), 49)})] + [frozenset({(('b',), 12)})] * 5
     default = ev.crossbar_stages_needed(specs, key_fields=fields)

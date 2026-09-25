@@ -15,50 +15,89 @@ pytestmark = pytest.mark.skipif(
     reason="needs results/*.csv (gitignored, real p4c compile output) -- "
            "see scripts/tcam_table_scoreboard.py's SOURCE_FILES")
 
-# KNOWN, DOCUMENTED gap -- not silently swallowed. Both rows are the same
-# (84, 84)-bit probe (22 crossbar bytes, blocks_refined = 5, not saturated)
-# squeezed behind a 41/42-byte spacer that leaves it only 4 free crossbar
-# groups instead of 5; p4c's real cost jumps to 7 blocks. This is F5, the
-# "near-cap crossbar group budget" effect the 2026-09-20 rewrite design's own
-# Sec 8 (E1) and Sec 13.2 explicitly say is NOT modelled by the Sec 13.2
-# stage-sharing margin -- that margin is capped at exactly +1 block by
-# design (Sec 13.2: "Bound: +1 block per affected table, exactly, never
-# more"), and these two rows need +2 (5 -> 7). No reading of "not_first" can
-# close a 2-block gap with a margin that only ever adds 1, so this is a
-# genuine, structural residual of the model as specified, reproducing Sec 8's
-# own recorded (spacer, groups-left, blocks) table point-for-point -- not a
-# bug in how this script applies the margin. See task-3-report.md for the
-# full account. If E1 (or a successor) ever models F5, this set should
-# shrink; a new, DIFFERENT under-prediction appearing here is a regression
-# and should not be added to this list without the same level of scrutiny.
-KNOWN_UNDER_PREDICTIONS = frozenset({
+# Observations at a stage the packer refuses: two DIFFERENT keys past
+# target.TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE (62 bytes), where p4c's
+# extra charge reaches +2 (dsp41/dsp42: the (84, 84) probe at 63/64 bytes, 7
+# blocks instead of 5). They are reported as REFUSED, not scored: the gate is
+# 0 under on every placement the model can actually emit. (59-62-byte rows are
+# scored, with the crowded-stage +1.)
+KNOWN_REFUSED_PLACEMENTS = frozenset({
     ("tcam_discount_scan", "dsp41"),
     ("tcam_discount_scan", "dsp42"),
 })
 
 
-def test_total_observation_count_is_308():
+def test_total_observation_count_is_405():
+    # 308 fitted-corpus observations + 50 held-out tables + 47 mixed-key cap
+    # probes (tcam_mixed_key_cap_sweep 30, tcam_mixed_key_cap_onset 17).
     rows = scoreboard.score_all()
 
-    assert len(rows) == 308
+    assert len(rows) == 405
 
 
-def test_blocks_charged_under_predictions_are_exactly_the_known_f5_gap():
-    """The gate the whole script exists for: blocks_charged must never
-    under-predict, except for the one documented, structural gap (F5) the
-    Sec 13.2 margin was never meant to cover. Any OTHER under-prediction --
-    or the disappearance of these two without the set being updated -- fails
-    this test rather than passing silently."""
+def test_the_held_out_tables_are_priced_exactly():
+    """tcam_heldout_harvest.csv: 50 classification tables from the 8
+    compiles in results/compiler_calibration_extra/, which no part of the
+    model was fitted on. Every one priced exactly -- refined and charged."""
+    rows = [r for r in scoreboard.score_all()
+            if r["source"] == "tcam_heldout_harvest"]
+
+    assert len(rows) == 50
+    assert all(r["diff_refined"] == 0 for r in rows)
+    assert all(r["diff_charged"] == 0 for r in rows)
+
+
+def test_blocks_charged_never_under_predicts_a_placement_the_model_emits():
+    """The gate the whole script exists for: on every observation whose
+    placement the packer would also produce, blocks_charged is never below
+    what p4c charged."""
     rows = scoreboard.score_all()
 
     unders = scoreboard.under_predictions(rows, "diff_charged")
-    observed = frozenset((r["source"], r["identifier"]) for r in unders)
 
-    assert observed == KNOWN_UNDER_PREDICTIONS, (
-        "blocks_charged under-predictions changed shape: %r -- either a new "
-        "regression (investigate before touching this test) or the F5 gap "
-        "was modelled away (shrink KNOWN_UNDER_PREDICTIONS with a reason)"
-        % (observed.symmetric_difference(KNOWN_UNDER_PREDICTIONS),))
+    assert unders == [], [(r["source"], r["identifier"]) for r in unders]
+
+
+def test_the_refused_placements_are_exactly_the_rows_past_the_cap():
+    """Rows are excluded from the gate only because the packer refuses their
+    stage: every one sits above 62 combined bytes."""
+    rows = scoreboard.score_all()
+
+    refused = scoreboard.refused_placements(rows)
+    by_source = {}
+    for r in refused:
+        by_source.setdefault(r["source"], set()).add(r["identifier"])
+
+    assert by_source.pop("tcam_discount_scan") == {i for _, i in KNOWN_REFUSED_PLACEMENTS}
+    assert by_source.pop("tcam_mixed_key_cap_sweep") == {
+        "%s_t%d" % (tag, t) for tag in ("solid22", "rag11", "rag14", "four26", "hik16")
+        for t in (63, 64)}
+    # Two solid 32-byte keys sharing one stage at 64 bytes; p4c charged
+    # nothing extra, the packer refuses the stage (an over-prediction).
+    assert by_source.pop("tcam_stretch_sweep") == {
+        "a32x2_b32x2/tern_%s%d" % (tag, i) for tag in "ab" for i in (0, 1)}
+    assert by_source == {}
+
+
+def test_no_saturated_key_is_charged_outside_a_crowded_stage():
+    """The per-key saturation margin is retired: a table is charged beyond
+    its refined price only when its stage is crowded (> 58 bytes)."""
+    rows = scoreboard.score_all()
+
+    extra = [r for r in rows if r["blocks_charged"] > r["blocks_refined"]]
+
+    assert extra and all(r["crowded"] and r["not_first"] for r in extra)
+
+
+def test_the_crowded_stage_margin_is_applied_to_59_to_62_byte_rows():
+    """rag14 = (54, 56), not saturated: 3 blocks alone, 4 at 59-62 bytes.
+    Charged 4 there only because the stage is crowded."""
+    rows = {r["identifier"]: r for r in scoreboard.score_all()
+            if r["source"] == "tcam_mixed_key_cap_sweep"}
+    for t in (59, 60, 61, 62):
+        row = rows["rag14_t%d" % t]
+        assert not row["saturated"]
+        assert (row["blocks_charged"], row["observed_blocks"]) == (4, 4)
 
 
 def test_offset_harvest_headline_over_predicts_exactly_8_of_100():

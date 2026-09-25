@@ -36,7 +36,9 @@ TCAM_BLOCK_KEY_LENGTH = 44
 CROSSBAR_PRIVATE_BYTES_PER_GROUP = 5
 # The stage's crossbar, in the two units the groups above come in. Documentation
 # and provenance ONLY -- deliberately consumed by nothing, because no group-BUDGET
-# term exists in this model (spec Sec 6.3; a budget is deferred to experiment E1).
+# term exists in this model. The near-cap effect a budget would price (spec F5)
+# is handled as a placement refusal instead: TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE
+# below.
 #
 # Provenance, and a retraction. scripts/tcam_group_cap_probe.py's point
 # `groups_13_bytes_64` was read for months as "a per-stage group cap was probed
@@ -50,6 +52,36 @@ TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE = 6  # midbytes, 2 nibbles each
 TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
 TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
+# Two tighter limits for a stage holding two or more DIFFERENT keys (spec "F5",
+# the "crowded stage"). A later key must take whatever crossbar groups the first
+# left; once the stage is nearly full, p4c routes its bytes through midbyte
+# nibbles at extra TCAM blocks. packing.crossbar_stages_needed applies both:
+#
+#   * above ..._FREE_BYTES (58) and up to ..._BYTES (62): every table of the
+#     NON-first key pays +1 block, whatever the key's own slack. This is the
+#     model's ONLY sharing charge since the per-key saturation margin was
+#     retired on the same evidence (packing.charged());
+#   * above ..._BYTES (62): the co-location is refused outright, because the
+#     measured extra reaches +2 there and a +1 margin cannot cover it.
+#
+# Evidence (2026-09-25), per combined distinct-key bytes in one stage:
+#   * <= 58: six probe shapes behind a solid spacer never pay
+#     (scripts/tcam_mixed_key_cap_sweep.py, results/tcam_mixed_key_cap_onset.csv);
+#   * 59-62: (54, 56) -- independent_low_sd5's real app key, not saturated --
+#     pays +1; (46, 46, 48, 64) pays +1 at 61; the real design M150_k5_s12's
+#     11-byte ddos trees pay +1 at 61 (results/tcam_margin_screen_compiled.csv);
+#   * 63-64: (84, 84), (54, 56) and (27, 52) pay +2 (tcam_discount_scan,
+#     tcam_mixed_key_cap_sweep).
+# Scored on every source together (19 fitted designs, 8 held-out, 16 real
+# campaign designs compiled for this, 405 per-table observations), this is the
+# only rule tried with 0 under-predictions on all of them, and dropping the
+# older saturation margin in its favour made every gate MORE exact. Its cost,
+# the safe direction: some real stages at 59-62 bytes pay nothing (three campaign
+# designs at 59, independent_low_sd12 at 60), so a few designs at the 12-stage
+# ceiling are priced one stage deeper than p4c places them. Which key pays is
+# the allocator's greedy choice; byte totals cannot separate the two cases.
+TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE = 58
+TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62
 # MAX_CODEWORD_LENGTH is a CONSEQUENCE of TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE, not an
 # independent limit: a single-stage ternary table can occupy at most the 64-byte-per-stage
 # crossbar budget above, so a codeword wider than 64 bytes (512 bits) could never fit in one

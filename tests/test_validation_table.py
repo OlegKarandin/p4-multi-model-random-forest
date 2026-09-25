@@ -51,3 +51,20 @@ def test_format_table_marks_under_predictions_visibly():
 def test_format_table_renders_missing_ground_truth_without_crashing():
     text = vt.format_table(_pairs(("blank_row", 14, None)), "stage_depth")
     assert "blank_row" in text
+
+
+def test_heldout_pairs_replay_every_extra_row_against_p4c_ground_truth():
+    # The 8 held-out compiles (results/compiler_calibration_extra/), replayed
+    # end to end by the model. Ground truth is p4c's own *_real columns; the
+    # CSV's stale blocks/stage_depth columns must never be read as truth.
+    import os
+    if not os.path.isdir(os.path.join(vt.ROOT, "results",
+                                      "compiler_calibration_extra", "compiles")):
+        pytest.skip("needs results/compiler_calibration_extra (gitignored)")
+    stage_pairs, blocks_pairs = vt.heldout_pairs()
+    assert len(stage_pairs) == len(blocks_pairs) == 8
+    by_row = {p["row_id"]: p for p in blocks_pairs}
+    assert by_row["joint_high_sd9"]["real"] == 42       # tcam_real, not blocks=38
+    assert by_row["independent_high_sd9"]["real"] is None  # never allocated
+    assert vt.aggregate(stage_pairs)["under"] == 0
+    assert vt.aggregate(blocks_pairs)["under"] == 0

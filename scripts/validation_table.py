@@ -23,19 +23,22 @@ ground truth. The CSV's own stage_depth/blocks columns are read ONLY by the
 drift check below, whose job is precisely to catch a stale-column case like
 this one.
 
-RESOLVED FINDING (2026-09-07). This script used to carry a 5-row known
-finding: recomputed blocks came out HIGHER than tcam_real on
-independent_low_sd6/sd7 and independent_high_sd6/sd7/sd8, an over-application
-of "Mechanism G" (the rule charging +1 TCAM block to a ragged key at an odd
-crossbar group offset). That rule has been replaced by
-tables.version_block_penalty, which prices the real constraint -- whether any
-crossbar midbyte in a key's group run keeps a free nibble for the mandatory
-2-bit --version-- field. Validated per TABLE against p4c's own resources.json
-across all 19 compiles (100 classification tables, 3 penalties predicted and 3
-observed, no false alarms and no misses), it takes blocks to 17 of 17 exact
-with no under-prediction. stage_depth is untouched at 18 of 19, the sole miss
-being independent_high_sd12, which over-predicts by 1 on a design already past
-the 12-stage ceiling -- the safe direction.
+CURRENT STANDING (2026-09-25). On the 19 fitted rows: stage_depth 17/19
+exact, 0 under (independent_high_sd12 +1, already past the 12-stage ceiling;
+independent_low_sd12 +1) and blocks 16/17 exact, 0 under (independent_low_sd12
++2). Both independent_low_sd12 misses are the crowded-stage rule's known cost:
+its real stage shares 60 bytes for free. The drift check below prints its CSV
+disagreement, deliberately un-silenced. (independent_high_sd7/sd8, over by
++1/+3 under the retired saturation margin, are exact again.) The earlier
+"version_block_penalty, 17 of 17" account describes a mechanism deleted on
+2026-09-21.
+
+HELD OUT. Two further sections replay compiles the model was never fitted on,
+end to end from the generated program (scripts/p4_artifact_replay.replay_design):
+results/compiler_calibration_extra/ (8 designs: stage_depth 8/8, blocks 4/5,
+independent_low_sd9 +3) and results/tcam_margin_screen/ (16 real designs chosen
+to stress the stage-sharing rules: stage_depth 12/16 and blocks 11/16 exact,
+every miss an over-prediction). 0 under anywhere.
 
 Run (from the repository root):
   "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" scripts/validation_table.py
@@ -58,9 +61,20 @@ import pandas as pd  # noqa: E402
 from test_resource_model_golden import rebuild_pool  # noqa: E402
 
 from src.p4model.usage import assemble_usage  # noqa: E402
+from scripts.p4_artifact_replay import replay_design  # noqa: E402
 
 DEFAULT_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "resource_model_golden.json")
 DEFAULT_CSV = os.path.join(ROOT, "results", "compiler_calibration_v6.csv")
+# HELD OUT: 8 real compiles never used to fit or re-tune the model. Its CSV's
+# blocks/stage_depth columns are stale predictions from the model that was live
+# when the rows were collected -- only the *_real columns are read here.
+HELDOUT_ROOT = os.path.join(ROOT, "results", "compiler_calibration_extra")
+HELDOUT_CSV = os.path.join(ROOT, "results", "compiler_calibration_extra.csv")
+# 16 REAL campaign designs compiled to stress the stage-sharing rules
+# (scripts/tcam_margin_screen.py). Chosen adversarially: over-predictions are
+# expected, under-predictions are not.
+CROWDED_ROOT = os.path.join(ROOT, "results", "tcam_margin_screen")
+CROWDED_CSV = os.path.join(ROOT, "results", "tcam_margin_screen_compiled.csv")
 
 # The one already-corrected discrepancy between the CSV's own (stale) blocks
 # column and a fresh recompute -- see results/compiler_calibration_verify.csv
@@ -72,13 +86,11 @@ KNOWN_BLOCKS_COLUMN_CORRECTION = {
         "(results/compiler_calibration_verify.csv)"),
 }
 
-# EMPTY, deliberately. This held the 5 rows whose recomputed blocks exceeded
-# both tcam_real and the CSV's own blocks column under the old Mechanism G
-# rule. version_block_penalty replaced that rule on 2026-09-07 and all 5 now
-# agree with p4c exactly, so nothing is expected to drift here any more. The
-# lookup is kept (rather than deleted along with its rows) so a future
-# regression lands as a NEW entry with an explanation, instead of silently
-# widening KNOWN_BLOCKS_COLUMN_CORRECTION.
+# EMPTY, deliberately. It once held 5 rows priced by the retracted Mechanism G
+# rule. The lookup is kept so a future regression lands as a NEW entry with an
+# explanation, instead of silently widening KNOWN_BLOCKS_COLUMN_CORRECTION.
+# (independent_low_sd12 is NOT listed here on purpose: it is the crowded-stage
+# rule's measured cost and is left audible in the drift check.)
 KNOWN_MECHANISM_G_ROWS = {}
 
 
@@ -135,6 +147,24 @@ def join_rows(predictions, truth, predicted_attr, real_key):
         real = truth.get(row_id, {}).get(real_key)
         pairs.append({"row_id": row_id, "predicted": predicted, "real": real})
     return pairs
+
+
+def heldout_pairs(root=HELDOUT_ROOT, csv_path=HELDOUT_CSV):
+    """(stage_pairs, blocks_pairs) for the held-out archive, each row replayed
+    END TO END by p4_artifact_replay.replay_design: the model's own per-table
+    prices, packed by the model's own packer, from nothing but the generated
+    program. There is no golden-fixture row for these designs, which is why
+    they go through the program text rather than assemble_usage; on the 19
+    fixture rows the two paths give identical stage_depth and blocks."""
+    truth = load_ground_truth(csv_path)
+    stage_pairs, blocks_pairs = [], []
+    for row_id, record in truth.items():
+        depth, blocks = replay_design(row_id, root)
+        stage_pairs.append({"row_id": row_id, "predicted": depth,
+                            "real": record.get("stages_real")})
+        blocks_pairs.append({"row_id": row_id, "predicted": blocks,
+                             "real": record.get("tcam_real")})
+    return stage_pairs, blocks_pairs
 
 
 def aggregate(pairs):
@@ -321,6 +351,29 @@ def main(argv=None):
     _print_section("blocks", blocks_pairs, "blocks")
     _print_sram_map_ram(truth, row_ids)
     _print_drift_check(predictions, truth, row_ids)
+
+    if os.path.isdir(os.path.join(HELDOUT_ROOT, "compiles")):
+        print("\n\n## HELD OUT -- 8 compiles never used to fit the model "
+              "(results/compiler_calibration_extra)")
+        held_stage, held_blocks = heldout_pairs()
+        _print_section("stage_depth (held out)", held_stage, "stage_depth")
+        _print_section("blocks (held out)", held_blocks, "blocks")
+        print("  independent_low_sd9's +3: the model's packing puts one app tree "
+              "in a crowded 61-byte stage with ddos trees and charges the "
+              "worst key order; p4c keeps the two tasks in separate stages at the same "
+              "depth and pays nothing. Pinned in "
+              "tests/test_compiler_calibration.py.")
+    else:
+        print("\n(held-out archive %s not present -- section skipped)"
+              % HELDOUT_ROOT)
+
+    if os.path.isfile(CROWDED_CSV):
+        print("\n\n## HELD OUT, ADVERSARIAL -- 16 real campaign designs compiled "
+              "to stress the stage-sharing rules (results/tcam_margin_screen)")
+        crowd_stage, crowd_blocks = heldout_pairs(CROWDED_ROOT, CROWDED_CSV)
+        _print_section("stage_depth (crowded real designs)", crowd_stage,
+                       "stage_depth")
+        _print_section("blocks (crowded real designs)", crowd_blocks, "blocks")
 
 
 if __name__ == "__main__":

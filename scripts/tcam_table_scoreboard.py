@@ -5,8 +5,10 @@ on one table and a -1 on another cancel out -- which is exactly how a real
 per-table error survived an entire calibration study behind a clean-looking
 17/17 (see that script's docstring). This script is the missing check: score
 every individual table observation this project has ever collected against
-p4c -- 308 rows spread across 11 CSV files in results/ -- and require ZERO
-under-predictions on the quantity the production packer will actually charge.
+p4c -- 405 rows across 14 CSV files in results/, 50 of them from compiles the
+model was never fitted on -- and require ZERO under-predictions on the
+quantity the production packer will actually charge, at every placement the
+packer can emit.
 
 THREE PREDICTED QUANTITIES, per row:
   blocks_headline -- tables.codeword_to_blocks_headline(field_bit_widths),
@@ -15,49 +17,44 @@ THREE PREDICTED QUANTITIES, per row:
   blocks_refined  -- tables.codeword_to_blocks(field_bit_widths), the
                       production per-table price (headline plus the Sec 2.3
                       isolation credit, capped at one field per Sec 6.1).
-  blocks_charged  -- blocks_refined, PLUS ONE if the Sec 13.2 stage-sharing
-                      margin applies: the table's key is not the first
-                      distinct key in its stage, AND its own standalone price
-                      has no spare half-byte slot (crossbar_capacity(g) == B,
-                      i.e. it is exactly saturated). blocks_charged is the
-                      quantity a downstream 12-stage feasibility gate will
-                      rely on once Task 4 wires the packer to it -- headline
-                      and refined alone are EXPECTED to under-predict on the
-                      stage-sharing rows; only blocks_charged must hit 0/308.
+  blocks_charged  -- blocks_refined, PLUS ONE if the crowded-stage margin
+                      applies: the table's key is not the first distinct key
+                      in its stage AND two different keys fill more than 58 of
+                      the stage's crossbar bytes (target.py). Headline and
+                      refined alone are EXPECTED to under-predict on crowded
+                      rows; only blocks_charged must hit 0 under.
+
+Rows whose stage holds two different keys past 62 bytes are marked
+placement_refused: the packer never produces that stage, so they are reported
+and excluded from the gate. (Until 2026-09-25 blocks_charged instead added the
+per-key SATURATION margin -- +1 whenever a saturated key was not first in any
+shared stage. Retired; see src/p4model/packing.py's charged().)
 
 ONE ADAPTER PER SOURCE CSV, feeding ONE shared scoring core (score_observation
-below) -- the 11 files' schemas differ enough (single key vs. two, an
-explicit measured_start_group column vs. none, a JSON layout blob) that a
-common adapter would be more contorted than 11 small ones (spec Sec 6.4).
+below) -- the files' schemas differ enough (single key vs. two, an explicit
+measured_start_group column vs. none, a JSON layout blob) that a common
+adapter would be more contorted than one small adapter each (spec Sec 6.4).
 
-APPLYING THE MARGIN -- the one genuinely hard judgment call, resolved per
-source as follows (see task-3-report.md for the full account):
+WHICH KEY IS "NOT FIRST", resolved per source:
 
-  * tcam_offset_harvest, tcam_discount_scan, tcam_offset_scan,
-    tcam_offset_probe, tcam_version_sweep, tcam_spacer_sweep: each row (or,
-    for version_sweep/spacer_sweep, the single scored "a" key) carries its own
-    measured_start_group -- direct per-table ground truth. not_first =
-    measured_start_group is not null and > 0, taken literally, in preference
-    to any row-level boolean (both_in_one_stage / shared_stage).
+  * tcam_offset_harvest, tcam_heldout_harvest, tcam_discount_scan,
+    tcam_offset_scan, tcam_offset_probe, tcam_mixed_key_cap_sweep/onset,
+    tcam_version_sweep, tcam_spacer_sweep: each row (or the single scored
+    "a" key) carries its own measured_start_group -- direct per-table ground
+    truth. not_first = measured_start_group is not null and > 0, taken
+    literally. The probe-family files also record both keys' bytes, so they
+    set crowded/placement_refused.
   * tcam_phv_slice_sweep, tcam_ledger_divergence_sweep, tcam_lane_sweep,
-    tcam_field_count_sweep: single-key probes by construction (no second key
-    ever appears) -- the margin never applies, full stop, exactly as the task
-    brief states for these four regardless of any column they happen to carry.
-  * tcam_stretch_sweep: no measured_start_group column exists here, and this
-    file's own `blocks_a`/`blocks_b` columns are STALE -- they hold the
-    predicted price a superseded formula gave when the sweep script ran, not
-    p4c's real per-table count (verified against the `layout` JSON, which
-    IS read from resources.json; two tables -- ragged_ax1_bx4's tern_a0 and
-    ragged_ax2_bx2's tern_a1 -- cost 10 blocks for real while blocks_a says
-    9, exactly Sec 12.1's F7 finding). This adapter therefore takes ground
-    truth and per-table stage placement from `layout` alone, never from
-    blocks_a/blocks_b. not_first per table = some table of the OTHER key
-    shares this table's TCAM stage in the committed layout; this file has no
-    crossbar-byte evidence to say which of the two keys is truly first, so
-    both keys are treated as margin candidates whenever both are saturated
-    (conservative, over-predicting, and safe) -- except on the two ragged
-    rows, where only the ragged key is ever saturated, so the margin fires
-    on exactly the table that needs it and nowhere else.
+    tcam_field_count_sweep: single-key probes by construction -- no margin.
+  * tcam_stretch_sweep: ground truth and per-table stage placement come from
+    the `layout` JSON (its blocks_a/blocks_b columns are a STALE predicted
+    price). not_first per table = some table of the OTHER key shares its
+    stage; the file cannot say which key p4c served first, so both are
+    candidates -- the packer's own worst-order choice. Stage bytes are the two
+    keys' widths, so crowded and refused are set here too.
+  * tcam_offset_harvest and tcam_heldout_harvest do not record stage byte
+    totals, so crowded stays False there. That can only LOWER blocks_charged
+    below the packer's own charge, which keeps the gate conservative.
 
 Run (from the repository root):
   "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" scripts/tcam_table_scoreboard.py
@@ -81,6 +78,10 @@ from src.p4model.tables import (  # noqa: E402
     codeword_to_blocks_headline,
     crossbar_capacity,
 )
+from src.p4model.target import (  # noqa: E402
+    TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE,
+    TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE,
+)
 
 RESULTS_DIR = os.path.join(ROOT, "results")
 DEFAULT_OUT = os.path.join(RESULTS_DIR, "tcam_table_scoreboard.csv")
@@ -99,6 +100,13 @@ SOURCE_FILES = [
     "tcam_spacer_sweep.csv",
     "tcam_lane_sweep.csv",
     "tcam_field_count_sweep.csv",
+    # HELD OUT: results/compiler_calibration_extra/, never used for fitting.
+    # Written by scripts/tcam_heldout_harvest.py.
+    "tcam_heldout_harvest.csv",
+    # The mixed-key byte cap's own evidence (scripts/tcam_mixed_key_cap_sweep.py):
+    # five probe shapes at 59-64 combined bytes, and two of them at 20-58.
+    "tcam_mixed_key_cap_sweep.csv",
+    "tcam_mixed_key_cap_onset.csv",
 ]
 
 
@@ -119,21 +127,37 @@ def _parse_int_list(value):
 
 
 def score_observation(source, identifier, field_bit_widths, observed_blocks,
-                      not_first, note=""):
+                      not_first, note="", placement_refused=False,
+                      crowded=False):
     """The one scoring core every adapter feeds. field_bit_widths is the
     table's key, exactly what tables.codeword_to_blocks takes. not_first is
     this specific table's OWN evidence of whether its key was first in its
-    stage -- never a row-level "sharing was possible" flag. The Sec 13.2
-    margin fires only when not_first AND the table's own standalone price is
-    exactly saturated (no spare half-byte slot): a table with slack never
-    pays regardless of placement, and a first-placed table never pays
-    regardless of slack."""
+    stage -- never a row-level "sharing was possible" flag. The margin fires
+    only when not_first AND crowded (below): a first-placed table never pays,
+    and neither does any table in an uncrowded stage. `saturated`
+    (crossbar_capacity(g) == B) is still recorded per row for reading the
+    table, but no longer charges anything.
+
+    placement_refused marks an observation whose STAGE the packer would never
+    produce -- two different keys past
+    target.TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE. Its price is still
+    recorded, but under_predictions() skips it: the model avoids that
+    placement rather than pricing it (the F5 rows, dsp41/dsp42).
+
+    crowded marks a table whose stage holds two different keys filling more
+    than target.TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE (58) bytes:
+    the packer charges every non-first table there +1.
+    Only sources that record the stage's byte total can set it; elsewhere it
+    stays False, which can only LOWER blocks_charged below the packer's, so
+    the under-prediction gate stays conservative."""
     field_bit_widths = tuple(field_bit_widths)
     key_bytes = codeword_fields_to_bytes_from_bits(field_bit_widths)
     headline = codeword_to_blocks_headline(field_bit_widths)
     refined = codeword_to_blocks(field_bit_widths)
     saturated = crossbar_capacity(refined) == key_bytes
-    margin_applied = bool(not_first) and saturated
+    # Since 2026-09-25 the only sharing charge is the crowded-stage margin;
+    # `saturated` is still recorded, for reading the table, but charges nothing.
+    margin_applied = bool(not_first) and bool(crowded)
     charged = refined + (1 if margin_applied else 0)
     return {
         "source": source,
@@ -144,6 +168,8 @@ def score_observation(source, identifier, field_bit_widths, observed_blocks,
         "not_first": bool(not_first),
         "saturated": saturated,
         "margin_applied": margin_applied,
+        "placement_refused": bool(placement_refused),
+        "crowded": bool(crowded),
         "blocks_headline": headline,
         "blocks_refined": refined,
         "blocks_charged": charged,
@@ -183,8 +209,8 @@ def score_offset_harvest(path):
 
 
 def score_probe_family(path, source_name):
-    """Shared adapter for tcam_discount_scan.csv, tcam_offset_scan.csv and
-    tcam_offset_probe.csv -- identical schema (point_id, probe_fields,
+    """Shared adapter for tcam_discount_scan.csv, tcam_offset_scan.csv,
+    tcam_offset_probe.csv and the two tcam_mixed_key_cap_*.csv -- identical schema (point_id, probe_fields,
     probe_real_blocks, measured_start_group, ...), differing only in which
     probe geometry each sweep varied."""
     frame = pd.read_csv(path)
@@ -192,9 +218,15 @@ def score_probe_family(path, source_name):
     for _, r in frame.iterrows():
         field_bits = _parse_int_list(r["probe_fields"])
         not_first = _not_first_from_measured_start_group(r["measured_start_group"])
+        # Spacer and probe are always two DIFFERENT keys, so their sum is the
+        # stage's distinct-key byte load whenever p4c co-located them.
+        stage_bytes = (r["spacer_bytes"] + r["probe_key_bytes"]
+                       if bool(r["both_in_one_stage"]) else 0)
+        refused = stage_bytes > TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE
+        crowded = stage_bytes > TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE
         rows.append(score_observation(
             source_name, r["point_id"], field_bits, r["probe_real_blocks"],
-            not_first))
+            not_first, placement_refused=refused, crowded=crowded))
     return rows
 
 
@@ -210,14 +242,10 @@ def score_stretch_sweep(path):
     not_first for one table = some table of the OTHER key (tag 'a' vs 'b')
     shares this table's stage in the committed layout. This file carries no
     crossbar-byte evidence to say which of two co-located keys is truly
-    first, so both are treated as margin candidates -- score_observation only
-    actually charges the margin when the table's own price is ALSO
-    saturated, which is what keeps this conservative choice from
-    over-firing: the narrower key in every row here (the 12/27/32-byte 'b'
-    or 'a' partner alongside a non-saturated width) never has spare-free
-    headroom taken away by this, and the two rows where it matters
-    (ragged_ax1_bx4's tern_a0, ragged_ax2_bx2's tern_a1) are exactly the
-    F7 rows this margin exists to cover -- real 10, refined 9, charged 10."""
+    first, so both are treated as margin candidates -- the same worst-order
+    choice the packer makes. The stage's distinct-key bytes are the two keys'
+    own widths, so crowded (> 58) and refused (> 62) are computed here too:
+    a49 + b12 = 61 is crowded, a32 + b32 = 64 is refused."""
     frame = pd.read_csv(path)
     rows = []
     for _, r in frame.iterrows():
@@ -233,12 +261,19 @@ def score_stretch_sweep(path):
                 tag = name[len("tern_"):][0]
                 other_tag = "b" if tag == "a" else "a"
                 shares_stage_with_other_key = other_tag in tags_here
+                stage_bytes = (sum(codeword_fields_to_bytes_from_bits(fields[t])
+                                   for t in tags_here)
+                               if shares_stage_with_other_key else 0)
                 height = span[2]
                 rows.append(score_observation(
                     "tcam_stretch_sweep", "%s/%s" % (point_id, name),
                     fields[tag], height, shares_stage_with_other_key,
                     note="ground truth and not_first both read from layout, "
-                         "not blocks_a/blocks_b -- see adapter docstring"))
+                         "not blocks_a/blocks_b -- see adapter docstring",
+                    placement_refused=(stage_bytes
+                                       > TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE),
+                    crowded=(stage_bytes
+                             > TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE)))
     return rows
 
 
@@ -347,6 +382,21 @@ def score_field_count_sweep(path):
     return rows
 
 
+def score_heldout_harvest(path):
+    """50 classification tables from the 8 HELD-OUT compiles
+    (results/compiler_calibration_extra/, scripts/tcam_heldout_harvest.py).
+    Same per-table ground truth as score_offset_harvest: measured_start_group
+    says whether this table's key was first in its stage."""
+    frame = pd.read_csv(path)
+    rows = []
+    for _, r in frame.iterrows():
+        rows.append(score_observation(
+            "tcam_heldout_harvest", "%s/%s" % (r["row_id"], r["table"]),
+            _parse_int_list(r["field_bits"]), r["observed_blocks"],
+            _not_first_from_measured_start_group(r["measured_start_group"])))
+    return rows
+
+
 def score_all(results_dir=RESULTS_DIR):
     """Every observation from every source, in SOURCE_FILES order."""
     path = lambda name: os.path.join(results_dir, name)  # noqa: E731
@@ -362,6 +412,11 @@ def score_all(results_dir=RESULTS_DIR):
     rows += score_spacer_sweep(path("tcam_spacer_sweep.csv"))
     rows += score_lane_sweep(path("tcam_lane_sweep.csv"))
     rows += score_field_count_sweep(path("tcam_field_count_sweep.csv"))
+    rows += score_heldout_harvest(path("tcam_heldout_harvest.csv"))
+    rows += score_probe_family(path("tcam_mixed_key_cap_sweep.csv"),
+                               "tcam_mixed_key_cap_sweep")
+    rows += score_probe_family(path("tcam_mixed_key_cap_onset.csv"),
+                               "tcam_mixed_key_cap_onset")
     return rows
 
 
@@ -394,7 +449,13 @@ def summary_table(rows):
 
 
 def under_predictions(rows, diff_key="diff_charged"):
-    return [r for r in rows if r[diff_key] < 0]
+    """Rows priced below p4c, among placements the packer can emit."""
+    return [r for r in rows if r[diff_key] < 0 and not r["placement_refused"]]
+
+
+def refused_placements(rows):
+    """Rows observed at a stage the packer refuses (mixed-key byte cap)."""
+    return [r for r in rows if r["placement_refused"]]
 
 
 def parse_args(argv=None):
@@ -427,7 +488,15 @@ def main(argv=None):
                   r["key_bytes"], r["blocks_refined"], r["blocks_charged"],
                   r["observed_blocks"], r["not_first"], r["saturated"]))
 
-    print("\nGATE (blocks_charged, 0 under-predictions required): %s"
+    refused = refused_placements(rows)
+    print("\n### placements the packer refuses (two keys > %d bytes): %d\n"
+          % (TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE, len(refused)))
+    for r in refused:
+        print("  %s / %s: field_bit_widths=%s blocks_charged=%d observed_blocks=%d"
+              % (r["source"], r["identifier"], r["field_bit_widths"],
+                 r["blocks_charged"], r["observed_blocks"]))
+
+    print("\nGATE (blocks_charged, 0 under-predictions on emitted placements): %s"
           % ("PASS" if not unders else "FAIL -- %d under-prediction(s)" % len(unders)))
 
     return rows

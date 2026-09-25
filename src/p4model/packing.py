@@ -5,25 +5,25 @@ Deliberately knows nothing about features, registers or trees -- it is handed
 (blocks, byte_width) specs plus readiness levels and returns a placement, which
 is what lets the same packer serve both the range pool and the classification
 pool. What it must ask tables.py is a key's own standalone price
-(codeword_to_blocks) and the byte capacity that price buys
-(crossbar_capacity): a table's block count is not a property of the table
-alone -- a key that shares its stage with a DIFFERENT key can cost one block
+(codeword_to_blocks): a table's block count is not a property of the table
+alone -- a key sharing a CROWDED stage with a different key can cost one block
 more than the same key alone -- so the placement and the charge have to be
 computed together (see crossbar_stages_needed's key_field_bits and the
-stage-sharing margin in charged(), spec Sec 13.2 "Effect 4")."""
+crowded-stage margin in charged())."""
 import itertools
 import math
 from dataclasses import dataclass
 
 from src.p4model.errors import CrossbarKeyTooWide
-from src.p4model.tables import (codeword_bytes_to_blocks, codeword_to_blocks,
-                                crossbar_capacity)
+from src.p4model.tables import codeword_bytes_to_blocks, codeword_to_blocks
 from src.p4model.target import (
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
     TCAM_ROWS_PER_STAGE,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
+    TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE,
+    TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE,
 )
 
 
@@ -39,15 +39,13 @@ class StagePlan:
   indices: frozenset     # for assertions and debugging
   blocks: int            # total TCAM blocks actually CHARGED across every stage --
                          # not the naive per-table sum passed in as table_specs, since the
-                         # stage-sharing margin (see crossbar_stages_needed's
-                         # key_field_bits and charged()) adds a block to a key that shares
-                         # its stage with a DIFFERENT key and has no spare half-byte slot
-                         # of its own. That is a per-STAGE placement fact, not a per-table
-                         # one. Measured to matter: the ragged 49-byte key (179, 204)
-                         # costs 9 TCAM blocks alone in a stage and 10 when a 12-byte key
-                         # shares it (scripts/tcam_stretch_sweep.py), and that difference
-                         # is what keeps independent_low_sd9's app and ddos trees out of
-                         # one stage.
+                         # crowded-stage margin (see crossbar_stages_needed's
+                         # key_field_bits and charged()) adds a block to every table of a
+                         # non-first key when two DIFFERENT keys fill more than 58 of a
+                         # stage's crossbar bytes. That is a per-STAGE placement fact, not
+                         # a per-table one. Measured to matter: the ragged 49-byte key
+                         # (179, 204) costs 9 TCAM blocks alone in a stage and 10 beside a
+                         # 12-byte key, 61 bytes in all (scripts/tcam_stretch_sweep.py).
 
   def __int__(self):     # transitional: `stages` is still the occupancy count
     return self.occupied
@@ -188,16 +186,14 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
 
   key_field_bits (optional) is one tuple of key-field BIT widths per table,
   positionally aligned with table_specs. It exists because a table's BLOCK
-  COUNT is not a property of the table alone: when two DIFFERENT keys share a
-  stage, the second key's bytes must land on whatever crossbar positions the
-  first one left free, p4c's allocator is greedy, and when it stumbles it
-  takes one extra half-byte slot. A key that still has a spare slot absorbs
-  that; a key whose standalone price has NO spare slot is left with nowhere to
-  put the mandatory 2-bit --version-- field and pays a whole extra TCAM block
-  for two bits. charged() below is that margin (spec Sec 13.2 "Effect 4") and
-  carries the derivation; key_field_bits is what lets it ask
-  tables.codeword_to_blocks for each key's standalone price and
-  tables.crossbar_capacity whether that price leaves a byte slot spare.
+  COUNT is not a property of the table alone: when two DIFFERENT keys crowd a
+  stage (more than 58 of its 64 crossbar bytes), the later key's bytes must
+  land on whatever crossbar positions the first one left free, p4c's
+  allocator is greedy, and short of room it takes one extra half-byte slot --
+  a whole extra TCAM block for a key with none spare. charged() below is that
+  margin and carries the derivation; key_field_bits marks the ternary pool
+  (the only one the crowded-stage rules apply to) and lets key_width ask
+  tables.codeword_to_blocks for each key's standalone price.
 
   Confirmed from the pack format, not inferred: sharing, the table's memory
   unit 0 holds the version field and NOTHING else (bits [41:0] empty); alone,
@@ -211,19 +207,16 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   (ragged_ax1_bx5) and 10 when a 12-byte key shares that stage
   (ragged_ax1_bx4, ragged_ax2_bx2); the same block-and-byte geometry built
   from SOLID single fields costs 9 either way, because a solid key has no
-  nibble-clean byte for the allocator to spend a half-byte slot on. The margin
-  charges both, which is over on the solid control and right on the ragged one
-  -- one-sided by design, and bounded at exactly +1 block per affected table
-  (Sec 13.2). independent_low_sd5's three ddos trees, each costing 3 TCAMs
-  where their 11-byte key's bytes alone buy 2, used to be cited here as a
-  second measurement; that one is a per-TABLE fact now and is priced by
-  tables.codeword_to_blocks, with no placement term involved.
+  nibble-clean byte for the allocator to spend a half-byte slot on. 49 + 12 =
+  61 bytes is a crowded stage, so the margin charges both -- over on the solid
+  control, right on the ragged one: one-sided by design, and bounded at
+  exactly +1 block per affected table.
 
   Passing key_field_bits=None -- the default -- charges every table its
-  declared block count wherever it lands, i.e. exactly the pre-existing
-  pricing, since the margin needs a key's field widths to know whether it is
-  saturated. The range pool never passes it: a range table keys one whole-byte
-  field with slack to spare, so the margin is inert there by construction.
+  declared block count wherever it lands and skips both crowded-stage rules,
+  i.e. exactly the pre-existing pricing. The range pool never passes it: a
+  range table keys one whole-byte 16-bit field and 8 of them (the table cap)
+  fill 16 bytes, nowhere near crowding a stage.
 
   RM-5/RM-6/RM-7 measured these limits
   on the Ternary Match Input crossbar specifically. A follow-up compile
@@ -250,16 +243,18 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   reviews/archive/t12_required_changes.md Section 1.3, confirmed across key
   widths 8-512 bits; summarised in reviews/p4_tofino_reference.md §4.3.)
 
-  There is deliberately no per-stage crossbar BLOCK-supply term on top of
-  those three. It was probed and not found where it was looked for: two solid
-  keys of 34 and 30 crossbar bytes need 13 blocks' worth of crossbar supply in
-  a stage that has 12 groups, sit exactly on the 64-byte cap, and p4c placed
-  them in one stage anyway (scripts/tcam_group_cap_probe.py, point
-  groups_13_bytes_64, with groups_12_bytes_59 as the control, probed
-  2026-09-15). A residual near-cap effect does exist -- it shows up only when
-  one key already holds 41+ of the stage's 64 bytes (spec F5) -- and spec Sec
-  13.2 deliberately folds it into the same one-sided statement as the margin
-  below rather than modelling it, with experiment E1 deferred.
+  The ternary pool (the only caller passing key_field_bits) has one more
+  pair of limits, for a stage holding two or more DIFFERENT keys -- the
+  "crowded stage" (spec "F5"; measurements in target.py). A later key must
+  take whatever crossbar groups the first left, and p4c routes what does not
+  fit through midbyte nibbles at extra TCAM blocks. Above
+  TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE = 58 bytes every table of
+  the non-first key is charged +1 (charged()'s is_crowded); above
+  TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62 the stage is refused, since
+  the measured extra there reaches +2. One-sided: some real stages at 59-62
+  bytes pay nothing (independent_low_sd12 shares 60 bytes free), and the rule
+  prices those designs one stage deeper than p4c. There is still no per-stage
+  group-supply term; target.py's group counts remain documentation only.
 
   These constraints are NOT separable: solving each relaxation alone and
   taking the max can under-count. Counterexample -- tables
@@ -382,7 +377,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
 
     Only `== 0` is ever read out of this: charged() needs to know which key is
     FIRST in the ordering under test, because that is the one key the
-    stage-sharing margin never falls on. The sum is over the keys' own widths,
+    crowded-stage margin never falls on. The sum is over the keys' own widths,
     never their tables' block counts, which can run deeper than one block's
     worth of rows when a tree exceeds 512 entries or is sharded -- a table's
     extra depth stores more rows through the SAME key and does not move the
@@ -393,52 +388,42 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       running += key_blocks
     return offsets
 
-  def charged(offsets, blocks, fields, bits):
+  def crowded(key_count, stage_bytes):
+    """Whether a stage is CROWDED: two or more different keys filling more
+    than TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE bytes (target.py has
+    the measurements). Ternary pool only -- the one caller passing
+    key_field_bits."""
+    return (key_field_bits is not None and key_count > 1
+            and stage_bytes > TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE)
+
+  def charged(offsets, blocks, fields, bits, is_crowded=False):
     """One shard's TCAM blocks IN THIS STAGE: its declared count plus the
-    stage-sharing margin (spec Sec 13.2, "Effect 4").
+    crowded-stage margin.
 
     `blocks` already carries the key's standalone price -- what a key alone in
     its stage, or first in the order the crossbar serves, actually costs.
-    Sharing adds exactly one thing. The second key's bytes must land on the
-    crossbar positions the first key left free (byte k of a 32-bit PHV
-    container may only sit on a position congruent to k mod 4,
-    input_xbar.cpp's is_better_group comment), p4c's allocator is greedy, and
-    when it stumbles it raises nibbles_needed by one and fills one more
-    half-byte slot. A key with a spare slot absorbs that; a key with none has
-    nowhere left for the mandatory 2-bit --version-- field and pays a whole
-    extra TCAM block for two bits. Read out of prog.bfa rather than inferred:
-    spec Sec 12.1, and the pack-format evidence in this function's own
-    docstring.
+    Sharing adds one thing, and only in a CROWDED stage (see crowded(): two
+    different keys filling more than 58 of the stage's 64 crossbar bytes). The
+    later key must take the crossbar groups the first left; its bytes must
+    also land on positions matching their PHV container lane (byte k of a
+    32-bit container only on a position congruent to k mod 4,
+    input_xbar.cpp's is_better_group), and p4c's greedy allocator, short of
+    room, parks bytes on midbyte nibbles -- one more half-byte slot, which a
+    key with none spare pays for with a whole TCAM block (spec Sec 12.1, read
+    out of prog.bfa). Rule: +1 to every table of a non-first key in a crowded
+    stage, whatever the key's own slack.
 
-    "No spare slot" is exactly saturation. g = codeword_to_blocks(bits) blocks
-    supply crossbar_capacity(g) whole byte slots and the key needs B of them,
-    so the key is saturated iff crossbar_capacity(g) == B. Measured: the
-    ragged key (179, 204) is B = 49 at g = 9 with crossbar_capacity(9) = 49,
-    and really does cost 9 alone (ragged_ax1_bx5) and 10 when a 12-byte key
-    shares its stage (ragged_ax1_bx4, ragged_ax2_bx2 --
-    scripts/tcam_stretch_sweep.py). The SOLID 49-byte control is saturated too
-    but has no nibble-clean byte for the allocator to spend a slot on and
-    costs 9 either way, so this rule is over on that synthetic control and
-    never under -- which is the trade Sec 13.2 makes deliberately: the margin
-    is one-sided and bounded at exactly +1 per affected table.
-
-    Its measured cost on real designs, which Sec 13.2's prose understates
-    ("on the 9 mixed archived stages no second key is saturated" -- two of
-    them are): independent_high_sd7's stage 9 holds a 10-byte app key
-    (crossbar_capacity(2) == 10) beside a 12-byte ddos key, and
-    independent_high_sd8's holds a 19-byte app key beside three 16-byte ddos
-    ones (crossbar_capacity(3) == 16). p4c charged neither anything extra, so
-    usage.blocks reads 28 against tcam_real 27 and 41 against 38 --
-    scripts/validation_table.py reports both as OVER. The margin is kept
-    anyway because dropping it makes independent_low_sd9's stage_depth
-    under-predict (10 against 11), and never under-predicting outranks
-    exactness here. No spelling of the saturation test scored so far achieves
-    both; see this task's report for the three that were tried.
-
-    It is what keeps independent_low_sd9's app and ddos trees out of a shared
-    stage: 2 app at 9 blocks + 2 ddos at 3 is exactly 24 and packs 9+3 | 9+3,
-    so every capacity limit this model knows would let them share -- and p4c
-    still refuses.
+    RETIRED 2026-09-25: the per-key saturation margin (+1 to a non-first key
+    whose standalone price leaves no spare slot, crossbar_capacity(g) == B,
+    in ANY shared stage). Every observation on disk says saturation is not
+    the driver, crowding is: independent_high_sd7/sd8's saturated keys shared
+    stages of 22 and 35 bytes free (the rule over-charged them +1/+3); the
+    saturated 16-byte probe paid nothing even at 59-64 bytes
+    (results/tcam_mixed_key_cap_sweep.csv); and the one saturated key that
+    did pay -- (179, 204) beside a 12-byte key, 9 blocks alone and 10 shared
+    (scripts/tcam_stretch_sweep.py) -- sat in a 61-byte, crowded stage, as
+    does independent_low_sd9's refusal. Scored on every source, crowding
+    alone is at least as exact on every gate and 0-under everywhere.
 
     "Not first" is `offsets[fields] != 0`; key_width is >= 1 for every key
     that can reach this branch, so offset 0 names exactly one key per
@@ -447,15 +432,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
 
     bits is None for callers that name no field widths (the range pool),
     whose keys are whole-byte fields with slack to spare; the margin is inert
-    there by construction, so they short-circuit. An empty tuple would fall
-    through to the general path and come out unsaturated anyway
-    (crossbar_capacity(1) = 5 != 0 bytes), so the two spellings agree on it.
+    there by construction, so they short-circuit.
     """
     if bits is None:
       return blocks
-    g = codeword_to_blocks(bits)
-    saturated = crossbar_capacity(g) == crossbar_bytes(fields)
-    return blocks + (1 if offsets[fields] != 0 and saturated else 0)
+    return blocks + (1 if offsets[fields] != 0 and is_crowded else 0)
 
   def fits(stage, blocks, fields, bits):
     # stage[3] is the per-shard (blocks, key, field-bits) already here, stage[4]
@@ -478,16 +459,26 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     keys = list(stage[4])
     if all(key != fields for key, _ in keys):
       keys.append((fields, key_width(fields, bits)))
-    if (crossbar_bytes(stage[1] | fields) > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+    stage_bytes = crossbar_bytes(stage[1] | fields)
+    if (stage_bytes > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
         or stage[2] + 1 > TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE):
       return False
+    # Two DIFFERENT keys past the mixed-key budget (target.py, spec "F5"): p4c
+    # would route the later key's bytes through midbyte nibbles at up to +2
+    # blocks a table, which no price here models, so the stage is refused
+    # rather than under-charged. Pool-level gate: only the ternary pool passes
+    # key_field_bits, and F5 was measured on ternary keys only.
+    if (key_field_bits is not None and len(keys) > 1
+        and stage_bytes > TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE):
+      return False
     shards_here = stage[3] + [(blocks, fields, bits)]
+    is_crowded = crowded(len(keys), stage_bytes)
     for key_order in itertools.permutations(keys):
       offsets = offsets_for(key_order)
       # The TCAM test is a column PACKING, not a running total against
       # TCAM_BLOCKS_PER_STAGE -- see fits_two_columns: three 8-block tables
       # sum to exactly 24 and still do not fit, four 6-block ones do.
-      if not fits_two_columns([charged(offsets, *shard)
+      if not fits_two_columns([charged(offsets, *shard, is_crowded=is_crowded)
                                for shard in shards_here]):
         return False
     return True
@@ -527,7 +518,9 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     pays no margin; `_stage_shards` caps it at one column. The rule stands
     anyway: a stage this function is handed is real and costs its blocks, so
     it is counted rather than dropped."""
-    return max(sum(charged(offsets_for(key_order), blocks, fields, bits)
+    is_crowded = crowded(len(stage[4]), crossbar_bytes(stage[1]))
+    return max(sum(charged(offsets_for(key_order), blocks, fields, bits,
+                           is_crowded=is_crowded)
                    for blocks, fields, bits in stage[3])
                for key_order in itertools.permutations(stage[4]))
 

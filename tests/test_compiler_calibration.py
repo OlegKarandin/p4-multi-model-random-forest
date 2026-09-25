@@ -591,7 +591,11 @@ _REPLAY_EXPECTED = {
     'independent_high_sd7': (11, 11),
     'independent_high_sd8': (11, 12),
     'independent_low_sd10': (11, 11),
-    'independent_low_sd12': (12, 12),
+    # (13, 12): the crowded-stage rule refuses nothing here but charges the
+    # ddos trees +1 in the 40 + 20 = 60-byte stage p4c shared for free, which
+    # no longer fits the stage's columns -- see target.py and the golden
+    # fixture's known_findings 'crowded_stage_rule_2026_09_25'.
+    'independent_low_sd12': (13, 12),
     'independent_low_sd5': (8, 8),
     'independent_low_sd6': (8, 11),
     'independent_low_sd7': (9, 10),
@@ -649,9 +653,15 @@ def test_replayed_stage_depth_still_under_predicts_by_at_most_three():
                  for predicted, real in (cc.replay_stage_depth(row_id, _ARTIFACTS)
                                           for row_id in _REPLAY_EXPECTED)]
     assert max(residuals) <= 3
-    assert min(residuals) >= 0
-    assert sum(residuals) / len(residuals) <= 0.79
-    assert sum(r == 0 for r in residuals) >= 9
+    # The one deliberate exception: independent_low_sd12, over by 1 under the
+    # crowded-stage rule (see _REPLAY_EXPECTED). Any OTHER over-count of a
+    # committed placement is a regression.
+    over = {row_id: real - predicted for row_id, (predicted, real) in
+            ((row_id, cc.replay_stage_depth(row_id, _ARTIFACTS))
+             for row_id in _REPLAY_EXPECTED) if real < predicted}
+    assert over == {'independent_low_sd12': -1}
+    assert sum(abs(r) for r in residuals) / len(residuals) <= 0.84
+    assert sum(r == 0 for r in residuals) >= 8
 
 
 @_no_artifacts
@@ -884,3 +894,79 @@ def test_independent_low_sd9_costs_the_stage_the_version_charge_buys():
     if not os.path.isdir(os.path.join(root, 'compiles', 'independent_low_sd9')):
         pytest.skip('needs %s (gitignored; run collect() first)' % root)
     assert cc.replay_stage_depth('independent_low_sd9', root) == (11, 11)
+
+
+# ---------------------------------------------------------------------------
+# Held-out designs: results/compiler_calibration_extra/ was compiled but never
+# used to fit or re-tune the block model (the per-table harvest and the golden
+# fixture read compiler_calibration_v6 only). replay_design prices every table
+# with the MODEL's own per-table prices and packs them with the model's own
+# packer, so this is the only end-to-end check on data the model never saw.
+# The CSV's blocks/stage_depth columns are stale predictions from the model
+# that was live when the rows were collected; only the *_real columns are
+# ground truth here.
+# ---------------------------------------------------------------------------
+
+_HELDOUT_ROOT = os.path.join('results', 'compiler_calibration_extra')
+_HELDOUT_CSV = os.path.join('results', 'compiler_calibration_extra.csv')
+
+
+def _heldout_rows():
+    if not os.path.isfile(_HELDOUT_CSV):
+        return []
+    frame = pd.read_csv(_HELDOUT_CSV)
+    return [(r.row_id, r.tcam_real, int(r.stages_real))
+            for r in frame.itertuples()]
+
+
+# independent_low_sd9 is the design the stage-sharing margin exists for. The
+# model's packing puts one app tree in a stage with ddos trees -- 49 + 12 = 61
+# bytes, a crowded stage -- and the worst key order charges every non-first
+# table +1; p4c instead keeps the tasks in separate stages, at the same depth
+# (exact) and no extra block. So blocks read 67 against 64. Safe direction;
+# pinned by name so it cannot grow.
+_HELDOUT_KNOWN_BLOCK_OVERS = {'independent_low_sd9': 3}
+
+
+@pytest.mark.parametrize('row_id,tcam_real,stages_real', _heldout_rows())
+def test_the_model_matches_p4c_on_every_held_out_design(row_id, tcam_real,
+                                                         stages_real):
+    if not os.path.isdir(os.path.join(_HELDOUT_ROOT, 'compiles', row_id)):
+        pytest.skip('needs %s (gitignored)' % _HELDOUT_ROOT)
+    predicted_depth, predicted_blocks = cc.replay_design(row_id, _HELDOUT_ROOT)
+    # Depth exact on all 8, including the 3 p4c rejected as too deep (13-14
+    # stages): the model calls them infeasible for the right reason.
+    assert predicted_depth == stages_real
+    if not pd.isna(tcam_real):
+        assert (predicted_blocks - int(tcam_real)
+                == _HELDOUT_KNOWN_BLOCK_OVERS.get(row_id, 0))
+
+
+# ---------------------------------------------------------------------------
+# 16 REAL campaign designs compiled specifically to exercise the stage-sharing
+# margin and the crowded-stage rule (scripts/tcam_margin_screen.py): disjoint
+# designs whose two keys can share a stage, half of them at 59-64 combined
+# bytes. Chosen adversarially, so over-predictions are expected here; what
+# must never happen is an under-prediction.
+# ---------------------------------------------------------------------------
+
+_MARGIN_ROOT = os.path.join('results', 'tcam_margin_screen')
+_MARGIN_CSV = os.path.join('results', 'tcam_margin_screen_compiled.csv')
+
+
+def _margin_rows():
+    if not os.path.isfile(_MARGIN_CSV):
+        return []
+    return [(r.row_id, r.tcam_real, int(r.stages_real))
+            for r in pd.read_csv(_MARGIN_CSV).itertuples()]
+
+
+@pytest.mark.parametrize('row_id,tcam_real,stages_real', _margin_rows())
+def test_the_model_never_under_predicts_a_crowded_real_design(row_id, tcam_real,
+                                                              stages_real):
+    if not os.path.isdir(os.path.join(_MARGIN_ROOT, 'compiles', row_id)):
+        pytest.skip('needs %s (gitignored)' % _MARGIN_ROOT)
+    depth, blocks = cc.replay_design(row_id, _MARGIN_ROOT)
+    assert stages_real <= depth <= stages_real + 1
+    if not pd.isna(tcam_real):
+        assert int(tcam_real) <= blocks <= int(tcam_real) + 3
