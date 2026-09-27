@@ -292,7 +292,7 @@ def test_the_cost_decomposition_names_say_what_they_take():
     currently-avoided.
 
     `codeword_bytes_to_blocks` deliberately carries NO version charge: the
-    penalty depends on the width MULTISET and the group offset, never on a byte
+    real per-table price depends on the width MULTISET, never on a byte
     total -- 11 bytes costs 2 blocks or 3 depending on the field split -- so a
     signature promising otherwise would assert a dependency the quantity does
     not have.
@@ -373,7 +373,8 @@ def test_a_deep_table_costs_only_its_own_extra_depth():
 # The older per-key saturation margin (+1 whenever a saturated key shared any
 # stage) is retired; see test_a_saturated_key_in_an_uncrowded_shared_stage_...
 #
-# These four tests stood in tests/test_version_block.py until the 2026-09-20
+# These four tests stood in tests/test_tcam_block_ledger.py (then named
+# test_version_block.py) until the 2026-09-20
 # TCAM block model rewrite. That file was re-scoped by Task 2 to PER-TABLE
 # facts only -- a key's price alone, which no longer depends on where the key
 # sits -- so the sharing tests move here, alongside the other packing-level
@@ -392,11 +393,13 @@ def test_the_packer_charges_sd5s_stage_the_twelve_blocks_p4c_charged():
     # ddos tables is 12. Both keys price at 3 blocks in
     # tables.codeword_to_blocks -- the ddos key's 11 bytes saturate two blocks
     # and the version bits push it to three, which is a per-TABLE fact, not a
-    # placement one. Neither key is saturated AT three blocks
-    # (crossbar_capacity(3) = 16, against 11 and 14 bytes), so the margin stays
-    # silent and the stage costs exactly the declared sum. This is the shape
-    # that used to be cited as the retired offset mechanism's proof; the new
-    # model reaches the same 12 with no placement term involved at all.
+    # placement one. The margin stays silent here for the real reason: the two
+    # DIFFERENT keys together fill 14 + 11 = 25 crossbar bytes, well under the
+    # 58-byte crowded-stage threshold (not because either key is individually
+    # "unsaturated" -- the retired per-key saturation margin is what used to
+    # read that quantity, and it is gone). This is the shape that used to be
+    # cited as the retired offset mechanism's proof; the new model reaches the
+    # same 12 with no placement term involved at all.
     from src.p4model.packing import crossbar_stages_needed
     from src.p4model.tables import codeword_to_blocks
 
@@ -413,44 +416,53 @@ def test_the_packer_charges_sd5s_stage_the_twelve_blocks_p4c_charged():
 def test_a_stage_of_one_shared_key_is_never_charged_the_sharing_margin():
     # Every 'joint' design keys every tree on the identical field set, so a
     # joint stage has exactly ONE distinct key and that key is first in every
-    # ordering -- the margin cannot fire, however saturated the key is. The
-    # key below IS saturated (32 bytes, 6 blocks, crossbar_capacity(6) = 32),
-    # so this pins the "not first" half of the rule rather than the "spare
-    # slot" half. None of the 8 joint calibration rows shows a single table
-    # charged above its declared width.
+    # ordering -- crowded() requires TWO different keys, so the margin cannot
+    # fire regardless of how many crossbar bytes the one key fills. The key
+    # below is 60 bytes -- past the 58-byte crowded-stage threshold on its
+    # own -- specifically so this test cannot pass merely because the key
+    # happened to be small; it pins the "only one distinct key" half of the
+    # rule, not a byte count that happens to be under budget. None of the 8
+    # joint calibration rows shows a single table charged above its declared
+    # width.
     from src.p4model.packing import crossbar_stages_needed
-    from src.p4model.tables import codeword_to_blocks, crossbar_capacity
+    from src.p4model.tables import codeword_to_blocks
 
-    key = frozenset({(("code", "f"), 32)})
-    assert crossbar_capacity(codeword_to_blocks((256,))) == 32
+    key = frozenset({(("code", "f"), 60)})
+    assert codeword_to_blocks((480,)) == 11
     plan = crossbar_stages_needed(
-        [(6, 32)] * 3, key_fields=[key] * 3,
-        key_field_bits=[(256,)] * 3)
-    assert plan.blocks == 18
+        [(11, 60)] * 3, key_fields=[key] * 3,
+        key_field_bits=[(480,)] * 3)
+    assert plan.blocks == 33
 
 
 def test_omitting_key_field_bits_prices_every_table_at_its_declared_width():
-    # Without field widths there is no way to ask whether a key is saturated,
-    # so the margin is skipped entirely and every table costs what it declares.
-    # That is what keeps the range pool -- the one caller that passes no bits
-    # -- on exactly its pre-existing pricing.
+    # Without field widths there is no way to detect a crowded stage (crowded()
+    # short-circuits on key_field_bits is None), so the margin is skipped
+    # entirely and every table costs what it declares. That is what keeps the
+    # range pool -- the one caller that passes no bits -- on exactly its
+    # pre-existing pricing.
     from src.p4model.packing import crossbar_stages_needed
 
     plan = crossbar_stages_needed([(3, 14), (2, 11), (2, 11), (2, 11)])
     assert plan.blocks == 9
 
 
-def test_two_different_ragged_keys_do_not_share_a_stage():
+def test_two_different_ragged_keys_share_a_crowded_stage_and_pay_the_margin():
     # independent_low_sd9, the row the margin exists for. Its app trees key
-    # 179 + 204 bits = 49 crossbar bytes at 9 blocks, and crossbar_capacity(9)
-    # is exactly 49 -- saturated. Its ddos trees key 37 + 49 bits = 12 bytes at
-    # 3 blocks against a capacity of 16 -- five slots spare. 2 app + 2 ddos is
-    # exactly 24 blocks and packs both columns as 9+3 | 9+3, so every capacity
-    # limit this model knows would let them share a stage; p4c refuses, and
-    # charging the app key its margin in any ordering where it is not served
-    # first is what reproduces that. The measurement behind it:
-    # scripts/tcam_stretch_sweep.py's ragged_ax1_bx5 puts the 49-byte key alone
-    # at 9 blocks and ragged_ax1_bx4 puts it beside a 12-byte key at 10.
+    # 179 + 204 bits = 49 crossbar bytes at 9 blocks; its ddos trees key
+    # 37 + 49 bits = 12 bytes at 3 blocks. 2 app + 2 ddos is exactly 24 blocks
+    # and packs both columns as 9+3 | 9+3, so every BLOCK/TABLE-COUNT limit
+    # this model knows would let them share a stage -- and the packer really
+    # does co-locate them below (occupied == 4 for 10 tables, not 10). p4c
+    # itself refuses to share the stage for free, though: the combined 49 + 12
+    # = 61 crossbar bytes crowds it (> 58), and charging the app key its
+    # margin in the ddos-keys-first order (the only one of the two orders that
+    # fits: app-key-first overflows the column budget, see
+    # test_a_stage_fits_if_some_key_order_fits_not_every_order) is what
+    # reproduces that extra cost on top of the shared placement. The
+    # measurement behind it: scripts/tcam_stretch_sweep.py's ragged_ax1_bx5
+    # puts the 49-byte key alone at 9 blocks and ragged_ax1_bx4 puts it beside
+    # a 12-byte key at 10.
     from src.p4model.packing import crossbar_stages_needed
 
     app = frozenset({(("code", "app_a"), 23), (("code", "app_b"), 26)})
@@ -463,9 +475,37 @@ def test_two_different_ragged_keys_do_not_share_a_stage():
     assert plan.occupied == 4
     # p4c commits 5 x 9 + 5 x 3 = 60 with the tasks in separate stages. The
     # packer instead co-locates one app tree with ddos trees in a 49 + 12 =
-    # 61-byte stage, which is CROWDED (> 58): the worst key order charges
-    # every non-first table +1, so 63. Same depth, +3 blocks, safe direction.
-    assert plan.blocks == 63
+    # 61-byte stage, which is CROWDED (> 58): the one order that fits charges
+    # the app key its margin, so 61. Same depth, +1 block, safe direction --
+    # was +3 (63) under the retired "every order must fit" rule, since that
+    # rule could only ever charge more, never less, than "some order fits".
+    assert plan.blocks == 61
+
+
+def test_a_stage_fits_if_some_key_order_fits_not_every_order():
+    # scripts/tcam_stretch_sweep.py's ragged_ax1_bx4: a 49-byte app key (9
+    # blocks) beside four 12-byte ddos keys (3 blocks each). p4c places all
+    # five in ONE stage at 22 TCAM blocks (results/tcam_stretch_sweep.csv) --
+    # it serves the ddos key first (4x3 = 12 blocks, no margin, fills one
+    # column exactly) and the app key second (9 + 1 margin = 10, the other
+    # column), 22 total. The other order -- app key first, ddos keys paying
+    # the margin -- does not fit: 9 + 4x4 = 25 blocks, over the 24-block
+    # column budget. Requiring EVERY order to fit rejects this stage outright
+    # (see test_two_different_ragged_keys_share_a_crowded_stage_and_pay_the_margin
+    # for the shape where neither order fits and 2 stages really are needed);
+    # requiring only SOME order to fit, and charging the worst FITTING order,
+    # reproduces the real placement exactly. reviews/final_model_check_2026-09-27.md
+    # section 1b.
+    from src.p4model.packing import crossbar_stages_needed
+
+    app = frozenset({(("code", "app_a"), 23), (("code", "app_b"), 26)})
+    ddos = frozenset({(("code", "ddos_a"), 5), (("code", "ddos_b"), 7)})
+    plan = crossbar_stages_needed(
+        [(9, 49)] + [(3, 12)] * 4,
+        readiness_levels=[0] * 5,
+        key_fields=[app] + [ddos] * 4,
+        key_field_bits=[(179, 204)] + [(37, 49)] * 4)
+    assert (plan.occupied, plan.blocks) == (1, 22)
 
 
 _SPACER = frozenset({(("code", "spacer"), 41)})

@@ -28,9 +28,9 @@ blocks where codeword_bits_to_blocks says 2. It looked right for years only
 because on few wide fields byte-rounding is nearly a no-op.
 codeword_bits_to_blocks no longer appears in this module at all -- band_ceiling
 and band_target, its only callers here, were pruned once the block-domain
-repair made them stats-only; codeword_bits_to_blocks itself survives as one
-ARM of codeword_to_blocks (src/p4gen/evaluation.py) and in
-src/reporting/replay_scoring.py's band_factor_before/after columns. It no
+repair made them stats-only; codeword_bits_to_blocks itself (src/p4model/tables.py)
+survives only as the empty-key floor codeword_to_blocks special-cases to, and
+in src/reporting/replay_scoring.py's band_factor_before/after columns. It no
 longer gates anything.
 
 The byte-domain helpers below (byte_width, bits_to_next_byte, bits_to_reach,
@@ -226,8 +226,10 @@ def blocks_bought_by(widths, floors, feature, multiplier):
 
     The quantity feature_order ranks on. It is evaluated on the FULL width dict
     with this feature substituted, not on the feature alone, and that is forced
-    rather than stylistic: version_block_penalty depends on the width MULTISET,
-    so no per-feature quantity can price a ternary step (design §1.3).
+    rather than stylistic: codeword_to_blocks's isolation credit (Sec 2.3)
+    depends on the width MULTISET -- one nibble-clean field's credit can move
+    the whole table's price -- so no per-feature quantity can price a ternary
+    step (design §1.3).
 
     The scan is exact rather than closed-form because the two ladders step for
     different reasons -- a byte completion moves the ternary factor, a 206th

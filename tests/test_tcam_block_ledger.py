@@ -30,6 +30,11 @@ what was retired outright.
 2026-09-21 (Task 4): those sharing tests are now restored, against the margin
 rather than against an offset, in `tests/test_p4model_guards.py` alongside its
 other packing-level guards. This file stays per-table.
+
+2026-09-27 (final model check cleanup): renamed from `test_version_block.py` --
+"version block" was this file's old per-table vocabulary, retired along with
+`version_block_penalty` in the same 2026-09-21 rewrite noted above; the content
+never changed, only the name.
 """
 import math
 
@@ -68,7 +73,7 @@ def test_block_factor_matches_the_fresh_compile_sweep(field_bits, real_blocks, w
 # --------------------------------------------------------------------------
 # The one real penalty in the whole calibration set.
 # --------------------------------------------------------------------------
-def test_sd5_ddos_key_pays_a_version_block_because_it_saturates_its_groups():
+def test_sd5_ddos_key_needs_a_third_block_because_neither_tail_is_isolatable():
     # independent_low_sd5's ddos trees key code_bwd_packet_length_max (27 bits,
     # 4 bytes) + code_ddos_packet_length_mean (52 bits, 7 bytes) = 11 crossbar
     # bytes, which is EXACTLY two groups' 2 x 5.5 bytes. resources.json stage 6

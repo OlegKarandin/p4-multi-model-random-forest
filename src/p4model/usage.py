@@ -26,8 +26,7 @@ class ResourceUsage:
   repeating it here would let a caller silently use the whole object where
   a count is meant.
 
-  codeword_length : classification-table key width in bits, before the
-                  CODEWORD_KEY_OVERHEAD_BITS the block factor adds. Under
+  codeword_length : classification-table key width in bits. Under
                   'joint' this is THE pooled split-threshold count of the
                   merged tree set -- the quantity threshold alignment
                   actually shrinks, and the one src/training/align_budget.py
@@ -65,11 +64,14 @@ class ResourceUsage:
                           generation -- see build_p4_script.py's
                           raw_feature_intervals, keyed on the union of both
                           models' raw feature names).
-  CAVEAT (Spec 4.3, applies to both fields above): this reports register
-  DEPTH and COUNT (how many stages, how many registers), NOT register
-  CAPACITY. Tofino has a limited number of stateful ALUs per stage, and
-  whether these registers actually FIT has never been measured in this
-  repo -- do not read register_depth/register_count as a feasibility
+  CAVEAT (Spec 4.3, applies to both fields above): register_count is a
+  distinct-instance count, not a placement fact. register_depth DOES account
+  for the stateful-ALU issue limit: registers.register_stage_schedule models
+  Tofino's METER_ALUS_PER_STAGE = 4 cap and spills the surplus RegisterActions
+  forward when a design needs more than that many in one stage, and
+  readiness_levels_for reads register_depth off that schedule. What is NOT
+  modelled here is per-stage register MEMORY (how much state one Register<>
+  array actually occupies) -- do not read register_count as a memory-capacity
   guarantee.
 
   range_depth  : packing.StagePlan.depth for the range-matching pool ALONE
@@ -170,7 +172,7 @@ def assemble_usage(pool):
   # encoding where a ddos tree only reads ddos features' code fields and
   # could in principle start as soon as just the ddos range tables have
   # landed, not the app ones too. Not modelled -- doing so would need
-  # per-task range levels threaded through this pool -- and the 18/19
+  # per-task range levels threaded through this pool -- and the 17/19
   # stage_depth calibration result (scripts/validation_table.py) suggests
   # the case rarely binds in practice.
   ternary_level = range_plan.depth if range_table_specs else FLOW_HASH_LEVEL + 1

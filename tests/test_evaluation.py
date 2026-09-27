@@ -167,12 +167,15 @@ def test_ternary_matching_resource_usage_exposes_per_tree_table_specs():
     assert blocks == sum(spec[0] for spec in specs)
 
 
-def test_codeword_bytes_to_blocks_charges_44_bits_per_5_and_a_half_bytes():
+def test_codeword_bytes_to_blocks_is_the_superseded_single_field_ladder():
     # Ref 4.1 / Sec 7 "Mechanism D": one TCAM block is fed by ONE ternary
     # crossbar group, and a group delivers 5 private bytes + 1 midbyte
-    # nibble = 44 bits = 5.5 bytes. Measured ladder from 144 real compiled
-    # tables -- 33 bytes is the largest key that still fits 6 blocks, 34
-    # needs 7.
+    # nibble = 44 bits = 5.5 bytes. This is codeword_bytes_to_blocks's OWN
+    # ladder, not the current per-table model (codeword_to_blocks) -- that
+    # model prices 11 crossbar bytes at 3 blocks, this one at 2 (doc §4.1).
+    # The only production caller left is packing.key_width's range-pool
+    # branch, where a table keys exactly one whole-byte field and the two
+    # rules happen to agree.
     assert ev.codeword_bytes_to_blocks(5) == 1
     assert ev.codeword_bytes_to_blocks(6) == 2
     assert ev.codeword_bytes_to_blocks(33) == 6
@@ -820,7 +823,7 @@ _PRE_TASK_MULTI_JOINT = (2, 8, 6)                  # stages, blocks, stage_depth
 # block is spent only when the mandatory 2-bit --version-- field has no midbyte
 # nibble left to live in. This fixture's two keys both keep one, so 11 -- the
 # naive sum -- is now the right answer, and it is what the pre-2026-09-06 model
-# reported too. See tests/test_version_block.py for the rule's measurement set.
+# reported too. See tests/test_tcam_block_ledger.py for the rule's measurement set.
 # `stages` and `stage_depth` were unaffected throughout: the charge moves a
 # total, not a placement.
 _PRE_TASK_MULTI_DISJOINT = (2, 11, 6)
@@ -1747,7 +1750,7 @@ def test_stage_depth_counts_the_vote_epilogue_stage():
 # SATURATION margin (+1 to a non-first key with no spare byte slot in any
 # shared stage), retired because every observation on disk showed crowding,
 # not saturation, deciding who pays. See tests/test_p4model_guards.py for the
-# packing-level measurement set and tests/test_version_block.py for the
+# packing-level measurement set and tests/test_tcam_block_ledger.py for the
 # per-table price it sits on top of.
 
 APP_49 = (179, 204)      # 23 + 26 = 49 crossbar bytes, 9 blocks, ragged
@@ -1759,14 +1762,17 @@ APP_19 = (146,)          # independent_low_sd6's app key: 19 bytes, 4 blocks
 # The four tests below replay scripts/tcam_stretch_sweep.py's 49-byte-key +
 # 12-byte-key probes. 49 + 12 = 61 crossbar bytes of two DIFFERENT keys is a
 # CROWDED stage (> 58, target.TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE),
-# so the packer charges every table of the non-first key +1 and, not knowing
-# which key p4c serves second, takes the WORST order. Here that is the
-# 12-byte key's four or five tables, +1 each. p4c instead charged the single
-# 49-byte table (ragged: 10 blocks; solid control: nothing). So the model
-# over-predicts these probes, by blocks and at this exact fill by a stage --
-# the crowded-stage rule's accepted, one-sided cost. Values are pinned at the
-# model's figure with p4c's measurement beside them, so the deviation stays
-# visible.
+# so the packer charges every table of the non-first key +1, and, not knowing
+# which key p4c serves second, takes the worst order AMONG THOSE THAT FIT
+# (reviews/final_model_check_2026-09-27.md section 1b -- fits() only requires
+# SOME order to pack, not every order). At five narrow tables (bx5) neither
+# order fits one stage, matching p4c's own 2-stage placement; at four (bx4)
+# the order that charges the narrow tables their margin (12 + 9 + 1 = 22)
+# fits and is the only one that does, reproducing p4c's real 1-stage, 22-block
+# placement exactly for the ragged key. The rule still over-predicts the
+# SOLID control by one block (22 against p4c's 21), because crowding is a
+# byte-total test blind to whether a key's bytes are ragged or solid -- see
+# that test for the one remaining deviation this section pins.
 
 
 def test_a_crowded_stage_with_five_narrow_tables_needs_two_stages():
@@ -1789,43 +1795,51 @@ def test_a_crowded_stage_with_five_narrow_tables_needs_two_stages():
     assert solid.occupied == 2          # p4c measured 1
 
 
-def test_a_crowded_stage_is_priced_at_its_worst_key_order():
+def test_a_crowded_stage_fits_under_its_best_fitting_key_order():
     # ragged_ax1_bx4: 21 declared blocks, measured by p4c to fit ONE stage
-    # (wide table charged 10, narrow ones 3 each: 10 | 12). The worst order
-    # charges the four narrow tables instead: 9 | 4 x 4 = 16 overflows a
-    # 12-row column, so the model needs 2 stages.
+    # (wide table charged 10, narrow ones 3 each: 10 | 12). fits() requires
+    # only SOME ordering of the stage's keys to pack, not every ordering
+    # (reviews/final_model_check_2026-09-27.md section 1b): the four narrow
+    # tables served first (12, no margin) then the wide one (9 + 1 margin =
+    # 10) packs into one stage exactly as p4c does, even though the other
+    # order (wide table first; narrow ones pay the margin: 9 + 4 x 4 = 25)
+    # does not.
     plan = ev.crossbar_stages_needed(
         [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
         key_field_bits=[APP_49] + [DDOS_12] * 4)
-    assert plan.occupied == 2           # p4c measured 1
+    assert plan.occupied == 1           # p4c measured 1 -- exact
 
 
-def test_stage_plan_blocks_carries_the_crowded_charge_not_the_naive_sum():
+def test_stage_plan_blocks_charges_the_worst_fitting_key_order():
     # Same ragged_ax1_bx4 shape. StagePlan.blocks reports what the placement
-    # it chose actually charges, never the naive per-table sum (21) -- the
-    # rule independent_low_sd5 established when multi_model_memory_evaluation
-    # reported 13 where p4c used 16. Here the model's 2-stage placement
-    # charges 24 against p4c's 22.
+    # it chose actually charges: the largest total among the orderings that
+    # fit, never the naive per-table sum (21) -- the rule independent_low_sd5
+    # established when multi_model_memory_evaluation reported 13 where p4c
+    # used 16. Only one ordering fits here (see the test above), so it is
+    # also the worst one that fits, and the model's placement charges 22,
+    # matching p4c exactly.
     plan = ev.crossbar_stages_needed(
         [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
         key_field_bits=[APP_49] + [DDOS_12] * 4)
-    assert plan.blocks == 24            # p4c measured 22
+    assert plan.blocks == 22            # p4c measured 22 -- exact
 
 
 def test_stage_plan_blocks_over_charges_a_solid_key_that_shares_a_stage():
     # The solid control of the same shape: p4c measured 9 + 4 x 3 = 21 with
     # nothing extra charged. The crowded-stage rule cannot see the field
-    # split, so it prices it like the ragged key: 24.
+    # split, so it prices it like the ragged key: 22, one block over p4c's
+    # 21 -- still an over-prediction, but a smaller one than the +3 the
+    # "every order must fit" rule used to give (24 against 21).
     plan = ev.crossbar_stages_needed(
         [(9, 49)] + [(3, 12)] * 4,
         key_fields=[frozenset({(('a',), 49)})] +
                    [frozenset({(('b',), 12)})] * 4,
         key_field_bits=[SOLID_49] + [DDOS_12] * 4)
-    assert plan.blocks == 24            # p4c measured 21
+    assert plan.blocks == 22            # p4c measured 21
 
 
 def test_stage_plan_blocks_is_inert_on_a_single_key_stage():

@@ -1,7 +1,15 @@
-"""B1: the archived compiles' per-table offsets, scored against the model.
+"""Per-table crossbar placement facts harvested from the 19 archived p4c
+compiles (results/compiler_calibration_v6), scored against the model.
 
-These tests pin the two facts Task 7 adjudicates on, so a later change to
-either the harvest or the cost rule cannot quietly move them.
+Originally written for Task 7's offset-based mechanism (`start_group`,
+`version_block_penalty`), which the 2026-09-20 rewrite retired: no per-table
+price in `src.p4model.tables` depends on where a key's crossbar run starts
+any more (see `packing.key_width`'s "HONEST LIMIT" note). The harvest module
+this file exercises (`scripts/tcam_offset_harvest.py`) already says so in its
+own comments. What these tests still pin: the raw archived measurements
+(crossbar offsets, block counts) as historical ground truth, and a per-table
+exactness check that duplicates `scripts/tcam_table_scoreboard.py`'s 100/100
+gate on this one archive rather than adding new coverage.
 """
 import pytest
 
@@ -20,13 +28,18 @@ def test_harvest_reads_independent_low_sd5s_four_classification_tables():
     }
 
 
-def test_the_app_key_starts_at_the_ddos_tables_block_count_not_its_group_count():
-    """The one measurement in the whole archive that discriminates finding 1.4.
+def test_the_archived_app_key_started_at_the_ddos_keys_block_count_not_its_group_count():
+    """Historical ground truth, not a live discrimination.
 
     The ddos key is 11 crossbar bytes = 2 groups and costs 3 blocks (2 groups +
-    the version penalty). p4c starts the app key at group 3, i.e. it advanced
-    the offset by the BLOCK count. packing.offsets_for summing blocks is
-    therefore what the hardware does; summing group counts would predict 2.
+    a version-nibble block). p4c started the UNRELATED app key at crossbar
+    group 3 in this archived compile -- the ddos key's BLOCK count, not its
+    GROUP count. Back when a key's own price depended on where its crossbar
+    run started, this was the fact `packing.offsets_for`'s width-based
+    (rather than group-based) sum was built to match. The 2026-09-20 rewrite
+    deleted `start_group` from every per-table price, so this measurement no
+    longer discriminates anything the current model reads -- it is kept as
+    the archived fact itself, not as a live test of finding 1.4.
     """
     rows = {r['table']: r for r in harvest.harvest_row('independent_low_sd5')}
 
@@ -40,8 +53,10 @@ def test_the_app_key_starts_at_the_ddos_tables_block_count_not_its_group_count()
 
 @pytest.mark.parametrize('row_id', harvest.ROW_IDS)
 def test_every_archived_classification_table_is_predicted_exactly(row_id):
-    """The whole point of the ledger: the model, evaluated at each table's
-    MEASURED offset, reproduces p4c's own per-table block count."""
+    """Per-table exactness on this one archive -- duplicates the 100/100
+    archived-table result `scripts/tcam_table_scoreboard.py` reports over all
+    14 result CSVs; kept here because it replays directly off this harvest's
+    own fixture with no extra harness."""
     misses = [r for r in harvest.harvest_row(row_id)
               if not r['start_group_ambiguous']
               and r['predicted_blocks'] != r['observed_blocks']]

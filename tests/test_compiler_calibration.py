@@ -591,11 +591,16 @@ _REPLAY_EXPECTED = {
     'independent_high_sd7': (11, 11),
     'independent_high_sd8': (11, 12),
     'independent_low_sd10': (11, 11),
-    # (13, 12): the crowded-stage rule refuses nothing here but charges the
-    # ddos trees +1 in the 40 + 20 = 60-byte stage p4c shared for free, which
-    # no longer fits the stage's columns -- see target.py and the golden
-    # fixture's known_findings 'crowded_stage_rule_2026_09_25'.
-    'independent_low_sd12': (13, 12),
+    # Exact since the 2026-09-27 any-order fit rule (reviews/
+    # final_model_check_2026-09-27.md section 1b): the crowded-stage rule
+    # still charges the ddos trees +1 in the 40 + 20 = 60-byte stage p4c
+    # shared for free, but fits() now only requires SOME ordering of the
+    # stage's keys to pack column-wise, and one does (ddos key first, no
+    # margin; app key second, +1). Requiring EVERY ordering to fit used to
+    # reject that placement and push the design to 13 stages -- see the
+    # golden fixture's known_findings 'crowded_stage_rule_2026_09_25' and
+    # 'any_order_fit_rule_2026_09_27'.
+    'independent_low_sd12': (12, 12),
     'independent_low_sd5': (8, 8),
     'independent_low_sd6': (8, 11),
     'independent_low_sd7': (9, 10),
@@ -653,13 +658,14 @@ def test_replayed_stage_depth_still_under_predicts_by_at_most_three():
                  for predicted, real in (cc.replay_stage_depth(row_id, _ARTIFACTS)
                                           for row_id in _REPLAY_EXPECTED)]
     assert max(residuals) <= 3
-    # The one deliberate exception: independent_low_sd12, over by 1 under the
-    # crowded-stage rule (see _REPLAY_EXPECTED). Any OTHER over-count of a
-    # committed placement is a regression.
+    # independent_low_sd12 used to be the one deliberate exception here, over
+    # by 1 under the crowded-stage rule alone (see _REPLAY_EXPECTED); the
+    # 2026-09-27 any-order fit rule closed it to exact, so no row may
+    # over-count a committed placement any more.
     over = {row_id: real - predicted for row_id, (predicted, real) in
             ((row_id, cc.replay_stage_depth(row_id, _ARTIFACTS))
              for row_id in _REPLAY_EXPECTED) if real < predicted}
-    assert over == {'independent_low_sd12': -1}
+    assert over == {}
     assert sum(abs(r) for r in residuals) / len(residuals) <= 0.84
     assert sum(r == 0 for r in residuals) >= 8
 
@@ -921,11 +927,15 @@ def _heldout_rows():
 
 # independent_low_sd9 is the design the stage-sharing margin exists for. The
 # model's packing puts one app tree in a stage with ddos trees -- 49 + 12 = 61
-# bytes, a crowded stage -- and the worst key order charges every non-first
-# table +1; p4c instead keeps the tasks in separate stages, at the same depth
-# (exact) and no extra block. So blocks read 67 against 64. Safe direction;
-# pinned by name so it cannot grow.
-_HELDOUT_KNOWN_BLOCK_OVERS = {'independent_low_sd9': 3}
+# bytes, a crowded stage -- and the one key order that FITS (fits() only
+# requires some ordering to pack column-wise, since the 2026-09-27 any-order
+# fit rule: reviews/final_model_check_2026-09-27.md section 1b) charges the
+# non-first table +1; p4c instead keeps the tasks in separate stages, at the
+# same depth (exact) and no extra block. So blocks read 65 against 64 -- down
+# from 67 under the retired "every order must fit" rule, which charged every
+# non-first table in the stage rather than just the one order p4c could
+# actually place. Safe direction; pinned by name so it cannot grow.
+_HELDOUT_KNOWN_BLOCK_OVERS = {'independent_low_sd9': 1}
 
 
 @pytest.mark.parametrize('row_id,tcam_real,stages_real', _heldout_rows())

@@ -1,7 +1,7 @@
 """What one table costs: rows, blocks, and the crossbar key fields it claims.
 
 The two accounting rules that matter, both measured rather than derived: blocks
-charge crossbar BYTES per key FIELD (codeword_bytes_to_blocks), not raw codeword
+charge crossbar BYTES per key FIELD (codeword_to_blocks), not raw codeword
 bits; and a range table's blocks come from the DECLARED interval count via
 compiler_range_rows, never from the expanded physical row count that
 range_entry_count gives -- those answer different questions, and
@@ -64,13 +64,20 @@ def range_deployment_overflow(feature_intervals,
 def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE_BIT_WIDTH):
   """Returns (range_entries, range_blocks, range_table_specs).
 
-  range_entries is the EXPANDED PHYSICAL TCAM ROW COUNT (the same quantity
-  range_blocks quantizes via ceil(total_rows / TERNARY_MATCHING_ENTRIES_PER_BLOCK)),
-  NOT a count of distinct [lo, hi] intervals -- one range interval typically
-  expands to several physical rows (see range_entry_count / expand_range()),
-  so range_entries >= the interval count, often strictly greater. (A1: prior
-  to this fix, range_entries counted intervals, an unrelated quantity that
-  could not be meaningfully compared against range_blocks.)
+  range_entries is the EXPANDED PHYSICAL TCAM ROW COUNT range_entry_count
+  gives for actually INSERTING every interval -- NOT a count of distinct
+  [lo, hi] intervals, and NOT the quantity range_blocks is derived from. One
+  range interval typically expands to several physical rows (see
+  range_entry_count / expand_range()), so range_entries >= the interval
+  count, often strictly greater. (A1: prior to this fix, range_entries
+  counted intervals, an unrelated quantity that could not be meaningfully
+  compared against range_blocks.)
+
+  range_blocks, by contrast, is sized at COMPILE time from the DECLARED
+  interval count via compiler_range_rows(len(intervals)) -- never from
+  range_entries/total_rows, which is an insertion-time quantity answering a
+  different question (range_deployment_overflow is where that question
+  belongs; see its own docstring).
 
   Every selected feature gets its OWN independent range-matching P4 table
   (build_p4_script.py:663-674, keyed on "meta.<feature>_val : range"), so
@@ -79,14 +86,14 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   range_blocks is still returned for the blocks half of the cost model.
 
   A physical TCAM block is TERNARY_MATCHING_ENTRIES_PER_BLOCK rows x
-  TCAM_BLOCK_KEY_LENGTH key bits. For RANGE keys, unlike TERNARY keys (where
-  ceil((bits + 4) / 44) genuinely applies), words-per-entry is not a function
-  of key width at all -- it is decided by PHV container width, and
+  TCAM_BLOCK_KEY_LENGTH key bits. For RANGE keys, words-per-entry is not a
+  function of key width at all -- it is decided by PHV container width, and
   generate_P4_code already pins every feature value field to a 16-bit
   container via an @pa_container_size pragma (build_p4_script.py). So this
-  function's depth-only formula (ceil(total_rows / 512)) is correct BECAUSE
-  of that pragma, not by coincidence: with the container width fixed at 16
-  bits, one row always costs exactly one TCAM word, regardless of
+  function's depth-only formula (ceil(compiler_range_rows(len(intervals)) /
+  512)) is correct BECAUSE of that pragma, not by coincidence: with the
+  container width fixed at 16 bits, one row always costs exactly one TCAM
+  word, regardless of
   key_bit_width. Keys wider than MAX_RANGE_KEY_BITS never reach this
   computation -- nibble_widths_for() raises first, since the SDE would
   refuse such a table outright and pricing it is meaningless.
@@ -138,9 +145,12 @@ def codeword_fields_to_bytes(feature_intervals):
   ceil(total_bits / 8) on the concatenation (e.g. 3 features x 4 bits:
   3 bytes, not 2). Rounding the concatenation would under-count.
 
-  Note: the "+4" ternary overhead used by ternary_matching_resource_usage
-  is a TCAM *block capacity* fact (RM-3 Design A), not a crossbar-byte
-  fact, and is deliberately NOT applied here."""
+  Note: ternary_matching_resource_usage no longer applies a "+4" bit
+  overhead anywhere -- that band-domain rule (RM-3 Design A) was retired
+  along with codeword_bits_to_blocks's role in per-table pricing. The
+  mandatory version field is priced inside codeword_to_blocks's crossbar-byte
+  ledger instead (see tables.crossbar_capacity), which has nothing to add
+  here."""
   return codeword_fields_to_bytes_from_bits(
       [max(len(intervals) - 1, 0) for intervals in feature_intervals.values()])
 
@@ -157,10 +167,15 @@ def codeword_fields_to_bytes_from_bits(field_bit_widths):
 
 
 def codeword_bits_to_blocks(codeword_length):
-  """How many TCAM_BLOCK_KEY_LENGTH-wide key blocks one classification-table
-  row spans. THE step function alignment is optimising against: a shed bit is
-  worth nothing unless it carries codeword_length across a band boundary, and
-  then it is worth n_trees blocks at once.
+  """How many TCAM_BLOCK_KEY_LENGTH-wide key blocks a codeword_length-bit key
+  would span under the retired band model (raw bits, version overhead
+  included) -- NOT what alignment optimises against any more;
+  codeword_to_blocks prices per-feature crossbar bytes instead (see its own
+  docstring). This function survives for two reasons only: codeword_to_blocks
+  and codeword_to_blocks_headline both special-case the empty key to
+  codeword_bits_to_blocks(0), since a version field still needs a physical
+  block even when the key claims none; and src/reporting/replay_scoring.py
+  still derives its (unread) band_factor_before/after columns from it.
 
   (Was `band_factor` until 2026-09-14. Renamed, not changed: the name now
   states what it takes -- raw codeword BITS -- so it cannot be mistaken for
@@ -220,7 +235,9 @@ def codeword_to_blocks_headline(field_bit_widths):
   off -- the conservative arm of the refinement layer (Sec 13.1's "Off" row):
   exact on 92 of the 100 archived classification tables, over by exactly one
   block per tree on the other 8 (the two 33-byte, 15-feature keys), and NEVER
-  observed to under-predict across 308 table observations. `codeword_to_blocks`
+  observed to under-predict across 405 table observations (389 scorable, 16
+  refused at > 62 crossbar bytes -- scripts/tcam_table_scoreboard.py).
+  `codeword_to_blocks`
   never returns MORE than this function does -- see
   test_the_isolation_refinement_never_raises_the_headline_price.
 
@@ -307,26 +324,26 @@ def codeword_to_blocks(field_bit_widths):
   `--version--` field needs one more. So, with `overflow(g) = max(0, B - 5g)`
   and `S_usable` counting nibble-clean, isolatable fields:
 
-    blocks = min g : overflow(g) <= ceil(g / 2)
-                      and 2*overflow(g) - min(overflow(g), S_usable, 1) + 1 <= g
+    blocks = min g : 2*overflow(g) - min(overflow(g), S_usable, 1) + 1 <= g
 
-  Two amendments on top of the bare ledger, both compiler behaviour rather
-  than block structure -- comments at each site say why, not just what:
+  One amendment on top of the bare ledger, compiler behaviour rather than
+  block structure -- the nibble-clean credit is capped at ONE
+  (`min(overflow, S_usable, 1)`, not `min(overflow, S_usable)`) because p4c's
+  allocator (`IXBar::allocate_mid_bytes`/`free_mid_bytes`) guarantees at most
+  one nibble-only midbyte per table by construction (Sec 12.4) -- a second
+  credit is untested by any corpus point and would under-predict 3.7% of
+  random keys at B in {17, 28, 39, 50, 61}.
 
-  1. `overflow(g) <= ceil(g / 2)` is p4c's OWN sizing-loop limit
-     (`IXBar::calculate_sizes`, input_xbar.cpp:507-511), not something the
-     crossbar's structure alone implies (a block can pair with any of a
-     stage's 6 midbytes, so structure alone would allow up to 6 overflow
-     bytes per stage). It binds on real data: `joint_high_sd7`'s four
-     29-byte tables cost 6 blocks; dropping this clause "for consistency"
-     with plain structure would price them at 5 and under-predict, which
-     this project forbids (Sec 12.3).
-  2. The nibble-clean credit is capped at ONE (`min(overflow, S_usable, 1)`,
-     not `min(overflow, S_usable)`) because p4c's allocator
-     (`IXBar::allocate_mid_bytes`/`free_mid_bytes`) guarantees at most one
-     nibble-only midbyte per table by construction (Sec 12.4) -- a second
-     credit is untested by any corpus point and would under-predict 3.7% of
-     random keys at B in {17, 28, 39, 50, 61}.
+  p4c's own sizing loop (`IXBar::calculate_sizes`, input_xbar.cpp:507-511)
+  separately never plans more than `ceil(g / 2)` midbytes for `g` groups
+  (`overflow(g) <= ceil(g / 2)`), which the crossbar's bare structure would
+  not by itself imply (a block can pair with any of a stage's 6 midbytes, so
+  structure alone would allow up to 6 overflow bytes per stage). That clause
+  is NOT in the formula above because it never binds: with `credit <= 1` the
+  ledger clause already forces `overflow <= floor(g / 2) <= ceil(g / 2)`, so
+  the sizing-loop limit is implied rather than a second, independent test --
+  confirmed by brute force over 200 000 random keys, 0 differences with the
+  clause present or absent.
 
   The empty-key case is a real early return, not something the ladder
   happens to produce -- see codeword_to_blocks_headline's docstring for why
@@ -342,15 +359,25 @@ def codeword_to_blocks(field_bit_widths):
   while True:
     overflow = max(0, key_bytes - CROSSBAR_PRIVATE_BYTES_PER_GROUP * g)
     credit = min(overflow, s_usable, 1)
-    if (overflow <= math.ceil(g / 2)
-        and 2 * overflow - credit + 1 <= g):
+    if 2 * overflow - credit + 1 <= g:
       return g
     g += 1
 
 
 def codeword_bytes_to_blocks(key_bytes):
-  """TCAM blocks one classification-table row spans because of the ternary
-  input CROSSBAR, as opposed to because of its bit width.
+  """TCAM blocks a SINGLE key_bytes-byte-wide crossbar field would span,
+  under the pre-2026-09-21 model: ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH).
+
+  SUPERSEDED for classification tables, which key several per-feature fields
+  at once and are priced by codeword_to_blocks's crossbar-byte ledger
+  instead: doc §4.1's measured ladder disagrees with this function from 11
+  bytes up (11 -> 3 blocks there, 2 here; 33 needs the Sec 2.3 isolation
+  credit to reach 6, which this function reaches only because its own
+  rounding is cruder). This function's only remaining production reach is
+  packing.key_width's range-pool branch, where a range table keys exactly
+  ONE whole-byte meta.<feature>_val field -- the one shape both rules price
+  identically, since there is no second field for the crossbar-byte ledger's
+  per-field rounding to diverge on.
 
   (Was `crossbar_block_width` until 2026-09-14. Renamed, not changed: the name
   now states what it takes -- crossbar key BYTES -- so the decomposition
@@ -361,24 +388,7 @@ def codeword_bytes_to_blocks(key_bytes):
 
   One block is fed by exactly one crossbar group, and a group delivers 5
   private bytes + 1 midbyte nibble = TCAM_BLOCK_KEY_LENGTH bits = 5.5 BYTES
-  (reviews/p4_tofino_reference.md §4.1.1). The crossbar allocates per FIELD
-  and byte-rounds each one, so
-  what it charges is key_bytes (codeword_fields_to_bytes), not the raw
-  codeword length -- a table keying 15 separate code_<feature> fields
-  totalling 205 bits really presents 33 bytes = 264 bits and needs 6 blocks,
-  not 5.
-
-  This is the term codeword_bits_to_blocks misses, and it is why
-  codeword_bits_to_blocks was accidentally right for years: on ONE dense wide
-  codeword field byte-rounding is a no-op and the two agree exactly. They
-  diverge as soon as the key is split per feature, which is what
-  build_p4_script actually emits.
-
-  Measured exact on 144 real compiled classification tables spanning three
-  compile eras -- the whole observed key_bytes -> blocks ladder (4 -> 1,
-  11 -> 2, 16 -> 3, 20 -> 4, 26 -> 5, 33 -> 6, 37 -> 7, 41 -> 8, 49 -> 9,
-  52 -> 10, 60 -> 11) is single-valued and lands on this function. Appendix B
-  "Mechanism D"."""
+  (reviews/p4_tofino_reference.md §4.1.1)."""
   return math.ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH)
 
 

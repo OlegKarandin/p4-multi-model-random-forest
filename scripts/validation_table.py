@@ -23,22 +23,27 @@ ground truth. The CSV's own stage_depth/blocks columns are read ONLY by the
 drift check below, whose job is precisely to catch a stale-column case like
 this one.
 
-CURRENT STANDING (2026-09-25). On the 19 fitted rows: stage_depth 17/19
-exact, 0 under (independent_high_sd12 +1, already past the 12-stage ceiling;
-independent_low_sd12 +1) and blocks 16/17 exact, 0 under (independent_low_sd12
-+2). Both independent_low_sd12 misses are the crowded-stage rule's known cost:
-its real stage shares 60 bytes for free. The drift check below prints its CSV
-disagreement, deliberately un-silenced. (independent_high_sd7/sd8, over by
-+1/+3 under the retired saturation margin, are exact again.) The earlier
-"version_block_penalty, 17 of 17" account describes a mechanism deleted on
-2026-09-21.
+CURRENT STANDING (2026-09-27). On the 19 fitted rows: stage_depth 18/19
+exact, 0 under (independent_high_sd12 +1, already past the 12-stage ceiling)
+and blocks 16/17 exact, 0 under (independent_low_sd12 +1). The
+independent_low_sd12 blocks miss is the crowded-stage rule's known cost: its
+real stage shares 60 bytes for free. Its stage_depth miss is CLOSED: the
+2026-09-27 any-order fit rule (reviews/final_model_check_2026-09-27.md
+section 1b) lets fits() accept a stage under the one key ordering that packs
+column-wise, rather than requiring every ordering to, which used to push this
+design one stage too deep. The drift check below prints its CSV disagreement,
+deliberately un-silenced. (independent_high_sd7/sd8, over by +1/+3 under the
+retired saturation margin, are exact again.) The earlier "version_block_penalty,
+17 of 17" account describes a mechanism deleted on 2026-09-21.
 
 HELD OUT. Two further sections replay compiles the model was never fitted on,
 end to end from the generated program (scripts/p4_artifact_replay.replay_design):
 results/compiler_calibration_extra/ (8 designs: stage_depth 8/8, blocks 4/5,
-independent_low_sd9 +3) and results/tcam_margin_screen/ (16 real designs chosen
-to stress the stage-sharing rules: stage_depth 12/16 and blocks 11/16 exact,
-every miss an over-prediction). 0 under anywhere.
+independent_low_sd9 +1, down from +3 under the retired every-order rule) and
+results/tcam_margin_screen/ (16 real designs chosen to stress the
+stage-sharing rules: stage_depth 12/16 and blocks 11/16 exact, every miss an
+over-prediction, mean/max block error 0.38/2, down from 0.56/3). 0 under
+anywhere.
 
 Run (from the repository root):
   "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" scripts/validation_table.py
@@ -358,11 +363,12 @@ def main(argv=None):
         held_stage, held_blocks = heldout_pairs()
         _print_section("stage_depth (held out)", held_stage, "stage_depth")
         _print_section("blocks (held out)", held_blocks, "blocks")
-        print("  independent_low_sd9's +3: the model's packing puts one app tree "
-              "in a crowded 61-byte stage with ddos trees and charges the "
-              "worst key order; p4c keeps the two tasks in separate stages at the same "
-              "depth and pays nothing. Pinned in "
-              "tests/test_compiler_calibration.py.")
+        print("  independent_low_sd9's +1: the model's packing puts one app tree "
+              "in a crowded 61-byte stage with ddos trees and charges the one "
+              "key order that fits (fits() only requires SOME ordering to pack "
+              "since the 2026-09-27 any-order fit rule); p4c keeps the two "
+              "tasks in separate stages at the same depth and pays nothing. "
+              "Pinned in tests/test_compiler_calibration.py.")
     else:
         print("\n(held-out archive %s not present -- section skipped)"
               % HELDOUT_ROOT)

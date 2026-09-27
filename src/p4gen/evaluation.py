@@ -205,10 +205,10 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   ternary_blocks (the naive per-table block sum each branch computes below)
   is deliberately NOT one of the 13 keys: it is already dead after the branch
   converges -- assemble_usage's ResourceUsage.blocks uses ternary_plan.blocks,
-  the version-block-charged StagePlan total from src.p4model.packing, never this
-  naive sum. Carrying it into the pool would invite exactly the confusion the
-  StagePlan.blocks fix (see CLAUDE.md's compiler-calibration note) was
-  created to resolve.
+  the StagePlan total from src.p4model.packing charged with the crowded-stage
+  margin, never this naive sum. Carrying it into the pool would invite exactly
+  the confusion the StagePlan.blocks fix (see CLAUDE.md's compiler-calibration
+  note) was created to resolve.
 
   use_default_action_discount: opt-in, threaded down to
   ternary_matching_resource_usage under BOTH encodings -- directly for

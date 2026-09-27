@@ -53,7 +53,7 @@ at group offset 3, where the compiler charged the ddos key at offset 0.
 any crossbar midbyte in the key's group run keep a free nibble for the
 mandatory 2-bit --version-- field? That predicts all 100 tables exactly, and
 takes usage.blocks from 12/17 to 17/17 against tcam_real with no
-under-prediction. See tests/test_version_block.py and
+under-prediction. See tests/test_tcam_block_ledger.py and
 reviews/p4_tofino_reference.md Appendix B "Mechanism G".
 
 SUPERSEDED IN TURN (2026-09-21). `tables.version_block_penalty` and the whole
@@ -328,6 +328,78 @@ def _metadata(campaign_dir):
                     "known, quantified over-prediction, not a correction, and "
                     "scripts/validation_table.py still reports both as "
                     "OVER."),
+            },
+            {
+                'id': 'crowded_stage_rule_2026_09_25',
+                'rows': ['independent_low_sd12'],
+                'row_deltas': {'independent_low_sd12': 2},
+                'summary': (
+                    "RE-PINNED, and the delta is an OVER-prediction. The "
+                    "crowded-stage rule (src/p4model/target.py "
+                    "TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE = 58, "
+                    "TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62) charges "
+                    "every non-first key +1 when two different keys fill more "
+                    "than 58 crossbar bytes of one stage, and refuses more "
+                    "than 62. independent_low_sd12's real stage 10 shares a "
+                    "40-byte app key and a 20-byte ddos key at 60 bytes and "
+                    "p4c charged nothing, so this row now reads blocks 80 "
+                    "against tcam_real 78 and stage_depth 13 against "
+                    "stages_real 12 (a feasible design priced past the "
+                    "12-stage ceiling). Kept because the same 59-62-byte band "
+                    "costs +1 on independent_low_sd5's real (54, 56) key "
+                    "behind a spacer (results/tcam_mixed_key_cap_sweep.csv) "
+                    "and on the real campaign design M150_k5_s12 "
+                    "(results/tcam_margin_screen_compiled.csv), and byte "
+                    "totals cannot separate the paying stages from this free "
+                    "one; without the rule those are under-predictions. Other "
+                    "rows unchanged."),
+            },
+            {
+                'id': 'saturation_margin_retired_2026_09_25',
+                'rows': ['independent_high_sd7', 'independent_high_sd8'],
+                'row_deltas': {'independent_high_sd7': -1,
+                               'independent_high_sd8': -3},
+                'summary': (
+                    "RE-PINNED to exact. 'stage_sharing_margin_2026_09_21' "
+                    "above over-charged these two rows +1/+3 because a "
+                    "SATURATED key shared a stage (22 and 35 combined bytes) "
+                    "and p4c charged nothing. That per-key saturation margin "
+                    "is retired: every observation on disk showed crowding "
+                    "(> 58 combined distinct-key bytes), not saturation, "
+                    "deciding who pays -- the saturated 16-byte probe paid "
+                    "nothing even at 59-64 bytes "
+                    "(results/tcam_mixed_key_cap_sweep.csv), and the one "
+                    "saturated key that did pay, (179, 204) beside a 12-byte "
+                    "key, sat in a crowded 61-byte stage the crowded-stage "
+                    "rule charges anyway. blocks now 28 -> 27 and 41 -> 38, "
+                    "matching tcam_real; stage_depth unchanged."),
+            },
+            {
+                'id': 'any_order_fit_rule_2026_09_27',
+                'rows': ['independent_low_sd12'],
+                'row_deltas': {'independent_low_sd12': -1},
+                'summary': (
+                    "RE-PINNED, and the delta is an IMPROVEMENT. "
+                    "src/p4model/packing.py's fits() used to require EVERY "
+                    "ordering of a stage's distinct keys to pack before a "
+                    "shard could join it, and stage_charged_blocks() charged "
+                    "the largest total over ALL orderings; both now only "
+                    "require/consider orderings that actually fit_two_columns "
+                    "(reviews/final_model_check_2026-09-27.md section 1b). "
+                    "independent_low_sd12's real stage 10 packs one order "
+                    "(ddos key first, no margin; app key second, +1 margin) "
+                    "but not the other (app key first; ddos key pays the "
+                    "margin and overflows the column budget) -- requiring "
+                    "every order wrongly called the whole design infeasible "
+                    "one stage too deep. This row now reads ternary blocks 69 "
+                    "against tcam_real (unchanged), stage_depth 12 against "
+                    "stages_real 12 (EXACT, was 13, the design's own 12-stage "
+                    "ceiling) and usage.blocks 79 against 78 (was 80). Every "
+                    "other row is unchanged: no other archived stage has two "
+                    "different keys where only one ordering fits. Matches the "
+                    "review's own scratch experiment exactly: fitted "
+                    "stage_depth 17/19 -> 18/19, this row's blocks error "
+                    "+2 -> +1."),
             },
         ],
     }
