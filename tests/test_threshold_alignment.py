@@ -1923,9 +1923,9 @@ def test_the_block_factor_equals_the_evaluators_block_factor():
 @pytest.mark.parametrize('seed', range(50))
 def test_the_block_factor_matches_p4model_on_random_width_vectors(seed):
     """The property half of E1-blocks. The fixture above pins four features on
-    one pair; version_block_penalty's saturation clause only fires on a key
-    whose bytes consume every midbyte its groups reach, which one pair will
-    almost never produce. 1-15 fields of 1-60 bits is the design's own probe
+    one pair; codeword_to_blocks' multiset-dependent isolation credit (which
+    replaced version_block_penalty, deleted 2026-09-21) fires only on
+    particular width mixes, which one pair will rarely produce. 1-15 fields of 1-60 bits is the design's own probe
     range (§1.3). Guards against anyone reimplementing _factor's arithmetic
     locally instead of delegating."""
     from src.p4model.tables import codeword_to_blocks
@@ -1943,7 +1943,7 @@ def test_shedding_a_bit_never_raises_the_block_factor(seed):
     run could be punished for a free saving, and the rollback would then be
     reasoning about a cost that moved the wrong way. Verified by the design
     over 200 000 random shapes; pinned here over a smaller sample so a future
-    change to version_block_penalty that breaks monotonicity fails in this
+    change to codeword_to_blocks that breaks monotonicity fails in this
     suite rather than in a campaign."""
     rng = np.random.default_rng(1000 + seed)
     widths = {i: int(w) for i, w in
@@ -2008,7 +2008,7 @@ def _order_fixture_pair():
 def test_feature_order_puts_the_feature_that_buys_the_most_blocks_first():
     """Gap 2's fix (audit §3), and Gap 1's (§2) -- they are ONE edit: a ranking
     by achieved cost is meaningless on stale widths, and a ranking by byte
-    distance is blind to both version_block_penalty and range steps.
+    distance is blind to both the width-multiset price and range steps.
 
     Feature 0 is one bit from completing a crossbar byte (width 9 -> 8 drops
     the key from 2 bytes to 1, so the ternary factor steps and the saving is

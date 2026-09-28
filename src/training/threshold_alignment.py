@@ -12,6 +12,7 @@ from src.training.align_targets import (LOWER_EDGE, boundary_moves,
                                         candidate_targets,
                                         hypothetical_ranges, lower_boundary,
                                         neighbour_writes)
+from src.p4model.tables import crossbar_capacity
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
@@ -55,6 +56,17 @@ import numpy as np
 # is exactly why the cap is kept several times larger rather than pinned to
 # the observed value. Smaller fixtures are far below it: 2 to 4 rounds on
 # the test suite's forests.
+#
+# Campaign measurement (alignment audit 2026-09-28, A7/T6): over 935 real
+# campaign pairs -- 7891 visited features -- the loop counter `rounds`
+# reached at most 6: {1: 1573, 2: 5390, 3: 814, 4: 82, 5: 26, 6: 6}
+# features. Definitions differ: the probe above reports (last accepted
+# round + 1), under which the campaign maximum is <= 7, while this
+# distribution counts rounds actually run. Either way the campaign sits far
+# below the synthetic probe's 10 and five times below 32, so the cap is
+# kept at 32: an unused round costs nothing. The probe itself, re-run after
+# the 2026-09-28 fixes (T1-T4), now reaches at most 4 (per-config maxima
+# {2: 8, 3: 9, 4: 1} over its 18 configurations).
 MAX_RECOMPUTE_ROUNDS = 32
 
 
@@ -97,8 +109,9 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
 
     This is one edit fixing two audit gaps, and they are inseparable. Gap 2:
     the old key was `bits_to_next_byte`, a byte-domain proxy blind both to
-    version_block_penalty (which depends on the width MULTISET, so no
-    per-feature scalar can see it) and to range steps. Gap 1: range blocks are
+    the block price's dependence on the width MULTISET (codeword_to_blocks'
+    isolation credit, so no per-feature scalar can see it) and to range
+    steps. Gap 1: range blocks are
     not alignment-invariant, so a feature four intervals from a free range
     block outranks a feature one bit from a byte boundary that buys nothing.
     A ranking by achieved cost is meaningless on stale widths, so the staleness
@@ -126,6 +139,15 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
     joint-dinf/M100/k17/split12 row is the precedent that this shape really
     occurs -- per-instance optimality was never claimed for a greedy heuristic
     and is not claimed here.
+
+    NEARLY INERT, MEASURED (alignment audit 2026-09-28, step 3): under the
+    old ratcheted guard, order had no measurable effect at delta = 0 -- the
+    exhaustive order search found the same result in 220/221 cases, and on
+    the 935 replayed campaign pairs order alone changed 1 row. Kept anyway
+    (walkthrough decision D1): T3 anchored the guard at the pre-alignment
+    scores, which turns accidental accuracy gains into a slack the whole run
+    shares, so which feature spends it first can matter again. Re-measure
+    before relying on either statement.
 
     The trailing feature index makes this a TOTAL order, keeping the run
     deterministic -- which train_model.py's refit assertion depends on
@@ -431,13 +453,17 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['total_blocks_floor'] = total_blocks(own_floor_widths, multiplier)
 
     # §4.6. bits_to_reach survives, aimed at the next cheaper BLOCK factor
-    # instead of the retired stage step. A factor of f - 1 is fed by f - 1
-    # crossbar groups of 5.5 bytes each, so it needs key_bytes <=
-    # (11 * (f - 1)) // 2. Still a documented LOWER BOUND, and now doubly so:
-    # version_block_penalty can hold the factor up past that width, and the
-    # cheapest bits are not necessarily the least damaging ones. Reported,
-    # never enforced -- no run is skipped on it.
-    block_target = (11 * (stats['factor_before'] - 1)) // 2
+    # instead of the retired stage step. A factor of f - 1 holds a key of at
+    # most tables.crossbar_capacity(f - 1) = 5(f-1) + floor((f-2)/2) bytes --
+    # the current ladder, 10 bytes at f - 1 = 2 -- so that is the byte target.
+    # (It used to be (11 * (f - 1)) // 2, i.e. 5.5 bytes per block, which is
+    # 11 at f - 1 = 2 and so optimistic.) This is the HEADLINE ladder:
+    # codeword_to_blocks' isolation credit can let a key one byte past it
+    # still price at f - 1 (measured: never more than one byte), so the
+    # number is a lower bound up to that one byte, and the cheapest bits are
+    # not necessarily the least damaging ones. Reported, never enforced -- no
+    # run is skipped on it.
+    block_target = crossbar_capacity(stats['factor_before'] - 1)
     stats['bits_to_reach'] = (
         bits_to_reach(pooled_widths, own_floor_widths, block_target)
         if stats['factor_before'] > 1 else None)

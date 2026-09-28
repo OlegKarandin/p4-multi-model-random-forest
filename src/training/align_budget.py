@@ -246,11 +246,14 @@ def blocks_bought_by(widths, floors, feature, multiplier):
     unchanged, so both score (0, 0) here and feature_order falls back to its
     combined-interval-count tiebreak instead of ranking them by the joint
     opportunity. This costs ranking quality only, not a lost block: the
-    budget gate itself evaluates the full width dict once both features have
-    actually been shed, not this function's per-feature probe, so the block
-    still gets bought when both candidates are eventually accepted -- just
-    possibly after spending accuracy budget on a feature that, ranked
-    correctly, would not have gone first.
+    ranking only ORDERS features, it never skips a move, and every free move
+    is accepted whichever feature comes first -- true under the old ratcheted
+    guard and under the pre-alignment anchor alike (spec 2026-09-28 T3) -- so
+    the block still gets bought once both features have been shed. (This
+    used to credit "the budget gate", which was deleted with BlockBudget on
+    2026-09-15 -- see the note at the end of this module.) Under the anchor
+    the order can decide who spends the run's shared accuracy slack, which
+    is feature_order's D1 caveat, not a lost block.
     """
     room = widths[feature] - floors[feature]
     if room <= 0:

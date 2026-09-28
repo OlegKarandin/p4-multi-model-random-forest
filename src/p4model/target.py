@@ -100,9 +100,8 @@ MAX_RANGE_KEY_BITS = 19   # §4.2: a 20-bit range key does not compile at all
 
 # The non-codeword key bits every classification-table row carries alongside
 # the codeword itself. Factored out of the inline `codeword_length + 4` this
-# replaces so the band arithmetic lives in exactly one place -- src/training/
-# align_budget.py gates C1's accuracy spending on it and must not re-declare
-# it. Physical origin: the mandatory 2-bit --version-- field, which p4c
+# replaces so the band arithmetic lives in exactly one place. Physical
+# origin: the mandatory 2-bit --version-- field, which p4c
 # always parks in a whole midbyte NIBBLE, never fewer bits
 # (model_audit_2026-09-27.md Appendix A.2; tofino/input_xbar.cpp). 4 is that
 # nibble, not a fitted or undocumented number. `codeword_bits_to_blocks`
