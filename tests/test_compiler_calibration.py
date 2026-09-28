@@ -839,8 +839,12 @@ def test_replay_rejects_a_row_the_backend_never_allocated():
 # Mechanism A's 1-3 stage PHV tax, so they can only ever pin the residual.
 # These 11 were produced by TODAY's generator, which is what the model is
 # supposed to predict, and on them it is exact everywhere -- including
-# independent_low_sd9, the last divergence the study had open, closed by the
-# version-block charge (evaluation.crossbar_stages_needed's key_field_bits).
+# independent_low_sd9, the last divergence the study had open, closed by
+# what key_field_bits charges (evaluation.crossbar_stages_needed's
+# key_field_bits parameter) -- at the time of this comment (2026-09-06) the
+# version-block penalty; today the crowded-stage margin (target.py
+# TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE/..._BYTES_PER_STAGE),
+# after the 2026-09-20/21 rewrite and 2026-09-25 replacement.
 # ---------------------------------------------------------------------------
 
 _CURRENT_ARTIFACTS = {

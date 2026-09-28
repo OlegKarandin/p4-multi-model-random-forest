@@ -264,12 +264,47 @@ def tail_is_isolatable(field_bits):
   byte on a shared midbyte to hold it.
 
   Only meaningful for a field whose last crossbar byte is a nibble
-  (`1 <= field_bits % 8 <= 4`) -- callers filter to that set before asking;
-  this function answers the SECOND question, which PHV container byte within
-  the field's 32-bit container the leftover lands in, and whether that
-  position is one p4c's allocator can isolate. Measured over 34 compiles
-  (`scripts/tcam_phv_slice_sweep.py`) against the direct observable
-  `byte_group_holds_whole_byte`: 12 pays / 12 free / 0 disagreements.
+  (`1 <= field_bits % 8 <= 4`) -- callers filter to that set before asking.
+
+  THE MECHANISM (model_audit_2026-09-27.md Appendix A; p4c
+  `tofino/input_xbar.cpp`, `align_flags` l.461, `allocate_mid_bytes`
+  l.1039-1090, `free_mid_bytes` l.879, the `allocTable` loop l.1361-1390 --
+  midbytes are allocated BEFORE groups). Every crossbar slot has a lane
+  (`slot number mod 4`); byte k of a 32-bit container may only sit in a
+  lane-k slot, a 16-bit container's bytes only at matching parity, an 8-bit
+  container's anywhere (Appendix A.3). A group supplies one slot of each
+  lane plus one extra in the lane it starts on, so g groups cover 2 lanes at
+  full capacity and the rest at g-1 -- an 11-byte key (3 W-container bytes
+  each in 3 lanes, 2 in the 4th, Appendix A.5) fits 2 blocks only if its
+  3-4-bit tail takes the spare midbyte nibble AND the other 10 bytes still
+  fit those two groups' lanes; the tail helps only when removing it relieves
+  an over-full lane (Appendix A.4). Two probes at IDENTICAL lane counts
+  (w027 = 27+56 bits, w019 = 19+64 bits, both (3,3,3,2)) diverge purely on
+  which lane loses its tail: w019's removal leaves (3,3,2,2), which two
+  groups cover exactly -> isolatable, 2 blocks; w027's leaves (3,3,3,1),
+  needing 3 extras where only 2 exist -> p4c falls back to parking a whole
+  byte on a midbyte, filling both its nibbles and leaving none for the
+  mandatory 2-bit --version-- field -> a version-only block -> 3, not
+  isolatable (Appendix A.6).
+
+  This function is a WIDTH-ONLY PROXY for that lane rule: it infers the
+  tail's lane from `field_bits mod 32` alone, assuming the field starts at a
+  container boundary (27 -> byte 3, not isolatable; 19 -> byte 2, single
+  container, isolatable) rather than walking the real PHV layout. A lane
+  checker built from the compile's actual layout agrees with this proxy on
+  every real key measured (74/74) and is exact (57/57) where the proxy is
+  conservative (48/57, always erring toward NOT isolatable, never the other
+  way) on synthetic multi-field probe families the proxy was not built to
+  cover. The unknown this function approximates is the PHV layout, not
+  whether the outcome is predictable -- it is lane arithmetic, not (as an
+  older draft of the P4 reference's Sec 4.1.1 "residual" claimed) the
+  allocator's unpredictable greedy choice.
+
+  Measured over 24 compiles (`scripts/tcam_phv_slice_sweep.py`; the CSV has
+  24 rows, matching that script's own docstring -- 34 was a stale count
+  quoted elsewhere and is not this probe's real size) against the direct
+  observable `byte_group_holds_whole_byte`: 12 pays / 12 free / 0
+  disagreements with the width table below.
 
     tail  = field_bits mod 32 (32 when the remainder is 0)
     index = ceil(tail / 8) - 1        # which container byte holds the tail

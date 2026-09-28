@@ -278,14 +278,25 @@ def score_stretch_sweep(path):
 
 
 def score_phv_slice_sweep(path):
-    """24 single-key isolation probes. field_bit_widths is reconstructed from
-    clean_bits + solid_bits (one field per row); key_bytes cross-checked
-    against the CSV's own column. No sharing column at all -- the margin
-    never applies, full stop."""
+    """24 single-key isolation probes, each key TWO fields --
+    `(clean_bits, solid_bits)`, exactly the pair the probe itself builds and
+    scores (`fields = (clean_bits, 8 * solid_bytes)`,
+    `tcam_phv_slice_sweep.py:193`, fed straight to `codeword_to_blocks`). Do
+    not merge them into one `(clean_bits + solid_bits,)` field: solid_bits is
+    always a whole-byte field with no tail of its own, so merging does not
+    change key_bytes (both round to the same crossbar-byte total) but it DOES
+    silently drop the Sec 2.3 isolation credit, which only fires on the true
+    nibble-clean field (clean_bits) -- codeword_to_blocks then charges the
+    version-only-block worst case on every row, over-predicting 16 of the
+    24 (C2). key_bytes is cross-checked against the CSV's own column via the
+    combined total, which is round-trip safe either way. No sharing column at
+    all -- the margin never applies, full stop."""
     frame = pd.read_csv(path)
     rows = []
     for _, r in frame.iterrows():
-        total_bits = int(r["clean_bits"]) + int(r["solid_bits"])
+        clean_bits = int(r["clean_bits"])
+        solid_bits = int(r["solid_bits"])
+        total_bits = clean_bits + solid_bits
         expected_key_bytes = math.ceil(total_bits / 8)
         if expected_key_bytes != int(r["key_bytes"]):
             raise ValueError(
@@ -294,7 +305,7 @@ def score_phv_slice_sweep(path):
                     r["point_id"], total_bits, expected_key_bytes,
                     r["key_bytes"]))
         rows.append(score_observation(
-            "tcam_phv_slice_sweep", r["point_id"], (total_bits,),
+            "tcam_phv_slice_sweep", r["point_id"], (clean_bits, solid_bits),
             r["real_blocks"], False))
     return rows
 

@@ -172,7 +172,7 @@ def assemble_usage(pool):
   # encoding where a ddos tree only reads ddos features' code fields and
   # could in principle start as soon as just the ddos range tables have
   # landed, not the app ones too. Not modelled -- doing so would need
-  # per-task range levels threaded through this pool -- and the 17/19
+  # per-task range levels threaded through this pool -- and the 18/19
   # stage_depth calibration result (scripts/validation_table.py) suggests
   # the case rarely binds in practice.
   ternary_level = range_plan.depth if range_table_specs else FLOW_HASH_LEVEL + 1

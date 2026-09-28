@@ -36,13 +36,16 @@ deliberately un-silenced. (independent_high_sd7/sd8, over by +1/+3 under the
 retired saturation margin, are exact again.) The earlier "version_block_penalty,
 17 of 17" account describes a mechanism deleted on 2026-09-21.
 
-HELD OUT. Two further sections replay compiles the model was never fitted on,
-end to end from the generated program (scripts/p4_artifact_replay.replay_design):
-results/compiler_calibration_extra/ (8 designs: stage_depth 8/8, blocks 4/5,
-independent_low_sd9 +1, down from +3 under the retired every-order rule) and
-results/tcam_margin_screen/ (16 real designs chosen to stress the
-stage-sharing rules: stage_depth 12/16 and blocks 11/16 exact, every miss an
-over-prediction, mean/max block error 0.38/2, down from 0.56/3). 0 under
+TWO FURTHER SECTIONS replay compiles end to end from the generated program
+(scripts/p4_artifact_replay.replay_design). Only the first is actually held
+out: results/compiler_calibration_extra/ (8 designs the model was never
+fitted on: stage_depth 8/8, blocks 4/5, independent_low_sd9 +1, down from +3
+under the retired every-order rule). results/tcam_margin_screen/ (16 real
+campaign designs) is NOT held out -- it was USED TO CHOOSE the crowded-stage
+margin's 58/62 thresholds (target.py's own "Evidence (2026-09-25)" comment
+cites it directly), so it is adversarial evidence, not a generalisation
+check: stage_depth 12/16 and blocks 11/16 exact, every miss an
+over-prediction, mean/max block error 0.38/2, down from 0.56/3. 0 under
 anywhere.
 
 Run (from the repository root):
@@ -75,9 +78,10 @@ DEFAULT_CSV = os.path.join(ROOT, "results", "compiler_calibration_v6.csv")
 # when the rows were collected -- only the *_real columns are read here.
 HELDOUT_ROOT = os.path.join(ROOT, "results", "compiler_calibration_extra")
 HELDOUT_CSV = os.path.join(ROOT, "results", "compiler_calibration_extra.csv")
-# 16 REAL campaign designs compiled to stress the stage-sharing rules
-# (scripts/tcam_margin_screen.py). Chosen adversarially: over-predictions are
-# expected, under-predictions are not.
+# 16 REAL campaign designs, USED TO CHOOSE 58/62 (scripts/tcam_margin_screen.py;
+# target.py's own "Evidence (2026-09-25)" comment cites this file directly) --
+# adversarial evidence, not a held-out generalisation check. Over-predictions
+# are expected, under-predictions are not.
 CROWDED_ROOT = os.path.join(ROOT, "results", "tcam_margin_screen")
 CROWDED_CSV = os.path.join(ROOT, "results", "tcam_margin_screen_compiled.csv")
 
@@ -374,8 +378,9 @@ def main(argv=None):
               % HELDOUT_ROOT)
 
     if os.path.isfile(CROWDED_CSV):
-        print("\n\n## HELD OUT, ADVERSARIAL -- 16 real campaign designs compiled "
-              "to stress the stage-sharing rules (results/tcam_margin_screen)")
+        print("\n\n## ADVERSARIAL, USED TO CHOOSE 58/62 -- 16 real campaign "
+              "designs compiled to stress the stage-sharing rules "
+              "(results/tcam_margin_screen)")
         crowd_stage, crowd_blocks = heldout_pairs(CROWDED_ROOT, CROWDED_CSV)
         _print_section("stage_depth (crowded real designs)", crowd_stage,
                        "stage_depth")

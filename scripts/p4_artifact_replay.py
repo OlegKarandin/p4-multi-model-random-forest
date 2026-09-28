@@ -35,7 +35,8 @@ def _p4_table_keys(p4_path):
     widths come back too because a field that is not a whole number of bytes
     hands the crossbar a part-used byte, which is what decides whether a
     midbyte nibble survives for the version field
-    (evaluation.version_block_penalty)."""
+    (tables.tail_is_isolatable, consumed by tables.codeword_to_blocks's Sec
+    2.3 isolation credit)."""
     with open(p4_path, encoding='utf-8', errors='replace') as handle:
         text = handle.read()
     widths, bits = {}, {}
@@ -335,12 +336,15 @@ def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
             range_fields.append(fields)
             range_levels.append(levels[keys[0][:-len('_val')]])
         elif name.startswith('get_classification_tree'):
-            # blocks[name] is the count p4c committed, which is exactly the
-            # key's cost at the offset it actually got -- and every committed
-            # classification key in this corpus sits at crossbar group 0. That
-            # is the same basis crossbar_stages_needed assumes for a declared
-            # spec, so it is fed in unmodified: the packer adds only
-            # version_block_delta, i.e. what a DIFFERENT offset would change.
+            # blocks[name] is the count p4c committed -- each key's own
+            # standalone price (tables.codeword_to_blocks), unaffected by
+            # WHERE it starts (the retired offset mechanism is gone; a key's
+            # own price no longer depends on that). That is the same basis
+            # crossbar_stages_needed assumes for a declared spec, so it is
+            # fed in unmodified: the packer adds only the crowded-stage
+            # margin (key_field_bits below; packing.charged's is_crowded
+            # branch), which fires only when two DIFFERENT keys share a
+            # stage above 58 combined crossbar bytes.
             key_bits = tuple(sorted(bits[key] for key in keys))
             ternary_specs.append((blocks[name], width))
             ternary_fields.append(fields)
@@ -351,13 +355,15 @@ def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
                                          unavailable_stages=interior)
     ternary_level = range_plan.depth if range_specs else 0
     # key_field_bits matters even though the block counts here are p4c's own.
-    # The version charge is what makes a MIXED stage infeasible: in
-    # independent_low_sd9 two 9-block app tables and two 3-block ddos tables
-    # pack cleanly into 9+3 | 9+3 = 24 blocks, and p4c still refuses, because
-    # whichever key it hands the later crossbar groups pays a version block
-    # and 26 > 24. The committed placement then puts each key at offset 0, so
-    # nothing actually pays -- the charge decides the PLACEMENT, not the
-    # invoice.
+    # The crowded-stage margin is what makes a MIXED stage infeasible:
+    # independent_low_sd9's real stage packs two DIFFERENT keys (app, ddos)
+    # whose combined crossbar bytes crowd the stage (61 bytes, above
+    # TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE = 58), so every table
+    # of the non-first key pays +1 -- without that margin the design
+    # under-predicts stage_depth (src/p4model/packing.py's
+    # crossbar_stages_needed docstring, "crowded stage"). The committed
+    # placement instead puts each key in its own stage, so nothing actually
+    # pays there -- the margin decides the PLACEMENT, not the invoice.
     ternary_plan = crossbar_stages_needed(
         ternary_specs, readiness_levels=[ternary_level] * len(ternary_specs),
         key_fields=ternary_fields, unavailable_stages=interior,

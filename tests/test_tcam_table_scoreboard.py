@@ -100,6 +100,22 @@ def test_the_crowded_stage_margin_is_applied_to_59_to_62_byte_rows():
         assert (row["blocks_charged"], row["observed_blocks"]) == (4, 4)
 
 
+def test_phv_slice_sweep_scores_two_fields_not_one_merged_field():
+    """C2: the probe (scripts/tcam_phv_slice_sweep.py:193) declares TWO
+    fields, `fields = (clean_bits, 8 * solid_bytes)`, and calls
+    codeword_to_blocks(fields) with that pair -- so the scoreboard must score
+    the same pair, not a single field merged to clean_bits + solid_bits. The
+    merge silently drops the isolation credit (tail_is_isolatable only fires
+    on the true nibble-clean field, clean_bits) and over-predicts 16 of the
+    24 rows; scored correctly every row is exact."""
+    rows = scoreboard.score_phv_slice_sweep(
+        os.path.join(scoreboard.RESULTS_DIR, "tcam_phv_slice_sweep.csv"))
+
+    assert len(rows) == 24
+    exact = [r for r in rows if r["diff_refined"] == 0]
+    assert len(exact) == 24, [(r["identifier"], r["diff_refined"]) for r in rows]
+
+
 def test_offset_harvest_headline_over_predicts_exactly_8_of_100():
     """Spec Sec 4.2/13.1's own headline gate: the isolation refinement is a
     no-op on every archived design's totals, but visible per table -- 8 of

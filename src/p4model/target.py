@@ -47,9 +47,13 @@ CROSSBAR_PRIVATE_BYTES_PER_GROUP = 5
 # two tables share group 5, and the probe's assembly uses groups 0-11 -- exactly
 # 12 of 12, landing ON the cap rather than past it. The cap is real and is this
 # constant.
+# Provenance: ir/tofino.def:38, MAX_TERNARY_GROUPS (model_audit_2026-09-27.md
+# Appendix C).
 TERNARY_CROSSBAR_GROUPS_PER_STAGE = 12      # 5 private bytes each
 TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE = 6  # midbytes, 2 nibbles each
 TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
+# Provenance: mau/tofino/memories.h:54, TERNARY_TABLES_MAX (model_audit_2026-
+# 09-27.md Appendix C).
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
 TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
 # Two tighter limits for a stage holding two or more DIFFERENT keys (spec "F5",
@@ -100,7 +104,9 @@ TOFINO_PIPELINE_STAGES = 12
 # E"): one entry in every RANGE_WORST_CASE_ENTRY_FRACTION is assumed to need
 # the worst-case row count for the key's nibble geometry, capped at
 # RANGE_WORST_CASE_ROWS_CAP; the rest are priced at one row. See
-# compiler_range_rows.
+# compiler_range_rows. Provenance: bf-p4c mau/resource_estimate.cpp:1628-1693
+# / .h:213-214, RangeEntries::preorder/postorder (model_audit_2026-09-27.md
+# Appendix C).
 RANGE_WORST_CASE_ENTRY_FRACTION = 4
 RANGE_WORST_CASE_ROWS_CAP = 8
 
@@ -111,8 +117,13 @@ MAX_RANGE_KEY_BITS = 19   # §4.2: a 20-bit range key does not compile at all
 # the codeword itself. Factored out of the inline `codeword_length + 4` this
 # replaces so the band arithmetic lives in exactly one place -- src/training/
 # align_budget.py gates C1's accuracy spending on it and must not re-declare
-# it. Its physical origin is not documented in this repo; the value is
-# pre-existing behaviour and is NOT changed here.
+# it. Physical origin: the mandatory 2-bit --version-- field, which p4c
+# always parks in a whole midbyte NIBBLE, never fewer bits
+# (model_audit_2026-09-27.md Appendix A.2; tofino/input_xbar.cpp). 4 is that
+# nibble, not a fitted or undocumented number. `codeword_bits_to_blocks`
+# carries this constant only for the empty-key floor -- everywhere else
+# `crossbar_capacity`'s own `floor((g-1)/2)` term already withholds one
+# half-byte for the version field, so this constant is not re-added there.
 CODEWORD_KEY_OVERHEAD_BITS = 4
 
 # A Tofino stage has four stateful ("meter") ALUs, and every RegisterAction
@@ -121,5 +132,7 @@ CODEWORD_KEY_OVERHEAD_BITS = 4
 # table reports a Meter ALU count of 4 as 100.00% (joint_high_sd7 stages 3-6,
 # among others). Swept over 2/3/4/5/6/8 against the 18 committed calibration
 # placements, only 4 reproduces the compiler's last-register stage on every
-# row -- its neighbours manage 13, 11, 10 and 8 of 18.
+# row -- its neighbours manage 13, 11, 10 and 8 of 18. Provenance:
+# mau/memories.h:67, mau/resource_estimate.h:32 (model_audit_2026-09-27.md
+# Appendix C).
 METER_ALUS_PER_STAGE = 4
