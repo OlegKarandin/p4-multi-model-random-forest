@@ -226,8 +226,9 @@ def assemble_usage(pool):
   # starts its trees early, while the other task's range tables may still be
   # landing -- so the two pools can now meet in one stage, and the ternary
   # pool is SEEDED with the range pool's loads: those range shards count
-  # against the stage's table cap, byte limit and column packing, but are not
-  # charged again (see crossbar_stages_needed's seed_stages). With no range
+  # against the stage's table cap, byte limit and column packing, and as one
+  # more different key in the crowded-stage 58/62 rules, but are not charged
+  # again (see crossbar_stages_needed's seed_stages). With no range
   # table for a task, its trees start right after the flow-hash prologue
   # (tree_readiness_levels).
   ternary_levels = tree_readiness_levels(range_plan.table_stages, range_task,

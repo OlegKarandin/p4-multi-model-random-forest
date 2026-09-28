@@ -1,0 +1,485 @@
+{
+ "designs": {
+  "margin_independent_M250_k4_s15": {
+   "source": "results/tcam_margin_screen/p4_src/margin_independent_M250_k4_s15.p4",
+   "tables": {
+    "get_classification_tree_app_0": [
+     "code_flow_iat_min",
+     "code_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_1": [
+     "code_flow_iat_min",
+     "code_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_2": [
+     "code_flow_iat_min",
+     "code_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_3": [
+     "code_flow_iat_min",
+     "code_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_4": [
+     "code_flow_iat_min",
+     "code_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_5": [
+     "code_flow_iat_min",
+     "code_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_6": [
+     "code_flow_iat_min",
+     "code_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_ddos_0": [
+     "code_bwd_packet_length_mean",
+     "code_flow_iat_mean",
+     "code_ddos_fwd_packet_length_mean",
+     "code_ddos_packet_length_mean"
+    ],
+    "get_classification_tree_ddos_1": [
+     "code_bwd_packet_length_mean",
+     "code_flow_iat_mean",
+     "code_ddos_fwd_packet_length_mean",
+     "code_ddos_packet_length_mean"
+    ],
+    "get_classification_tree_ddos_2": [
+     "code_bwd_packet_length_mean",
+     "code_flow_iat_mean",
+     "code_ddos_fwd_packet_length_mean",
+     "code_ddos_packet_length_mean"
+    ],
+    "table_0_flow_iat_min": [
+     "flow_iat_min_val"
+    ],
+    "table_1_fwd_packet_length_max": [
+     "fwd_packet_length_max_val"
+    ],
+    "table_2_app_fwd_packet_length_mean": [
+     "fwd_packet_length_mean_val"
+    ],
+    "table_3_app_packet_length_mean": [
+     "packet_length_mean_val"
+    ],
+    "table_4_bwd_packet_length_mean": [
+     "bwd_packet_length_mean_val"
+    ],
+    "table_5_flow_iat_mean": [
+     "flow_iat_mean_val"
+    ],
+    "table_6_ddos_fwd_packet_length_mean": [
+     "fwd_packet_length_mean_val"
+    ],
+    "table_7_ddos_packet_length_mean": [
+     "packet_length_mean_val"
+    ],
+    "vote_app": [],
+    "vote_ddos": []
+   },
+   "widths": {
+    "code_flow_iat_min": 5,
+    "code_fwd_packet_length_max": 13,
+    "code_app_fwd_packet_length_mean": 11,
+    "code_app_packet_length_mean": 13,
+    "code_bwd_packet_length_mean": 4,
+    "code_flow_iat_mean": 4,
+    "code_ddos_fwd_packet_length_mean": 4,
+    "code_ddos_packet_length_mean": 4,
+    "flow_iat_min_val": 2,
+    "fwd_packet_length_max_val": 2,
+    "fwd_packet_length_mean_val": 2,
+    "packet_length_mean_val": 2,
+    "bwd_packet_length_mean_val": 2,
+    "flow_iat_mean_val": 2
+   },
+   "bits": {
+    "code_flow_iat_min": 35,
+    "code_fwd_packet_length_max": 101,
+    "code_app_fwd_packet_length_mean": 85,
+    "code_app_packet_length_mean": 99,
+    "code_bwd_packet_length_mean": 32,
+    "code_flow_iat_mean": 27,
+    "code_ddos_fwd_packet_length_mean": 28,
+    "code_ddos_packet_length_mean": 29,
+    "flow_iat_min_val": 16,
+    "fwd_packet_length_max_val": 16,
+    "fwd_packet_length_mean_val": 16,
+    "packet_length_mean_val": 16,
+    "bwd_packet_length_mean_val": 16,
+    "flow_iat_mean_val": 16
+   },
+   "sizes": {
+    "get_classification_tree_app_0": 65,
+    "get_classification_tree_app_1": 71,
+    "get_classification_tree_app_2": 66,
+    "get_classification_tree_app_3": 64,
+    "get_classification_tree_app_4": 70,
+    "get_classification_tree_app_5": 65,
+    "get_classification_tree_app_6": 65,
+    "get_classification_tree_ddos_0": 45,
+    "get_classification_tree_ddos_1": 51,
+    "get_classification_tree_ddos_2": 49,
+    "table_0_flow_iat_min": 36,
+    "table_1_fwd_packet_length_max": 102,
+    "table_2_app_fwd_packet_length_mean": 86,
+    "table_3_app_packet_length_mean": 100,
+    "table_4_bwd_packet_length_mean": 33,
+    "table_5_flow_iat_mean": 28,
+    "table_6_ddos_fwd_packet_length_mean": 29,
+    "table_7_ddos_packet_length_mean": 30,
+    "vote_app": 2187,
+    "vote_ddos": 8
+   },
+   "stages_real": 11,
+   "tcam_real": 73,
+   "stage_depth_before_c1": 12
+  },
+  "independent_high_sd12": {
+   "source": "results/compiler_calibration_v6/p4_src/independent_high_sd12.p4",
+   "tables": {
+    "get_classification_tree_app_0": [
+     "code_app_bwd_iat_max",
+     "code_bwd_iat_mean",
+     "code_app_bwd_iat_min",
+     "code_app_bwd_packet_length_max",
+     "code_app_bwd_packet_length_mean",
+     "code_bwd_packet_length_min",
+     "code_flow_iat_max",
+     "code_app_flow_iat_min",
+     "code_app_fwd_iat_max",
+     "code_app_fwd_iat_min",
+     "code_app_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_fwd_packet_length_min",
+     "code_app_min_packet_length",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_1": [
+     "code_app_bwd_iat_max",
+     "code_bwd_iat_mean",
+     "code_app_bwd_iat_min",
+     "code_app_bwd_packet_length_max",
+     "code_app_bwd_packet_length_mean",
+     "code_bwd_packet_length_min",
+     "code_flow_iat_max",
+     "code_app_flow_iat_min",
+     "code_app_fwd_iat_max",
+     "code_app_fwd_iat_min",
+     "code_app_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_fwd_packet_length_min",
+     "code_app_min_packet_length",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_2": [
+     "code_app_bwd_iat_max",
+     "code_bwd_iat_mean",
+     "code_app_bwd_iat_min",
+     "code_app_bwd_packet_length_max",
+     "code_app_bwd_packet_length_mean",
+     "code_bwd_packet_length_min",
+     "code_flow_iat_max",
+     "code_app_flow_iat_min",
+     "code_app_fwd_iat_max",
+     "code_app_fwd_iat_min",
+     "code_app_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_fwd_packet_length_min",
+     "code_app_min_packet_length",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_3": [
+     "code_app_bwd_iat_max",
+     "code_bwd_iat_mean",
+     "code_app_bwd_iat_min",
+     "code_app_bwd_packet_length_max",
+     "code_app_bwd_packet_length_mean",
+     "code_bwd_packet_length_min",
+     "code_flow_iat_max",
+     "code_app_flow_iat_min",
+     "code_app_fwd_iat_max",
+     "code_app_fwd_iat_min",
+     "code_app_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_fwd_packet_length_min",
+     "code_app_min_packet_length",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_app_4": [
+     "code_app_bwd_iat_max",
+     "code_bwd_iat_mean",
+     "code_app_bwd_iat_min",
+     "code_app_bwd_packet_length_max",
+     "code_app_bwd_packet_length_mean",
+     "code_bwd_packet_length_min",
+     "code_flow_iat_max",
+     "code_app_flow_iat_min",
+     "code_app_fwd_iat_max",
+     "code_app_fwd_iat_min",
+     "code_app_fwd_packet_length_max",
+     "code_app_fwd_packet_length_mean",
+     "code_app_fwd_packet_length_min",
+     "code_app_min_packet_length",
+     "code_app_packet_length_mean"
+    ],
+    "get_classification_tree_ddos_0": [
+     "code_ddos_bwd_iat_max",
+     "code_ddos_bwd_iat_min",
+     "code_ddos_bwd_packet_length_max",
+     "code_ddos_bwd_packet_length_mean",
+     "code_flow_iat_mean",
+     "code_ddos_flow_iat_min",
+     "code_ddos_fwd_iat_max",
+     "code_fwd_iat_mean",
+     "code_ddos_fwd_iat_min",
+     "code_ddos_fwd_packet_length_max",
+     "code_ddos_fwd_packet_length_mean",
+     "code_ddos_fwd_packet_length_min",
+     "code_ddos_min_packet_length",
+     "code_ddos_packet_length_mean"
+    ],
+    "table_0_app_bwd_iat_max": [
+     "bwd_iat_max_val"
+    ],
+    "table_1_bwd_iat_mean": [
+     "bwd_iat_mean_val"
+    ],
+    "table_2_app_bwd_iat_min": [
+     "bwd_iat_min_val"
+    ],
+    "table_3_app_bwd_packet_length_max": [
+     "bwd_packet_length_max_val"
+    ],
+    "table_4_app_bwd_packet_length_mean": [
+     "bwd_packet_length_mean_val"
+    ],
+    "table_5_bwd_packet_length_min": [
+     "bwd_packet_length_min_val"
+    ],
+    "table_6_flow_iat_max": [
+     "flow_iat_max_val"
+    ],
+    "table_7_app_flow_iat_min": [
+     "flow_iat_min_val"
+    ],
+    "table_8_app_fwd_iat_max": [
+     "fwd_iat_max_val"
+    ],
+    "table_9_app_fwd_iat_min": [
+     "fwd_iat_min_val"
+    ],
+    "table_10_app_fwd_packet_length_max": [
+     "fwd_packet_length_max_val"
+    ],
+    "table_11_app_fwd_packet_length_mean": [
+     "fwd_packet_length_mean_val"
+    ],
+    "table_12_app_fwd_packet_length_min": [
+     "fwd_packet_length_min_val"
+    ],
+    "table_13_app_min_packet_length": [
+     "min_packet_length_val"
+    ],
+    "table_14_app_packet_length_mean": [
+     "packet_length_mean_val"
+    ],
+    "table_15_ddos_bwd_iat_max": [
+     "bwd_iat_max_val"
+    ],
+    "table_16_ddos_bwd_iat_min": [
+     "bwd_iat_min_val"
+    ],
+    "table_17_ddos_bwd_packet_length_max": [
+     "bwd_packet_length_max_val"
+    ],
+    "table_18_ddos_bwd_packet_length_mean": [
+     "bwd_packet_length_mean_val"
+    ],
+    "table_19_flow_iat_mean": [
+     "flow_iat_mean_val"
+    ],
+    "table_20_ddos_flow_iat_min": [
+     "flow_iat_min_val"
+    ],
+    "table_21_ddos_fwd_iat_max": [
+     "fwd_iat_max_val"
+    ],
+    "table_22_fwd_iat_mean": [
+     "fwd_iat_mean_val"
+    ],
+    "table_23_ddos_fwd_iat_min": [
+     "fwd_iat_min_val"
+    ],
+    "table_24_ddos_fwd_packet_length_max": [
+     "fwd_packet_length_max_val"
+    ],
+    "table_25_ddos_fwd_packet_length_mean": [
+     "fwd_packet_length_mean_val"
+    ],
+    "table_26_ddos_fwd_packet_length_min": [
+     "fwd_packet_length_min_val"
+    ],
+    "table_27_ddos_min_packet_length": [
+     "min_packet_length_val"
+    ],
+    "table_28_ddos_packet_length_mean": [
+     "packet_length_mean_val"
+    ],
+    "vote_app": [],
+    "vote_ddos": []
+   },
+   "widths": {
+    "code_app_bwd_iat_max": 1,
+    "code_bwd_iat_mean": 3,
+    "code_app_bwd_iat_min": 2,
+    "code_app_bwd_packet_length_max": 4,
+    "code_app_bwd_packet_length_mean": 3,
+    "code_bwd_packet_length_min": 1,
+    "code_flow_iat_max": 2,
+    "code_app_flow_iat_min": 2,
+    "code_app_fwd_iat_max": 1,
+    "code_app_fwd_iat_min": 2,
+    "code_app_fwd_packet_length_max": 3,
+    "code_app_fwd_packet_length_mean": 3,
+    "code_app_fwd_packet_length_min": 1,
+    "code_app_min_packet_length": 1,
+    "code_app_packet_length_mean": 4,
+    "code_ddos_bwd_iat_max": 1,
+    "code_ddos_bwd_iat_min": 1,
+    "code_ddos_bwd_packet_length_max": 3,
+    "code_ddos_bwd_packet_length_mean": 1,
+    "code_flow_iat_mean": 1,
+    "code_ddos_flow_iat_min": 1,
+    "code_ddos_fwd_iat_max": 1,
+    "code_fwd_iat_mean": 2,
+    "code_ddos_fwd_iat_min": 2,
+    "code_ddos_fwd_packet_length_max": 2,
+    "code_ddos_fwd_packet_length_mean": 1,
+    "code_ddos_fwd_packet_length_min": 1,
+    "code_ddos_min_packet_length": 1,
+    "code_ddos_packet_length_mean": 1,
+    "bwd_iat_max_val": 2,
+    "bwd_iat_mean_val": 2,
+    "bwd_iat_min_val": 2,
+    "bwd_packet_length_max_val": 2,
+    "bwd_packet_length_mean_val": 2,
+    "bwd_packet_length_min_val": 2,
+    "flow_iat_max_val": 2,
+    "flow_iat_min_val": 2,
+    "fwd_iat_max_val": 2,
+    "fwd_iat_min_val": 2,
+    "fwd_packet_length_max_val": 2,
+    "fwd_packet_length_mean_val": 2,
+    "fwd_packet_length_min_val": 2,
+    "min_packet_length_val": 2,
+    "packet_length_mean_val": 2,
+    "flow_iat_mean_val": 2,
+    "fwd_iat_mean_val": 2
+   },
+   "bits": {
+    "code_app_bwd_iat_max": 8,
+    "code_bwd_iat_mean": 23,
+    "code_app_bwd_iat_min": 9,
+    "code_app_bwd_packet_length_max": 30,
+    "code_app_bwd_packet_length_mean": 19,
+    "code_bwd_packet_length_min": 5,
+    "code_flow_iat_max": 12,
+    "code_app_flow_iat_min": 12,
+    "code_app_fwd_iat_max": 6,
+    "code_app_fwd_iat_min": 11,
+    "code_app_fwd_packet_length_max": 22,
+    "code_app_fwd_packet_length_mean": 19,
+    "code_app_fwd_packet_length_min": 3,
+    "code_app_min_packet_length": 2,
+    "code_app_packet_length_mean": 28,
+    "code_ddos_bwd_iat_max": 2,
+    "code_ddos_bwd_iat_min": 8,
+    "code_ddos_bwd_packet_length_max": 17,
+    "code_ddos_bwd_packet_length_mean": 2,
+    "code_flow_iat_mean": 5,
+    "code_ddos_flow_iat_min": 6,
+    "code_ddos_fwd_iat_max": 4,
+    "code_fwd_iat_mean": 13,
+    "code_ddos_fwd_iat_min": 12,
+    "code_ddos_fwd_packet_length_max": 11,
+    "code_ddos_fwd_packet_length_mean": 8,
+    "code_ddos_fwd_packet_length_min": 1,
+    "code_ddos_min_packet_length": 2,
+    "code_ddos_packet_length_mean": 5,
+    "bwd_iat_max_val": 16,
+    "bwd_iat_mean_val": 16,
+    "bwd_iat_min_val": 16,
+    "bwd_packet_length_max_val": 16,
+    "bwd_packet_length_mean_val": 16,
+    "bwd_packet_length_min_val": 16,
+    "flow_iat_max_val": 16,
+    "flow_iat_min_val": 16,
+    "fwd_iat_max_val": 16,
+    "fwd_iat_min_val": 16,
+    "fwd_packet_length_max_val": 16,
+    "fwd_packet_length_mean_val": 16,
+    "fwd_packet_length_min_val": 16,
+    "min_packet_length_val": 16,
+    "packet_length_mean_val": 16,
+    "flow_iat_mean_val": 16,
+    "fwd_iat_mean_val": 16
+   },
+   "sizes": {
+    "get_classification_tree_app_0": 48,
+    "get_classification_tree_app_1": 58,
+    "get_classification_tree_app_2": 55,
+    "get_classification_tree_app_3": 48,
+    "get_classification_tree_app_4": 39,
+    "get_classification_tree_ddos_0": 98,
+    "table_0_app_bwd_iat_max": 9,
+    "table_1_bwd_iat_mean": 24,
+    "table_2_app_bwd_iat_min": 10,
+    "table_3_app_bwd_packet_length_max": 31,
+    "table_4_app_bwd_packet_length_mean": 20,
+    "table_5_bwd_packet_length_min": 6,
+    "table_6_flow_iat_max": 13,
+    "table_7_app_flow_iat_min": 13,
+    "table_8_app_fwd_iat_max": 7,
+    "table_9_app_fwd_iat_min": 12,
+    "table_10_app_fwd_packet_length_max": 23,
+    "table_11_app_fwd_packet_length_mean": 20,
+    "table_12_app_fwd_packet_length_min": 4,
+    "table_13_app_min_packet_length": 3,
+    "table_14_app_packet_length_mean": 29,
+    "table_15_ddos_bwd_iat_max": 3,
+    "table_16_ddos_bwd_iat_min": 9,
+    "table_17_ddos_bwd_packet_length_max": 18,
+    "table_18_ddos_bwd_packet_length_mean": 3,
+    "table_19_flow_iat_mean": 6,
+    "table_20_ddos_flow_iat_min": 7,
+    "table_21_ddos_fwd_iat_max": 5,
+    "table_22_fwd_iat_mean": 14,
+    "table_23_ddos_fwd_iat_min": 13,
+    "table_24_ddos_fwd_packet_length_max": 12,
+    "table_25_ddos_fwd_packet_length_mean": 9,
+    "table_26_ddos_fwd_packet_length_min": 2,
+    "table_27_ddos_min_packet_length": 3,
+    "table_28_ddos_packet_length_mean": 6,
+    "vote_app": 243,
+    "vote_ddos": 2
+   },
+   "stages_real": 13,
+   "tcam_real": null,
+   "stage_depth_before_c1": 14
+  }
+ }
+}

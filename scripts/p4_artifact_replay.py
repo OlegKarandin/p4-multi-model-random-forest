@@ -277,7 +277,16 @@ def replay_design(row_id, artifacts_root):
     never-under on depth."""
     p4_path = os.path.join(artifacts_root, 'p4_src', row_id + '.p4')
     tables, widths, bits = _p4_table_keys(p4_path)
-    sizes = _p4_table_sizes(p4_path)
+    return replay_program(row_id, tables, widths, bits, _p4_table_sizes(p4_path))
+
+
+def replay_program(row_id, tables, widths, bits, sizes):
+    """replay_design's model half, on an already-parsed program: tables
+    (name -> key fields), widths/bits (field -> crossbar bytes / declared
+    bits) and sizes (table -> declared entries), as _p4_table_keys and
+    _p4_table_sizes return them. Split out so a committed fixture can replay a
+    design without the gitignored p4_src/ file
+    (tests/fixtures/c1_replay_designs.json)."""
     blocks = {}
     for name, keys in tables.items():
         if not keys or name not in sizes:

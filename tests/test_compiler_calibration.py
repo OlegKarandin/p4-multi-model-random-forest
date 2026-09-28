@@ -984,3 +984,58 @@ def test_the_model_never_under_predicts_a_crowded_real_design(row_id, tcam_real,
     assert stages_real <= depth <= stages_real + 1
     if not pd.isna(tcam_real):
         assert int(tcam_real) <= blocks <= int(tcam_real) + 3
+
+
+# ---------------------------------------------------------------------------
+# Audit C1 (per-task tree readiness under 'disjoint'): the two archived
+# compiles whose predicted stage_depth it moves, replayed from a COMMITTED
+# capture of their generated programs (tests/fixtures/c1_replay_designs.json,
+# scripts/dump_c1_replay_fixture.py), so this runs without results/.
+# ---------------------------------------------------------------------------
+
+_C1_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'fixtures', 'c1_replay_designs.json')
+
+
+def _c1_designs():
+    with open(_C1_FIXTURE, encoding='utf-8') as handle:
+        return sorted(json.load(handle)['designs'].items())
+
+
+def _c1_replay(design):
+    from scripts.p4_artifact_replay import replay_program
+
+    return replay_program('c1', design['tables'], design['widths'],
+                          design['bits'], design['sizes'])
+
+
+@pytest.mark.parametrize('row_id,design', _c1_designs(),
+                         ids=[row_id for row_id, _ in _c1_designs()])
+def test_per_task_readiness_makes_these_designs_exact(row_id, design):
+    # M250_k4_s15: 12 -> 11 (real 11); independent_high_sd12: 14 -> 13 (real
+    # 13). Each design's app trees no longer wait for its ddos range tables.
+    depth, blocks = _c1_replay(design)
+    assert depth == design['stages_real'], row_id
+    if design['tcam_real'] is not None:
+        assert blocks == design['tcam_real'], row_id
+
+
+@pytest.mark.parametrize('row_id,design', _c1_designs(),
+                         ids=[row_id for row_id, _ in _c1_designs()])
+def test_waiting_for_every_range_table_reproduces_the_pre_c1_depth(
+        row_id, design, monkeypatch):
+    # The counterfactual, computed rather than quoted: label every range table
+    # SHARED_TASK -- every tree waits for the last range table of either task,
+    # the pre-C1 rule -- and the old, one-stage-deeper prediction comes back.
+    import scripts.p4_artifact_replay as replay
+    from src.p4model.program import SHARED_TASK
+
+    real_table_tasks = replay.table_tasks
+
+    def everything_shared(tables):
+        return {name: (SHARED_TASK if name.startswith('table_') else task)
+                for name, task in real_table_tasks(tables).items()}
+
+    monkeypatch.setattr(replay, 'table_tasks', everything_shared)
+    depth, _blocks = _c1_replay(design)
+    assert depth == design['stage_depth_before_c1'] == design['stages_real'] + 1

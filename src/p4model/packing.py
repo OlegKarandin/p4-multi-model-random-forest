@@ -87,20 +87,31 @@ class StagePlan:
     return self.occupied
 
 
+# The key identity seeded_keys() gives a whole seed (another pool's shards in
+# a stage) in crossbar_stages_needed's key orderings. Never a real field set.
+_SEED_KEY = object()
+
+
 def stage_load_fits(loads):
   """Whether several pools' StageLoads for the SAME stage index fit together
   under the three per-stage limits: <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
   shards, <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes of distinct key fields,
   and a 12x2 column packing of every shard (fits_two_columns). The check
   crossbar_stages_needed's seed_stages makes while placing, restated as a
-  predicate so a caller can assert it after the fact. The crowded-stage rules
-  are not part of it: they are measured on ternary keys and applied inside the
-  ternary pool only (see crossbar_stages_needed's seed_stages)."""
+  predicate so a caller can assert it after the fact. Also the one
+  crowded-stage limit that can be judged from loads alone: two or more
+  non-empty pools in a stage are two different keys at least, so above
+  TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE (62) combined bytes they may not
+  share it (seed_stages treats a seed as a key; see seeded_keys). The +1
+  margin itself is already inside each load's charged blocks."""
   loads = list(loads)
   fields = frozenset().union(*(load.fields for load in loads))
+  total_bytes = sum(field_bytes for _, field_bytes in fields)
+  pools = sum(1 for load in loads if load.fields)
   return (sum(load.tables for load in loads) <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
-          and sum(field_bytes for _, field_bytes in fields)
-          <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+          and total_bytes <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+          and not (pools > 1
+                   and total_bytes > TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE)
           and fits_two_columns([b for load in loads for b in load.blocks]))
 
 
@@ -324,10 +335,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   the 8-table cap, the 64-byte limit and the 12x2 column packing of its stage
   exactly as this pool's own would, but they are never charged again: the
   returned plan's blocks, occupied, depth, indices and stage_loads describe
-  this pool alone. Seeds are range tables in practice, and they take no part
-  in the crowded-stage rules above -- those were measured on ternary keys
-  sharing a stage with ternary keys, and a stage's crowding (key count, bytes
-  over 58/62) is judged on this pool's keys only. Like unavailable_stages it
+  this pool alone. Seeds are range tables in practice, and for the
+  crowded-stage rules above a seed is one more DIFFERENT key whose bytes count
+  toward 58/62 (seeded_keys): nothing was measured with a range key beside a
+  tree key, so no exemption is assumed. A seed is never charged the margin;
+  only this pool's tables are. Like unavailable_stages it
   needs readiness_levels (absolute stage indices); passing seeds without them
   raises.
 
@@ -556,17 +568,16 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     # charged_blocks() charges the worst order that still fits, matching this
     # function's feasibility test exactly.
     #
-    # stage[4] is the stage's seed (seed_stages): another pool's shards, which
-    # count against the table cap, the byte limit and the column packing but
-    # not against the crowded-stage rules, whose byte count (stage_bytes) and
-    # key count stay this pool's own.
-    keys = list(stage[3])
+    # stage[4] is the stage's seed (seed_stages): another pool's shards. They
+    # count against the table cap, the byte limit and the column packing, and
+    # -- conservatively, see seeded_keys() -- as one more DIFFERENT key in the
+    # crowded-stage rules, but they are never charged the margin.
+    seed = stage[4]
+    keys = seeded_keys(stage[3], seed)
     if all(key != fields for key, _ in keys):
       keys.append((fields, key_width(fields, bits)))
-    seed = stage[4]
-    stage_bytes = crossbar_bytes(stage[0] | fields)
-    if (crossbar_bytes(stage[0] | fields | seed.fields)
-        > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+    stage_bytes = crossbar_bytes(stage[0] | fields | seed.fields)
+    if (stage_bytes > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
         or stage[1] + seed.tables + 1 > TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE):
       return False
     # Two DIFFERENT keys past the mixed-key budget (target.py, spec "F5"): p4c
@@ -596,6 +607,29 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     stage[2].append((blocks, fields, bits))
     if all(key != fields for key, _ in stage[3]):
       stage[3].append((fields, key_width(fields, bits)))
+
+  def seeded_keys(keys, seed):
+    """This pool's distinct keys in a stage, plus the seed as ONE more
+    distinct key when the stage has one.
+
+    Why a seed is a key at all: the crowded-stage margin and the 62-byte
+    refusal model the ternary crossbar itself -- a later key must take the
+    groups an earlier one left, lane-locked -- and a range table's key is
+    placed on that same crossbar. Nothing was ever measured with a range key
+    beside a tree key (before audit C1 the two pools never shared a stage), so
+    no exemption is claimed: seed bytes count toward the 58/62 thresholds, and
+    the seed takes part in the key orderings fits() and
+    stage_charged_blocks() try, so an order serving the seed first makes every
+    tree key a non-first key that pays the margin. The seed itself is never
+    charged -- charged() is only ever asked about this pool's shards. One
+    pseudo-key suffices however many range keys the seed holds: the margin
+    only asks whether a key is first, and one entry already lets the seed be
+    first. Measured cost on the archive: none (the largest seed in a shared
+    stage is 8 bytes, beside trees far below 58)."""
+    keys = list(keys)
+    if seed.fields:
+      keys.append((_SEED_KEY, 1))
+    return keys
 
   def empty(seed):
     # entry: [fields_present, tables_used, shards, key_order, seed]
@@ -637,11 +671,14 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     SEEDED stage is always entered through `fits()`, seed blocks included, so
     the same guarantee holds there. The seed's blocks take part in the column
     test but not in the returned list: they are the seeding pool's to report.
+    The seed also counts as one more key in the orderings and the crowding
+    test (seeded_keys), never as a shard that pays.
     Ties between fitting orders keep the first one found; they are equal in
     total, which is all any caller reads."""
-    is_crowded = crowded(len(stage[3]), crossbar_bytes(stage[0]))
+    keys = seeded_keys(stage[3], stage[4])
+    is_crowded = crowded(len(keys), crossbar_bytes(stage[0] | stage[4].fields))
     worst = None
-    for key_order in itertools.permutations(stage[3]):
+    for key_order in itertools.permutations(keys):
       offsets = offsets_for(key_order)
       charged_blocks = [charged(offsets, blocks, fields, bits,
                                 is_crowded=is_crowded)

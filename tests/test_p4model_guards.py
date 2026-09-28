@@ -791,11 +791,14 @@ def test_seeds_leave_an_unseeded_placement_unchanged():
         **kwargs)
 
 
-def test_seed_bytes_do_not_make_a_stage_crowded():
+def test_seed_bytes_and_keys_count_toward_a_crowded_stage():
     # 44 + 14 = 58 ternary bytes is the free edge (see
-    # test_a_stage_at_the_free_edge_charges_nothing); a 4-byte range seed takes
-    # the stage to 62 crossbar bytes but is not a ternary key, and the
-    # crowded-stage rules judge the ternary keys alone -- nothing is charged.
+    # test_a_stage_at_the_free_edge_charges_nothing). A 4-byte range seed takes
+    # the stage to 62 crossbar bytes and is one more DIFFERENT key on the same
+    # crossbar -- no measurement exempts range keys, so the stage is crowded.
+    # The worst fitting order serves the seed first: both tree keys are then
+    # non-first and pay +1 (9 + 1, 3 + 1); the seed's own blocks are never
+    # charged. Without the seed this stage costs 12 (test above).
     from src.p4model.packing import crossbar_stages_needed
 
     spacer = frozenset({(("code", "spacer"), 44)})
@@ -804,7 +807,25 @@ def test_seed_bytes_do_not_make_a_stage_crowded():
         [(9, 44), (3, 14)], readiness_levels=[0] * 2,
         key_fields=[spacer, probe], key_field_bits=[(352,), (54, 56)],
         seed_stages=[_seed(0, [1, 1], [2, 2])])
-    assert (plan.occupied, plan.blocks) == (1, 12)
+    assert (plan.occupied, plan.blocks) == (1, 14)
+    assert plan.stage_loads[0].blocks in ((10, 4), (4, 10))
+
+
+def test_a_seed_past_the_mixed_key_byte_cap_refuses_the_stage():
+    # 44 + 14 + 6 = 64 bytes: within the raw 64-byte limit but past the
+    # 62-byte refusal for different keys, which a seed is -- the probe moves on.
+    from src.p4model.packing import crossbar_stages_needed, stage_load_fits
+
+    spacer = frozenset({(("code", "spacer"), 44)})
+    probe = frozenset({(("code", "a"), 7), (("code", "b"), 7)})
+    plan = crossbar_stages_needed(
+        [(9, 44), (3, 14)], readiness_levels=[0] * 2,
+        key_fields=[spacer, probe], key_field_bits=[(352,), (54, 56)],
+        seed_stages=[_seed(0, [1, 1, 1], [2, 2, 2])])
+    assert plan.table_stages == (0, 1)
+    # The same shape judged after the fact: two pools, 64 bytes > 62.
+    assert not stage_load_fits([_seed(0, [1], [6]), _seed(0, [9, 3], [58])])
+    assert stage_load_fits([_seed(0, [1], [4]), _seed(0, [9, 3], [58])])
 
 
 def test_seed_stages_need_readiness_levels_and_one_load_per_stage():
