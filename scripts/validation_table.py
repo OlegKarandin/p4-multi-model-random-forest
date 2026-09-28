@@ -23,9 +23,8 @@ ground truth. The CSV's own stage_depth/blocks columns are read ONLY by the
 drift check below, whose job is precisely to catch a stale-column case like
 this one.
 
-CURRENT STANDING (2026-09-27). On the 19 fitted rows: stage_depth 18/19
-exact, 0 under (independent_high_sd12 +1, already past the 12-stage ceiling)
-and blocks 16/17 exact, 0 under (independent_low_sd12 +1). The
+CURRENT STANDING (2026-09-28). On the 19 fitted rows: stage_depth 19/19
+exact, 0 under, and blocks 16/17 exact, 0 under (independent_low_sd12 +1). The
 independent_low_sd12 blocks miss is the crowded-stage rule's known cost: its
 real stage shares 60 bytes for free. Its stage_depth miss is CLOSED: the
 2026-09-27 any-order fit rule (reviews/final_model_check_2026-09-27.md
@@ -33,8 +32,13 @@ section 1b) lets fits() accept a stage under the one key ordering that packs
 column-wise, rather than requiring every ordering to, which used to push this
 design one stage too deep. The drift check below prints its CSV disagreement,
 deliberately un-silenced. (independent_high_sd7/sd8, over by +1/+3 under the
-retired saturation margin, are exact again.) The earlier "version_block_penalty,
-17 of 17" account describes a mechanism deleted on 2026-09-21.
+retired saturation margin, are exact again.) independent_high_sd12 (+1 until
+2026-09-28, already past the 12-stage ceiling) is exact since per-task tree
+readiness (audit C1): its app trees no longer wait for the ddos range tables.
+The drift check reports its stage_depth against the CSV's stale 14,
+deliberately un-silenced like independent_low_sd12. The earlier
+"version_block_penalty, 17 of 17" account describes a mechanism deleted on
+2026-09-21.
 
 TWO FURTHER SECTIONS replay compiles end to end from the generated program
 (scripts/p4_artifact_replay.replay_design). Only the first is actually held
@@ -44,9 +48,9 @@ under the retired every-order rule). results/tcam_margin_screen/ (16 real
 campaign designs) is NOT held out -- it was USED TO CHOOSE the crowded-stage
 margin's 58/62 thresholds (target.py's own "Evidence (2026-09-25)" comment
 cites it directly), so it is adversarial evidence, not a generalisation
-check: stage_depth 12/16 and blocks 11/16 exact, every miss an
-over-prediction, mean/max block error 0.38/2, down from 0.56/3. 0 under
-anywhere.
+check: stage_depth 13/16 (M250_k4_s15 exact since C1) and blocks 11/16
+exact, every miss an over-prediction, mean/max block error 0.38/2, down from
+0.56/3. 0 under anywhere.
 
 Run (from the repository root):
   "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" scripts/validation_table.py

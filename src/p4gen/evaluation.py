@@ -57,6 +57,9 @@ from src.p4model.target import (
     TOFINO_PIPELINE_STAGES,
 )
 from src.p4model.program import (
+    APP_TASK,
+    DDOS_TASK,
+    SHARED_TASK,
     FEATURE_VALUE_BIT_WIDTH,
     FLOW_HASH_LEVEL,
     ORIENTATION_REGISTER,
@@ -188,7 +191,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   """Fitted-forest frontend for multi_model_memory_evaluation: runs the
   'joint'/'disjoint' encoding branches on both RandomForestClassifiers and
   pools everything they produce, once converged, into a plain dict under the
-  same 13 names regardless of which branch ran.
+  same 15 names regardless of which branch ran.
 
   This is the Tier 2 ProgramSpec seam (Spec S4.5, finding F6): downstream of
   this function, src.p4model.usage.assemble_usage takes only this dict and is
@@ -202,8 +205,19 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   field_BITS) instead, since bits round-trip exactly to bytes but not the
   reverse.
 
+  range_task and ternary_task say which classification task each table
+  serves, one label per entry, positionally aligned with range_table_specs and
+  ternary_table_specs respectively. Labels are src.p4model.program's
+  APP_TASK ('app') and DDOS_TASK ('ddos'); a range table can also be
+  SHARED_TASK ('shared'), meaning every task's trees key on its code field --
+  every range table under 'joint', none under 'disjoint' here. ternary_task
+  is never SHARED_TASK: under 'joint' the trees still come from two forests,
+  app trees first. assemble_usage reads the labels for per-task tree
+  readiness (audit C1): a tree waits only for range tables labelled with its
+  own task or SHARED_TASK.
+
   ternary_blocks (the naive per-table block sum each branch computes below)
-  is deliberately NOT one of the 13 keys: it is already dead after the branch
+  is deliberately NOT one of the 15 keys: it is already dead after the branch
   converges -- assemble_usage's ResourceUsage.blocks uses ternary_plan.blocks,
   the StagePlan total from src.p4model.packing charged with the crowded-stage
   margin, never this naive sum. Carrying it into the pool would invite exactly
@@ -226,9 +240,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # 'Flow IAT Max' in the other) silently merges with no raise
     # (final-review finding #1).
     _reject_colliding_feature_names(list(selected_features_app) + list(selected_features_ddos))
-    tree_nodes = merge_tree_nodes(
-        tree_nodes_for(clf_app, selected_features_app),
-        tree_nodes_for(clf_ddos, selected_features_ddos))
+    tree_nodes_app = tree_nodes_for(clf_app, selected_features_app)
+    tree_nodes_ddos = tree_nodes_for(clf_ddos, selected_features_ddos)
+    tree_nodes = merge_tree_nodes(tree_nodes_app, tree_nodes_ddos)
 
     feature_intervals = feature_intervals_from_nodes(tree_nodes)
     range_entries, range_blocks, range_table_specs = range_matching_resource_usage(feature_intervals)
@@ -246,6 +260,13 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     ternary_fields = [ternary_key_fields(feature_intervals)] * len(ternary_table_specs)
     ternary_key_bits = ([ternary_key_field_bits(feature_intervals)]
                         * len(ternary_table_specs))
+    # Every range table writes a code field of the ONE merged interval set,
+    # which every tree of both tasks keys on. The merged tree set lists the
+    # app trees first (merge_tree_nodes' order), one classification table
+    # each.
+    range_task = [SHARED_TASK] * len(range_table_specs)
+    ternary_task = ([APP_TASK] * len(tree_nodes_app)
+                    + [DDOS_TASK] * len(tree_nodes_ddos))
 
   elif encoding == 'disjoint':
 
@@ -274,6 +295,17 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # per-stage budgets -- pack them together, per pool.
     range_table_specs = range_table_specs_app + range_table_specs_ddos
     ternary_table_specs = ternary_table_specs_app + ternary_table_specs_ddos
+    # Which task each table serves, in the same concatenation order: a tree
+    # waits only for its own task's range tables (assemble_usage, audit C1).
+    # Each model's range tables are its own here, even for a feature both
+    # models split identically, which the generator emits as ONE shared table
+    # (p4_artifact_replay labels that one SHARED_TASK). This branch already
+    # prices such a feature as two tables, one per model, with the same
+    # readiness level, so each copy gates its own task's trees.
+    range_task = ([APP_TASK] * len(range_table_specs_app)
+                  + [DDOS_TASK] * len(range_table_specs_ddos))
+    ternary_task = ([APP_TASK] * len(ternary_table_specs_app)
+                    + [DDOS_TASK] * len(ternary_table_specs_ddos))
 
     # Each model keeps its own intervals here, so levels must be derived per
     # model and concatenated in the SAME order the specs were. But there is
@@ -328,12 +360,14 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   interior_stages = gated_block_interior_stages(emitted_features)
 
   # ternary_blocks (the naive per-table sum each branch computed above) is
-  # deliberately NOT one of the 13 keys below -- see this function's own
+  # deliberately NOT one of the 15 keys below -- see this function's own
   # docstring.
   return {
       "range_table_specs": range_table_specs,
       "ternary_table_specs": ternary_table_specs,
       "range_levels": range_levels,
+      "range_task": range_task,
+      "ternary_task": ternary_task,
       "range_fields": range_fields,
       "ternary_fields": ternary_fields,
       "ternary_key_bits": ternary_key_bits,
@@ -358,7 +392,8 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
 
     stages      : OCCUPIED match-table stage count -- how many distinct
                   stage indices actually hold a table from either pool
-                  (range_plan.occupied + ternary_plan.occupied). M2 example: 3.
+                  (len(range_plan.indices | ternary_plan.indices); a stage
+                  both pools share under 'disjoint' counts once). M2 example: 3.
                   This is what gets written to the campaign CSV's `stages`
                   column and plotted -- it is NOT a pipeline-depth quantity
                   and must never be compared against TOFINO_PIPELINE_STAGES.

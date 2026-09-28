@@ -1912,7 +1912,7 @@ POOL_KEYS = {
     "range_table_specs", "ternary_table_specs", "range_levels", "range_fields",
     "ternary_fields", "ternary_key_bits", "interior_stages", "emitted_features",
     "register_names", "range_entries", "range_blocks", "ternary_entries",
-    "codeword_length",
+    "codeword_length", "range_task", "ternary_task",
 }
 
 
@@ -1952,3 +1952,163 @@ def test_pool_inputs_key_field_widths_agree_with_table_spec_byte_widths(encoding
     for (_, byte_width), fields in zip(pool["ternary_table_specs"],
                                        pool["ternary_fields"]):
         assert sum(width for _, width in fields) == byte_width
+
+
+# --- Audit C1: per-task tree readiness under 'disjoint'
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint"])
+def test_pool_inputs_labels_every_table_with_its_task(encoding):
+    # range_task/ternary_task are positionally aligned with the specs. Trees
+    # are always one task's (app trees first, even under 'joint', where the
+    # merged tree set keeps merge_tree_nodes' order); a range table is its own
+    # model's under 'disjoint' and every task's (SHARED_TASK) under 'joint'.
+    from src.p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
+
+    features = ["f0", "f1", "f2", "f3"]
+    clf_app = _tiny_forest([0, 1, 2], seed=0)
+    clf_ddos = _tiny_forest([-1, 1], seed=7)
+    pool = ev._pool_inputs(clf_app, clf_ddos, features, features, encoding)
+
+    n_app, n_ddos = len(clf_app.estimators_), len(clf_ddos.estimators_)
+    assert pool["ternary_task"] == [APP_TASK] * n_app + [DDOS_TASK] * n_ddos
+    assert len(pool["ternary_task"]) == len(pool["ternary_table_specs"])
+    assert len(pool["range_task"]) == len(pool["range_table_specs"])
+    if encoding == "joint":
+        assert set(pool["range_task"]) == {SHARED_TASK}
+    else:
+        n_range_app = len(ev.get_feature_intervals(clf_app, features))
+        assert pool["range_task"] == (
+            [APP_TASK] * n_range_app
+            + [DDOS_TASK] * (len(pool["range_table_specs"]) - n_range_app))
+
+
+def _c1_pool(range_task, range_levels, ternary_task, tree_blocks):
+    """A hand-built assemble_usage pool: one 1-block range table per level,
+    each on its own raw-value field, and one tree per ternary_task entry, the
+    app trees on one 5-byte key and the ddos trees on another."""
+    from src.p4model.program import APP_TASK
+
+    range_fields = [frozenset({(("val", i), 2)}) for i in range(len(range_levels))]
+    keys = {True: frozenset({(("code", "app"), 5)}),
+            False: frozenset({(("code", "ddos"), 5)})}
+    return {
+        "range_table_specs": [(1, 2)] * len(range_levels),
+        "ternary_table_specs": [(tree_blocks, 5)] * len(ternary_task),
+        "range_levels": list(range_levels),
+        "range_task": list(range_task),
+        "ternary_task": list(ternary_task),
+        "range_fields": range_fields,
+        "ternary_fields": [keys[task == APP_TASK] for task in ternary_task],
+        "ternary_key_bits": [(40,)] * len(ternary_task),
+        "interior_stages": frozenset(),
+        "register_names": (),
+        "range_entries": 0,
+        "range_blocks": len(range_levels),
+        "ternary_entries": 0,
+        "codeword_length": 40,
+    }
+
+
+def test_disjoint_trees_start_after_their_own_tasks_range_tables():
+    # The app range table lands at stage 4 and the ddos one at 8. Three
+    # 12-block app trees (one column each, so two per stage) need not wait for
+    # the ddos table: they take stages 5 and 6, and the ddos tree takes 9 --
+    # depth 10, plus the vote stage. Before C1 every tree started at 9 and the
+    # same four trees needed stages 9 and 10 (12|12, 12|12), one stage deeper.
+    from src.p4model.program import APP_TASK, DDOS_TASK
+    from src.p4model.usage import assemble_usage
+
+    tasks = [APP_TASK] * 3 + [DDOS_TASK]
+    usage, range_plan, ternary_plan = assemble_usage(
+        _c1_pool([APP_TASK, DDOS_TASK], [4, 8], tasks, tree_blocks=12))
+
+    assert range_plan.table_stages == (4, 8)
+    assert sorted(ternary_plan.indices) == [5, 6, 9]
+    assert usage.stage_depth == 11
+    assert usage.blocks == 2 + 4 * 12
+
+
+def test_joint_labels_keep_every_tree_behind_the_whole_range_pool():
+    # The same tables with every range table SHARED_TASK -- what 'joint'
+    # always passes -- reproduce the pre-C1 placement exactly: every tree
+    # starts at range_plan.depth.
+    from src.p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
+    from src.p4model.usage import assemble_usage
+
+    tasks = [APP_TASK] * 3 + [DDOS_TASK]
+    usage, range_plan, ternary_plan = assemble_usage(
+        _c1_pool([SHARED_TASK] * 2, [4, 8], tasks, tree_blocks=12))
+
+    assert range_plan.depth == 9
+    assert sorted(ternary_plan.indices) == [9, 10]
+    assert usage.stage_depth == 12
+
+
+def test_joint_pool_inputs_start_every_tree_at_the_range_pools_depth():
+    # The joint invariant on real (tiny) forests: C1 is a no-op under 'joint'.
+    from src.p4model.usage import assemble_usage, tree_readiness_levels
+
+    features = ["f0", "f1", "f2", "f3"]
+    pool = ev._pool_inputs(
+        _tiny_forest([0, 1, 2], seed=0), _tiny_forest([-1, 1], seed=7),
+        features, features, "joint")
+    _usage, range_plan, ternary_plan = assemble_usage(pool)
+
+    levels = tree_readiness_levels(range_plan.table_stages, pool["range_task"],
+                                   pool["ternary_task"])
+    assert set(levels) == {range_plan.depth}
+    assert min(ternary_plan.indices) >= range_plan.depth
+    assert not (range_plan.indices & ternary_plan.indices)
+
+
+def test_a_tree_may_share_a_stage_with_the_other_tasks_range_tables():
+    # App range table at 4, ddos range tables at 5 and 8: the app tree is
+    # ready at 5 and lands there beside the ddos range table (a seeded stage),
+    # which usage.stages counts once, not twice.
+    from src.p4model.program import APP_TASK, DDOS_TASK
+    from src.p4model.usage import assemble_usage
+
+    usage, range_plan, ternary_plan = assemble_usage(
+        _c1_pool([APP_TASK, DDOS_TASK, DDOS_TASK], [4, 5, 8],
+                 [APP_TASK, DDOS_TASK], tree_blocks=2))
+
+    assert range_plan.indices == {4, 5, 8}
+    assert ternary_plan.indices == {5, 9}
+    assert usage.stages == 4
+    assert usage.blocks == 3 + 2 * 2
+
+
+def test_tree_readiness_falls_back_when_a_task_has_no_range_table():
+    from src.p4model.program import APP_TASK, DDOS_TASK, FLOW_HASH_LEVEL
+    from src.p4model.usage import tree_readiness_levels
+
+    assert tree_readiness_levels((6,), [DDOS_TASK], [APP_TASK, DDOS_TASK]) == [
+        FLOW_HASH_LEVEL + 1, 7]
+    with pytest.raises(ValueError, match="unknown task"):
+        tree_readiness_levels((6,), ["shared"], ["shared"])
+    with pytest.raises(ValueError, match="positionally aligned"):
+        tree_readiness_levels((6, 7), [DDOS_TASK], [DDOS_TASK])
+
+
+def test_replay_reads_each_tables_task_from_its_name_and_its_readers():
+    # A range table's name is task-prefixed only when both models split the
+    # feature with different intervals; an un-prefixed one belongs to whichever
+    # task's trees key on the code field it writes.
+    from scripts.p4_artifact_replay import table_tasks
+
+    tables = {
+        "get_classification_tree_app_0": ["code_a", "code_both", "code_app_x"],
+        "get_classification_tree_ddos_0": ["code_d", "code_both", "code_ddos_x"],
+        "table_0_a": ["a_val"],
+        "table_1_d": ["d_val"],
+        "table_2_both": ["both_val"],
+        "table_3_app_x": ["x_val"],
+        "table_4_ddos_x": ["x_val"],
+        "vote_app": [],
+    }
+    assert table_tasks(tables) == {
+        "get_classification_tree_app_0": "app",
+        "get_classification_tree_ddos_0": "ddos",
+        "table_0_a": "app", "table_1_d": "ddos", "table_2_both": "shared",
+        "table_3_app_x": "app", "table_4_ddos_x": "ddos",
+    }

@@ -47,3 +47,22 @@ ORIENTATION_REGISTER = "flow_forward_srcaddr"
 # the control block with a work-list CURSOR, so it cannot begin the second
 # gated block before the first one is fully placed.
 REGISTER_BLOCK_ORDER = (None, "fwd", "bwd")
+
+# The two classification tasks this program serves, spelled exactly as the
+# generator spells them in table names (get_classification_tree_app_3,
+# table_7_ddos_flow_iat_min, vote_app) and as accuracy_metrics takes them.
+# evaluation._pool_inputs labels every table with one of these (its
+# range_task / ternary_task lists), usage.assemble_usage reads the labels to
+# decide which range tables a tree waits for, and p4_artifact_replay recovers
+# the same labels from a compiled program's table names.
+APP_TASK = "app"
+DDOS_TASK = "ddos"
+TASKS = (APP_TASK, DDOS_TASK)
+
+# range_task's label for a range table whose code_<feature> field EVERY task's
+# trees key on, so every tree waits for it: all of them under 'joint' (one
+# merged interval set), and under 'disjoint' a feature both models split
+# identically -- build_p4_script._resolve_disjoint_feature_plan then emits one
+# un-prefixed table (table_1_bwd_iat_mean) instead of an _app_/_ddos_ pair.
+# Never a ternary_task value: every classification tree belongs to one task.
+SHARED_TASK = "shared"

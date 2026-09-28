@@ -46,6 +46,7 @@ TARGET_NAMES = (
 PROGRAM_NAMES = (
     "FEATURE_VALUE_BIT_WIDTH", "RANGE_TABLE_KEY_BYTES", "FLOW_HASH_LEVEL",
     "VOTE_EPILOGUE_STAGES", "ORIENTATION_REGISTER", "REGISTER_BLOCK_ORDER",
+    "APP_TASK", "DDOS_TASK", "TASKS", "SHARED_TASK",
 )
 
 
@@ -712,3 +713,129 @@ def test_a_saturated_key_in_an_uncrowded_shared_stage_pays_nothing():
         key_field_bits=[(1, 1, 1, 2, 3, 3, 3, 3, 4, 8),
                         (1, 1, 1, 2, 2, 2, 2, 2, 4, 4, 4, 5)])
     assert (plan.occupied, plan.blocks) == (1, 5)
+
+
+# --- seed_stages: a pool packed into stages another pool already partly fills
+# (audit C1). Seeds count against the table cap, the byte limit and the column
+# packing, and are never charged or reported by the seeded pool.
+
+def _seed(index, blocks, byte_widths, tables=None):
+    from src.p4model.packing import StageLoad
+
+    return StageLoad(index=index, blocks=tuple(blocks),
+                     fields=frozenset((("val", index, i), w)
+                                      for i, w in enumerate(byte_widths)),
+                     tables=len(blocks) if tables is None else tables)
+
+
+def test_a_seed_counts_against_the_eight_table_cap():
+    from src.p4model.packing import crossbar_stages_needed
+
+    key = frozenset({(("code", "k"), 2)})
+    plan = crossbar_stages_needed(
+        [(1, 2), (1, 2)], readiness_levels=[5, 5], key_fields=[key, key],
+        seed_stages=[_seed(5, [1] * 7, [2] * 7)])
+    # 7 seeded + 1 = 8 at stage 5; the second table spills to 6.
+    assert plan.table_stages in ((5, 6), (6, 5))
+    assert plan.indices == {5, 6}
+
+
+def test_a_seed_counts_against_the_64_byte_limit():
+    from src.p4model.packing import crossbar_stages_needed
+
+    key = frozenset({(("code", "k"), 8)})
+    plan = crossbar_stages_needed(
+        [(2, 8)], readiness_levels=[5], key_fields=[key],
+        seed_stages=[_seed(5, [1], [60])])
+    assert plan.table_stages == (6,)
+
+
+def test_a_seed_counts_against_the_column_packing():
+    from src.p4model.packing import crossbar_stages_needed
+
+    seed = _seed(5, [12, 8], [2, 2])
+    # 12 | 8 + 8 = 16 overflows the second column; 12 | 8 + 4 fits.
+    assert crossbar_stages_needed(
+        [(8, 5)], readiness_levels=[5],
+        seed_stages=[seed]).table_stages == (6,)
+    assert crossbar_stages_needed(
+        [(4, 5)], readiness_levels=[5],
+        seed_stages=[seed]).table_stages == (5,)
+
+
+def test_a_seed_is_never_charged_or_reported_by_the_seeded_pool():
+    from src.p4model.packing import crossbar_stages_needed
+
+    plan = crossbar_stages_needed(
+        [(3, 5)], readiness_levels=[5],
+        seed_stages=[_seed(5, [2, 2], [2, 2]), _seed(9, [4], [2])])
+    assert (plan.occupied, plan.depth, plan.indices, plan.blocks) == (
+        1, 6, frozenset({5}), 3)
+    assert [(load.index, load.blocks, load.tables)
+            for load in plan.stage_loads] == [(5, (3,), 1)]
+
+
+def test_seeds_leave_an_unseeded_placement_unchanged():
+    # Seeds at stages the pool never reaches change nothing at all.
+    from src.p4model.packing import crossbar_stages_needed
+
+    specs = [(9, 45), (3, 14), (6, 10), (6, 10)]
+    fields = [frozenset({(("code", "s"), 45)}),
+              frozenset({(("code", "a"), 7), (("code", "b"), 7)}),
+              frozenset({(("code", "c"), 10)}), frozenset({(("code", "c"), 10)})]
+    bits = [(360,), (54, 56), (80,), (80,)]
+    kwargs = dict(readiness_levels=[4] * 4, key_fields=fields,
+                  key_field_bits=bits)
+    assert crossbar_stages_needed(specs, **kwargs) == crossbar_stages_needed(
+        specs, seed_stages=[_seed(0, [12, 12], [2, 2]), _seed(3, [1], [2])],
+        **kwargs)
+
+
+def test_seed_bytes_do_not_make_a_stage_crowded():
+    # 44 + 14 = 58 ternary bytes is the free edge (see
+    # test_a_stage_at_the_free_edge_charges_nothing); a 4-byte range seed takes
+    # the stage to 62 crossbar bytes but is not a ternary key, and the
+    # crowded-stage rules judge the ternary keys alone -- nothing is charged.
+    from src.p4model.packing import crossbar_stages_needed
+
+    spacer = frozenset({(("code", "spacer"), 44)})
+    probe = frozenset({(("code", "a"), 7), (("code", "b"), 7)})
+    plan = crossbar_stages_needed(
+        [(9, 44), (3, 14)], readiness_levels=[0] * 2,
+        key_fields=[spacer, probe], key_field_bits=[(352,), (54, 56)],
+        seed_stages=[_seed(0, [1, 1], [2, 2])])
+    assert (plan.occupied, plan.blocks) == (1, 12)
+
+
+def test_seed_stages_need_readiness_levels_and_one_load_per_stage():
+    from src.p4model.packing import crossbar_stages_needed
+
+    with pytest.raises(ValueError, match="readiness_levels"):
+        crossbar_stages_needed([(1, 2)], seed_stages=[_seed(0, [1], [2])])
+    with pytest.raises(ValueError, match="two seed_stages entries"):
+        crossbar_stages_needed([(1, 2)], readiness_levels=[0],
+                               seed_stages=[_seed(0, [1], [2]),
+                                            _seed(0, [1], [2])])
+
+
+def test_table_stages_is_each_tables_latest_shard_in_both_branches():
+    from src.p4model.packing import crossbar_stages_needed
+
+    # Pure packer: a 30-block table is 12 | 12 | 6 shards; the two full ones
+    # fill stage 0, the 6 and the 1-block table share stage 1.
+    plan = crossbar_stages_needed([(30, 5), (1, 2)])
+    assert plan.table_stages == (1, 1)
+    assert [load.blocks for load in plan.stage_loads] == [(12, 12), (6, 1)]
+    # Dependency-aware: the same table from level 3 ends at stage 4.
+    plan = crossbar_stages_needed([(30, 5), (1, 2)], readiness_levels=[3, 7])
+    assert plan.table_stages == (4, 7)
+    assert sum(sum(load.blocks) for load in plan.stage_loads) == plan.blocks
+
+
+def test_stage_load_fits_checks_the_combined_limits():
+    from src.p4model.packing import stage_load_fits
+
+    assert stage_load_fits([_seed(0, [12], [2]), _seed(0, [6, 6], [30])])
+    assert not stage_load_fits([_seed(0, [12], [2]), _seed(0, [8, 8], [2])])
+    assert not stage_load_fits([_seed(0, [1] * 5, [2]), _seed(0, [1] * 4, [2])])
+    assert not stage_load_fits([_seed(0, [1], [40]), _seed(0, [1], [30])])

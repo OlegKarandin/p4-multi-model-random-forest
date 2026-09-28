@@ -196,7 +196,7 @@ def serialize_pool(pool):
 
 def serialize_row(row_id, group, encoding, pool, usage, range_plan, ternary_plan):
     """One fixture row: row_id/group/encoding, the interned key-field sets,
-    the pool inputs (assemble_usage's own 13-key contract, plus
+    the pool inputs (assemble_usage's own 15-key contract, plus
     emitted_features for the interior-stages replay test), and the outputs
     (every ResourceUsage field, both StagePlans' occupied/depth/blocks/
     sorted indices)."""
@@ -208,6 +208,8 @@ def serialize_row(row_id, group, encoding, pool, usage, range_plan, ternary_plan
         'range_key_field_set_ids': range_ids,
         'ternary_key_field_set_ids': ternary_ids,
         'range_levels': list(pool['range_levels']),
+        'range_task': list(pool['range_task']),
+        'ternary_task': list(pool['ternary_task']),
         'interior_stages': sorted(pool['interior_stages']),
         'emitted_features': list(pool['emitted_features']),
         'register_names': list(pool['register_names']),
@@ -399,6 +401,32 @@ def _metadata(campaign_dir):
                     "review's own scratch experiment exactly: fitted "
                     "stage_depth 17/19 -> 18/19, this row's blocks error "
                     "+2 -> +1."),
+            },
+            {
+                'id': 'per_task_tree_readiness_2026_09_28',
+                'rows': ['independent_high_sd12'],
+                'row_deltas': {'independent_high_sd12': -1},
+                'summary': (
+                    "RE-PINNED, and the delta is an IMPROVEMENT (audit C1, "
+                    "reviews/model_audit_2026-09-27.md section 10). Under "
+                    "'disjoint' a classification tree used to wait for the "
+                    "LAST range table of EITHER task; it now waits only for "
+                    "its own task's range tables (usage.tree_readiness_levels, "
+                    "fed by the new pool keys range_task/ternary_task and "
+                    "StagePlan.table_stages), and the ternary pool is seeded "
+                    "with the range pool's stage loads so a tree sharing a "
+                    "stage with the other task's range tables counts them "
+                    "against the table, byte and column limits. "
+                    "independent_high_sd12: stage_depth 14 -> 13 against "
+                    "stages_real 13 (EXACT; still past the 12-stage ceiling), "
+                    "usage.stages 7 -> 6, blocks unchanged. "
+                    "independent_high_sd6 and "
+                    "independent_high_sd10 start one task's trees a stage "
+                    "earlier (ternary_plan.indices gains a stage, occupied "
+                    "1 -> 2) with stage_depth, blocks and usage.stages "
+                    "unchanged. Every joint row is byte-identical: under "
+                    "'joint' every range table is SHARED_TASK, so every "
+                    "tree's readiness is the range pool's depth, as before."),
             },
         ],
     }

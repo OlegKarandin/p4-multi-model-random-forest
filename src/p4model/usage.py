@@ -7,8 +7,13 @@ the physics that produces one) can import it without pulling in the rest of
 the model."""
 from dataclasses import dataclass
 
-from src.p4model.packing import crossbar_stages_needed
-from src.p4model.program import FLOW_HASH_LEVEL, VOTE_EPILOGUE_STAGES
+from src.p4model.packing import crossbar_stages_needed, stage_load_fits
+from src.p4model.program import (
+    FLOW_HASH_LEVEL,
+    SHARED_TASK,
+    TASKS,
+    VOTE_EPILOGUE_STAGES,
+)
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,48 @@ class ResourceUsage:
   ternary_tables: int    # len(ternary_table_specs); see class docstring
 
 
+def tree_readiness_levels(range_table_stages, range_task, ternary_task):
+  """The earliest stage each classification tree may occupy (audit C1).
+
+  A tree keys on its own task's meta.code_<feature> fields, and a code field
+  exists one stage after the range table that writes it. So a tree of task t
+  is ready at 1 + the latest stage of any range table labelled t or
+  SHARED_TASK -- never waiting for the OTHER task's range tables, which write
+  fields it does not read. A task with no range table at all falls back to
+  FLOW_HASH_LEVEL + 1, the first stage after the flow-hash prologue.
+
+  range_table_stages : StagePlan.table_stages of the range pool, one stage
+                       index per range table.
+  range_task         : one label per range table, positionally aligned:
+                       program.APP_TASK, DDOS_TASK or SHARED_TASK.
+  ternary_task       : one label per classification tree: APP_TASK or
+                       DDOS_TASK.
+  Returns one level per tree, aligned with ternary_task.
+
+  Under 'joint' every range table is SHARED_TASK, so every tree's level is
+  1 + the latest range stage = the range pool's StagePlan.depth -- exactly the
+  single level every tree was given before C1. Evidence for the per-task rule
+  (reviews/model_audit_2026-09-27.md §10 C1, per_task_variant.py, 28 disjoint
+  compiles): p4c places 8/168 trees before the other task's last range table,
+  never one before its own."""
+  if len(range_table_stages) != len(range_task):
+    raise ValueError(
+        "tree_readiness_levels: got %d range table stages for %d range_task "
+        "labels; the two must be positionally aligned, one per range table"
+        % (len(range_table_stages), len(range_task)))
+  unknown = (set(range_task) - set(TASKS) - {SHARED_TASK}) | (set(ternary_task) - set(TASKS))
+  if unknown:
+    raise ValueError(
+        "tree_readiness_levels: unknown task label(s) %s; range tables take "
+        "%s or %r, trees take %s" % (sorted(unknown), TASKS, SHARED_TASK, TASKS))
+  ready = {}
+  for task in TASKS:
+    own = [stage for stage, label in zip(range_table_stages, range_task)
+           if label in (task, SHARED_TASK)]
+    ready[task] = max(own) + 1 if own else FLOW_HASH_LEVEL + 1
+  return [ready[task] for task in ternary_task]
+
+
 def assemble_usage(pool):
   """Pack both pools and assemble the ResourceUsage.
 
@@ -123,6 +170,8 @@ def assemble_usage(pool):
   range_table_specs = pool["range_table_specs"]
   ternary_table_specs = pool["ternary_table_specs"]
   range_levels = pool["range_levels"]
+  range_task = pool["range_task"]
+  ternary_task = pool["ternary_task"]
   range_fields = pool["range_fields"]
   ternary_fields = pool["ternary_fields"]
   ternary_key_bits = pool["ternary_key_bits"]
@@ -135,21 +184,23 @@ def assemble_usage(pool):
 
   # Range-matching tables and ternary classification tables are physically
   # distinct table pools (build_p4_script.py generates them separately), so
-  # each pool is packed on its own and the two stage counts are summed. Both
-  # pools are packed by the SAME solver: one stage count per pool that
+  # each pool is packed on its own, the ternary one seeded with the stages
+  # the range one already fills. Both pools are packed by the SAME solver:
+  # one stage count per pool that
   # respects the block, table-count and byte limits simultaneously, rather
   # than a max() of two independently-relaxed bounds (which can under-count,
   # see crossbar_stages_needed).
   # Both pools are placed dependency-aware (see crossbar_stages_needed and
   # feature_readiness_level): a feature's range table cannot precede the
-  # register chain producing its key, and every classification table reads
-  # every feature's codeword, so it cannot precede the last range table.
+  # register chain producing its key, and a classification table reads its
+  # own task's code fields, so it cannot precede that task's last range table
+  # (per-task readiness, below).
   # Validated against a real compile of the M2 program: 2 range stages + 1
   # classification stage = 3, exactly the compiler's own placement. The pure
   # packer predicted 2.
   #
   # F10: the classification boundary must be derived from where the range
-  # pool's tables actually LANDED (StagePlan.depth), not from one past the
+  # pool's tables actually LANDED (StagePlan.table_stages), not from one past the
   # earliest stage a range table was merely ALLOWED to start
   # (max(range_levels) + 1) -- the 8-table crossbar cap can spill a range
   # table forward past its level, and reusing max(range_levels) + 1 would
@@ -167,15 +218,20 @@ def assemble_usage(pool):
                                       readiness_levels=range_levels,
                                       key_fields=range_fields,
                                       unavailable_stages=interior_stages)
-  # Deliberate over-prediction, the safe direction: every classification
-  # table starts at the FULL range pool's depth, even under 'disjoint'
-  # encoding where a ddos tree only reads ddos features' code fields and
-  # could in principle start as soon as just the ddos range tables have
-  # landed, not the app ones too. Not modelled -- doing so would need
-  # per-task range levels threaded through this pool -- and the 18/19
-  # stage_depth calibration result (scripts/validation_table.py) suggests
-  # the case rarely binds in practice.
-  ternary_level = range_plan.depth if range_table_specs else FLOW_HASH_LEVEL + 1
+  # Per-task tree readiness (audit C1): a tree waits for the range tables of
+  # ITS OWN task -- the ones writing the code_<feature> fields it keys on --
+  # plus any SHARED_TASK table, never for the other task's. Under 'joint'
+  # every range table is shared, so every tree starts at range_plan.depth, as
+  # it always did. Under 'disjoint' a task whose range tables finish early
+  # starts its trees early, while the other task's range tables may still be
+  # landing -- so the two pools can now meet in one stage, and the ternary
+  # pool is SEEDED with the range pool's loads: those range shards count
+  # against the stage's table cap, byte limit and column packing, but are not
+  # charged again (see crossbar_stages_needed's seed_stages). With no range
+  # table for a task, its trees start right after the flow-hash prologue
+  # (tree_readiness_levels).
+  ternary_levels = tree_readiness_levels(range_plan.table_stages, range_task,
+                                         ternary_task)
   # Only the classification pool gets key_field_bits, which is what switches
   # on the crowded-stage rules (packing.charged/fits). A range table keys one
   # meta.<feature>_val field of FEATURE_VALUE_BIT_WIDTH bits -- 2 bytes -- and
@@ -183,21 +239,26 @@ def assemble_usage(pool):
   # Passing it would be noise.
   ternary_plan = crossbar_stages_needed(
       ternary_table_specs,
-      readiness_levels=[ternary_level] * len(ternary_table_specs),
+      readiness_levels=ternary_levels,
       key_fields=ternary_fields,
       unavailable_stages=interior_stages,
-      key_field_bits=ternary_key_bits)
+      key_field_bits=ternary_key_bits,
+      seed_stages=range_plan.stage_loads)
 
-  # The property that makes summing occupancies below meaningful: the two
-  # pools must never claim the same stage index.
-  assert not (range_plan.indices & ternary_plan.indices), (
-      "range and classification pools overlap at stages {}; summing their "
-      "occupancies is only meaningful while they are disjoint".format(
-          sorted(range_plan.indices & ternary_plan.indices)))
+  # A stage both pools use must satisfy every per-stage limit with both
+  # pools' tables in it. The seeded placement above already guarantees this;
+  # re-checked here because it is the property that makes the two plans'
+  # numbers mean anything together.
+  range_loads = {load.index: load for load in range_plan.stage_loads}
+  for load in ternary_plan.stage_loads:
+    if load.index in range_loads:
+      assert stage_load_fits([range_loads[load.index], load]), (
+          "range and classification tables share stage {} beyond its "
+          "table/byte/column limits".format(load.index))
 
   # F5/F6: stage_depth is ternary_plan.depth -- the classification pool is
-  # placed LAST (it starts at ternary_level, which is itself derived from
-  # range_plan.depth), so its depth is the overall pipeline depth. Verified
+  # placed LAST in the sense that matters: every tree starts after its own
+  # task's range tables, so its depth is the overall pipeline depth. Verified
   # against the M2 fixture: ternary_plan.indices == {5} there, so depth == 6,
   # exactly the brief's own worked example. max() with range_plan.depth is a
   # defensive widening for the degenerate case of zero ternary tables (where
@@ -223,8 +284,11 @@ def assemble_usage(pool):
   # about -- see StagePlan.blocks. range_blocks needs no substitution:
   # a range table's key always leaves spare crossbar byte slots,
   # so range_plan.blocks is provably identical to range_blocks.
+  # stages counts distinct stage indices holding a table from EITHER pool: a
+  # stage both pools share (possible under 'disjoint' since C1) counts once.
+  # Under 'joint' the pools never meet, and this is the old occupied sum.
   usage = ResourceUsage(
-      stages=range_plan.occupied + ternary_plan.occupied,
+      stages=len(range_plan.indices | ternary_plan.indices),
       blocks=range_blocks + ternary_plan.blocks,
       stage_depth=stage_depth,
       range_entries=range_entries,

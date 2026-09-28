@@ -13,11 +13,12 @@ import os
 import re
 
 from src.p4model.packing import crossbar_stages_needed
-from src.p4model.program import VOTE_EPILOGUE_STAGES
+from src.p4model.program import SHARED_TASK, TASKS, VOTE_EPILOGUE_STAGES
 from src.p4model.ranges import compiler_range_rows
 from src.p4model.registers import gated_block_interior_stages, readiness_levels_for
 from src.p4model.tables import codeword_to_blocks, tree_entries_to_blocks
 from src.p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
+from src.p4model.usage import tree_readiness_levels
 
 
 _RESOURCE_TABLE_ROW = re.compile(
@@ -293,6 +294,44 @@ def replay_design(row_id, artifacts_root):
     return predicted, range_plan.blocks + ternary_plan.blocks
 
 
+_TREE_TASK = re.compile(r'^get_classification_tree_(%s)_\d+$' % '|'.join(TASKS))
+_RANGE_TABLE_CODE = re.compile(r'^table_\d+_(\w+)$')
+
+
+def table_tasks(tables):
+    """{table name: task label} for every classification tree and range table
+    of one generated program -- the replay's counterpart of
+    evaluation._pool_inputs' ternary_task/range_task labels (APP_TASK,
+    DDOS_TASK, SHARED_TASK).
+
+    A tree's task is in its name, get_classification_tree_<task>_<i>. A range
+    table's is NOT, reliably: build_p4_script names it table_<n>_<resolved>,
+    where resolved is task-prefixed (app_<f>/ddos_<f>) only when both models
+    split feature f with DIFFERENT intervals; a feature one model selects
+    alone, or both split identically, stays un-prefixed
+    (_resolve_disjoint_feature_plan). So the name gives the code field the
+    table writes, meta.code_<resolved>, and the task comes from which trees
+    key on that field: one task's trees -> that task, both -> SHARED_TASK.
+    A field no tree keys on (not emitted today) is labelled SHARED_TASK, so
+    every tree waits for it -- the side that cannot under-count."""
+    labels, readers = {}, {}
+    for name, keys in tables.items():
+        match = _TREE_TASK.match(name)
+        if match:
+            labels[name] = match.group(1)
+            for key in keys:
+                readers.setdefault(key, set()).add(match.group(1))
+        elif name.startswith('get_classification_tree'):
+            raise ValueError('%s: a classification tree must name its task (%s)'
+                             % (name, ', '.join(TASKS)))
+    for name in tables:
+        match = _RANGE_TABLE_CODE.match(name)
+        if match:
+            tasks = readers.get('code_' + match.group(1), set())
+            labels[name] = next(iter(tasks)) if len(tasks) == 1 else SHARED_TASK
+    return labels
+
+
 def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
     """Packs one program's range and classification pools with the model's
     packer, given a table -> block-count map. Shared by replay_stage_depth
@@ -324,8 +363,9 @@ def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
     # block hold no table from the outer sequence, however empty they are.
     interior = gated_block_interior_stages(row_features)
 
-    range_specs, range_fields, range_levels = [], [], []
-    ternary_specs, ternary_fields, ternary_key_bits = [], [], []
+    tasks = table_tasks(tables)
+    range_specs, range_fields, range_levels, range_task = [], [], [], []
+    ternary_specs, ternary_fields, ternary_key_bits, ternary_task = [], [], [], []
     for name, keys in tables.items():
         if name not in blocks or not keys:
             continue
@@ -335,6 +375,7 @@ def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
             range_specs.append((blocks[name], width))
             range_fields.append(fields)
             range_levels.append(levels[keys[0][:-len('_val')]])
+            range_task.append(tasks[name])
         elif name.startswith('get_classification_tree'):
             # blocks[name] is the count p4c committed -- each key's own
             # standalone price (tables.codeword_to_blocks), unaffected by
@@ -349,11 +390,15 @@ def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
             ternary_specs.append((blocks[name], width))
             ternary_fields.append(fields)
             ternary_key_bits.append(key_bits)
+            ternary_task.append(tasks[name])
 
     range_plan = crossbar_stages_needed(range_specs, readiness_levels=range_levels,
                                          key_fields=range_fields,
                                          unavailable_stages=interior)
-    ternary_level = range_plan.depth if range_specs else 0
+    # Per-task tree readiness and the seeded ternary pool, exactly as
+    # usage.assemble_usage does it (audit C1): a tree waits for its own task's
+    # range tables and the shared ones, and may land in a stage still holding
+    # the other task's range tables, which count against that stage's limits.
     # key_field_bits matters even though the block counts here are p4c's own.
     # The crowded-stage margin is what makes a MIXED stage infeasible:
     # independent_low_sd9's real stage packs two DIFFERENT keys (app, ddos)
@@ -365,9 +410,12 @@ def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
     # placement instead puts each key in its own stage, so nothing actually
     # pays there -- the margin decides the PLACEMENT, not the invoice.
     ternary_plan = crossbar_stages_needed(
-        ternary_specs, readiness_levels=[ternary_level] * len(ternary_specs),
+        ternary_specs,
+        readiness_levels=tree_readiness_levels(range_plan.table_stages,
+                                               range_task, ternary_task),
         key_fields=ternary_fields, unavailable_stages=interior,
-        key_field_bits=ternary_key_bits)
+        key_field_bits=ternary_key_bits,
+        seed_stages=range_plan.stage_loads)
 
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
     return predicted, range_plan, ternary_plan

@@ -28,12 +28,38 @@ from src.p4model.target import (
 
 
 @dataclass(frozen=True)
+class StageLoad:
+  """What ONE pool puts into ONE stage, in the three units the per-stage
+  limits are written in. It is both an output (StagePlan.stage_loads, one per
+  occupied stage) and an input (crossbar_stages_needed's seed_stages): a pool
+  packed after another is handed the first pool's loads as stages that are
+  already partly full.
+
+  index  : the stage index.
+  blocks : the TCAM block count of every table SHARD in the stage, as charged
+           (crowded-stage margin included), one entry per shard. Kept per shard
+           rather than summed because the 12x2 column packing
+           (fits_two_columns) needs the widths, not the total.
+  fields : the distinct crossbar key fields present, (field_id, field_bytes)
+           pairs -- the 64-byte limit charges their union, not their sum.
+  tables : shards placed in the stage -- what the 8-table cap counts."""
+  index: int
+  blocks: tuple
+  fields: frozenset
+  tables: int
+
+
+@dataclass(frozen=True)
 class StagePlan:
   """crossbar_stages_needed's placement, not just its size -- F10: the stage
   a pool is DONE at (depth) is not the same quantity as how many stages it
   OCCUPIES (occupied): a stage can fill at the 8-table crossbar cap and spill
   a table forward past every level actually requested, so depth must be read
-  from where tables landed, not from max(readiness_levels) + 1."""
+  from where tables landed, not from max(readiness_levels) + 1.
+
+  Every field describes THIS pool only. Seeds passed in through
+  crossbar_stages_needed's seed_stages are never counted in occupied, depth,
+  indices, blocks or stage_loads -- they belong to the pool that produced them."""
   occupied: int          # how many stage indices hold a table from this pool
   depth: int             # max(occupied index) + 1 -- the quantity a 12-stage ceiling reads
   indices: frozenset     # for assertions and debugging
@@ -46,9 +72,36 @@ class StagePlan:
                          # a per-table one. Measured to matter: the ragged 49-byte key
                          # (179, 204) costs 9 TCAM blocks alone in a stage and 10 beside a
                          # 12-byte key, 61 bytes in all (scripts/tcam_stretch_sweep.py).
+  table_stages: tuple = ()  # one stage index per table_specs entry, positionally
+                         # aligned with it: the LATEST stage any shard of that table
+                         # landed in, i.e. the stage after which its result exists. A
+                         # table wider than one column is sharded (_stage_shards) and its
+                         # shards can land in different stages; this is their max. What
+                         # usage.assemble_usage reads to know when one task's range tables
+                         # are done (per-task tree readiness, audit C1).
+  stage_loads: tuple = ()  # one StageLoad per occupied stage, sorted by index: what
+                         # this pool put where. Pass it as the NEXT pool's seed_stages
+                         # so that pool sees these stages as partly full.
 
   def __int__(self):     # transitional: `stages` is still the occupancy count
     return self.occupied
+
+
+def stage_load_fits(loads):
+  """Whether several pools' StageLoads for the SAME stage index fit together
+  under the three per-stage limits: <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
+  shards, <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes of distinct key fields,
+  and a 12x2 column packing of every shard (fits_two_columns). The check
+  crossbar_stages_needed's seed_stages makes while placing, restated as a
+  predicate so a caller can assert it after the fact. The crowded-stage rules
+  are not part of it: they are measured on ternary keys and applied inside the
+  ternary pool only (see crossbar_stages_needed's seed_stages)."""
+  loads = list(loads)
+  fields = frozenset().union(*(load.fields for load in loads))
+  return (sum(load.tables for load in loads) <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
+          and sum(field_bytes for _, field_bytes in fields)
+          <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+          and fits_two_columns([b for load in loads for b in load.blocks]))
 
 
 def fits_two_columns(block_widths, rows=TCAM_ROWS_PER_STAGE,
@@ -143,7 +196,8 @@ def _stage_shards(block_count, byte_width):
 
 
 def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
-                           unavailable_stages=frozenset(), key_field_bits=None):
+                           unavailable_stages=frozenset(), key_field_bits=None,
+                           seed_stages=()):
   """Packs independent match tables into pipeline stages under ALL three
   per-stage hardware limits simultaneously, and returns a StagePlan
   describing where the tables landed (not just how many stages that took).
@@ -261,6 +315,22 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   prices those designs one stage deeper than p4c. There is still no per-stage
   group-supply term; target.py's group counts remain documentation only.
 
+  seed_stages (optional) is an iterable of StageLoad -- another pool's
+  StagePlan.stage_loads -- naming stages that are already partly full. It
+  exists because the two pools are no longer strictly sequential under
+  'disjoint' (audit C1): a task's trees wait only for THEIR OWN task's range
+  tables, so a classification tree can land in a stage still holding the other
+  task's range tables. A seed's shards, fields and table count count against
+  the 8-table cap, the 64-byte limit and the 12x2 column packing of its stage
+  exactly as this pool's own would, but they are never charged again: the
+  returned plan's blocks, occupied, depth, indices and stage_loads describe
+  this pool alone. Seeds are range tables in practice, and they take no part
+  in the crowded-stage rules above -- those were measured on ternary keys
+  sharing a stage with ternary keys, and a stage's crowding (key count, bytes
+  over 58/62) is judged on this pool's keys only. Like unavailable_stages it
+  needs readiness_levels (absolute stage indices); passing seeds without them
+  raises.
+
   These constraints are NOT separable: solving each relaxation alone and
   taking the max can under-count. Counterexample -- tables
   (20 blocks, 5 B), (20, 5), (1, 60): the blocks-only bound is
@@ -298,6 +368,24 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
         "two must be positionally aligned, one field-width tuple per table, or "
         "a table would be priced against another table's key shape"
         % (len(key_field_bits), len(table_specs)))
+
+  seeds = {}
+  for seed in seed_stages:
+    if seed.index in seeds:
+      raise ValueError(
+          "crossbar_stages_needed: two seed_stages entries for stage %d; pass "
+          "one StageLoad per stage (a StagePlan's stage_loads already is)"
+          % seed.index)
+    seeds[seed.index] = seed
+  if seeds and readiness_levels is None:
+    raise ValueError(
+        "crossbar_stages_needed: seed_stages name absolute stage indices, "
+        "which only the dependency-aware placement (readiness_levels) has; "
+        "the pure packer would silently ignore them")
+
+  def seed_at(index):
+    return seeds.get(index) or StageLoad(index=index, blocks=(),
+                                         fields=frozenset(), tables=0)
 
   shards = []
   for idx, (block_count, byte_width) in enumerate(table_specs):
@@ -467,12 +555,19 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     # (5x3 + 10 = 25; 9 + 5x4 = 29), so this rule still rejects it. stage_
     # charged_blocks() charges the worst order that still fits, matching this
     # function's feasibility test exactly.
+    #
+    # stage[4] is the stage's seed (seed_stages): another pool's shards, which
+    # count against the table cap, the byte limit and the column packing but
+    # not against the crowded-stage rules, whose byte count (stage_bytes) and
+    # key count stay this pool's own.
     keys = list(stage[3])
     if all(key != fields for key, _ in keys):
       keys.append((fields, key_width(fields, bits)))
+    seed = stage[4]
     stage_bytes = crossbar_bytes(stage[0] | fields)
-    if (stage_bytes > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
-        or stage[1] + 1 > TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE):
+    if (crossbar_bytes(stage[0] | fields | seed.fields)
+        > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+        or stage[1] + seed.tables + 1 > TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE):
       return False
     # Two DIFFERENT keys past the mixed-key budget (target.py, spec "F5"): p4c
     # would route the later key's bytes through midbyte nibbles at up to +2
@@ -489,8 +584,9 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       # The TCAM test is a column PACKING, not a running total against
       # TCAM_BLOCKS_PER_STAGE -- see fits_two_columns: three 8-block tables
       # sum to exactly 24 and still do not fit, four 6-block ones do.
-      if fits_two_columns([charged(offsets, *shard, is_crowded=is_crowded)
-                           for shard in shards_here]):
+      if fits_two_columns(list(seed.blocks)
+                          + [charged(offsets, *shard, is_crowded=is_crowded)
+                             for shard in shards_here]):
         return True
     return False
 
@@ -501,12 +597,18 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     if all(key != fields for key, _ in stage[3]):
       stage[3].append((fields, key_width(fields, bits)))
 
-  def opened(blocks, fields, bits):
-    return [set(fields), 1, [(blocks, fields, bits)],
-            [(fields, key_width(fields, bits))]]
+  def empty(seed):
+    # entry: [fields_present, tables_used, shards, key_order, seed]
+    return [set(), 0, [], [], seed]
+
+  def opened(blocks, fields, bits, seed):
+    stage = empty(seed)
+    place(stage, blocks, fields, bits)
+    return stage
 
   def stage_charged_blocks(stage):
-    """The TCAM blocks ONE finished stage actually costs, stage-sharing
+    """The TCAM blocks ONE finished stage actually costs, per shard in
+    stage[2]'s order (sum it for the stage's total), stage-sharing
     margin included -- the same question `fits()` already answers for
     placement, asked once more after the fact so the total can be reported.
 
@@ -529,35 +631,58 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
 
     At least one order always fits: `fits()` already requires SOME order to
     pack before a shard joins an existing stage, and the only stage committed
-    without a `fits` call -- a freshly `opened()` one -- holds a single key,
-    which is therefore first in every ordering, pays no margin, and fits by
-    construction (`_stage_shards` caps it at one column)."""
+    without a `fits` call -- a freshly `opened()` one with no seed -- holds a
+    single key, which is therefore first in every ordering, pays no margin,
+    and fits by construction (`_stage_shards` caps it at one column). A
+    SEEDED stage is always entered through `fits()`, seed blocks included, so
+    the same guarantee holds there. The seed's blocks take part in the column
+    test but not in the returned list: they are the seeding pool's to report.
+    Ties between fitting orders keep the first one found; they are equal in
+    total, which is all any caller reads."""
     is_crowded = crowded(len(stage[3]), crossbar_bytes(stage[0]))
-    fitting_totals = []
+    worst = None
     for key_order in itertools.permutations(stage[3]):
       offsets = offsets_for(key_order)
       charged_blocks = [charged(offsets, blocks, fields, bits,
                                 is_crowded=is_crowded)
                         for blocks, fields, bits in stage[2]]
-      if fits_two_columns(charged_blocks):
-        fitting_totals.append(sum(charged_blocks))
-    return max(fitting_totals)
+      if (fits_two_columns(list(stage[4].blocks) + charged_blocks)
+          and (worst is None or sum(charged_blocks) > sum(worst))):
+        worst = charged_blocks
+    return worst
+
+  def finished(stages_by_index, table_stages):
+    """The StagePlan for a finished placement: {index: stage} plus
+    {table_idx: latest stage index any of its shards landed in}."""
+    loads = []
+    for index in sorted(stages_by_index):
+      stage = stages_by_index[index]
+      loads.append(StageLoad(index=index,
+                             blocks=tuple(stage_charged_blocks(stage)),
+                             fields=frozenset(stage[0]), tables=stage[1]))
+    return StagePlan(occupied=len(loads),
+                     depth=(loads[-1].index + 1) if loads else 0,
+                     indices=frozenset(load.index for load in loads),
+                     blocks=sum(sum(load.blocks) for load in loads),
+                     table_stages=tuple(table_stages[idx]
+                                        for idx in range(len(table_specs))),
+                     stage_loads=tuple(loads))
 
   if readiness_levels is None:
-    # entry: [fields_present, tables_used, shards, key_order]
-    stages = []
-    for blocks, _width, _idx, fields, bits in sorted(shards, key=load,
-                                                     reverse=True):
-      for stage in stages:
+    stages, table_stages = [], {}
+    for blocks, _width, table_idx, fields, bits in sorted(shards, key=load,
+                                                          reverse=True):
+      for position, stage in enumerate(stages):
         if fits(stage, blocks, fields, bits):
           place(stage, blocks, fields, bits)
           break
       else:
-        stages.append(opened(blocks, fields, bits))
+        position = len(stages)
+        stages.append(opened(blocks, fields, bits, seed_at(position)))
+      table_stages[table_idx] = max(position,
+                                    table_stages.get(table_idx, position))
 
-    return StagePlan(occupied=len(stages), depth=len(stages),
-                      indices=frozenset(range(len(stages))),
-                      blocks=sum(stage_charged_blocks(stage) for stage in stages))
+    return finished(dict(enumerate(stages)), table_stages)
 
   # Dependency-aware placement. Three differences from the packer above, all
   # chosen to track the REAL compiler rather than the theoretical optimum:
@@ -576,23 +701,27 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   #      is not a fullness test: an interior stage stays unusable however
   #      empty it is, so it is checked before `fits` rather than through it.
   #
+  # A stage this pool has not opened yet but a seed already partly fills is
+  # tested through `fits` like any other shared stage; an unseeded empty stage
+  # still opens unconditionally, exactly as before seed_stages existed.
+  #
   # The result counts OCCUPIED stages, not the index span -- stages below the
   # lowest level hold register/hash work, not tables from this pool.
-  by_index = {}  # index -> [fields_present, tables, shards, key_order]
+  by_index = {}  # index -> [fields_present, tables, shards, key_order, seed]
+  table_stages = {}
   ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]], -load(s)))
   for blocks, _width, table_idx, fields, bits in ordered:
     index = readiness_levels[table_idx]
     while (index in unavailable_stages or
            (index in by_index
-            and not fits(by_index[index], blocks, fields, bits))):
+            and not fits(by_index[index], blocks, fields, bits)) or
+           (index not in by_index and index in seeds
+            and not fits(empty(seeds[index]), blocks, fields, bits))):
       index += 1
     if index in by_index:
       place(by_index[index], blocks, fields, bits)
     else:
-      by_index[index] = opened(blocks, fields, bits)
+      by_index[index] = opened(blocks, fields, bits, seed_at(index))
+    table_stages[table_idx] = max(index, table_stages.get(table_idx, index))
 
-  return StagePlan(occupied=len(by_index),
-                    depth=(max(by_index) + 1) if by_index else 0,
-                    indices=frozenset(by_index.keys()),
-                    blocks=sum(stage_charged_blocks(stage)
-                              for stage in by_index.values()))
+  return finished(by_index, table_stages)

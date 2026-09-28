@@ -36,6 +36,8 @@ def rebuild_pool(row):
         "range_table_specs": [tuple(s) for s in src["range_table_specs"]],
         "ternary_table_specs": [tuple(s) for s in src["ternary_table_specs"]],
         "range_levels": src["range_levels"],
+        "range_task": src["range_task"],
+        "ternary_task": src["ternary_task"],
         "range_fields": [sets[i] for i in src["range_key_field_set_ids"]],
         "ternary_fields": [sets[i] for i in src["ternary_key_field_set_ids"]],
         "ternary_key_bits": [bit_sets[i]
