@@ -537,7 +537,24 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       key moved a stage) -- no simulation reproduced that, so such stages
       are refused rather than priced.
   A table charged more than one stage's 24 blocks is split into chunks of
-  whole rows that each fit a stage. Measured on the 43 pragma'd arm-D
+  whole rows that each fit a stage.
+
+  A SINGLE-KEY POOL IS NOT SIMULATED. When every classification table keys
+  the same field set -- every 'joint' design -- and no seed sits at or after
+  the pool's lowest readiness level, there is no pricing question for an
+  order to settle: every table is its stage's first (and only) key, charged
+  its declared blocks. Such a pool is placed exactly as before C5, by the
+  declared-price packer the range pool uses (eager (level, largest-load)
+  shards; first-fit-decreasing without levels), so 'joint' blocks AND
+  stage_depth are structurally identical to the pre-C5 model (plan
+  invariant 1), not merely on the archived designs. The simulation's
+  placement order is a p4c-order heuristic for bin packing as well as for
+  pricing, and on single-key pools it packs differently from the old FFD in
+  ~1% of realistic tree-size mixes (task-5 review fuzz); what it exists for
+  -- which key a stage prices first -- only arises with two keys.
+  tests/test_p4model_guards.py fuzzes this against an independent reference.
+
+  Measured on the 43 pragma'd arm-D
   compiles (results/compiler_calibration_pinned/): stage_depth 42/43 (the
   miss, independent_high_sd12, is the one design where the pragma itself
   cost p4c a stage) and blocks 38/38.
@@ -602,7 +619,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                                         for idx in range(len(table_specs))),
                      stage_loads=tuple(loads))
 
-  if key_field_bits is not None:
+  distinct_keys = {key_fields[idx] if key_fields is not None
+                   else ("<private>", idx) for idx in range(len(table_specs))}
+  lowest_level = min(readiness_levels, default=0) if readiness_levels else 0
+  seed_reachable = any(index >= lowest_level for index in seeds)
+  if key_field_bits is not None and (len(distinct_keys) > 1 or seed_reachable):
     levels = (list(readiness_levels) if readiness_levels is not None
               else [0] * len(table_specs))
     priorities = (list(placement_priority) if placement_priority is not None
@@ -621,7 +642,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
           tables=len(placed)))
     return plan(loads, table_stages)
 
-  # ---- the range pool: every table charged its declared blocks.
+  # ---- the range pool, and a single-key classification pool (see the
+  # docstring): every table charged its declared blocks, placed as before C5.
   shards = []
   for idx, (block_count, byte_width) in enumerate(table_specs):
     fields = (key_fields[idx] if key_fields is not None

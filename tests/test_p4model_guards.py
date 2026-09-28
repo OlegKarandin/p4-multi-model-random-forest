@@ -905,16 +905,20 @@ def test_stage_load_fits_checks_the_combined_limits():
 
 def test_a_classification_table_wider_than_a_stage_is_split_by_whole_rows():
     # A 30-block table of a 5-block key (6 row words) cannot sit in one
-    # stage's 24 blocks. The ordered simulation splits it into chunks of whole
-    # words that each can -- 4 words (20 blocks, 12 | 8) then 2 (10) -- every
-    # chunk keeping the full key; the table is done at the later stage.
+    # stage's 24 blocks. The ordered simulation (two keys here, so it runs)
+    # splits it into chunks of whole words that each can -- 4 words (20
+    # blocks, 12 | 8) then 2 (10) -- every chunk keeping the full key; the
+    # table is done at the later stage. The 1-block second key, placed after
+    # the first chunk, finds lanes to spare.
     from src.p4model.packing import crossbar_stages_needed
 
-    key = frozenset({(("code", "w"), 25)})
-    plan = crossbar_stages_needed([(30, 25)], key_fields=[key],
-                                  key_field_bits=[(200,)])
-    assert (plan.occupied, plan.blocks, plan.table_stages) == (2, 30, (1,))
-    assert [load.blocks for load in plan.stage_loads] == [(12, 8), (10,)]
+    wide = frozenset({(("code", "w"), 25)})
+    small = frozenset({(("code", "s"), 2)})
+    plan = crossbar_stages_needed([(30, 25), (1, 2)], key_fields=[wide, small],
+                                  key_field_bits=[(200,), (16,)],
+                                  placement_priority=[2, 1])
+    assert (plan.occupied, plan.blocks, plan.table_stages) == (2, 31, (1, 0))
+    assert [load.blocks for load in plan.stage_loads] == [(12, 8, 1), (10,)]
 
 
 def test_a_classification_table_wider_than_a_column_stays_in_one_stage():
@@ -922,9 +926,148 @@ def test_a_classification_table_wider_than_a_column_stays_in_one_stage():
     # blocks, _stage_shards) and counts as ONE table against the 8-table cap.
     from src.p4model.packing import crossbar_stages_needed
 
-    key = frozenset({(("code", "w"), 25)})
-    plan = crossbar_stages_needed([(15, 25), (1, 25)], key_fields=[key, key],
-                                  key_field_bits=[(200,), (200,)],
-                                  readiness_levels=[2, 2])
+    wide = frozenset({(("code", "w"), 25)})
+    small = frozenset({(("code", "s"), 2)})
+    plan = crossbar_stages_needed([(15, 25), (1, 2)], key_fields=[wide, small],
+                                  key_field_bits=[(200,), (16,)],
+                                  readiness_levels=[2, 2],
+                                  placement_priority=[2, 1])
     assert (plan.occupied, plan.blocks, plan.table_stages) == (1, 16, (2, 2))
     assert plan.stage_loads[0].tables == 2
+
+
+# --- Plan invariant 1, structurally: a single-key classification pool (every
+# 'joint' design) is placed and charged exactly as before audit C5. The
+# ordered stage simulation's placement order once leaked into single-key
+# pools and moved stage_depth on ~1% of realistic tree-size mixes (task-5
+# review fuzz, 224/20 000) while the archive happened to avoid them. The
+# reference below is an INDEPENDENT restatement of the pre-C5 placement
+# (packing.py at 5e97e6b, where a single key never paid the old margin):
+# column-sized shards, placed eagerly in (level, largest-load-first) order at
+# the earliest legal stage (first-fit-decreasing without levels), a stage
+# taking a shard while it keeps <= 8 shards, <= 64 bytes of distinct fields
+# and a 12x2 column packing, every shard charged its declared blocks.
+
+def _pre_c5_single_key_reference(specs, levels, unavailable):
+    from src.p4model.packing import fits_two_columns
+
+    shards = []
+    for idx, (blocks, width) in enumerate(specs):
+        remaining = blocks
+        while remaining > 12:
+            shards.append((12, width, idx))
+            remaining -= 12
+        shards.append((remaining, width, idx))
+
+    def load(shard):
+        return max(shard[0] / 24, shard[1] / 64, 1 / 8)
+
+    stages = {}                     # index -> shard blocks; one key, so width is fixed
+
+    def fits(here, blocks, width):
+        return (width <= 64 and len(here) + 1 <= 8
+                and fits_two_columns(here + [blocks]))
+
+    table_stage = {}
+    if levels is None:
+        for blocks, width, idx in sorted(shards, key=load, reverse=True):
+            index = 0
+            while index in stages and not fits(stages[index], blocks, width):
+                index += 1
+            stages.setdefault(index, []).append(blocks)
+            table_stage[idx] = max(index, table_stage.get(idx, index))
+    else:
+        for blocks, width, idx in sorted(shards, key=lambda s: (levels[s[2]], -load(s))):
+            index = levels[idx]
+            while index in unavailable or (
+                    index in stages and not fits(stages[index], blocks, width)):
+                index += 1
+            stages.setdefault(index, []).append(blocks)
+            table_stage[idx] = max(index, table_stage.get(idx, index))
+    depth = max(stages) + 1 if stages else 0
+    return (len(stages), depth, sum(map(sum, stages.values())),
+            tuple(table_stage[i] for i in range(len(specs))))
+
+
+def _single_key_config(rng, dist):
+    from src.p4model.tables import codeword_to_blocks
+
+    while True:
+        if dist == "small":
+            bits = tuple(rng.randint(1, 12) for _ in range(rng.randint(1, 4)))
+        else:
+            bits = tuple(rng.randint(1, 60) for _ in range(rng.randint(1, 16)))
+        width = sum(-(-b // 8) for b in bits)
+        if width <= 64:
+            break
+    per_row = codeword_to_blocks(bits)
+    trees = rng.randint(1, 40 if dist == "extreme" else 30)
+
+    def rows():
+        if dist == "one":
+            return 1
+        if dist == "mix":           # ~85% one-word trees, the realistic shape
+            return 1 if rng.random() < 0.85 else rng.choice([2, 2, 3, 4])
+        if dist == "small":
+            return rng.choice([1, 2])
+        return rng.choice([1, 2, 3, 4, 5, 6])
+
+    specs = [(per_row * rows(), width) for _ in range(trees)]
+    key = frozenset({(("code", i), -(-b // 8)) for i, b in enumerate(bits)})
+    level = rng.randint(3, 8)
+    unavailable = frozenset(s for s in range(level, level + 4) if rng.random() < 0.15)
+    priority = [rng.choice([1, 2]) for _ in range(trees)]
+    return specs, key, bits, [level] * trees, unavailable, priority
+
+
+@pytest.mark.parametrize("dist", ["one", "mix", "small", "extreme"])
+def test_a_single_key_pool_is_placed_exactly_as_before_the_ordered_simulation(dist):
+    import random
+
+    from src.p4model.packing import StageLoad, crossbar_stages_needed
+
+    rng = random.Random("single-key-" + dist)
+    for case in range(1500):
+        specs, key, bits, levels, unavailable, priority = _single_key_config(rng, dist)
+        pure = case % 4 == 0
+        kwargs = dict(key_fields=[key] * len(specs), key_field_bits=[bits] * len(specs),
+                      placement_priority=priority)
+        if pure:
+            plan = crossbar_stages_needed(specs, **kwargs)
+            expected = _pre_c5_single_key_reference(specs, None, frozenset())
+        else:
+            # A range seed BELOW the trees' level (every 'joint' design: trees
+            # wait for every range table) must not change anything either.
+            seed = StageLoad(index=levels[0] - 1, blocks=(1, 1),
+                             fields=frozenset({(("val", 0), 2), (("val", 1), 2)}),
+                             tables=2)
+            plan = crossbar_stages_needed(specs, readiness_levels=levels,
+                                          unavailable_stages=unavailable,
+                                          seed_stages=[seed], **kwargs)
+            expected = _pre_c5_single_key_reference(specs, levels, unavailable)
+        assert (plan.occupied, plan.depth, plan.blocks, plan.table_stages) == expected, (
+            dist, case, specs, levels, sorted(unavailable))
+        assert plan.blocks == sum(blocks for blocks, _ in specs)
+
+
+def test_a_second_key_or_a_reachable_seed_switches_the_simulation_on():
+    # The single-key shortcut must not swallow a real pricing question: a
+    # 12-byte key ahead of the ragged 49-byte one still makes it pay 10, and a
+    # range seed IN the trees' stage still counts as a key placed first.
+    from src.p4model.packing import StageLoad, crossbar_stages_needed
+
+    app = frozenset({(("code", "app_a"), 23), (("code", "app_b"), 26)})
+    ddos = frozenset({(("code", "ddos_a"), 5), (("code", "ddos_b"), 7)})
+    two = crossbar_stages_needed(
+        [(9, 49)] + [(3, 12)] * 4, readiness_levels=[0] * 5,
+        key_fields=[app] + [ddos] * 4,
+        key_field_bits=[(179, 204)] + [(37, 49)] * 4,
+        placement_priority=[1] + [2] * 4)
+    assert two.blocks == 22
+    wide = frozenset({(("code", "wide"), 60)})
+    seed = StageLoad(index=0, blocks=(1,), fields=frozenset({(("val", 0), 2)}),
+                     tables=1)
+    seeded = crossbar_stages_needed(
+        [(11, 60)], readiness_levels=[0], key_fields=[wide],
+        key_field_bits=[(480,)], seed_stages=[seed])
+    assert seeded.blocks == 12
