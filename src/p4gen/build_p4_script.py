@@ -1138,6 +1138,21 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
         table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_"+task+"_"+str(i)+";")
         size = classification_table_sizes[tree_id_offset_by_task[task] + i]
         table_template = table_template.replace("<SIZE>", str(size))
+        # C5 (Phase 3 step 1): pin a deterministic ternary-table placement
+        # order -- ddos trees ahead of app trees -- so the (later) packer's
+        # stage simulation knows which key p4c's greedy crossbar allocator
+        # serves first, instead of charging the worst-case ordering. Priority
+        # is per TASK, not per tree: every ddos tree gets the same (2), every
+        # app tree the same (1); p4c breaks ties within a priority by
+        # declaration order, which the "last-listed tree first" rule (Phase 3
+        # step 3, not this task) relies on.
+        priority = 2 if task == "ddos" else 1
+        table_template = table_template.replace(
+            "    table get_classification_tree_"+task+"_"+str(i)+" {",
+            "    @placement_priority("+str(priority)+")"
+            "\n    table get_classification_tree_"+task+"_"+str(i)+" {",
+            1,
+        )
         table_templates += table_template
         apply_templates_tmp += "\t\t\tget_classification_tree_"+task+"_"+str(i)+".apply();\n"
       if task == "app":
@@ -1419,6 +1434,17 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
         # the 19 calibration compiles) and a pragma naming a field that does
         # not exist is silently ignored.
         phv_pragmas += ('@pa_solitary("ingress", "ig_md.class_tree_'
+                        + task + "_" + str(i) + '")\n')
+        # C5 (Phase 3 step 1): also forbid the allocator from overlaying this
+        # field with another one in the same container across control flows.
+        # @pa_solitary alone still lets two class_tree_* fields sharing a
+        # container overlay each other when they are written on mutually
+        # exclusive paths, which would make the field's PHV placement -- and
+        # therefore which stage its table lands in -- depend on overlay
+        # decisions the (later) stage simulation cannot see. Only class_tree_*
+        # fields get this: code_<feature> keeps its existing overlay
+        # behaviour (its @pa_solitary is emitted separately, below).
+        phv_pragmas += ('@pa_no_overlay("ingress", "ig_md.class_tree_'
                         + task + "_" + str(i) + '")\n')
       # generate_voting_code (below) writes to meta.classification_<task>; the
       # TNA template no longer declares this field itself (it doesn't know

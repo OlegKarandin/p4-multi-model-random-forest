@@ -2097,3 +2097,146 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
   assert len(solitary) == len(set(solitary)), "duplicate @pa_solitary is a p4c error"
   assert "classification_app" not in set(solitary)
   assert "classification_ddos" not in set(solitary)
+
+
+# ---------------------------------------------------------------------------
+# C5 (Phase 3 step 1): @placement_priority on every classification tree
+# table, and @pa_no_overlay next to every class_tree_* @pa_solitary.
+#
+# These two pragmas pin a deterministic tree order (ddos tables placed ahead
+# of app tables, at the SAME priority within a task) and a predictable PHV
+# layout for the per-tree result fields, so a later packer change can
+# simulate p4c's greedy crossbar placement instead of charging a fitted
+# worst-case margin for "don't know which key goes first"
+# (CLAUDE.md's "Ternary block cost" / "Crowded stage" section;
+# reviews/model_audit_2026-09-27.md, finding C5). This task only adds the
+# pragmas to the generated P4 -- the packer still uses the old margin.
+# ---------------------------------------------------------------------------
+
+_PLACEMENT_PRIORITY_TABLE_RE = re.compile(
+    r'@placement_priority\((\d+)\)\s*\n\s*table (get_classification_tree_[A-Za-z0-9_]+)')
+
+
+def test_generate_P4_code_ddos_trees_get_higher_placement_priority_than_app(tmp_path):
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)],
+                    "fwd_packet_length_max": [(0, 8), (9, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="priority_code.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  priority_by_table = {
+      name: int(priority)
+      for priority, name in _PLACEMENT_PRIORITY_TABLE_RE.findall(text)
+  }
+  tree_tables = set(re.findall(r"table (get_classification_tree_[A-Za-z0-9_]+) \{", text))
+
+  assert tree_tables, "fixture produced no classification tree tables at all"
+  # Every tree table -- app and ddos -- is annotated, and none twice.
+  assert set(priority_by_table) == tree_tables
+  assert len(_PLACEMENT_PRIORITY_TABLE_RE.findall(text)) == len(tree_tables)
+
+  app_tables = {t for t in tree_tables if "_app_" in t}
+  ddos_tables = {t for t in tree_tables if "_ddos_" in t}
+  assert app_tables and ddos_tables, "fixture must exercise both tasks"
+  assert all(priority_by_table[t] == 1 for t in app_tables)
+  assert all(priority_by_table[t] == 2 for t in ddos_tables)
+  # ddos strictly higher than app, matching
+  # reviews/model_audit_scratch/priority_exp_ddos_first_noovct's arm.
+  assert min(priority_by_table[t] for t in ddos_tables) > max(
+      priority_by_table[t] for t in app_tables)
+
+
+def test_generate_P4_code_placement_priority_pragma_precedes_its_table(tmp_path):
+  # The pragma must be the line immediately above its own "table <name> {"
+  # line -- p4c reads a table pragma from the syntax directly preceding the
+  # table declaration it annotates, not from anywhere else in the file.
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="priority_adjacency.p4")
+  with open(written_path) as f:
+    lines = f.read().splitlines()
+
+  found = 0
+  for idx, line in enumerate(lines):
+    if line.strip().startswith("table get_classification_tree_"):
+      assert idx > 0, "tree table has no preceding line at all"
+      assert lines[idx - 1].strip().startswith("@placement_priority("), (
+          "line before {!r} is {!r}, not a @placement_priority pragma"
+          .format(line, lines[idx - 1]))
+      found += 1
+  assert found > 0, "fixture produced no classification tree tables at all"
+
+
+def test_generate_P4_code_class_tree_fields_get_pa_no_overlay_next_to_solitary(tmp_path):
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)],
+                    "fwd_packet_length_max": [(0, 8), (9, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="no_overlay_code.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  class_tree_solitary = set(
+      m.group(1) for m in _PA_SOLITARY_RE.finditer(text)
+      if m.group(1).startswith("class_tree_"))
+  no_overlay = set(re.findall(
+      r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)', text))
+
+  assert class_tree_solitary, "fixture produced no per-tree result fields at all"
+  # Exactly the class_tree_* solitary fields get @pa_no_overlay, no more, no
+  # fewer, and never duplicated (a duplicate pragma is a p4c error, same as
+  # for @pa_solitary above).
+  assert no_overlay == class_tree_solitary
+  no_overlay_list = re.findall(
+      r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)', text)
+  assert len(no_overlay_list) == len(set(no_overlay_list))
+
+  # And each @pa_no_overlay sits directly under its own @pa_solitary line --
+  # not just present somewhere in the file.
+  for field in class_tree_solitary:
+    assert (
+        '@pa_solitary("ingress", "ig_md.' + field + '")\n'
+        '@pa_no_overlay("ingress", "ig_md.' + field + '")\n'
+    ) in text
+
+
+def test_generate_P4_code_never_adds_pa_no_overlay_to_code_fields(tmp_path):
+  # The brief's explicit "never" case: @pa_no_overlay must not appear next to
+  # (or anywhere naming) a code_<feature> field -- only class_tree_* fields
+  # get it. code_<feature> keeps its pre-existing overlay behaviour.
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)],
+                    "fwd_packet_length_max": [(0, 8), (9, INFINITE)]}
+  written_path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="no_overlay_never_code.p4")
+  with open(written_path) as f:
+    text = f.read()
+
+  code_solitary = set(
+      m.group(1) for m in _PA_SOLITARY_RE.finditer(text)
+      if m.group(1).startswith("code_"))
+  no_overlay = set(re.findall(
+      r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)', text))
+
+  assert code_solitary, "fixture produced no codeword fields at all"
+  assert not (code_solitary & no_overlay)
+  assert all(not name.startswith("code_") for name in no_overlay)

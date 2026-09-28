@@ -12,8 +12,11 @@
 const bit<32> MAX_NUM_FLOWS = 4096;
 
 @pa_solitary("ingress", "ig_md.class_tree_app_0")
+@pa_no_overlay("ingress", "ig_md.class_tree_app_0")
 @pa_solitary("ingress", "ig_md.class_tree_app_1")
+@pa_no_overlay("ingress", "ig_md.class_tree_app_1")
 @pa_solitary("ingress", "ig_md.class_tree_ddos_0")
+@pa_no_overlay("ingress", "ig_md.class_tree_ddos_0")
 @pa_container_size("ingress", "ig_md.flow_iat_max_val", 16)
 @pa_container_size("ingress", "ig_md.fwd_packet_length_max_val", 16)
 @pa_solitary("ingress", "ig_md.code_app_flow_iat_max")
@@ -172,6 +175,7 @@ control SwitchIngress(
 
 
 
+    @placement_priority(1)
     table get_classification_tree_app_0 {
         key = {
             meta.code_app_flow_iat_max : ternary;
@@ -182,6 +186,7 @@ control SwitchIngress(
         size = 5;
     }
     
+    @placement_priority(1)
     table get_classification_tree_app_1 {
         key = {
             meta.code_app_flow_iat_max : ternary;
@@ -192,6 +197,7 @@ control SwitchIngress(
         size = 5;
     }
     
+    @placement_priority(2)
     table get_classification_tree_ddos_0 {
         key = {
             meta.code_ddos_flow_iat_max : ternary;
