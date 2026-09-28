@@ -7,8 +7,11 @@ from src.training.align_budget import (_factor,
                                        pooled_interval_count,
                                        pooled_key_bytes, total_blocks,
                                        tree_multiplier)
-from src.training.align_targets import (boundary_moves, candidate_targets,
-                                        hypothetical_ranges, neighbour_writes)
+from src.training.align_targets import (LOWER_EDGE, boundary_moves,
+                                        boundary_moves_to, boundary_pairs,
+                                        candidate_targets,
+                                        hypothetical_ranges, lower_boundary,
+                                        neighbour_writes)
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
@@ -232,7 +235,7 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
     Sorted by (gain descending, damage ascending, generation order): a target
     that sheds two bits beats one that sheds one whatever the damage, and the
     accuracy guard is what bounds the damage anyway. In the common case where
-    s1 != s2, e1 != e2 and neither boundary sits on a sentinel, all four
+    s1 != s2, e1 != e2 and no boundary touches an edge, all four
     corners shed the SAME two bits -- each of the two boundary gaps is crossed
     exactly once whichever corner wins, and only WHICH MODEL pays for which
     gap changes -- so damage is the effective discriminator and gain only
@@ -935,22 +938,32 @@ def still_overlaps(range1, range2):
 
 
 def structurally_alignable(range1, range2):
-    """Can adjust_range_boundaries move these boundaries at all?
+    """Is this pair admissible at all, before its corners are priced?
 
-    A boundary sitting ON a sentinel -- 0 at the bottom, INFINITE at the top --
-    is never moved (adjust_range_boundaries' own guard). Where exactly one side
-    sits on one, nothing vetoed the PAIR, so
-    update_neighboring_ranges_and_index wrote the shrunk boundary into `ranges`
-    while the model kept splitting at the sentinel and the index kept the true
-    key: the C5 bug. dataset.py clips every feature at INFINITE, so a
+    A boundary whose source or target is an EDGE -- LOWER_EDGE at the bottom,
+    INFINITE at the top -- is never moved (adjust_range_boundaries' own
+    guard). Where exactly one side sat on one, nothing used to veto the PAIR,
+    so update_neighboring_ranges_and_index wrote the shrunk boundary into
+    `ranges` while the model kept splitting where it was and the index kept
+    the true key: the C5 bug. neighbour_writes now mirrors every per-boundary
+    refusal into the effective range, which is what keeps the three
+    structures consistent; this veto is a coarser second line.
+
+    NARROWED 2026-09-28 (spec T2) to what invariant 2 needs: a corner is
+    admissible iff its moves touch no edge, and the per-boundary refusal
+    already guarantees that for the lower edge. So a pair where exactly one
+    side is a first interval (0, c) is no longer vetoed -- e.g. (0, 10) vs
+    (6, 15), corner (0, 10): the second model's 15 -> 10 moves and its lower
+    boundary, which would have gone to the edge, stays. Before T2 the lower
+    edge and a real cut at 0 were the same value, so the old clause also
+    froze every pair touching a real cut at 0.
+
+    The INFINITE-side clause is kept as it was: the spec narrows only the
+    first-interval veto. dataset.py clips every feature at INFINITE, so a
     (m, INFINITE) interval is common, not exotic.
-
-    Extracted verbatim from the since-pruned calculate_range_overlap's two
-    early returns, whose 0.0 made them indistinguishable from "no overlap".
     """
-    (min1, max1), (min2, max2) = range1, range2
-    return ((min1 == 0) == (min2 == 0)
-            and (max1 == INFINITE) == (max2 == INFINITE))
+    (_, max1), (_, max2) = range1, range2
+    return (max1 == INFINITE) == (max2 == INFINITE)
 
 
 def target_is_well_formed(target):
@@ -967,29 +980,22 @@ def target_is_well_formed(target):
 
 
 def adjust_range_boundaries(rf, feature_idx, source_range, target_range, threshold_index):
-    """
-    Adjust thresholds using the pre-built index
-    """
-    source_min, source_max = source_range
-    target_min, target_max = target_range
-    
-    threshold_source_min = source_min - 1 if source_min > 0 else source_min
-    threshold_target_min = target_min - 1 if target_min > 0 else target_min
+    """Move `source_range`'s boundaries to `target_range`'s in the forest.
 
-    threshold_source_max = source_max
-    threshold_target_max = target_max
-        
+    Each boundary is the cut it stands for -- `start - 1` below, `end` above
+    (align_targets.boundary_pairs) -- and moves only if it changes and
+    neither its source nor its target is an EDGE (LOWER_EDGE below, INFINITE
+    above; align_targets.boundary_moves_to). Since spec 2026-09-28 T2 a cut
+    at 0 is an ordinary cut here, and a lower target of LOWER_EDGE is
+    refused rather than written as a threshold of 0.
+    """
     modifications = []
 
-    # Min side (sentinel 0) and max side (sentinel INFINITE): identical guard
-    # shape, identical AlignmentInvariantError, identical mutation loop --
-    # differing only in which sentinel refuses the move and which
-    # source/target pair is used.
-    for threshold_source, threshold_target, sentinel in (
-        (threshold_source_min, threshold_target_min, 0),
-        (threshold_source_max, threshold_target_max, INFINITE),
-    ):
-        if threshold_source != threshold_target and threshold_source != sentinel:
+    # Min side (edge LOWER_EDGE) and max side (edge INFINITE): identical
+    # guard, identical AlignmentInvariantError, identical mutation loop.
+    for threshold_source, threshold_target, edge in boundary_pairs(
+            source_range, target_range):
+        if boundary_moves_to(threshold_source, threshold_target, edge):
 
             if (feature_idx, threshold_source) not in threshold_index:
                 raise AlignmentInvariantError(
@@ -1158,15 +1164,20 @@ def update_neighboring_ranges_and_index(ranges, target_idx, old_range, new_range
 
     ranges[target_idx] = effective_range
 
+    # The index follows the EFFECTIVE range, which neighbour_writes built
+    # with the same per-boundary edge guards adjust_range_boundaries applies
+    # (align_targets.boundary_moves_to) -- so a boundary the model refused to
+    # move is not re-keyed either, whether the refusal was its source or its
+    # target being an edge.
     old_min, old_max = old_range
-    new_min, new_max = new_range
-    threshold_old_min = old_min - 1 if old_min > 0 else old_min
-    threshold_new_min = new_min - 1 if new_min > 0 else new_min
-    if threshold_old_min != threshold_new_min and threshold_old_min != 0:
+    effective_min, effective_max = effective_range
+    if effective_min != old_min:
         update_threshold_index(threshold_index, feature_idx,
-                               threshold_old_min, threshold_new_min)
-    if old_max != new_max and old_max != INFINITE:
-        update_threshold_index(threshold_index, feature_idx, old_max, new_max)
+                               lower_boundary(old_min),
+                               lower_boundary(effective_min))
+    if effective_max != old_max:
+        update_threshold_index(threshold_index, feature_idx, old_max,
+                               effective_max)
 
     for i, tup in writes:
         ranges[i] = tup

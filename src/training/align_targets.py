@@ -10,6 +10,47 @@ of it.
 from src.p4gen.build_p4_script import INFINITE
 
 
+# The range's lower EDGE, as a boundary value (spec 2026-09-28 T2).
+#
+# A boundary of interval (s, e) is expressed as the cut it stands for: the
+# lower boundary is the cut `x <= s - 1`, ALWAYS, and the upper is `x <= e`.
+# For a first interval (0, c) there is no cut below it -- s - 1 is the edge,
+# and it must be a value no real cut can take, which is why it is -1 and not
+# 0. Until 2026-09-28 the lower boundary was `s - 1 if s > 0 else s`, so the
+# edge of (0, c) and the real, learned cut `x <= 0` below (1, c) were both 0,
+# and both were frozen by a "sentinel 0" guard: a real cut at 0 never moved,
+# and a move whose TARGET lower bound was 0 wrote a threshold of 0 -- CREATING
+# a cut at 0 while believing it had moved to the edge.
+#
+# Edges never move and no cut is ever moved onto one (invariant 2): the top
+# edge is INFINITE, the bottom one this.
+LOWER_EDGE = -1
+
+
+def lower_boundary(start):
+    """The cut below an interval starting at `start`: `start - 1`, which is
+    LOWER_EDGE for a first interval (0, c) and the real cut 0 for (1, c)."""
+    return start - 1
+
+
+def boundary_pairs(source_range, target_range):
+    """[(source, target, edge)] for the lower and the upper boundary, in that
+    order -- the one statement of the boundary convention that
+    boundary_moves, neighbour_writes and threshold_alignment's
+    adjust_range_boundaries / update_neighboring_ranges_and_index all share,
+    so the four cannot drift apart again."""
+    (source_min, source_max), (target_min, target_max) = source_range, target_range
+    return [(lower_boundary(source_min), lower_boundary(target_min), LOWER_EDGE),
+            (source_max, target_max, INFINITE)]
+
+
+def boundary_moves_to(source, target, edge):
+    """Whether this one boundary really moves: it changes, and neither the
+    SOURCE nor the TARGET is the edge. A source on the edge has no cut to
+    move; a target on the edge would delete the cut (invariant 2)."""
+    return source != target and source != edge and target != edge
+
+
 def candidate_targets(range1, range2):
     """The four corner targets for an overlapping pair, intersection first.
 
@@ -46,25 +87,18 @@ def boundary_moves(source_range, target_range):
     """The (old_threshold, new_threshold) writes adjust_range_boundaries would
     make for one model.
 
-    Mirrors that function's guards exactly: a boundary is expressed as
-    `start - 1` on the min side, and a boundary sitting ON a sentinel (0 at the
-    bottom, INFINITE at the top) is never moved -- every feature's tiling
-    starts at 0 and ends at INFINITE, so declining is the common case, not an
-    edge case. A target whose moves are empty for BOTH models has gain 0 and
-    must be dropped before it costs an oracle evaluation.
+    Mirrors that function's guards exactly (both go through boundary_pairs
+    and boundary_moves_to): a boundary is expressed as the cut `start - 1` on
+    the min side and `end` on the max side, and a boundary whose source OR
+    target is an EDGE (LOWER_EDGE at the bottom, INFINITE at the top) is
+    never moved -- every feature's tiling starts at 0 and ends at INFINITE, so
+    declining is the common case, not an edge case. A target whose moves are
+    empty for BOTH models has gain 0 and must be dropped before it costs an
+    oracle evaluation.
     """
-    source_min, source_max = source_range
-    target_min, target_max = target_range
-
-    moves = []
-    for source, target, sentinel in (
-        (source_min - 1 if source_min > 0 else source_min,
-         target_min - 1 if target_min > 0 else target_min, 0),
-        (source_max, target_max, INFINITE),
-    ):
-        if source != target and source != sentinel:
-            moves.append((source, target))
-    return moves
+    return [(source, target)
+            for source, target, edge in boundary_pairs(source_range, target_range)
+            if boundary_moves_to(source, target, edge)]
 
 
 def neighbour_writes(ranges, target_idx, old_range, new_range):
@@ -72,9 +106,11 @@ def neighbour_writes(ranges, target_idx, old_range, new_range):
 
     Returns (effective_range, writes, inverted):
       effective_range : what ranges[target_idx] becomes, after mirroring
-                        adjust_range_boundaries' sentinel guards -- `ranges`
-                        must never claim a boundary moved that the model
-                        refused to move, which is the C5 bug.
+                        adjust_range_boundaries' edge guards per boundary --
+                        `ranges` must never claim a boundary moved that the
+                        model refused to move, which is the C5 bug. Since
+                        T2 (2026-09-28) that includes a refused TARGET edge:
+                        (6, 15) -> (0, 10) is effectively (6, 10).
       writes          : [(index, (lo, hi))] for every neighbour that absorbs
                         the boundary move.
       inverted        : the first neighbour tuple that would invert, or None.
@@ -84,11 +120,10 @@ def neighbour_writes(ranges, target_idx, old_range, new_range):
     old_min, old_max = old_range
     new_min, new_max = new_range
 
-    threshold_old_min = old_min - 1 if old_min > 0 else old_min
-    threshold_old_max = old_max
-
-    effective_min = new_min if threshold_old_min != 0 else old_min
-    effective_max = new_max if threshold_old_max != INFINITE else old_max
+    (lo_src, lo_dst, lo_edge), (hi_src, hi_dst, hi_edge) = boundary_pairs(
+        old_range, new_range)
+    effective_min = new_min if boundary_moves_to(lo_src, lo_dst, lo_edge) else old_min
+    effective_max = new_max if boundary_moves_to(hi_src, hi_dst, hi_edge) else old_max
     effective_range = (effective_min, effective_max)
 
     writes, inverted = [], None

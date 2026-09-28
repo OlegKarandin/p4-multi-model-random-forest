@@ -21,15 +21,21 @@ def test_candidate_targets_dedupes_coincident_corners():
     assert at.candidate_targets((10, 20), (10, 20)) == [(10, 20)]
 
 
-def test_boundary_moves_mirrors_the_sentinel_guards():
-    """adjust_range_boundaries silently declines to move a boundary sitting ON
-    a sentinel (0 or INFINITE), so a corner that asks only for sentinel moves
-    is a no-op and must be dropped before it costs an oracle evaluation."""
+def test_boundary_moves_mirrors_the_edge_guards():
+    """adjust_range_boundaries silently declines to move a boundary whose
+    source or target is an EDGE (LOWER_EDGE at the bottom, INFINITE at the
+    top), so a corner that asks only for edge moves is a no-op and must be
+    dropped before it costs an oracle evaluation. Spec 2026-09-28 T2: the
+    lower boundary of (s, e) is always s - 1, so (0, c)'s is the edge and
+    (1, c)'s is a real cut at 0."""
     assert at.boundary_moves((41, 96), (33, 88)) == [(40, 32), (96, 88)]
-    assert at.boundary_moves((0, 96), (33, 88)) == [(96, 88)]      # min on 0
+    assert at.boundary_moves((0, 96), (33, 88)) == [(96, 88)]      # source edge
+    assert at.boundary_moves((41, 96), (0, 88)) == [(96, 88)]      # target edge
     assert at.boundary_moves((41, INFINITE), (33, 88)) == [(40, 32)]
     assert at.boundary_moves((0, INFINITE), (33, 88)) == []
     assert at.boundary_moves((41, 96), (41, 96)) == []
+    assert at.boundary_moves((1, 96), (33, 88)) == [(0, 32), (96, 88)]  # cut at 0
+    assert at.boundary_moves((41, 96), (1, 88)) == [(40, 0), (96, 88)]  # onto 0
 
 
 def test_boundary_moves_agrees_with_adjust_range_boundaries(monkeypatch):
@@ -66,9 +72,10 @@ def _threshold_index_for(ranges):
     wiring test is actually about."""
     idx = {}
     for lo, hi in ranges:
-        t_min = lo - 1 if lo > 0 else lo
-        if t_min != 0:
-            idx[(0, t_min)] = [(0, 0)]
+        # T2: every lower boundary but the edge's is a real cut -- including
+        # the cut at 0 below a (1, c) interval.
+        if lo > 0:
+            idx[(0, lo - 1)] = [(0, 0)]
         if hi != INFINITE:
             idx[(0, hi)] = [(0, 0)]
     return idx
@@ -113,7 +120,14 @@ def test_neighbour_writes_mutates_nothing():
 def test_a_widening_target_shrinks_its_neighbour_and_can_invert_it():
     """Union and mixed corners widen the aligned interval, so inversions are a
     real and expected outcome for them -- unlike the intersection, which only
-    ever widens neighbours."""
+    ever widens neighbours.
+
+    T2 (2026-09-28): (11, 20) -> (0, 20) used to be the inverting example
+    (neighbour -> (0, -1)); a lower target of 0 is the EDGE now and is
+    refused, so that move is a no-op rather than an inversion. The inversion
+    is shown one interval further up instead."""
     ranges = [(0, 10), (11, 20), (21, INFINITE)]
     assert at.target_admissible(ranges, 1, (11, 20), (5, 20))     # neighbour -> (0, 4)
-    assert not at.target_admissible(ranges, 1, (11, 20), (0, 20))  # neighbour -> (0, -1)
+    assert at.neighbour_writes(ranges, 1, (11, 20), (0, 20)) == ((11, 20), [], None)
+    ranges = [(0, 4), (5, 10), (11, 20), (21, INFINITE)]
+    assert not at.target_admissible(ranges, 2, (11, 20), (5, 20))  # neighbour -> (5, 4)

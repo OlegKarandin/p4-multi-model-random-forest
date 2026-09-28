@@ -326,11 +326,12 @@ def test_a_candidate_that_moves_nothing_costs_no_prediction(monkeypatch):
     already skips `range1 == range2` before the modifications are even
     computed -- so on a random fixture at least one side always has real work
     left. Hand-build one instead: feature 0's (1, 999) vs (5, 999) triggers
-    the bail two different ways at once -- rf1's min boundary sits right
-    after the model's threshold-0 split (adjust_range_boundaries refuses to
-    move a threshold AT 0, and 1 - 1 == 0), and rf2's own range already
-    equals the target -- while (2000, 65535) vs (3000, 65535) is a genuine,
-    attempted move. This is what test_a_zero_zero_candidate_produces_no_
+    the bail -- before T2 two different ways at once: rf1's min boundary sat
+    right after the model's threshold-0 split (which adjust_range_boundaries
+    then refused to move, mistaking the cut at 0 for the lower edge), and
+    rf2's own range already equals the target; since T2 the cut at 0 is
+    movable but moving it gains nothing (see the assertion's comment) --
+    while (2000, 65535) vs (3000, 65535) is a genuine, attempted move. This is what test_a_zero_zero_candidate_produces_no_
     modifications_either_way already proves component-by-component; this
     test is the same mechanism wired into the real loop, counted end to end.
     """
@@ -370,6 +371,12 @@ def test_a_candidate_that_moves_nothing_costs_no_prediction(monkeypatch):
     # catch that: apply is called exactly twice per attempted candidate
     # whether or not the bail exists, so that relation holds either way --
     # only the absolute counts move.
+    #
+    # T2 (2026-09-28) changed WHY the (1, 999) pair moves nothing, not
+    # whether: rf1's cut at 0 is a real, movable cut now, but moving it
+    # (0 -> 4) sheds nothing because rf2 also cuts at 0, and rf2's
+    # (5, 999) -> (1, 999) would collapse its own (1, 4) interval -- so every
+    # corner is dropped (gain 0 or inadmissible) before it is evaluated.
     assert stats['attempted'] == 1
     assert len(calls) == 2
 
@@ -847,9 +854,15 @@ def _golden_alignment_pair(n=300):
 #      (43170,50610)&(43170,48048) move degrades App relative to the running
 #      best but not relative to the start, so it is now accepted, and the
 #      greedy path after it ends one interval higher on this pair.
+#   T1 (one-value intervals offered): no change -- this pair has none.
+#   T2 (lower edge told apart from a cut at 0): attempted 34->35, accepted
+#      27->28, intervals_after unchanged at 63 -- feature 3's
+#      (0,17518)&(14537,17534), vetoed before as a lone first interval, is now
+#      accepted as a partial move (model 2's 17534 -> 17518, model 1's lower
+#      EDGE untouched).
 _ALIGNMENT_GOLDEN_C1C2 = {
     0.0: {
-        'stats': {'attempted': 34, 'accepted': 27,
+        'stats': {'attempted': 35, 'accepted': 28,
                   'intervals_before': 91, 'intervals_after': 63},
         't1': [
             [50135, 37970, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33860, -2,
@@ -860,7 +873,7 @@ _ALIGNMENT_GOLDEN_C1C2 = {
              -2],
             [11493, -2, 15571, -2, 26424, -2, 43169, 33254, -2, -2, 26063, -2,
              -2],
-            [45724, 17534, 48924, -2, -2, 25535, -2, 48261, -2, -2, 53373, -2,
+            [45724, 17518, 48924, -2, -2, 25535, -2, 48261, -2, -2, 53373, -2,
              49629, -2, -2],
             [39753, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
              48048, -2, -2, -2],
@@ -875,7 +888,7 @@ _ALIGNMENT_GOLDEN_C1C2 = {
              -2],
             [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
              53373, -2, -2],
-            [27321, 53909, 49629, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
+            [27321, 53909, 49629, -2, -2, -2, 17518, -2, 21985, -2, 53934, -2,
              60939, -2, -2],
             [54408, 42582, 33254, -2, -2, 62045, -2, -2, 17244, -2, 37970, -2,
              48048, -2, -2],
@@ -2078,15 +2091,20 @@ def test_still_overlaps_rejects_a_pair_an_earlier_move_pulled_apart():
     assert not ta.still_overlaps((0, 100), (101, 200))
 
 
-def test_structurally_alignable_vetoes_a_lone_sentinel():
-    """The zero-side and INFINITE-side vetoes, which adjust_range_boundaries
-    physically cannot satisfy: a boundary sitting on a sentinel is never moved,
-    so `ranges` would claim a move the model refused to make (the C5 bug).
-    dataset.py clips every feature at INFINITE, so (m, INFINITE) is common.
+def test_structurally_alignable_vetoes_only_a_lone_top_edge():
+    """Spec 2026-09-28 T2 narrowed the lower-edge veto away: a pair where
+    exactly one side is a first interval (0, c) is admissible, because every
+    boundary move that would touch the lower EDGE is refused per boundary
+    (adjust_range_boundaries / boundary_moves / neighbour_writes), so what is
+    left of such a corner touches no edge -- e.g. (0, 10) vs (6, 15), corner
+    (0, 10): only the second model's 15 -> 10 moves. The INFINITE-side
+    clause is unchanged (dataset.py clips every feature at INFINITE, so
+    (m, INFINITE) is common).
     """
     assert ta.structurally_alignable((0, 100), (0, 200))
     assert ta.structurally_alignable((10, INFINITE), (20, INFINITE))
-    assert not ta.structurally_alignable((0, 100), (10, 200))
+    assert ta.structurally_alignable((0, 100), (10, 200))
+    assert ta.structurally_alignable((0, 10), (6, 15))
     assert not ta.structurally_alignable((10, INFINITE), (20, 900))
 
 
@@ -2227,3 +2245,376 @@ def test_the_truncation_guard_still_raises_on_a_feature_that_bought_a_block(
     with pytest.raises(AlignmentInvariantError) as excinfo:
         ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, delta_rel=None)
     assert 'fixpoint' in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Spec 2026-09-28 T2: the range's lower EDGE is not a cut at 0.
+#
+# The lower boundary of (s, e) is the cut s - 1, always. For a first interval
+# (0, c) that is LOWER_EDGE (-1), which never moves and never receives a
+# move; for (1, c) it is the real, learned cut `x <= 0`, movable like any
+# other. Invariant 3 (consistency -- the old "C5" bug) is tested on exactly
+# the partial edge-adjacent moves this makes possible.
+# ---------------------------------------------------------------------------
+
+def test_the_lower_edge_is_its_own_sentinel_value():
+    assert at.LOWER_EDGE == -1
+    assert ta.LOWER_EDGE == at.LOWER_EDGE
+
+
+def test_a_cut_at_zero_moves_like_any_other_cut():
+    """rf cuts {0, 10}: (0,0), (1,10), (11,INF). Aligning (1, 10) to (4, 10)
+    moves the cut at 0 to 3 -- before T2 it was mistaken for the edge and
+    frozen."""
+    rf = _hand_built_forest([0, 10])
+    ranges = ta.extract_feature_intervals(rf)[0]
+    assert ranges == [(0, 0), (1, 10), (11, INFINITE)]
+    index = ta.build_threshold_index(rf)
+
+    assert at.boundary_moves((1, 10), (4, 10)) == [(0, 3)]
+    mods = ta.adjust_range_boundaries(rf, 0, (1, 10), (4, 10), index)
+    assert [old for _, _, old in mods] == [0]
+    ta.update_neighboring_ranges_and_index(ranges, 1, (1, 10), (4, 10), 0, index)
+
+    assert ranges == [(0, 3), (4, 10), (11, INFINITE)]
+    assert ranges == ta.extract_feature_intervals(rf)[0]
+    assert set(index) == {(0, 3), (0, 10)}
+
+
+def test_a_cut_can_be_moved_onto_zero():
+    """rf cuts {3, 10}: (0,3), (4,10), (11,INF). Target (1, 10) -- the other
+    model's interval above ITS cut at 0 -- moves the cut 3 onto 0."""
+    rf = _hand_built_forest([3, 10])
+    ranges = ta.extract_feature_intervals(rf)[0]
+    index = ta.build_threshold_index(rf)
+
+    assert at.boundary_moves((4, 10), (1, 10)) == [(3, 0)]
+    mods = ta.adjust_range_boundaries(rf, 0, (4, 10), (1, 10), index)
+    assert [old for _, _, old in mods] == [3]
+    ta.update_neighboring_ranges_and_index(ranges, 1, (4, 10), (1, 10), 0, index)
+
+    assert ranges == [(0, 0), (1, 10), (11, INFINITE)]
+    assert ranges == ta.extract_feature_intervals(rf)[0]
+    assert set(index) == {(0, 0), (0, 10)}
+
+
+def test_no_move_touches_an_edge():
+    """Invariant 2: a boundary whose SOURCE or TARGET is an edge is refused,
+    per boundary. A target lower bound of 0 is the edge (moving a cut there
+    would delete it); INFINITE is the top edge."""
+    # Source on the lower edge: (0, 10) has no lower cut to move.
+    assert at.boundary_moves((0, 10), (6, 10)) == []
+    # Target on the lower edge: moving (6, 15)'s cut 5 to the edge would
+    # delete it. Only the upper boundary moves.
+    assert at.boundary_moves((6, 15), (0, 10)) == [(15, 10)]
+    # Top edge, both ways.
+    assert at.boundary_moves((6, INFINITE), (4, 10)) == [(5, 3)]
+    assert at.boundary_moves((6, 15), (4, INFINITE)) == [(5, 3)]
+    # A cut at 0 is not the edge: it moves, and can be moved onto.
+    assert at.boundary_moves((1, 15), (4, 15)) == [(0, 3)]
+    assert at.boundary_moves((4, 15), (1, 15)) == [(3, 0)]
+
+    rf = _hand_built_forest([5, 15])
+    index = ta.build_threshold_index(rf)
+    before = [e.tree_.threshold.copy() for e in rf.estimators_]
+    mods = ta.adjust_range_boundaries(rf, 0, (6, 15), (0, 10), index)
+    assert [old for _, _, old in mods] == [15]
+    thresholds = {int(t) for e in rf.estimators_
+                  for t, f in zip(e.tree_.threshold, e.tree_.feature) if f >= 0}
+    assert thresholds == {5, 10}
+    ta.restore_thresholds(rf, mods)
+    for e, b in zip(rf.estimators_, before):
+        assert np.array_equal(e.tree_.threshold, b)
+
+
+def test_neighbour_writes_mirrors_a_refused_lower_edge_move():
+    """The effective range keeps a boundary the model refused to move -- for
+    the lower edge as a TARGET as well as a source."""
+    ranges = [(0, 5), (6, 15), (16, INFINITE)]
+    effective, writes, inverted = at.neighbour_writes(ranges, 1, (6, 15), (0, 10))
+    assert effective == (6, 10)
+    assert writes == [(2, (11, INFINITE))]
+    assert inverted is None
+
+    ranges = [(0, 10), (11, INFINITE)]
+    effective, writes, inverted = at.neighbour_writes(ranges, 0, (0, 10), (6, 10))
+    assert (effective, writes, inverted) == ((0, 10), [], None)
+
+    # A cut at 0 is written through like any other boundary.
+    ranges = [(0, 0), (1, 10), (11, INFINITE)]
+    effective, writes, inverted = at.neighbour_writes(ranges, 1, (1, 10), (4, 10))
+    assert (effective, writes, inverted) == ((4, 10), [(0, (0, 3))], None)
+
+
+def _tiling_state(rf, feature_idx):
+    """(intervals, {threshold: set(nodes)}) rebuilt from the forest alone."""
+    fresh_index = {}
+    for (f, thr), nodes in ta.build_threshold_index(rf).items():
+        if f == feature_idx:
+            fresh_index[thr] = set(nodes)
+    return ta.extract_feature_intervals(rf)[feature_idx], fresh_index
+
+
+def _assert_consistent(rf, ranges, index, feature_idx):
+    """Invariant 3: the interval list, the forest's thresholds and the
+    threshold index describe the same tiling. Invariant 2: it runs from 0 to
+    INFINITE."""
+    fresh_ranges, fresh_index = _tiling_state(rf, feature_idx)
+    assert ranges == fresh_ranges
+    live_index = {thr: set(nodes) for (f, thr), nodes in index.items()
+                  if f == feature_idx}
+    assert live_index == fresh_index
+    assert ranges[0][0] == 0 and ranges[-1][1] == INFINITE
+
+
+def _one_partial_edge_candidate(rf, ranges, idx, source, target, accept):
+    """One candidate for one model, exactly as align_rf_thresholds runs it:
+    adjust_range_boundaries, then on reject restore_thresholds, on accept
+    update_neighboring_ranges_and_index."""
+    index = ta.build_threshold_index(rf)
+    mods = ta.adjust_range_boundaries(rf, 0, source, target, index)
+    if accept:
+        ta.update_neighboring_ranges_and_index(ranges, idx, source, target, 0, index)
+    else:
+        ta.restore_thresholds(rf, mods)
+    return mods, index
+
+
+@pytest.mark.parametrize('accept', [True, False])
+def test_consistency_holds_after_a_partial_edge_adjacent_move(accept):
+    """The spec's example: (0, 10) vs (6, 15), corner (0, 10). The second
+    model's lower boundary would move 5 -> LOWER_EDGE and is refused; its
+    upper boundary 15 -> 10 moves. The first model's interval IS the target.
+    Checked after an accept and after a reject, for both models."""
+    rf1 = _hand_built_forest([10])
+    rf2 = _hand_built_forest([5, 15])
+    ranges1 = ta.extract_feature_intervals(rf1)[0]
+    ranges2 = ta.extract_feature_intervals(rf2)[0]
+    assert ranges1 == [(0, 10), (11, INFINITE)]
+    assert ranges2 == [(0, 5), (6, 15), (16, INFINITE)]
+    assert ta.structurally_alignable((0, 10), (6, 15))
+
+    mods1, index1 = _one_partial_edge_candidate(rf1, ranges1, 0, (0, 10), (0, 10), accept)
+    mods2, index2 = _one_partial_edge_candidate(rf2, ranges2, 1, (6, 15), (0, 10), accept)
+
+    assert mods1 == []
+    assert [old for _, _, old in mods2] == [15]
+    _assert_consistent(rf1, ranges1, index1, 0)
+    _assert_consistent(rf2, ranges2, index2, 0)
+    if accept:
+        assert ranges2 == [(0, 5), (6, 10), (11, INFINITE)]
+    else:
+        assert ranges2 == [(0, 5), (6, 15), (16, INFINITE)]
+
+
+@pytest.mark.parametrize('accept', [True, False])
+def test_consistency_holds_when_a_cut_at_zero_meets_a_refused_edge(accept):
+    """rf1 cuts {0, 10}: (0,0), (1,10), (11,INF); rf2 cuts {5}: (0,5), (6,INF).
+    Pair (1, 10) & (0, 5), corner (0, 5): rf1's cut at 0 would move to the
+    lower EDGE (a deletion) -- refused -- while its upper cut 10 -> 5 moves.
+    rf2's lower boundary IS the edge and its upper already equals 5."""
+    rf1 = _hand_built_forest([0, 10])
+    rf2 = _hand_built_forest([5])
+    ranges1 = ta.extract_feature_intervals(rf1)[0]
+    ranges2 = ta.extract_feature_intervals(rf2)[0]
+    assert ta.structurally_alignable((1, 10), (0, 5))
+    assert at.boundary_moves((1, 10), (0, 5)) == [(10, 5)]
+    assert at.boundary_moves((0, 5), (0, 5)) == []
+
+    mods1, index1 = _one_partial_edge_candidate(rf1, ranges1, 1, (1, 10), (0, 5), accept)
+    mods2, index2 = _one_partial_edge_candidate(rf2, ranges2, 0, (0, 5), (0, 5), accept)
+
+    assert [old for _, _, old in mods1] == [10] and mods2 == []
+    _assert_consistent(rf1, ranges1, index1, 0)
+    _assert_consistent(rf2, ranges2, index2, 0)
+    if accept:
+        assert ranges1 == [(0, 0), (1, 5), (6, INFINITE)]
+
+
+class _InvariantWatch:
+    """Spec §2 invariants 1-3, checked INSIDE a real align_rf_thresholds run
+    at every point where the previous candidate has been fully decided: before
+    each target is tried (target_is_well_formed), before each pair is ranked
+    (_rank_targets), before each feature is picked (feature_order), and after
+    the run. Also checks every threshold write adjust_range_boundaries makes
+    against the edges (invariant 2).
+
+    Reads the loop's own live structures by identity: build_threshold_index
+    is called once per model copy at entry (so its return value IS the live
+    index and its argument the live forest), and feature_order is handed the
+    live interval dicts.
+    """
+
+    def __init__(self, monkeypatch):
+        self.models = []
+        self.intervals = None
+        self.initial = None
+        self.checks = 0
+        self.writes = []
+        real_bti = ta.build_threshold_index
+        real_fo = ta.feature_order
+        real_rank = ta._rank_targets
+        real_wf = ta.target_is_well_formed
+        real_adj = ta.adjust_range_boundaries
+
+        def bti(rf):
+            index = real_bti(rf)
+            self.models.append((rf, index))
+            return index
+
+        def fo(intervals1, intervals2, **kwargs):
+            if self.intervals is None:
+                self.intervals = (intervals1, intervals2)
+                self.initial = {f: (self._cuts(intervals1, f) | self._cuts(intervals2, f),
+                                    len(intervals1.get(f, [])), len(intervals2.get(f, [])))
+                                for f in set(intervals1) | set(intervals2)}
+            self.check_all()
+            return real_fo(intervals1, intervals2, **kwargs)
+
+        def rank(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx, *a):
+            self.check_all()
+            return real_rank(range1, range2, ranges1, ranges2, idx1, idx2,
+                             feature_idx, *a)
+
+        def wf(target):
+            self.check_all()
+            return real_wf(target)
+
+        def adj(rf, feature_idx, source, target, index):
+            mods = real_adj(rf, feature_idx, source, target, index)
+            for tree_idx, node_idx, old in mods:
+                new = int(rf.estimators_[tree_idx].tree_.threshold[node_idx])
+                self.writes.append((old, new))
+                assert old not in (at.LOWER_EDGE, INFINITE), (source, target)
+                assert new not in (at.LOWER_EDGE, INFINITE), (source, target)
+            return mods
+
+        monkeypatch.setattr(ta, 'build_threshold_index', bti)
+        monkeypatch.setattr(ta, 'feature_order', fo)
+        monkeypatch.setattr(ta, '_rank_targets', rank)
+        monkeypatch.setattr(ta, 'target_is_well_formed', wf)
+        monkeypatch.setattr(ta, 'adjust_range_boundaries', adj)
+        self._real_bti = real_bti
+
+    @staticmethod
+    def _cuts(intervals, feature):
+        return {hi for _, hi in intervals.get(feature, []) if hi != INFINITE}
+
+    def check_all(self):
+        if self.intervals is None:
+            return
+        self.checks += 1
+        for (rf, index), intervals in zip(self.models, self.intervals):
+            fresh = ta.extract_feature_intervals(rf)
+            assert fresh == intervals                     # invariant 3
+            fresh_index = {k: set(v) for k, v in self._real_bti(rf).items()}
+            assert {k: set(v) for k, v in index.items()} == fresh_index
+            for ranges in intervals.values():             # invariant 2
+                assert ranges[0][0] == 0 and ranges[-1][1] == INFINITE
+        for f, (pooled0, n1, n2) in self.initial.items():  # invariant 1
+            i1, i2 = self.intervals
+            assert self._cuts(i1, f) | self._cuts(i2, f) <= pooled0, f
+            assert (len(i1.get(f, [])), len(i2.get(f, []))) == (n1, n2), f
+
+
+def _partial_edge_candidates(log):
+    """Candidates in which some model's lower boundary would have touched the
+    lower edge (source or target start at 0, but not both) -- i.e. exactly the
+    partial moves T2 made admissible -- split by outcome."""
+    def touches(range_, target):
+        return (range_[0] == 0) != (target[0] == 0)
+    hits = [e for e in log
+            if touches(e['range1'], e['target']) or touches(e['range2'], e['target'])]
+    return ([e for e in hits if e['accepted']],
+            [e for e in hits if not e['accepted']])
+
+
+def _fitted_pair(seed, n=300, nf=3, n_estimators=4, max_depth=4, min_samples_leaf=10,
+                 zero_cuts=False):
+    """A small fitted App/DDoS pair. zero_cuts=True draws two features from
+    0..39 and zeroes a label-correlated subset -- feature 0 in the App data,
+    feature 1 in the DDoS data -- so a real cut at 0 ("value == 0 vs > 0")
+    exists in one model but not the other, which is what T2 made movable."""
+    from sklearn.ensemble import RandomForestClassifier
+
+    rng = np.random.default_rng(seed)
+    if zero_cuts:
+        nf = 2
+    high = 40 if zero_cuts else 90000
+    X1 = np.clip(rng.integers(0, high, size=(n, nf)), 0, INFINITE).astype(float)
+    y1 = np.array([c % 3 for c in range(n)])
+    X2 = np.clip(rng.integers(0, high, size=(n, nf)), 0, INFINITE).astype(float)
+    y2 = np.where(np.arange(n) % 2 == 0, -1, 1)
+    if zero_cuts:
+        X1[y1 == 0, 0] = 0.0
+        X2[y2 == -1, 1] = 0.0
+    rf1 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=n_estimators, max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf, random_state=seed).fit(X1, y1))
+    rf2 = dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=n_estimators, max_depth=max_depth,
+        min_samples_leaf=min_samples_leaf, random_state=seed + 1).fit(X2, y2))
+    return rf1, X1, y1, rf2, X2, y2
+
+
+def test_invariants_hold_at_every_decision_point_of_real_runs(monkeypatch):
+    """Invariants 1-3 inside real runs, across accept-all and delta = 0 (so
+    both accepts and rejects happen), on fitted pairs -- including ones whose
+    features carry real cuts at 0 -- and the hand-built partial-edge pair.
+    Non-vacuous: partial edge-adjacent candidates must be both accepted and
+    rejected somewhere in the sweep, and some ACCEPTED move must take a cut at
+    0 away and some must land one on 0."""
+    fixtures = [_golden_alignment_pair()]
+    fixtures += [_fitted_pair(seed) for seed in range(4)]
+    fixtures += [_fitted_pair(seed, zero_cuts=True) for seed in range(6)]
+    rf1, rf2 = _hand_built_forest([10]), _hand_built_forest([5, 15])
+    X = np.array([[0.0], [3.0], [6.0], [8.0], [12.0], [16.0], [20.0], [65535.0]])
+    fixtures.append((rf1, X, np.array([0, 0, 1, 1, 2, 2, 0, 1]),
+                     rf2, X, np.array([-1, 1, -1, 1, -1, 1, -1, 1])))
+
+    partial_accepted = partial_rejected = 0
+    moved_from_zero = moved_onto_zero = 0
+    for rf1, X1, y1, rf2, X2, y2 in fixtures:
+        for delta in (None, 0.0):
+            with monkeypatch.context() as m:
+                watch = _InvariantWatch(m)
+                log = []
+                a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
+                                                delta_rel=delta, candidate_log=log)
+                watch.check_all()
+                assert watch.checks > 0
+            acc, rej = _partial_edge_candidates(log)
+            partial_accepted += len(acc)
+            partial_rejected += len(rej)
+            for e in log:
+                if not e['accepted']:
+                    continue
+                moves = (at.boundary_moves(e['range1'], e['target'])
+                         + at.boundary_moves(e['range2'], e['target']))
+                moved_from_zero += sum(1 for old, _ in moves if old == 0)
+                moved_onto_zero += sum(1 for _, new in moves if new == 0)
+
+    assert partial_accepted > 0 and partial_rejected > 0, (
+        partial_accepted, partial_rejected)
+    assert moved_from_zero > 0 and moved_onto_zero > 0, (
+        moved_from_zero, moved_onto_zero)
+
+
+def test_the_loop_accepts_a_partial_edge_adjacent_move():
+    """End to end on the golden pair at delta = 0. Feature 3's pair
+    (0, 17518) & (14537, 17534) -- exactly one side a first interval, so
+    vetoed outright before T2 -- is accepted with target (14537, 17518):
+    model 1's lower boundary would have moved off the EDGE and is refused,
+    model 2's cut 17534 moves to 17518. Its sibling pair
+    (0, 17518) & (8903, 14536) is offered and REJECTED by the accuracy guard,
+    so the same run also exercises the reject path on this shape."""
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+    log = []
+    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, delta_rel=0.0,
+                           candidate_log=log)
+    mixed = [(e['range1'], e['range2'], e['target'], e['accepted'])
+             for e in log if (e['range1'][0] == 0) != (e['range2'][0] == 0)]
+    assert ((0, 17518), (14537, 17534), (14537, 17518), True) in mixed
+    assert at.boundary_moves((0, 17518), (14537, 17518)) == []
+    assert at.boundary_moves((14537, 17534), (14537, 17518)) == [(17534, 17518)]
+    assert any(r2 == (8903, 14536) and not ok for _, r2, _, ok in mixed)

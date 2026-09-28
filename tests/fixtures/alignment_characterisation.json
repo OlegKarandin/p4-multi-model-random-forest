@@ -5,16 +5,32 @@
     {
      "feature_idx": 3,
      "range1": [
+      0,
+      17518
+     ],
+     "range2": [
+      14537,
+      17534
+     ],
+     "round": 1,
+     "target": [
+      14537,
+      17518
+     ]
+    },
+    {
+     "feature_idx": 3,
+     "range1": [
       17519,
       17906
      ],
      "range2": [
-      17535,
+      17519,
       25912
      ],
      "round": 1,
      "target": [
-      17535,
+      17519,
       17906
      ]
     },
@@ -455,9 +471,9 @@
     "delta_rel": 0.0
    },
    "stats": {
-    "accepted": 28,
+    "accepted": 29,
     "accuracy_spent": 0.0,
-    "attempted": 37,
+    "attempted": 38,
     "bits_to_reach": 4,
     "codeword_after": 58,
     "codeword_before": 87,
@@ -535,7 +551,7 @@
     ],
     [
      45724,
-     17534,
+     17518,
      48924,
      -2,
      -2,
@@ -649,7 +665,7 @@
      -2,
      -2,
      -2,
-     17534,
+     17518,
      -2,
      21985,
      -2,
