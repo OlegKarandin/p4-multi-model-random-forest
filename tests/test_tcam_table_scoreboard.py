@@ -1,8 +1,10 @@
 """Task 3 (plan "Step 2"): the per-table regression gate, scored over every
 CSV this project has archived from real p4c compiles (2026-09-20 rewrite
 design Sec 6.4). See scripts/tcam_table_scoreboard.py's module docstring for
-what each of the three predicted quantities is and how the Sec 13.2
-stage-sharing margin is applied per source.
+what each of the three predicted quantities is and how a table sharing its
+stage with a different key is charged per source -- the packer's own ordered
+stage simulation (audit C5), since the fitted crowded-stage margin was
+retired on 2026-09-28.
 """
 import os
 
@@ -16,11 +18,11 @@ pytestmark = pytest.mark.skipif(
            "see scripts/tcam_table_scoreboard.py's SOURCE_FILES")
 
 # Observations at a stage the packer refuses: two DIFFERENT keys past
-# target.TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE (62 bytes), where p4c's
-# extra charge reaches +2 (dsp41/dsp42: the (84, 84) probe at 63/64 bytes, 7
-# blocks instead of 5). They are reported as REFUSED, not scored: the gate is
-# 0 under on every placement the model can actually emit. (59-62-byte rows are
-# scored, with the crowded-stage +1.)
+# target.TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE (62 bytes, the
+# greedy-give-up safety net), where p4c's extra charge reaches +2 (dsp41/dsp42:
+# the (84, 84) probe at 63/64 bytes, 7 blocks instead of 5). They are reported
+# as REFUSED, not scored: the gate is 0 under on every placement the model can
+# actually emit. (59-62-byte rows are scored, at their lane leftover price.)
 KNOWN_REFUSED_PLACEMENTS = frozenset({
     ("tcam_discount_scan", "dsp41"),
     ("tcam_discount_scan", "dsp42"),
@@ -60,7 +62,8 @@ def test_blocks_charged_never_under_predicts_a_placement_the_model_emits():
 
 def test_the_refused_placements_are_exactly_the_rows_past_the_cap():
     """Rows are excluded from the gate only because the packer refuses their
-    stage: every one sits above 62 combined bytes."""
+    stage: every one sits above 62 combined bytes (none is refused for want
+    of a lane fit alone)."""
     rows = scoreboard.score_all()
 
     refused = scoreboard.refused_placements(rows)
@@ -79,25 +82,47 @@ def test_the_refused_placements_are_exactly_the_rows_past_the_cap():
     assert by_source == {}
 
 
-def test_no_saturated_key_is_charged_outside_a_crowded_stage():
-    """The per-key saturation margin is retired: a table is charged beyond
-    its refined price only when its stage is crowded (> 58 bytes)."""
+def test_every_charge_above_the_refined_price_is_what_p4c_charged():
+    """A table is charged above its standalone (refined) price only when a
+    different key was placed ahead of it in its stage -- and on every such
+    emitted row the lane leftover price is exactly p4c's count: the ragged
+    (179, 204) key at 10 behind a 12-byte key (tcam_stretch_sweep), the
+    (54, 56) probe at 4 behind a spacer at 59-62 bytes, and the
+    (46, 46, 48, 64) probe at 6 at 61 bytes (tcam_mixed_key_cap_sweep).
+    The retired crowded-stage margin charged +1 by byte total alone."""
     rows = scoreboard.score_all()
 
-    extra = [r for r in rows if r["blocks_charged"] > r["blocks_refined"]]
+    extra = [r for r in rows if r["blocks_charged"] > r["blocks_refined"]
+             and not r["placement_refused"]]
 
-    assert extra and all(r["crowded"] and r["not_first"] for r in extra)
+    assert len(extra) == 7
+    assert all(r["not_first"] and r["behind_other_key"] for r in extra)
+    assert all(r["diff_charged"] == 0 for r in extra), [
+        (r["identifier"], r["blocks_charged"], r["observed_blocks"])
+        for r in extra]
 
 
-def test_the_crowded_stage_margin_is_applied_to_59_to_62_byte_rows():
-    """rag14 = (54, 56), not saturated: 3 blocks alone, 4 at 59-62 bytes.
-    Charged 4 there only because the stage is crowded."""
+def test_a_later_key_is_charged_its_lane_price_at_59_to_62_bytes():
+    """rag14 = (54, 56), not saturated: 3 blocks alone, 4 behind a solid
+    spacer at 59-62 bytes -- the lanes the spacer leaves hold its bytes only
+    at 4 blocks. Charged 4 there, as p4c did."""
     rows = {r["identifier"]: r for r in scoreboard.score_all()
             if r["source"] == "tcam_mixed_key_cap_sweep"}
     for t in (59, 60, 61, 62):
         row = rows["rag14_t%d" % t]
         assert not row["saturated"]
         assert (row["blocks_charged"], row["observed_blocks"]) == (4, 4)
+
+
+def test_the_solid_wide_key_is_charged_nothing_behind_a_narrow_key():
+    """a49x1_b12x4/a49x1_b12x5: the SOLID 49-byte control shares a 61-byte
+    stage with 12-byte keys and p4c charged it 9, its standalone price. The
+    retired crowded margin charged 10; the lane simulation, like p4c, 9."""
+    rows = {r["identifier"]: r for r in scoreboard.score_all()
+            if r["source"] == "tcam_stretch_sweep"}
+    for point in ("a49x1_b12x4", "a49x1_b12x5"):
+        row = rows["%s/tern_a0" % point]
+        assert (row["blocks_charged"], row["observed_blocks"]) == (9, 9)
 
 
 def test_phv_slice_sweep_scores_two_fields_not_one_merged_field():

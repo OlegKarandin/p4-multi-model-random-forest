@@ -63,10 +63,10 @@ a key's own price cannot depend on where it starts. The paragraph above is
 kept as the record of how the earlier retraction was settled, not as a
 description of live code. What prices a key now is `tables.codeword_to_blocks`
 (no offset argument), and the sharing effect lives in
-`src/p4model/packing.py`'s stage-sharing margin. That change re-pinned two of
-this fixture's rows: see `known_findings` entry
-`stage_sharing_margin_2026_09_21` below, which records an OVER-prediction
-rather than a correction.
+`src/p4model/packing.py`'s stage placement -- first as a stage-sharing margin
+(`known_findings` entry `stage_sharing_margin_2026_09_21` below, an
+OVER-prediction rather than a correction), since audit C5 as an ordered stage
+simulation over crossbar lanes (`ordered_stage_simulation_2026_09_28`).
 
 `ternary_ragged` is no longer serialized: the penalty prices a key by its
 field BIT widths, and key_field_sets already carries those.
@@ -331,31 +331,6 @@ def _metadata(campaign_dir):
                     "OVER."),
             },
             {
-                'id': 'crowded_stage_rule_2026_09_25',
-                'rows': ['independent_low_sd12'],
-                'row_deltas': {'independent_low_sd12': 2},
-                'summary': (
-                    "RE-PINNED, and the delta is an OVER-prediction. The "
-                    "crowded-stage rule (src/p4model/target.py "
-                    "TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE = 58, "
-                    "TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62) charges "
-                    "every non-first key +1 when two different keys fill more "
-                    "than 58 crossbar bytes of one stage, and refuses more "
-                    "than 62. independent_low_sd12's real stage 10 shares a "
-                    "40-byte app key and a 20-byte ddos key at 60 bytes and "
-                    "p4c charged nothing, so this row now reads blocks 80 "
-                    "against tcam_real 78 and stage_depth 13 against "
-                    "stages_real 12 (a feasible design priced past the "
-                    "12-stage ceiling). Kept because the same 59-62-byte band "
-                    "costs +1 on independent_low_sd5's real (54, 56) key "
-                    "behind a spacer (results/tcam_mixed_key_cap_sweep.csv) "
-                    "and on the real campaign design M150_k5_s12 "
-                    "(results/tcam_margin_screen_compiled.csv), and byte "
-                    "totals cannot separate the paying stages from this free "
-                    "one; without the rule those are under-predictions. Other "
-                    "rows unchanged."),
-            },
-            {
                 'id': 'saturation_margin_retired_2026_09_25',
                 'rows': ['independent_high_sd7', 'independent_high_sd8'],
                 'row_deltas': {'independent_high_sd7': -1,
@@ -374,33 +349,6 @@ def _metadata(campaign_dir):
                     "key, sat in a crowded 61-byte stage the crowded-stage "
                     "rule charges anyway. blocks now 28 -> 27 and 41 -> 38, "
                     "matching tcam_real; stage_depth unchanged."),
-            },
-            {
-                'id': 'any_order_fit_rule_2026_09_27',
-                'rows': ['independent_low_sd12'],
-                'row_deltas': {'independent_low_sd12': -1},
-                'summary': (
-                    "RE-PINNED, and the delta is an IMPROVEMENT. "
-                    "src/p4model/packing.py's fits() used to require EVERY "
-                    "ordering of a stage's distinct keys to pack before a "
-                    "shard could join it, and stage_charged_blocks() charged "
-                    "the largest total over ALL orderings; both now only "
-                    "require/consider orderings that actually fit_two_columns "
-                    "(reviews/final_model_check_2026-09-27.md section 1b). "
-                    "independent_low_sd12's real stage 10 packs one order "
-                    "(ddos key first, no margin; app key second, +1 margin) "
-                    "but not the other (app key first; ddos key pays the "
-                    "margin and overflows the column budget) -- requiring "
-                    "every order wrongly called the whole design infeasible "
-                    "one stage too deep. This row now reads ternary blocks 69 "
-                    "against tcam_real (unchanged), stage_depth 12 against "
-                    "stages_real 12 (EXACT, was 13, the design's own 12-stage "
-                    "ceiling) and usage.blocks 79 against 78 (was 80). Every "
-                    "other row is unchanged: no other archived stage has two "
-                    "different keys where only one ordering fits. Matches the "
-                    "review's own scratch experiment exactly: fitted "
-                    "stage_depth 17/19 -> 18/19, this row's blocks error "
-                    "+2 -> +1."),
             },
             {
                 'id': 'per_task_tree_readiness_2026_09_28',
@@ -427,6 +375,36 @@ def _metadata(campaign_dir):
                     "unchanged. Every joint row is byte-identical: under "
                     "'joint' every range table is SHARED_TASK, so every "
                     "tree's readiness is the range pool's depth, as before."),
+            },
+            {
+                'id': 'ordered_stage_simulation_2026_09_28',
+                'rows': ['independent_low_sd12'],
+                'row_deltas': {'independent_low_sd12': -1},
+                'summary': (
+                    "RE-PINNED, and the delta is an IMPROVEMENT (audit C5, "
+                    "reviews/model_audit_2026-09-27.md sections 7 and 10). The "
+                    "fitted crowded-stage margin (+1 to every non-first key "
+                    "when two different keys filled more than 58 of a stage's "
+                    "64 crossbar bytes) and its any-key-order fit search are "
+                    "replaced by an ORDERED stage simulation in "
+                    "src/p4model/packing.py: classification trees are placed "
+                    "in the order the generator's @placement_priority pins "
+                    "(ddos 2 before app 1, ties to the tree listed last), the "
+                    "first key in a stage pays codeword_to_blocks, and every "
+                    "later key pays its lane leftover price "
+                    "(src/p4model/lanes.py). Two different keys above 62 "
+                    "combined bytes are still refused (the greedy-give-up "
+                    "safety net). independent_low_sd12's real stage shares a "
+                    "40-byte app key and a 20-byte ddos key at 60 bytes and "
+                    "p4c charged nothing; the simulation agrees, so blocks "
+                    "79 -> 78 against tcam_real 78 (EXACT; "
+                    "ternary_plan.blocks 69 -> 68), stage_depth unchanged at "
+                    "12. Every other row is byte-identical, all 8 joint rows "
+                    "included (a joint stage holds one key, charged exactly as "
+                    "before). Supersedes and retires "
+                    "'crowded_stage_rule_2026_09_25' and "
+                    "'any_order_fit_rule_2026_09_27', whose mechanisms no "
+                    "longer exist."),
             },
         ],
     }

@@ -219,8 +219,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   ternary_blocks (the naive per-table block sum each branch computes below)
   is deliberately NOT one of the 15 keys: it is already dead after the branch
   converges -- assemble_usage's ResourceUsage.blocks uses ternary_plan.blocks,
-  the StagePlan total from src.p4model.packing charged with the crowded-stage
-  margin, never this naive sum. Carrying it into the pool would invite exactly
+  the StagePlan total from src.p4model.packing, charged by its ordered stage
+  simulation (a key placed behind a different key pays its lane leftover
+  price), never this naive sum. Carrying it into the pool would invite exactly
   the confusion the StagePlan.blocks fix (see CLAUDE.md's compiler-calibration
   note) was created to resolve.
 

@@ -66,3 +66,11 @@ TASKS = (APP_TASK, DDOS_TASK)
 # un-prefixed table (table_1_bwd_iat_mean) instead of an _app_/_ddos_ pair.
 # Never a ternary_task value: every classification tree belongs to one task.
 SHARED_TASK = "shared"
+
+# The @placement_priority the generator puts on every classification tree
+# table (build_p4_script.generate_P4_tables_and_apply): ddos trees 2, app trees
+# 1. p4c's table placer takes the highest-priority ready table first, so the
+# pragma pins which task's key is FIRST in a stage both tasks share -- the key
+# every other key in that stage is priced behind. packing.crossbar_stages_needed
+# replays the same order (placement_priority, audit C5).
+PLACEMENT_PRIORITY = {DDOS_TASK: 2, APP_TASK: 1}

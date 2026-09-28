@@ -68,3 +68,23 @@ def test_heldout_pairs_replay_every_extra_row_against_p4c_ground_truth():
     assert by_row["independent_high_sd9"]["real"] is None  # never allocated
     assert vt.aggregate(stage_pairs)["under"] == 0
     assert vt.aggregate(blocks_pairs)["under"] == 0
+
+
+def test_pinned_pairs_are_the_primary_gate_42_of_43_and_38_of_38():
+    # The pragma'd archive (results/compiler_calibration_pinned/, audit C5):
+    # stage_depth 42/43 -- independent_high_sd12 the one, known, miss (13
+    # against 14, infeasible either way) -- and blocks 38/38.
+    import os
+    if not (os.path.isfile(vt.PINNED_CSV)
+            and os.path.isdir(os.path.join(vt.PINNED_ROOT, "compiles"))):
+        pytest.skip("needs results/compiler_calibration_pinned (gitignored)")
+    stage_pairs, blocks_pairs = vt.pinned_pairs()
+    stages = vt.aggregate(stage_pairs)
+    blocks = vt.aggregate(blocks_pairs)
+    assert (stages["n_compared"], stages["exact"]) == (43, 42)
+    misses = {p["row_id"]: p["predicted"] - p["real"] for p in stage_pairs
+              if p["predicted"] != p["real"]}
+    assert misses == {"independent_high_sd12": -1}
+    assert set(misses) == set(vt.KNOWN_PINNED_MISSES)
+    assert (blocks["n_compared"], blocks["exact"], blocks["under"],
+            blocks["over"]) == (38, 38, 0, 0)

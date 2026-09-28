@@ -591,15 +591,12 @@ _REPLAY_EXPECTED = {
     'independent_high_sd7': (11, 11),
     'independent_high_sd8': (11, 12),
     'independent_low_sd10': (11, 11),
-    # Exact since the 2026-09-27 any-order fit rule (reviews/
-    # final_model_check_2026-09-27.md section 1b): the crowded-stage rule
-    # still charges the ddos trees +1 in the 40 + 20 = 60-byte stage p4c
-    # shared for free, but fits() now only requires SOME ordering of the
-    # stage's keys to pack column-wise, and one does (ddos key first, no
-    # margin; app key second, +1). Requiring EVERY ordering to fit used to
-    # reject that placement and push the design to 13 stages -- see the
-    # golden fixture's known_findings 'crowded_stage_rule_2026_09_25' and
-    # 'any_order_fit_rule_2026_09_27'.
+    # Exact. Its 40-byte app key and 20-byte ddos key share one 60-byte stage
+    # for free in p4c; the ordered stage simulation (audit C5) places the
+    # ddos key first (placement priority) and prices the app key's lanes in
+    # what it left, which costs nothing extra -- as p4c charged. (The retired
+    # 58-byte crowded-stage margin charged this stage +1 and, until the
+    # 2026-09-27 any-order fit rule, pushed the design to 13.)
     'independent_low_sd12': (12, 12),
     'independent_low_sd5': (8, 8),
     'independent_low_sd6': (8, 11),
@@ -659,9 +656,8 @@ def test_replayed_stage_depth_still_under_predicts_by_at_most_three():
                                           for row_id in _REPLAY_EXPECTED)]
     assert max(residuals) <= 3
     # independent_low_sd12 used to be the one deliberate exception here, over
-    # by 1 under the crowded-stage rule alone (see _REPLAY_EXPECTED); the
-    # 2026-09-27 any-order fit rule closed it to exact, so no row may
-    # over-count a committed placement any more.
+    # by 1 under the retired crowded-stage rule (see _REPLAY_EXPECTED); it is
+    # exact, so no row may over-count a committed placement any more.
     over = {row_id: real - predicted for row_id, (predicted, real) in
             ((row_id, cc.replay_stage_depth(row_id, _ARTIFACTS))
              for row_id in _REPLAY_EXPECTED) if real < predicted}
@@ -840,11 +836,11 @@ def test_replay_rejects_a_row_the_backend_never_allocated():
 # These 11 were produced by TODAY's generator, which is what the model is
 # supposed to predict, and on them it is exact everywhere -- including
 # independent_low_sd9, the last divergence the study had open, closed by
-# what key_field_bits charges (evaluation.crossbar_stages_needed's
-# key_field_bits parameter) -- at the time of this comment (2026-09-06) the
-# version-block penalty; today the crowded-stage margin (target.py
-# TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE/..._BYTES_PER_STAGE),
-# after the 2026-09-20/21 rewrite and 2026-09-25 replacement.
+# what key_field_bits switches on (crossbar_stages_needed's key_field_bits
+# parameter) -- at the time of this comment (2026-09-06) the version-block
+# penalty; later the crowded-stage margin; since audit C5 (2026-09-28) the
+# ordered stage simulation that prices a later key in the crossbar lanes the
+# earlier keys left (src/p4model/lanes.py).
 # ---------------------------------------------------------------------------
 
 _CURRENT_ARTIFACTS = {
@@ -881,23 +877,23 @@ def test_independent_low_sd9_costs_the_stage_the_version_charge_buys():
     # 9+3 | 9+3, so every limit this model knows says they may share a stage --
     # and p4c still refuses.
     #
-    # What reproduces that today is the stage-sharing MARGIN (spec Sec 13.2
-    # "Effect 4", src/p4model/packing.py's `charged`): a table whose key is not
-    # the first distinct key in its stage, and whose standalone price leaves no
-    # spare whole-byte crossbar slot, pays one extra TCAM block for the 2-bit
-    # --version-- field. The app key is exactly saturated (crossbar_capacity(9)
-    # == 49 bytes), so a mixed stage prices at 26, not 24, and the two tasks
-    # stay apart. Measured on the same key by scripts/tcam_stretch_sweep.py: 9
-    # blocks alone (ragged_ax1_bx5), 10 sharing (ragged_ax1_bx4).
+    # What reproduces that today is the ordered stage simulation (audit C5,
+    # src/p4model/packing.py's crossbar_stages_needed): the ddos trees are
+    # placed first (placement priority), and the app key, priced in the
+    # crossbar lanes the ddos key left (lanes.price_with_supply), costs 10
+    # blocks there instead of 9 -- a mixed stage then prices past 24 and the
+    # two tasks stay apart. Measured on the same key by
+    # scripts/tcam_stretch_sweep.py: 9 blocks alone (ragged_ax1_bx5), 10
+    # sharing (ragged_ax1_bx4).
     #
     # Note what the committed artifact does NOT show: any table at 10 blocks.
     # resources.json has all five app trees at 9 and all five ddos at 3, in
-    # four stages (5 ddos | 2 app | 2 app | 1 app). The margin decides the
-    # PLACEMENT, and the placement it settles on gives every stage a single
-    # key, where nothing is owed. Reading that artifact is also what falsified
-    # the older "ragged key at an odd group offset" rule, which claimed these
-    # tables cost 10 unconditionally -- that mechanism is retired outright
-    # (rewrite design Sec 2). The margin is pinned in
+    # four stages (5 ddos | 2 app | 2 app | 1 app). The sharing price decides
+    # the PLACEMENT, and the placement it settles on gives every stage a
+    # single key, where nothing is owed. Reading that artifact is also what
+    # falsified the older "ragged key at an odd group offset" rule, which
+    # claimed these tables cost 10 unconditionally -- that mechanism is
+    # retired outright (rewrite design Sec 2). Pinned in
     # tests/test_p4model_guards.py's
     # test_two_different_ragged_keys_do_not_share_a_stage.
     root = _CURRENT_ARTIFACTS['independent_low_sd9']
@@ -929,17 +925,15 @@ def _heldout_rows():
             for r in frame.itertuples()]
 
 
-# independent_low_sd9 is the design the stage-sharing margin exists for. The
-# model's packing puts one app tree in a stage with ddos trees -- 49 + 12 = 61
-# bytes, a crowded stage -- and the one key order that FITS (fits() only
-# requires some ordering to pack column-wise, since the 2026-09-27 any-order
-# fit rule: reviews/final_model_check_2026-09-27.md section 1b) charges the
-# non-first table +1; p4c instead keeps the tasks in separate stages, at the
-# same depth (exact) and no extra block. So blocks read 65 against 64 -- down
-# from 67 under the retired "every order must fit" rule, which charged every
-# non-first table in the stage rather than just the one order p4c could
-# actually place. Safe direction; pinned by name so it cannot grow.
-_HELDOUT_KNOWN_BLOCK_OVERS = {'independent_low_sd9': 1}
+# EMPTY since audit C5 (2026-09-28). independent_low_sd9 read 65 blocks
+# against p4c's 64 under the retired crowded-stage margin, which put one app
+# tree beside the ddos trees in a 61-byte stage and charged it +1; the ordered
+# stage simulation keeps the two tasks apart there, as p4c does, and is exact.
+# Kept as a lookup so a future over-prediction lands here by name, with a
+# reason, rather than by loosening the assertion. These compiles predate the
+# @placement_priority pragma (pre-pragma, informational): the primary gate is
+# the pinned archive below.
+_HELDOUT_KNOWN_BLOCK_OVERS = {}
 
 
 @pytest.mark.parametrize('row_id,tcam_real,stages_real', _heldout_rows())
@@ -957,15 +951,79 @@ def test_the_model_matches_p4c_on_every_held_out_design(row_id, tcam_real,
 
 
 # ---------------------------------------------------------------------------
-# 16 REAL campaign designs compiled specifically to exercise the stage-sharing
-# margin and the crowded-stage rule (scripts/tcam_margin_screen.py): disjoint
-# designs whose two keys can share a stage, half of them at 59-64 combined
-# bytes. Chosen adversarially, so over-predictions are expected here; what
-# must never happen is an under-prediction.
+# THE PINNED ARCHIVE -- the primary gate (audit C5, 2026-09-28).
+# results/compiler_calibration_pinned/: the 43 designs of
+# compiler_calibration_v6, _extra and tcam_margin_screen regenerated with the
+# generator's @placement_priority (ddos 2 / app 1) and @pa_no_overlay on the
+# class_tree_* fields, and compiled one at a time ("arm D",
+# reviews/model_audit_2026-09-27.md §7.3). The pragmas pin the tree order the
+# packer's ordered stage simulation replays, so these are the compiles that
+# match what the generator emits today. Ground truth:
+# results/compiler_calibration_pinned.csv
+# (scripts/build_pinned_calibration_csv.py). Every design replayed END TO END
+# (replay_design: the model's own prices, the model's own packer).
+# ---------------------------------------------------------------------------
+
+_PINNED_ROOT = os.path.join('results', 'compiler_calibration_pinned')
+_PINNED_CSV = os.path.join('results', 'compiler_calibration_pinned.csv')
+
+# The pinned archive's one miss, by name: independent_high_sd12 predicts 13
+# stages where p4c needs 14 -- an UNDER-prediction by 1 on a design that is
+# infeasible either way (> 12 stages). It is the one design where the pragmas
+# themselves cost p4c a stage (13 without them, which the model matches on the
+# pre-pragma compile: test_per_task_readiness_makes_these_designs_exact
+# below). Pinned so it cannot silently spread to a feasible design.
+_PINNED_KNOWN_STAGE_MISSES = {'independent_high_sd12': -1}
+
+
+def _pinned_rows():
+    if not os.path.isfile(_PINNED_CSV):
+        return []
+    return [(r.row_id, r.tcam_real, int(r.stages_real))
+            for r in pd.read_csv(_PINNED_CSV).itertuples()]
+
+
+def test_the_pinned_archive_holds_all_43_designs():
+    if not os.path.isfile(_PINNED_CSV):
+        pytest.skip('needs %s (gitignored)' % _PINNED_CSV)
+    frame = pd.read_csv(_PINNED_CSV)
+    assert len(frame) == 43
+    assert int(frame['tcam_real'].notna().sum()) == 38
+
+
+@pytest.mark.parametrize('row_id,tcam_real,stages_real', _pinned_rows())
+def test_the_model_matches_p4c_on_every_pinned_design(row_id, tcam_real,
+                                                      stages_real):
+    """stage_depth 42/43 (independent_high_sd12 the known miss), blocks 38/38
+    -- design for design the same as the audit's prototype
+    (reviews/model_audit_scratch/proto_model.py --c1, FILL=lane)."""
+    if not os.path.isdir(os.path.join(_PINNED_ROOT, 'compiles', row_id)):
+        pytest.skip('needs %s (gitignored)' % _PINNED_ROOT)
+    depth, blocks = cc.replay_design(row_id, _PINNED_ROOT)
+    assert depth - stages_real == _PINNED_KNOWN_STAGE_MISSES.get(row_id, 0)
+    if not pd.isna(tcam_real):
+        assert blocks == int(tcam_real)
+
+
+# ---------------------------------------------------------------------------
+# PRE-PRAGMA, INFORMATIONAL: 16 REAL campaign designs compiled specifically to
+# exercise the (since retired) stage-sharing margin and crowded-stage rule
+# (scripts/tcam_margin_screen.py): disjoint designs whose two keys can share a
+# stage, half of them at 59-64 combined bytes. Compiled WITHOUT
+# @placement_priority, so p4c chose its own tree order. Their pinned compiles
+# are in the primary gate above, where all 16 are exact.
 # ---------------------------------------------------------------------------
 
 _MARGIN_ROOT = os.path.join('results', 'tcam_margin_screen')
 _MARGIN_CSV = os.path.join('results', 'tcam_margin_screen_compiled.csv')
+
+# margin_independent_M150_k5_s12 reads 66 blocks against the pre-pragma
+# compile's 68: an UNDER-prediction by 2 on this archive. Unpinned, p4c served
+# that design's keys in an order that cost 2 more blocks; the generator now
+# pins the order, and the pinned compile of the same design costs 66, exactly
+# as predicted (audit §7.3: "1 better (M150_k5_s12 -2 blocks)"). Pinned by
+# name so no other design can join it unnoticed.
+_MARGIN_PRE_PRAGMA_BLOCK_DELTAS = {'margin_independent_M150_k5_s12': -2}
 
 
 def _margin_rows():
@@ -976,14 +1034,28 @@ def _margin_rows():
 
 
 @pytest.mark.parametrize('row_id,tcam_real,stages_real', _margin_rows())
-def test_the_model_never_under_predicts_a_crowded_real_design(row_id, tcam_real,
-                                                              stages_real):
+def test_the_model_on_the_pre_pragma_crowded_real_designs(row_id, tcam_real,
+                                                          stages_real):
     if not os.path.isdir(os.path.join(_MARGIN_ROOT, 'compiles', row_id)):
         pytest.skip('needs %s (gitignored)' % _MARGIN_ROOT)
     depth, blocks = cc.replay_design(row_id, _MARGIN_ROOT)
-    assert stages_real <= depth <= stages_real + 1
+    assert depth == stages_real
     if not pd.isna(tcam_real):
-        assert int(tcam_real) <= blocks <= int(tcam_real) + 3
+        assert (blocks - int(tcam_real)
+                == _MARGIN_PRE_PRAGMA_BLOCK_DELTAS.get(row_id, 0))
+
+
+@pytest.mark.parametrize('row_id,tcam_real,stages_real',
+                         [row for row in _margin_rows()
+                          if row[0] in _MARGIN_PRE_PRAGMA_BLOCK_DELTAS])
+def test_the_pre_pragma_under_prediction_is_exact_on_the_pinned_compile(
+        row_id, tcam_real, stages_real):
+    if not os.path.isfile(_PINNED_CSV) or not os.path.isdir(
+            os.path.join(_PINNED_ROOT, 'compiles', row_id)):
+        pytest.skip('needs %s (gitignored)' % _PINNED_ROOT)
+    pinned = pd.read_csv(_PINNED_CSV).set_index('row_id').loc[row_id]
+    _depth, blocks = cc.replay_design(row_id, _PINNED_ROOT)
+    assert blocks == int(pinned['tcam_real']) == int(tcam_real) - 2
 
 
 # ---------------------------------------------------------------------------

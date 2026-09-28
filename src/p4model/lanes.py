@@ -426,12 +426,23 @@ def stage_prices(keys_bytes, order=None):
     if price is None:
       exhausted = True
       continue
-    need = price
-    for grp in range(_GROUPS):
-      if need <= 0:
-        break
-      if free[grp]:
-        free[grp] = set()
-        need -= 1
-    free_mids -= set(sorted(free_mids)[:max(0, (price - 1) // 2)])
+    free, free_mids = later_key_occupancy(free, free_mids, price)
   return prices
+
+
+def later_key_occupancy(free_groups, free_mids, price):
+  """What a LATER key priced at `price` blocks leaves free: it consumes, whole,
+  the first `price` groups that still have a free slot, and the lowest
+  `(price - 1) // 2` free midbytes (stage_prices' bookkeeping, split out so
+  packing.crossbar_stages_needed can run the same simulation with the first
+  key charged its production price). Returns new `(free_groups, free_mids)`;
+  the arguments are not modified."""
+  free = {grp: set(slots) for grp, slots in free_groups.items()}
+  need = price
+  for grp in range(_GROUPS):
+    if need <= 0:
+      break
+    if free.get(grp):
+      free[grp] = set()
+      need -= 1
+  return free, set(free_mids) - set(sorted(free_mids)[:max(0, (price - 1) // 2)])

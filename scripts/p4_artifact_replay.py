@@ -13,7 +13,8 @@ import os
 import re
 
 from src.p4model.packing import crossbar_stages_needed
-from src.p4model.program import SHARED_TASK, TASKS, VOTE_EPILOGUE_STAGES
+from src.p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK, TASKS,
+                                  VOTE_EPILOGUE_STAGES)
 from src.p4model.ranges import compiler_range_rows
 from src.p4model.registers import gated_block_interior_stages, readiness_levels_for
 from src.p4model.tables import codeword_to_blocks, tree_entries_to_blocks
@@ -386,15 +387,14 @@ def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
             range_levels.append(levels[keys[0][:-len('_val')]])
             range_task.append(tasks[name])
         elif name.startswith('get_classification_tree'):
-            # blocks[name] is the count p4c committed -- each key's own
-            # standalone price (tables.codeword_to_blocks), unaffected by
-            # WHERE it starts (the retired offset mechanism is gone; a key's
-            # own price no longer depends on that). That is the same basis
-            # crossbar_stages_needed assumes for a declared spec, so it is
-            # fed in unmodified: the packer adds only the crowded-stage
-            # margin (key_field_bits below; packing.charged's is_crowded
-            # branch), which fires only when two DIFFERENT keys share a
-            # stage above 58 combined crossbar bytes.
+            # blocks[name] is either the model's own standalone price
+            # (codeword_to_blocks x rows, replay_design) or the count p4c
+            # committed (replay_stage_depth). Either way it is what the table
+            # is charged as its stage's FIRST key; the packer's ordered stage
+            # simulation charges a table placed behind a different key its
+            # lane leftover price instead (packing.crossbar_stages_needed).
+            # Program order is kept: p4c breaks placement-priority ties by
+            # taking the table listed LAST first.
             key_bits = tuple(sorted(bits[key] for key in keys))
             ternary_specs.append((blocks[name], width))
             ternary_fields.append(fields)
@@ -408,23 +408,19 @@ def _replay_plans(row_id, tables, widths, bits, blocks, readiness_levels):
     # usage.assemble_usage does it (audit C1): a tree waits for its own task's
     # range tables and the shared ones, and may land in a stage still holding
     # the other task's range tables, which count against that stage's limits.
-    # key_field_bits matters even though the block counts here are p4c's own.
-    # The crowded-stage margin is what makes a MIXED stage infeasible:
-    # independent_low_sd9's real stage packs two DIFFERENT keys (app, ddos)
-    # whose combined crossbar bytes crowd the stage (61 bytes, above
-    # TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE = 58), so every table
-    # of the non-first key pays +1 -- without that margin the design
-    # under-predicts stage_depth (src/p4model/packing.py's
-    # crossbar_stages_needed docstring, "crowded stage"). The committed
-    # placement instead puts each key in its own stage, so nothing actually
-    # pays there -- the margin decides the PLACEMENT, not the invoice.
+    # key_field_bits and placement_priority (the generator's
+    # @placement_priority per task) switch on the ordered stage simulation,
+    # which decides both WHERE trees land and what a tree behind a different
+    # key in its stage pays -- so they matter even when the block counts are
+    # p4c's own.
     ternary_plan = crossbar_stages_needed(
         ternary_specs,
         readiness_levels=tree_readiness_levels(range_plan.table_stages,
                                                range_task, ternary_task),
         key_fields=ternary_fields, unavailable_stages=interior,
         key_field_bits=ternary_key_bits,
-        seed_stages=range_plan.stage_loads)
+        seed_stages=range_plan.stage_loads,
+        placement_priority=[PLACEMENT_PRIORITY[task] for task in ternary_task])
 
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
     return predicted, range_plan, ternary_plan

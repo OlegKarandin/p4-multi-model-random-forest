@@ -1,56 +1,57 @@
 """Validation table: this project's resource-model predictions (recomputed
-with CURRENT code) against real Tofino p4c ground truth, over all 19 rows of
-the compiler-calibration sample (Spec 4.7).
+with CURRENT code) against real Tofino p4c ground truth.
 
-CAPTION CONSTRAINT. These are 19 ARCHIVED p4c compiles re-evaluated against
-current model code -- not 19 fresh compiles. Published wording must say so.
-Ground truth (stages_real, tcam_real, sram_real, map_ram_real) is read from
-results/compiler_calibration_v6.csv and came from p4c. Predictions are
-recomputed here by replaying tests/fixtures/resource_model_golden.json through
-src/p4model/usage.py's assemble_usage, so this script needs neither sklearn nor
-the campaign backup and reproduces in under a second.
+PRIMARY GATE -- THE PINNED ARCHIVE (results/compiler_calibration_pinned/,
+ground truth results/compiler_calibration_pinned.csv, written by
+scripts/build_pinned_calibration_csv.py). 43 designs generated with the
+@placement_priority / @pa_no_overlay pragmas the generator now emits (audit
+C5; "arm D" of reviews/model_audit_2026-09-27.md §7.3) and compiled one at a
+time. The pragmas pin the order p4c places the classification trees in --
+the order packing.crossbar_stages_needed's ordered stage simulation replays --
+so this is the only archive whose compiles match what the generator produces
+today. Every design is replayed END TO END from its generated program
+(scripts/p4_artifact_replay.replay_design): the model's own per-table prices,
+packed by the model's own packer. CURRENT STANDING (2026-09-28):
+stage_depth 42/43, blocks 38/38 (5 designs never got a TCAM allocation: they
+need more than 12 stages). The one miss, KNOWN_PINNED_MISSES below, is
+independent_high_sd12: predicted 13, p4c 14 -- the one design where the
+pragma itself cost p4c a stage (13 without it); infeasible either way. It is
+an UNDER-prediction and is printed as one, deliberately un-silenced. The
+same numbers, design for design, as the audit's prototype
+(reviews/model_audit_scratch/proto_model.py --c1, FILL=lane).
+
+PRE-PRAGMA, INFORMATIONAL. Three older archives were compiled WITHOUT the
+pragmas, so p4c chose its own tree order there, which the model no longer
+assumes. They are still reported, for continuity, but are not the gate:
+
+  * FITTED (results/compiler_calibration_v6.csv, 19 rows). Predictions are
+    recomputed by replaying tests/fixtures/resource_model_golden.json through
+    src/p4model/usage.py's assemble_usage (no sklearn, no campaign backup).
+    CAPTION CONSTRAINT: these are 19 ARCHIVED compiles re-evaluated against
+    current model code, not 19 fresh compiles. stage_depth 19/19, blocks
+    17/17 (2026-09-28).
+  * HELD OUT (results/compiler_calibration_extra/, 8 designs never used to
+    fit the model): stage_depth 8/8, blocks 5/5.
+  * ADVERSARIAL (results/tcam_margin_screen/, 16 real campaign designs, USED
+    TO CHOOSE the retired 58/62 crowded-stage margin -- not held out):
+    stage_depth 16/16, blocks 15/16 -- margin_independent_M150_k5_s12 reads
+    66 against p4c's 68, an UNDER-prediction of 2 blocks. Unpinned, p4c
+    served that design's keys in an order that cost 2 more blocks; its pinned
+    compile (the primary gate) costs 66, exactly as predicted (audit §7.3:
+    the pragma made it 2 blocks cheaper). Printed, not silenced.
 
 WHY THE CSV'S OWN PREDICTION COLUMNS ARE NOT USED. results/
 compiler_calibration_v6.csv carries its own stage_depth/blocks columns, but
 those were written by whatever model code was live the moment each row was
 collected -- not necessarily today's. independent_low_sd5 is the documented
 case: its CSV blocks=13 predates the StagePlan.blocks fix; recomputing from
-the golden fixture (frozen AFTER that fix) gives 16, matching tcam_real=16
-(results/compiler_calibration_verify.csv). This script never reads the CSV's
-stage_depth/blocks columns as predictions -- only stages_real/tcam_real/
+the golden fixture gives 16, matching tcam_real=16
+(results/compiler_calibration_verify.csv). Only stages_real/tcam_real/
 sram_real/map_ram_real (p4c's own numbers, which cannot go stale) are used as
 ground truth. The CSV's own stage_depth/blocks columns are read ONLY by the
-drift check below, whose job is precisely to catch a stale-column case like
-this one.
-
-CURRENT STANDING (2026-09-28). On the 19 fitted rows: stage_depth 19/19
-exact, 0 under, and blocks 16/17 exact, 0 under (independent_low_sd12 +1). The
-independent_low_sd12 blocks miss is the crowded-stage rule's known cost: its
-real stage shares 60 bytes for free. Its stage_depth miss is CLOSED: the
-2026-09-27 any-order fit rule (reviews/final_model_check_2026-09-27.md
-section 1b) lets fits() accept a stage under the one key ordering that packs
-column-wise, rather than requiring every ordering to, which used to push this
-design one stage too deep. The drift check below prints its CSV disagreement,
-deliberately un-silenced. (independent_high_sd7/sd8, over by +1/+3 under the
-retired saturation margin, are exact again.) independent_high_sd12 (+1 until
-2026-09-28, already past the 12-stage ceiling) is exact since per-task tree
-readiness (audit C1): its app trees no longer wait for the ddos range tables.
-The drift check reports its stage_depth against the CSV's stale 14,
-deliberately un-silenced like independent_low_sd12. The earlier
-"version_block_penalty, 17 of 17" account describes a mechanism deleted on
-2026-09-21.
-
-TWO FURTHER SECTIONS replay compiles end to end from the generated program
-(scripts/p4_artifact_replay.replay_design). Only the first is actually held
-out: results/compiler_calibration_extra/ (8 designs the model was never
-fitted on: stage_depth 8/8, blocks 4/5, independent_low_sd9 +1, down from +3
-under the retired every-order rule). results/tcam_margin_screen/ (16 real
-campaign designs) is NOT held out -- it was USED TO CHOOSE the crowded-stage
-margin's 58/62 thresholds (target.py's own "Evidence (2026-09-25)" comment
-cites it directly), so it is adversarial evidence, not a generalisation
-check: stage_depth 13/16 (M250_k4_s15 exact since C1) and blocks 11/16
-exact, every miss an over-prediction, mean/max block error 0.38/2, down from
-0.56/3. 0 under anywhere.
+drift check, whose job is precisely to catch a stale-column case like this
+one: it prints independent_high_sd12's stage_depth (13, exact, since per-task
+tree readiness) against the CSV's stale 14, deliberately un-silenced.
 
 Run (from the repository root):
   "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" scripts/validation_table.py
@@ -77,15 +78,28 @@ from scripts.p4_artifact_replay import replay_design  # noqa: E402
 
 DEFAULT_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "resource_model_golden.json")
 DEFAULT_CSV = os.path.join(ROOT, "results", "compiler_calibration_v6.csv")
-# HELD OUT: 8 real compiles never used to fit or re-tune the model. Its CSV's
-# blocks/stage_depth columns are stale predictions from the model that was live
-# when the rows were collected -- only the *_real columns are read here.
+# PRIMARY GATE: the 43 pragma'd compiles (see the module docstring). Ground
+# truth only; predictions are recomputed from p4_src/ every run.
+PINNED_ROOT = os.path.join(ROOT, "results", "compiler_calibration_pinned")
+PINNED_CSV = os.path.join(ROOT, "results", "compiler_calibration_pinned.csv")
+# The pinned archive's one known miss, printed with its reason rather than
+# silenced: an UNDER-prediction on a design p4c cannot fit anyway.
+KNOWN_PINNED_MISSES = {
+    "independent_high_sd12": (
+        "stage_depth 13 vs p4c 14 (UNDER by 1, design infeasible either way: "
+        "> 12 stages). The one design where the @pa_no_overlay/"
+        "@placement_priority pragmas themselves cost p4c a stage -- 13 without "
+        "them (reviews/model_audit_2026-09-27.md §7.3/§7.6)"),
+}
+# PRE-PRAGMA, INFORMATIONAL (see the module docstring). HELD OUT: 8 real
+# compiles never used to fit or re-tune the model. Its CSV's blocks/
+# stage_depth columns are stale predictions from the model that was live when
+# the rows were collected -- only the *_real columns are read here.
 HELDOUT_ROOT = os.path.join(ROOT, "results", "compiler_calibration_extra")
 HELDOUT_CSV = os.path.join(ROOT, "results", "compiler_calibration_extra.csv")
-# 16 REAL campaign designs, USED TO CHOOSE 58/62 (scripts/tcam_margin_screen.py;
-# target.py's own "Evidence (2026-09-25)" comment cites this file directly) --
-# adversarial evidence, not a held-out generalisation check. Over-predictions
-# are expected, under-predictions are not.
+# PRE-PRAGMA, INFORMATIONAL. 16 REAL campaign designs, USED TO CHOOSE the
+# retired 58/62 crowded-stage margin (scripts/tcam_margin_screen.py) --
+# adversarial evidence, not a held-out generalisation check.
 CROWDED_ROOT = os.path.join(ROOT, "results", "tcam_margin_screen")
 CROWDED_CSV = os.path.join(ROOT, "results", "tcam_margin_screen_compiled.csv")
 
@@ -102,8 +116,6 @@ KNOWN_BLOCKS_COLUMN_CORRECTION = {
 # EMPTY, deliberately. It once held 5 rows priced by the retracted Mechanism G
 # rule. The lookup is kept so a future regression lands as a NEW entry with an
 # explanation, instead of silently widening KNOWN_BLOCKS_COLUMN_CORRECTION.
-# (independent_low_sd12 is NOT listed here on purpose: it is the crowded-stage
-# rule's measured cost and is left audible in the drift check.)
 KNOWN_MECHANISM_G_ROWS = {}
 
 
@@ -178,6 +190,12 @@ def heldout_pairs(root=HELDOUT_ROOT, csv_path=HELDOUT_CSV):
         blocks_pairs.append({"row_id": row_id, "predicted": blocks,
                              "real": record.get("tcam_real")})
     return stage_pairs, blocks_pairs
+
+
+def pinned_pairs(root=PINNED_ROOT, csv_path=PINNED_CSV):
+    """(stage_pairs, blocks_pairs) for the PRIMARY gate, the pinned archive,
+    replayed end to end exactly as heldout_pairs replays the held-out one."""
+    return heldout_pairs(root, csv_path)
 
 
 def aggregate(pairs):
@@ -353,6 +371,22 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+
+    if (os.path.isfile(PINNED_CSV)
+            and os.path.isdir(os.path.join(PINNED_ROOT, "compiles"))):
+        print("## PRIMARY GATE -- 43 pragma'd compiles "
+              "(results/compiler_calibration_pinned)")
+        pin_stage, pin_blocks = pinned_pairs()
+        _print_section("stage_depth (pinned)", pin_stage, "stage_depth")
+        _print_section("blocks (pinned)", pin_blocks, "blocks")
+        for row_id, reason in KNOWN_PINNED_MISSES.items():
+            print("  known miss, %s: %s" % (row_id, reason))
+    else:
+        print("(pinned archive %s not present -- PRIMARY GATE SKIPPED)"
+              % PINNED_ROOT)
+
+    print("\n\n## PRE-PRAGMA, INFORMATIONAL -- archives compiled without "
+          "@placement_priority; p4c chose its own tree order there")
     predictions = predictions_from_fixture(args.fixture)
     truth = load_ground_truth(args.csv_path)
     row_ids = list(predictions.keys())
@@ -360,35 +394,32 @@ def main(argv=None):
     stage_pairs = join_rows(predictions, truth, "stage_depth", "stages_real")
     blocks_pairs = join_rows(predictions, truth, "blocks", "tcam_real")
 
-    _print_section("stage_depth", stage_pairs, "stage_depth")
-    _print_section("blocks", blocks_pairs, "blocks")
+    _print_section("stage_depth (fitted, pre-pragma)", stage_pairs, "stage_depth")
+    _print_section("blocks (fitted, pre-pragma)", blocks_pairs, "blocks")
     _print_sram_map_ram(truth, row_ids)
     _print_drift_check(predictions, truth, row_ids)
 
     if os.path.isdir(os.path.join(HELDOUT_ROOT, "compiles")):
-        print("\n\n## HELD OUT -- 8 compiles never used to fit the model "
-              "(results/compiler_calibration_extra)")
+        print("\n\n## HELD OUT, PRE-PRAGMA -- 8 compiles never used to fit "
+              "the model (results/compiler_calibration_extra)")
         held_stage, held_blocks = heldout_pairs()
         _print_section("stage_depth (held out)", held_stage, "stage_depth")
         _print_section("blocks (held out)", held_blocks, "blocks")
-        print("  independent_low_sd9's +1: the model's packing puts one app tree "
-              "in a crowded 61-byte stage with ddos trees and charges the one "
-              "key order that fits (fits() only requires SOME ordering to pack "
-              "since the 2026-09-27 any-order fit rule); p4c keeps the two "
-              "tasks in separate stages at the same depth and pays nothing. "
-              "Pinned in tests/test_compiler_calibration.py.")
     else:
         print("\n(held-out archive %s not present -- section skipped)"
               % HELDOUT_ROOT)
 
     if os.path.isfile(CROWDED_CSV):
-        print("\n\n## ADVERSARIAL, USED TO CHOOSE 58/62 -- 16 real campaign "
-              "designs compiled to stress the stage-sharing rules "
+        print("\n\n## ADVERSARIAL, PRE-PRAGMA -- 16 real campaign designs "
+              "used to choose the retired 58/62 margin "
               "(results/tcam_margin_screen)")
         crowd_stage, crowd_blocks = heldout_pairs(CROWDED_ROOT, CROWDED_CSV)
         _print_section("stage_depth (crowded real designs)", crowd_stage,
                        "stage_depth")
         _print_section("blocks (crowded real designs)", crowd_blocks, "blocks")
+        print("  margin_independent_M150_k5_s12's UNDER: unpinned, p4c served "
+              "its keys in an order costing 2 more blocks; the pinned compile "
+              "of the same design costs exactly the predicted 66.")
 
 
 if __name__ == "__main__":

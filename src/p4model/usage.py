@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from src.p4model.packing import crossbar_stages_needed, stage_load_fits
 from src.p4model.program import (
     FLOW_HASH_LEVEL,
+    PLACEMENT_PRIORITY,
     SHARED_TASK,
     TASKS,
     VOTE_EPILOGUE_STAGES,
@@ -226,25 +227,33 @@ def assemble_usage(pool):
   # starts its trees early, while the other task's range tables may still be
   # landing -- so the two pools can now meet in one stage, and the ternary
   # pool is SEEDED with the range pool's loads: those range shards count
-  # against the stage's table cap, byte limit and column packing, and as one
-  # more different key in the crowded-stage 58/62 rules, but are not charged
-  # again (see crossbar_stages_needed's seed_stages). With no range
+  # against the stage's table cap, byte limit and column packing, and their
+  # range fields are keys placed on the stage's crossbar BEFORE any tree key
+  # in the lane simulation, but are not charged again (see
+  # crossbar_stages_needed's seed_stages). With no range
   # table for a task, its trees start right after the flow-hash prologue
   # (tree_readiness_levels).
   ternary_levels = tree_readiness_levels(range_plan.table_stages, range_task,
                                          ternary_task)
-  # Only the classification pool gets key_field_bits, which is what switches
-  # on the crowded-stage rules (packing.charged/fits). A range table keys one
-  # meta.<feature>_val field of FEATURE_VALUE_BIT_WIDTH bits -- 2 bytes -- and
-  # the 8-table cap holds a stage to 16 of them, nowhere near crowding it.
-  # Passing it would be noise.
+  # Only the classification pool gets key_field_bits, which switches on the
+  # ordered stage simulation (packing.crossbar_stages_needed, audit C5): trees
+  # are placed in p4c's order -- @placement_priority, ddos before app
+  # (program.PLACEMENT_PRIORITY), ties to the tree listed last, which is why
+  # ternary_table_specs must stay in program order (app trees, then ddos, each
+  # by index) -- and a key placed after a different key in its stage pays its
+  # lane leftover price. This runs once per call, i.e. once per trial; it is
+  # never inside threshold alignment's loop, which prices keys with
+  # codeword_to_blocks alone. A range table keys one meta.<feature>_val field
+  # of FEATURE_VALUE_BIT_WIDTH bits -- 2 bytes -- so the range pool needs none
+  # of this.
   ternary_plan = crossbar_stages_needed(
       ternary_table_specs,
       readiness_levels=ternary_levels,
       key_fields=ternary_fields,
       unavailable_stages=interior_stages,
       key_field_bits=ternary_key_bits,
-      seed_stages=range_plan.stage_loads)
+      seed_stages=range_plan.stage_loads,
+      placement_priority=[PLACEMENT_PRIORITY[task] for task in ternary_task])
 
   # A stage both pools use must satisfy every per-stage limit with both
   # pools' tables in it. The seeded placement above already guarantees this;
@@ -280,9 +289,9 @@ def assemble_usage(pool):
   register_count = len(register_names)
 
   # ternary_plan.blocks, not ternary_blocks: the latter is the naive
-  # per-table sum computed above, before the crowded-stage margin
-  # (packing.charged) that only crossbar_stages_needed's stage packing knows
-  # about -- see StagePlan.blocks. range_blocks needs no substitution:
+  # per-table sum, before the lane leftover prices that only
+  # crossbar_stages_needed's stage simulation knows about -- see
+  # StagePlan.blocks. range_blocks needs no substitution:
   # a range table's key always leaves spare crossbar byte slots,
   # so range_plan.blocks is provably identical to range_blocks.
   # stages counts distinct stage indices holding a table from EITHER pool: a

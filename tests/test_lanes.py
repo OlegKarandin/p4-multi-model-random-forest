@@ -268,3 +268,16 @@ def test_first_key_occupancy_uses_fullest_lane_midbytes():
 def test_no_module_level_mode_flags_remain():
   for name in ('FILL', 'FIRST_MID'):
     assert not hasattr(lanes, name)
+
+
+def test_later_key_occupancy_consumes_whole_groups_and_low_midbytes_only():
+  # stage_prices' later-key bookkeeping, split out for packing's simulation:
+  # a key priced at 5 consumes the first 5 groups with a free slot, wholly,
+  # and the lowest (5 - 1) // 2 = 2 free midbytes; its inputs are untouched.
+  free = {g: set(range(5)) for g in range(12)}
+  free[0] = set()
+  mids = {1, 2, 4, 5}
+  new_free, new_mids = lanes.later_key_occupancy(free, mids, 5)
+  assert [g for g in range(12) if new_free[g]] == [6, 7, 8, 9, 10, 11]
+  assert new_mids == {4, 5}
+  assert free[1] == set(range(5)) and mids == {1, 2, 4, 5}

@@ -4,7 +4,8 @@ compiles (results/compiler_calibration_v6), scored against the model.
 Originally written for Task 7's offset-based mechanism (`start_group`,
 `version_block_penalty`), which the 2026-09-20 rewrite retired: no per-table
 price in `src.p4model.tables` depends on where a key's crossbar run starts
-any more (see `packing.key_width`'s "HONEST LIMIT" note). The harvest module
+any more (and `packing.key_width`/`offsets_for`, the last code that read a
+key's position, were deleted by audit C5 on 2026-09-28). The harvest module
 this file exercises (`scripts/tcam_offset_harvest.py`) already says so in its
 own comments. What these tests still pin: the raw archived measurements
 (crossbar offsets, block counts) as historical ground truth, and a per-table
@@ -36,7 +37,8 @@ def test_the_archived_app_key_started_at_the_ddos_keys_block_count_not_its_group
     group 3 in this archived compile -- the ddos key's BLOCK count, not its
     GROUP count. Back when a key's own price depended on where its crossbar
     run started, this was the fact `packing.offsets_for`'s width-based
-    (rather than group-based) sum was built to match. The 2026-09-20 rewrite
+    (rather than group-based) sum was built to match (offsets_for is deleted
+    since audit C5). The 2026-09-20 rewrite
     deleted `start_group` from every per-table price, so this measurement no
     longer discriminates anything the current model reads -- it is kept as
     the archived fact itself, not as a live test of finding 1.4.

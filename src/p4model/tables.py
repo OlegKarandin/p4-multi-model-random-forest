@@ -408,18 +408,21 @@ def codeword_bytes_to_blocks(key_bytes):
   instead: doc §4.1's measured ladder disagrees with this function from 11
   bytes up (11 -> 3 blocks there, 2 here; 33 needs the Sec 2.3 isolation
   credit to reach 6, which this function reaches only because its own
-  rounding is cruder). This function's only remaining production reach is
-  packing.key_width's range-pool branch, where a range table keys exactly
-  ONE whole-byte meta.<feature>_val field -- the one shape both rules price
-  identically, since there is no second field for the crossbar-byte ledger's
-  per-field rounding to diverge on.
+  rounding is cruder). No production code calls it since audit C5
+  (2026-09-28) deleted its last caller, packing.key_width's range-pool
+  branch; the probe scripts (tcam_offset_harvest, tcam_spacer_sweep,
+  tcam_version_sweep, tcam_group_cap_probe) still use it to size SOLID
+  single-field keys, the one shape both rules price identically, since there
+  is no second field for the crossbar-byte ledger's per-field rounding to
+  diverge on.
 
   (Was `crossbar_block_width` until 2026-09-14. Renamed, not changed: the name
   now states what it takes -- crossbar key BYTES -- so the decomposition
   fields -> bytes -> blocks reads in one direction. It carries NO version
-  charge: this function prices a key standalone, and the crowded-stage margin
-  a key pays when it shares a crowded stage with another key is a different
-  quantity computed by a different module -- see packing.charged.)
+  charge: this function prices a key standalone, and what a key pays when it
+  is placed behind a different key in its stage is a different quantity
+  computed by a different module -- see packing.crossbar_stages_needed's
+  ordered stage simulation and lanes.price_with_supply.)
 
   One block is fed by exactly one crossbar group, and a group delivers 5
   private bytes + 1 midbyte nibble = TCAM_BLOCK_KEY_LENGTH bits = 5.5 BYTES
