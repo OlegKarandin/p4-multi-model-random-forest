@@ -771,23 +771,31 @@ def _golden_alignment_pair(n=300):
 # non-guarantee, realised on this exact pair -- the new order is a better
 # HEURISTIC on average, not a per-row improvement, and this golden pin is the
 # proof it is not one here.
+#
+# Regenerated 2026-09-28 by the alignment-audit fixes (spec
+# 2026-09-28-alignment-audit-fixes-design.md), one line per change:
+#   T3 (guard anchored at the pre-alignment scores, no ratchet): attempted
+#      41->34, accepted 27->27, intervals_after 62->63 -- feature 0's
+#      (43170,50610)&(43170,48048) move degrades App relative to the running
+#      best but not relative to the start, so it is now accepted, and the
+#      greedy path after it ends one interval higher on this pair.
 _ALIGNMENT_GOLDEN_C1C2 = {
     0.0: {
-        'stats': {'attempted': 41, 'accepted': 27,
-                  'intervals_before': 91, 'intervals_after': 62},
+        'stats': {'attempted': 34, 'accepted': 27,
+                  'intervals_before': 91, 'intervals_after': 63},
         't1': [
-            [50135, 33860, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33384, -2,
+            [50135, 37970, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33860, -2,
              -2],
-            [25153, 17906, 44768, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
+            [25153, 17906, 42582, -2, -2, -2, 21985, -2, 65407, 47461, -2, -2,
              -2],
             [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
              -2],
             [11493, -2, 15571, -2, 26424, -2, 43169, 33254, -2, -2, 26063, -2,
              -2],
-            [45724, 17534, 48924, -2, -2, 25535, -2, 44845, -2, -2, 53373, -2,
+            [45724, 17534, 48924, -2, -2, 25535, -2, 48261, -2, -2, 53373, -2,
              49629, -2, -2],
-            [39753, 58452, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
-             50610, -2, -2, -2],
+            [39753, 50955, 32983, -2, -2, 21061, -2, -2, 64763, 24115, -2,
+             48048, -2, -2, -2],
             [40996, 17244, -2, 35130, -2, 58798, -2, -2, 60939, 65407, -2, -2,
              -2],
         ],
@@ -795,15 +803,15 @@ _ALIGNMENT_GOLDEN_C1C2 = {
             [8902, -2, 58514, 50135, 29400, -2, -2, 30850, -2, -2, 33384, -2,
              -2],
             [14536, -2, 39753, -2, 40996, -2, 61298, 35130, -2, -2, -2],
-            [27458, 47461, -2, -2, 58452, 65407, 33860, -2, -2, -2, 61513, -2,
+            [27458, 47461, -2, -2, 48924, 65407, 33860, -2, -2, -2, 61513, -2,
              -2],
             [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
              53373, -2, -2],
-            [27321, 53909, 49629, -2, -2, -2, 17534, -2, 25152, -2, 53934, -2,
+            [27321, 53909, 49629, -2, -2, -2, 17534, -2, 21985, -2, 53934, -2,
              60939, -2, -2],
-            [54408, 44768, 33254, -2, -2, 62045, -2, -2, 17244, -2, 41841, -2,
-             50610, -2, -2],
-            [54766, 48924, 24115, -2, -2, 38129, -2, -2, 49965, 26063, -2, -2,
+            [54408, 42582, 33254, -2, -2, 62045, -2, -2, 17244, -2, 37970, -2,
+             48048, -2, -2],
+            [54766, 48261, 24115, -2, -2, 38129, -2, -2, 49965, 26063, -2, -2,
              -2],
         ],
     },
@@ -842,8 +850,8 @@ def test_align_rf_thresholds_produces_the_same_models_as_before_this_change(
     Replacing sklearn's accuracy_score/f1_score with a confusion-matrix
     formula, and the from-scratch ensemble vote with an incrementally
     maintained one, must not move a single number. It cannot be checked by
-    "the metrics look close": accept_alignment compares against a per-task
-    ratchet, so a one-ULP disagreement flips a decision, the flipped decision
+    "the metrics look close": accept_alignment compares against per-task
+    anchors, so a one-ULP disagreement flips a decision, the flipped decision
     changes which thresholds move, and every later candidate sees a different
     model. The observable consequence is the final threshold arrays and the
     stats dict -- so pin those.
@@ -1324,10 +1332,11 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
     is a regression rather than a result change.
 
     Only the delta_rel=None arm is a theorem. On the guarded arms an extra
-    move accepted in an earlier feature ratchets `marks` up (spec B.4), which
-    may legitimately flip a later feature's decisions -- features are
+    move accepted in an earlier feature changes the shared accuracy slack
+    above the pre-alignment anchor (spec 2026-09-28 T3), which may
+    legitimately flip a later feature's decisions -- features are
     structurally independent (each owns its interval lists and its
-    threshold-index keys) but the per-task high-water marks are global. It
+    threshold-index keys) but that slack is global. It
     holds on this fixture for all three arms, and is asserted for all three;
     if a future change breaks it on a guarded arm only, that is the mechanism
     to check before assuming a bug.
@@ -1437,7 +1446,7 @@ def test_accuracy_spent_is_zero_when_no_move_is_accepted(monkeypatch):
 
 def test_accuracy_spent_is_a_max_across_tasks_not_a_mean(monkeypatch):
     """The module's own standard everywhere else (accept_alignment's all(),
-    ratchet, _rank_targets' damage). A run cheap on average but expensive on
+    _rank_targets' damage). A run cheap on average but expensive on
     one task is not cheap, and this field must not be the first place that
     principle is violated."""
     captured = {}

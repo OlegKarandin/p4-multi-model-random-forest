@@ -1,4 +1,5 @@
-"""Spec B.4: the acceptance test and the ratchet become per-task."""
+"""Spec B.4: the acceptance test is per task; spec 2026-09-28 T3: it is
+anchored at the pre-alignment scores for the whole run (no ratchet)."""
 import numpy as np
 import pytest
 
@@ -75,41 +76,101 @@ def test_delta_none_accepts_everything_including_a_catastrophic_move():
     assert ta.accept_alignment(BEFORE, after, delta_rel=None) is True
 
 
-def test_the_ratchet_is_per_task_and_elementwise():
-    """Today only the mean was ratcheted, so a sequence where App improves while
-    DDoS degrades kept the mean flat, no single move tripped the guard, and
-    DDoS drifted arbitrarily far. Four independent marks bound each task's
-    total drift from ITS OWN best."""
-    marks = ta.ratchet(BEFORE, (0.790, 0.788, 0.955, 0.954))
-
-    assert marks == (0.790, 0.788, 0.960, 0.959)
+def test_the_ratchet_is_gone():
+    """Spec 2026-09-28 T3: the guard is anchored at the PRE-ALIGNMENT scores
+    for the whole run. The running high-water mark it replaced let a noise
+    gain on val_align become the floor for every later move."""
+    assert not hasattr(ta, 'ratchet')
 
 
-def test_a_ratcheted_sequence_cannot_let_one_task_drift_past_delta():
-    """The regression test for the drift: App climbs 0.01 per step while DDoS
-    slides 0.003 per step. Under a mean-only ratchet every step looks free.
-    Under per-task marks, DDoS's cumulative loss is measured from its own best
-    and the sequence is cut off."""
-    delta = 0.05
-    marks = BEFORE
-    ddos_acc = BEFORE[2]
-    app_acc = BEFORE[0]
-    accepted_steps = 0
+class _ScriptedMetrics:
+    """Stands in for IncrementalMetrics inside align_rf_thresholds.
 
-    for _ in range(20):
-        app_acc += 0.010
-        ddos_acc -= 0.003
-        candidate = (app_acc, app_acc - 0.002, ddos_acc, ddos_acc - 0.001)
-        if not ta.accept_alignment(marks, candidate, delta):
-            break
-        marks = ta.ratchet(marks, candidate)
-        accepted_steps += 1
+    Each apply() moves this model's (accuracy, f1) to the next scripted value
+    (both metrics move together); once the script runs out a move changes
+    nothing. revert() restores the value apply() replaced, exactly the
+    contract the real class honours. `start` is what metrics() reports before
+    any move."""
 
-    # delta = 5% of DDoS's 0.040 error = 0.002 absolute, and each step costs
-    # 0.003 -- so not even the first step may pass.
-    assert accepted_steps == 0
-    total_ddos_loss = BEFORE[2] - ddos_acc
-    assert total_ddos_loss > delta * (1 - BEFORE[2])
+    scripts = {}
+    starts = {}
+
+    def __init__(self, tree_predictions, rf, y_true, task):
+        self.task = task
+        self.script = list(self.scripts.get(task, []))
+        self.value = self.starts[task]
+
+    def metrics(self):
+        return (self.value, self.value)
+
+    def apply(self, tree_predictions, undo_info):
+        token = self.value
+        if self.script:
+            self.value = self.script.pop(0)
+        return token
+
+    def revert(self, token):
+        self.value = token
+
+
+def _scripted_run(monkeypatch, app_script, ddos_script):
+    from tests.test_threshold_alignment import _block_purchase_then_more_pair
+
+    monkeypatch.setattr(_ScriptedMetrics, 'scripts',
+                        {'app': list(app_script), 'ddos': list(ddos_script)})
+    monkeypatch.setattr(_ScriptedMetrics, 'starts',
+                        {'app': 0.9500, 'ddos': 0.9000})
+    monkeypatch.setattr(ta, 'IncrementalMetrics', _ScriptedMetrics)
+    rf1, rf2, X, y1, y2 = _block_purchase_then_more_pair()
+    log = []
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, delta_rel=0.0,
+                           candidate_log=log)
+    return log
+
+
+def test_a_gain_then_a_partial_giveback_is_accepted(monkeypatch):
+    """0.9500 -> 0.9510 -> 0.9505: the second move gives back half of an
+    accidental gain but stays above where the run STARTED, so it is free.
+    Under the retired ratchet it was judged against 0.9510 and rejected."""
+    log = _scripted_run(monkeypatch, [0.9510, 0.9505], [])
+    assert [e['accepted'] for e in log[:2]] == [True, True]
+
+
+def test_a_move_below_the_start_on_one_metric_is_rejected_however_much_the_others_rise(
+        monkeypatch):
+    """Still per metric (accept_alignment unchanged): App rises to 0.9600 on
+    the same move that takes DDoS to 0.8999, one ten-thousandth below its own
+    pre-alignment 0.9000 -- rejected. And a later move that drops App below
+    its START after an earlier gain is rejected too, even though it is only
+    a partial giveback of that gain relative to the gain's peak."""
+    log = _scripted_run(monkeypatch, [0.9600], [0.8999])
+    assert log[0]['accepted'] is False
+
+    log = _scripted_run(monkeypatch, [0.9510, 0.9499], [])
+    assert [e['accepted'] for e in log[:2]] == [True, False]
+
+
+def test_the_final_val_align_metrics_never_fall_below_the_start():
+    """The run-level statement T3's fixed anchor guarantees: on the data the
+    guard judges (val_align), every one of the four metrics ends >= where it
+    started. Measured on the real metric machinery, not a script."""
+    from tests.test_threshold_alignment import _golden_alignment_pair
+    from src.training.incremental_metrics import IncrementalMetrics
+
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
+
+    def four(m1, m2):
+        p1, _ = ta.build_prediction_cache(m1, np.asarray(X1, dtype=np.float32))
+        p2, _ = ta.build_prediction_cache(m2, np.asarray(X2, dtype=np.float32))
+        return (IncrementalMetrics(p1, m1, y1, task='app').metrics()
+                + IncrementalMetrics(p2, m2, y2, task='ddos').metrics())
+
+    stats = {}
+    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, delta_rel=0.0,
+                                    align_stats=stats)
+    assert stats['accepted'] > 0, 'the fixture must actually move something'
+    before, after = four(rf1, rf2), four(a1, a2)
+    assert all(a >= b for b, a in zip(before, after)), (before, after)
 
 
 def test_alignment_reports_its_acceptance_rate_and_interval_counts():

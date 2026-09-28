@@ -113,9 +113,11 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
     the fallback is the order the archive was produced under.
 
     NOT A STRICT IMPROVEMENT, and no write-up may claim it is (design D6).
-    Acceptance is greedy and the accuracy budget (`marks`) is ONE GLOBAL
-    ratchet, not a per-feature budget, so which feature is visited first
-    changes which moves are still affordable when a later feature's turn comes.
+    Acceptance is greedy and the accuracy guard is ONE GLOBAL anchor (the
+    pre-alignment scores, spec 2026-09-28 T3), not a per-feature budget: the
+    accidental gains above the start are a slack the whole run shares, so
+    which feature is visited first changes which moves are still affordable
+    when a later feature's turn comes.
     Ranking by blocks bought is a better HEURISTIC; individual rows may do
     worse than the byte-domain order. Audit §8.4's
     joint-dinf/M100/k17/split12 row is the precedent that this shape really
@@ -172,16 +174,13 @@ def accept_alignment(before, after, delta_rel):
     return all(rel_deg(b, a) <= delta_rel for b, a in zip(before, after))
 
 
-def ratchet(before, after):
-    """Element-wise high-water marks (spec B.4).
-
-    Per task, not on the mean. With only the mean ratcheted, a sequence where
-    App improves while DDoS degrades keeps the mean flat, no single move trips
-    the guard, and DDoS drifts arbitrarily far. Independent marks bound each
-    task's total drift from ITS OWN best at delta_rel, independently of the
-    other task -- strictly stronger than the per-move test alone.
-    """
-    return tuple(max(b, a) for b, a in zip(before, after))
+# DELETED 2026-09-28: ratchet(before, after), the element-wise high-water
+# marks of spec B.4. Its rationale was drift under delta > 0: judged against
+# the running best, each task's total drift was bounded at delta_rel. delta is
+# fixed at 0 now, and the pre-alignment anchor that replaced it (spec
+# 2026-09-28 T3, see align_rf_thresholds' `started_at`) bounds total drift
+# anyway -- per metric, from the START -- without turning an accidental
+# val_align gain into the floor for every later move.
 
 
 def joint_interval_count(intervals1, intervals2):
@@ -373,16 +372,22 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     metrics1 = IncrementalMetrics(tree_predictions1, rf1, y_val1, task="app")
     metrics2 = IncrementalMetrics(tree_predictions2, rf2, y_val2, task="ddos")
 
-    # Four independent high-water marks, in (acc_app, f1_app, acc_ddos,
-    # f1_ddos) order.
-    marks = metrics1.metrics() + metrics2.metrics()
-    # Last-ACCEPTED state -- the model's actual current metrics, as opposed
-    # to marks' running per-task max. Before any candidate, both coincide.
-    current = marks
-    # The run's starting point, kept separate from `marks` because `marks`
-    # ratchets upward and would understate what a run gave away. §2.4's
-    # accuracy_spent is measured from HERE to the final `current`.
-    started_at = list(marks)
+    # The run's starting point: the PRE-ALIGNMENT scores, in (acc_app,
+    # f1_app, acc_ddos, f1_ddos) order. Every candidate is judged against
+    # these four, per metric, for the WHOLE run (spec 2026-09-28 T3). They
+    # used to be ratcheted up to max(marks, after) after every accepted move
+    # (spec B.4's high-water marks), which at delta = 0 made each accidental
+    # gain on val_align the floor for every later move. A fixed anchor still
+    # bounds each metric's total drift -- at zero, at delta = 0 -- so the
+    # ratchet bought nothing the anchor does not. Consequence, accepted: the
+    # run now shares one accuracy slack (the accidental gains above the
+    # start), so which feature is visited first can matter again -- the
+    # reason feature_order's ranking is kept. §2.4's accuracy_spent is
+    # measured from here to the final `current`.
+    started_at = metrics1.metrics() + metrics2.metrics()
+    # Last-ACCEPTED state -- the model's actual current metrics. Before any
+    # candidate it coincides with started_at.
+    current = started_at
 
     stats = align_stats if align_stats is not None else {}
     stats['attempted'] = 0
@@ -591,7 +596,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     mtoken1 = metrics1.apply(tree_predictions1, undo_info1)
                     mtoken2 = metrics2.apply(tree_predictions2, undo_info2)
                     after = metrics1.metrics() + metrics2.metrics()
-                    accepted = accept_alignment(marks, after, delta_rel)
+                    accepted = accept_alignment(started_at, after, delta_rel)
 
                     if candidate_log is not None:
                         candidate_log.append({
@@ -606,12 +611,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                             'shift_mass_2': mass2,
                             # Local, immediate-effect degradation: current is the
                             # actual model state right before THIS candidate, as
-                            # opposed to marks' cumulative per-task high-water mark
-                            # (which accept_alignment above correctly uses instead --
-                            # that ratchet is deliberate, spec B.4, and unaffected
-                            # by this diagnostic). Comparing a local physical bound
-                            # (shift_mass) against a cumulative quantity would be
-                            # apples-to-oranges.
+                            # opposed to the fixed pre-alignment anchor
+                            # started_at (which accept_alignment above correctly
+                            # uses instead -- spec 2026-09-28 T3 -- and which
+                            # this diagnostic does not affect). Comparing a local
+                            # physical bound (shift_mass) against a cumulative
+                            # quantity would be apples-to-oranges.
                             'rel_deg': tuple(rel_deg(b, a)
                                              for b, a in zip(current, after)),
                             'accepted': bool(accepted),
@@ -626,8 +631,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         # candidate has to restore. revert is independent of
                         # undo_cache_update (it restores from its own stored copy,
                         # not from tree_predictions), so the order here is free --
-                        # but it must happen on EVERY reject, or the ratchet starts
-                        # comparing against a model state that no longer exists.
+                        # but it must happen on EVERY reject, or the next
+                        # candidate's `after` is measured from a model state
+                        # that no longer exists.
                         metrics1.revert(mtoken1)
                         metrics2.revert(mtoken2)
                         # C2: the pair is not dead yet -- try the next-ranked
@@ -641,7 +647,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                     # would return exactly the list already being iterated.
                     progressed = True
                     stats['accepted'] += 1
-                    marks = ratchet(marks, after)
                     current = after
 
                     # Realised shed for THIS move, measured on the one feature
@@ -696,7 +701,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # §2.4: what this run gave away, in the same units accept_alignment uses,
     # priced as a MAX across the four metrics rather than a sum or a mean --
     # the standard this module already applies in accept_alignment's all(),
-    # in ratchet, and in _rank_targets' damage. Recorded unconditionally
+    # and in _rank_targets' damage. Recorded unconditionally
     # (design spec: "Unchanged, still written with exactly today's values")
     # so a campaign always has this stat to compare runs against. With the
     # delta_align axis deleted (2026-09-15) alignment only ever accepts free
