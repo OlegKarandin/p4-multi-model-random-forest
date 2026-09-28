@@ -435,7 +435,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         if stats['factor_before'] > 1 else None)
 
     # The width dict alignment actually works on, decremented per accepted move
-    # so feature_order and the per-feature early exit see the CURRENT cost.
+    # so feature_order sees the CURRENT cost.
     #
     # Copied, not aliased: `pooled_widths` above is the entry snapshot that
     # `stats` and the floor comparison are computed from, and mutating it in
@@ -499,14 +499,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         # recomputed sweep returns the identical list, every member of which
         # is already in `seen`, so the next round would do zero work.
         # MAX_RECOMPUTE_ROUNDS is only the backstop for genuine cycling.
-
-        # audit §8.2 item 4. What this feature costs before it is worked, so an
-        # accepted move that BUYS a block can end the feature instead of
-        # shedding on past the ladder step it just crossed. Priceable only now
-        # that per-feature overshoot has a cost: every extra accepted move
-        # ratchets the ONE global accuracy budget that later features need.
-        feature_entry_total = total_blocks(live_widths, multiplier)
-        bought_here = False
+        #
+        # Every feature runs to that fixpoint (spec 2026-09-28 T4). A
+        # per-feature early exit used to retire a feature at the end of the
+        # round in which it first bought a block (audit §8.2 item 4); it left
+        # later purchases on the same feature unbought (measured +16 blocks
+        # on 3/935 replay rows, never worse) and was deleted.
 
         seen = set()
         progressed = True
@@ -664,41 +662,15 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
 
                     live_widths[feature_idx] -= pooled_before - pooled_after
 
-                    if total_blocks(live_widths, multiplier) < feature_entry_total:
-                        # KNOWN LIMITATION (audit finding 2.3): this break,
-                        # together with `remaining.discard(feature_idx)`
-                        # above, retires the feature for the rest of THIS
-                        # run after its FIRST block purchase. A feature able
-                        # to buy a range block here and a byte-boundary step
-                        # later (via further overlap resolution) is only
-                        # ever credited for the first -- the second
-                        # opportunity is left unbought. A fix would need to
-                        # re-rank the feature back into consideration
-                        # instead of unconditionally discarding it, and MUST
-                        # preserve the total order `remaining` yields: the
-                        # refit determinism assertion depends on features
-                        # being processed in one fixed order, not on this
-                        # break's current all-or-nothing retirement. Left
-                        # open -- spec §8.
-                        bought_here = True
-                        break
-
                     # First acceptance wins: the ranking already put the
                     # cheapest admissible corner first, and the tuples this
                     # pair was named by no longer exist.
                     break
 
-            if bought_here:
-                break
-
-        if progressed and rounds > 1 and not bought_here:
+        if progressed and rounds > 1:
             # Truncated while still accepting moves: the loop never reached a
             # fixpoint, so the result depends on where it was cut off. That is
             # an invariant violation, not a slower run.
-            #
-            # `not bought_here` is the third condition: leaving early because
-            # this feature bought its block is a DELIBERATE exit, not a
-            # truncation, so the fixpoint claim does not apply to it.
             #
             # `rounds > 1` is the "recomputation was actually running" test:
             # at MAX_RECOMPUTE_ROUNDS == 1 the loop is DELIBERATELY reduced to

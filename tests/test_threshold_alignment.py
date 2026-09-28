@@ -2083,120 +2083,61 @@ def test_align_stats_records_the_factor_and_the_total_separately(delta_rel):
     assert stats['total_blocks_after'] >= stats['factor_after']
 
 
-def test_a_feature_stops_being_worked_once_it_has_bought_a_block():
-    """Audit §8.2 item 4. The inner loop ran to a per-feature fixpoint whatever
-    further shedding was worth -- invisible while nothing priced per-feature
-    overshoot, and a real accuracy cost now that something does: every extra
-    accepted move ratchets the ONE global accuracy budget that later features
-    still need.
+def _block_purchase_then_more_pair():
+    """One feature where round 1 BUYS a block and round 2 still sheds.
+
+        rf1 cuts {3, 4, 27, 31} + F,   rf2 cuts {32, 56, 57} + F,
+        F = 100..133 (34 cuts both models share, so they never form a pair
+        but do count toward the pooled width).
+
+    Pooled width 41 bits = 6 crossbar bytes (factor 2). Round 1 accepts two
+    moves (targets (0, 3) and (58, 100)), bringing the width to 39 = 5 bytes,
+    factor 1: a real purchase, priced by the real total_blocks. Only round 2
+    then reaches the pair that the round-1 moves created, target (5, 27),
+    shedding one more bit (width 38). Found by a random search over small
+    hand-built cut sets, then padded with F to sit on the 40-bit ladder step.
     """
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    stats = {}
-    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, delta_rel=None,
-                         align_stats=stats)
-    assert stats['total_blocks_after'] <= stats['total_blocks_before']
-    assert stats['accuracy_spent'] >= 0.0
+    filler = list(range(100, 134))
+    rf1 = _hand_built_forest([3, 4, 27, 31] + filler)
+    rf2 = _hand_built_forest([32, 56, 57] + filler)
+    X = np.array([[0.0], [50.0], [500.0], [1500.0],
+                  [2500.0], [4000.0], [7000.0], [65535.0]])
+    y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1])
+    y2 = np.array([-1, 1, -1, 1, -1, 1, -1, 1])
+    return rf1, rf2, X, y1, y2
 
 
-def test_stopping_early_does_not_trip_the_fixpoint_invariant(monkeypatch):
-    """The hazard. The per-feature loop ends with
-    `if progressed and rounds > 1: raise AlignmentInvariantError` -- a check
-    that the loop REACHED a fixpoint. Leaving early because the feature bought
-    its block is a deliberate exit, not a truncation, and must not raise.
+def test_a_feature_keeps_shedding_after_it_buys_a_block():
+    """Spec 2026-09-28 T4: the per-feature early exit is gone, so a feature
+    runs to its fixpoint even after a round in which it bought a block.
+
+    Under the deleted exit this fixture stopped after round 1 at width 39:
+    the purchase (41 -> 39 bits, factor 2 -> 1) retired the feature before
+    round 2 could reach the (5, 27) move. Now round 2 runs and sheds it.
     """
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 32)
-    stats = {}
-    ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, delta_rel=None,
-                         align_stats=stats)      # must not raise
-    assert stats['accepted'] >= 0
+    rf1, rf2, X, y1, y2 = _block_purchase_then_more_pair()
+    stats, log = {}, []
+    ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, delta_rel=None,
+                           align_stats=stats, candidate_log=log)
+
+    accepted = [(e['round'], e['target']) for e in log if e['accepted']]
+    assert accepted == [(1, (0, 3)), (1, (58, 100)), (2, (5, 27))]
+    assert stats['codeword_before'] == 41 and stats['factor_before'] == 2
+    # The block was bought in round 1 (39 bits is already factor 1) ...
+    assert stats['factor_after'] == 1
+    # ... and the feature still shed past it.
+    assert stats['codeword_after'] == 38
 
 
-def test_a_late_round_block_purchase_does_not_trip_the_fixpoint_invariant(monkeypatch):
-    """Mutation-tested strengthening of the test above.
-
-    A reviewer mutation-tested `test_stopping_early_does_not_trip_the_
-    fixpoint_invariant` by reverting the `and not bought_here` guard and
-    rerunning it: it still PASSED. On `_golden_alignment_pair()` the feature
-    that ends up buying a block does so on round 1, so `rounds > 1` and
-    `bought_here` never co-occur there -- the collision the guard exists for
-    is never exercised, and that test would pass just as well with the guard
-    deleted.
-
-    This test forces the actual collision instead of hoping a fixture
-    produces it. On a DIFFERENT, still fully deterministic forest pair (fixed
-    seeds, `n_estimators=4, max_depth=4, min_samples_leaf=10`, verified by
-    direct experiment -- see the commit message), feature index 2 naturally
-    takes two rounds: 5 accepted moves land in round 1, and a 6th lands only
-    in round 2 after round 1's moves expose a new overlap. `total_blocks` is
-    monkeypatched (module-level, exactly like MAX_RECOMPUTE_ROUNDS above) to
-    watch feature 2's own width in the live width dict: the first 5 times it
-    changes (round 1's moves) the fake reports no cheaper total -- `bought_
-    here` stays False, matching the real dynamics -- and only the 6th change
-    (round 2's move) reports a drop. That is round 2, so at the moment
-    `bought_here` is set, `rounds == 2 > 1` and `progressed` is True: exactly
-    the state the raise's `and not bought_here` clause exists to wave through
-    without an AlignmentInvariantError.
-
-    Calls align_rf_thresholds directly rather than align_with_policy. That
-    mattered while align_with_policy could roll a run back and re-run it,
-    calling the fake again under different conditions; the rollback is gone
-    (2026-09-15), but the direct call is still the narrower thing to test.
-
-    The two setup calls before the per-feature loop (`total_blocks_before`,
-    `total_blocks_floor`) are passed through to the REAL total_blocks
-    unmodified -- they are computed once, over different width dicts
-    (pooled/floor, not the live dict), and are not part of what this test
-    is isolating.
-    """
-    from sklearn.ensemble import RandomForestClassifier
-
-    seed = 7
-    target_feature = 2
-    rng = np.random.default_rng(seed)
-    n, nf = 300, 3
-    X1 = np.clip(rng.integers(0, 90000, size=(n, nf)), 0, INFINITE).astype(float)
-    y1 = np.array([c % 3 for c in range(n)])
-    X2 = np.clip(rng.integers(0, 90000, size=(n, nf)), 0, INFINITE).astype(float)
-    y2 = np.where(np.arange(n) % 2 == 0, -1, 1)
-    rf1 = dt_thresholds_float_to_int(RandomForestClassifier(
-        n_estimators=4, max_depth=4, min_samples_leaf=10,
-        random_state=seed).fit(X1, y1))
-    rf2 = dt_thresholds_float_to_int(RandomForestClassifier(
-        n_estimators=4, max_depth=4, min_samples_leaf=10,
-        random_state=seed + 1).fit(X2, y2))
-
-    real_total_blocks = ta.total_blocks
-    state = {'calls': 0, 'last': 'UNSET', 'changes': 0}
-    NOT_BOUGHT_CHANGES = 5   # round 1's accepted-move count for feature 2
-    BASE = 10 ** 6
-
-    def fake_total_blocks(widths, multiplier):
-        state['calls'] += 1
-        if state['calls'] <= 2:
-            # total_blocks_before / total_blocks_floor: real arithmetic,
-            # untouched -- not the quantity under test.
-            return real_total_blocks(widths, multiplier)
-        width = widths.get(target_feature)
-        if state['last'] == 'UNSET':
-            state['last'] = width
-            return BASE
-        if width != state['last']:
-            state['last'] = width
-            state['changes'] += 1
-            if state['changes'] <= NOT_BOUGHT_CHANGES:
-                return BASE                # round 1's moves: not bought
-            return BASE - 1                # round 2's move: bought
-        return BASE
-
-    monkeypatch.setattr(ta, 'total_blocks', fake_total_blocks)
-
-    stats = {}
-    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2, delta_rel=None,
-                           align_stats=stats)      # must not raise
-
-    # Confirms the collision actually happened rather than the fake simply
-    # never being exercised: a 6th change is exactly the round-2 move that
-    # crosses NOT_BOUGHT_CHANGES and sets bought_here at rounds == 2.
-    assert state['changes'] >= NOT_BOUGHT_CHANGES + 1
-    assert stats['accepted'] >= 0
+def test_the_truncation_guard_still_raises_on_a_feature_that_bought_a_block(
+        monkeypatch):
+    """The fixpoint check is now simply `progressed and rounds > 1`. With the
+    cap patched to 2 the fixture above is cut off in round 2 while still
+    accepting (round 2 accepts (5, 27)), so it must raise -- the purchase in
+    round 1 no longer exempts it, because nothing leaves a feature early any
+    more."""
+    monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 2)
+    rf1, rf2, X, y1, y2 = _block_purchase_then_more_pair()
+    with pytest.raises(AlignmentInvariantError) as excinfo:
+        ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, delta_rel=None)
+    assert 'fixpoint' in str(excinfo.value).lower()
