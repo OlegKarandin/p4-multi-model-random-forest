@@ -563,20 +563,18 @@ def test_the_threshold_index_and_the_intervals_agree_on_which_splits_exist():
 # ---------------------------------------------------------------------------
 
 def _find_overlaps_nested(ranges1, ranges2):
-    """Reference oracle: a verbatim copy of the O(n*m) nested scan that
-    find_partially_overlapping_ranges used to be, kept here so the sweep can
-    be checked against the exact behaviour it replaces."""
+    """Reference oracle: the O(n*m) nested scan, under the INCLUSIVE overlap
+    test of spec 2026-09-28 T1 -- intervals are inclusive integer ranges, so
+    two overlap iff max(s1, s2) <= min(e1, e2). No degenerate-interval skip:
+    a one-value interval (t, t) is an ordinary interval. Identical tuples are
+    still not a pair (there is nothing to align)."""
     overlaps = []
 
     for i, (start1, end1) in enumerate(ranges1):
-        if end1 <= start1:
-            continue
         for j, (start2, end2) in enumerate(ranges2):
-            if end2 <= start2:
-                continue
             if start1 == start2 and end1 == end2:
                 continue
-            if start1 < end2 and start2 < end1:
+            if max(start1, start2) <= min(end1, end2):
                 overlaps.append((i, j))
 
     return overlaps
@@ -637,35 +635,105 @@ def test_the_sweep_does_not_drop_a_pair_at_the_end1_equals_end2_tie():
     assert (0, 0) in got
 
 
-def test_degenerate_zero_zero_and_t_t_intervals_are_excluded_by_choice_not_accident():
-    """find_partially_overlapping_ranges filters end <= start, which drops
-    (0, 0) AND (t, t) intervals for t > 0. That is consistent, not a bug:
-    structurally_alignable already vetoes any pair where exactly one side
-    starts at 0, and adjust_range_boundaries refuses to move a boundary at 0
-    -- so a degenerate interval could never be aligned anyway. This test
-    documents the exclusion as a choice, and pins it against the nested
-    oracle so a future change to the filter shows up here."""
+def test_one_value_intervals_are_offered():
+    """Spec 2026-09-28 T1. The sweep used to skip every interval with
+    end <= start, so a one-value interval (t, t) -- (0, 0) included -- never
+    formed a pair. Each one below overlaps the other model's interval that
+    contains its value, and must be reported, in the nested oracle's order."""
     ranges1 = [(0, 0), (1, 15), (16, 16), (17, 30)]
     ranges2 = [(0, 0), (1, 20), (21, 21), (22, 30)]
-    degenerate1 = {0, 2}  # indices of (0, 0) and (16, 16) in ranges1
-    degenerate2 = {0, 2}  # indices of (0, 0) and (21, 21) in ranges2
 
     got = ta.find_partially_overlapping_ranges(ranges1, ranges2)
 
     assert got == _find_overlaps_nested(ranges1, ranges2)
-    for idx1, idx2 in got:
-        assert idx1 not in degenerate1 and idx2 not in degenerate2, (idx1, idx2)
+    assert got == [(1, 1), (2, 1), (3, 1), (3, 2), (3, 3)]
+    assert (2, 1) in got      # (16, 16) inside (1, 20)
+    assert (3, 2) in got      # (21, 21) inside (17, 30)
 
 
-def test_merely_touching_intervals_are_not_overlaps():
-    """Pins the strict '<' semantics against a future off-by-one 'fix': an
-    interval that only touches another at a shared or adjacent boundary is
-    not a partial overlap, whether the touch is exact (100 == 100) or there
-    is a one-unit gap (100, 101)."""
+def test_sharing_one_value_is_an_overlap_and_adjacency_is_not():
+    """Intervals are INCLUSIVE integer ranges: (0, 100) and (100, 200) both
+    contain 100, so they overlap. (0, 100) and (101, 200) share nothing --
+    adjacent, not overlapping."""
     ranges1 = [(0, 100)]
 
-    assert ta.find_partially_overlapping_ranges(ranges1, [(100, 200)]) == []
+    assert ta.find_partially_overlapping_ranges(ranges1, [(100, 200)]) == [(0, 0)]
     assert ta.find_partially_overlapping_ranges(ranges1, [(101, 200)]) == []
+
+
+def test_an_inverted_interval_is_an_invariant_violation_not_a_skip():
+    """A valid tiling cannot hold an interval with end < start, so the sweep
+    no longer silently skips one: it raises."""
+    with pytest.raises(AlignmentInvariantError):
+        ta.find_partially_overlapping_ranges([(0, 5), (7, 6)], [(0, 9)])
+    with pytest.raises(AlignmentInvariantError):
+        ta.find_partially_overlapping_ranges([(0, 9)], [(3, 2)])
+
+
+def _six_six_pair():
+    """The spec's T1 worked example as a real forest pair:
+        rf1 cuts {5, 6} -> (0,5), (6,6), (7,INF)
+        rf2 cuts {3, 9} -> (0,3), (4,9), (10,INF)
+    Target (6,6) for the pair (6,6)&(4,9) moves rf2's cuts 3 -> 5 and
+    9 -> 6 (gain 2: pooled cuts {3,5,6,9} -> {5,6})."""
+    rf1 = _hand_built_forest([5, 6])
+    rf2 = _hand_built_forest([3, 9])
+    X = np.array([[0.0], [2.0], [4.0], [5.0], [6.0], [7.0], [9.0], [12.0]])
+    y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1])
+    y2 = np.array([-1, 1, -1, 1, -1, 1, -1, 1])
+    return rf1, rf2, X, y1, y2
+
+
+def test_the_six_six_example_is_offered_and_its_move_applied():
+    """Spec 2026-09-28 T1's worked example: never tried before, because the
+    sweep skipped (6, 6) and the strict test could not see it overlap
+    (4, 9)."""
+    rf1, rf2, X, y1, y2 = _six_six_pair()
+    ranges1 = ta.extract_feature_intervals(rf1)[0]
+    ranges2 = ta.extract_feature_intervals(rf2)[0]
+    assert ranges1 == [(0, 5), (6, 6), (7, INFINITE)]
+    assert ranges2 == [(0, 3), (4, 9), (10, INFINITE)]
+
+    # Offered by the sweep, and admitted by the re-read check.
+    assert (1, 1) in ta.find_partially_overlapping_ranges(ranges1, ranges2)
+    assert ta.still_overlaps((6, 6), (4, 9))
+
+    # Ranked: (6, 6) is the best corner, with gain 2.
+    X32 = np.ascontiguousarray(X, dtype=np.float32)
+    cols = np.sort(X32, axis=0)
+    before, ranked = ta._rank_targets((6, 6), (4, 9), ranges1, ranges2,
+                                      1, 1, 0, cols, cols)
+    assert ranked[0] == ((6, 6), before - 2)
+
+    # Applied: rf2's cuts 3 and 9 move to 5 and 6.
+    index2 = ta.build_threshold_index(rf2)
+    mods = ta.adjust_range_boundaries(rf2, 0, (4, 9), (6, 6), index2)
+    assert sorted(old for _, _, old in mods) == [3, 9]
+    ta.update_neighboring_ranges_and_index(ranges2, 1, (4, 9), (6, 6), 0, index2)
+    assert ranges2 == [(0, 5), (6, 6), (7, INFINITE)]
+    assert ranges2 == ta.extract_feature_intervals(rf2)[0]
+    assert set(index2) == {(0, 5), (0, 6)}
+
+
+def test_the_alignment_loop_attempts_a_one_value_pair():
+    """End to end. On _six_six_pair itself the loop's first pair,
+    (0,5)&(0,3), is accepted first and rewrites (6,6) away, so this uses a
+    pair whose FIRST sweep pair is one-value:
+        rf1 cuts {2, 3, 9} -> (0,2), (3,3), (4,9), (10,INF)
+        rf2 cuts {2, 5, 9} -> (0,2), (3,5), (6,9), (10,INF)
+    (3,3)&(3,5) with target (3,3) moves rf2's cut 5 -> 3 (gain 1), after
+    which both models tile identically. Before T1 the loop never saw it."""
+    rf1 = _hand_built_forest([2, 3, 9])
+    rf2 = _hand_built_forest([2, 5, 9])
+    X = np.array([[0.0], [2.0], [3.0], [4.0], [5.0], [7.0], [9.0], [12.0]])
+    y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1])
+    y2 = np.array([-1, 1, -1, 1, -1, 1, -1, 1])
+    log = []
+    a1, a2 = ta.align_rf_thresholds(rf1, rf2, X, y1, X, y2, delta_rel=None,
+                                    candidate_log=log)
+    assert [(e['range1'], e['range2'], e['target'], e['accepted'])
+            for e in log] == [((3, 3), (3, 5), (3, 3), True)]
+    assert ta.extract_feature_intervals(a2)[0] ==         ta.extract_feature_intervals(a1)[0] ==         [(0, 2), (3, 3), (4, 9), (10, INFINITE)]
 
 
 def test_a_zero_zero_candidate_produces_no_modifications_either_way():
@@ -2003,7 +2071,11 @@ def test_still_overlaps_rejects_a_pair_an_earlier_move_pulled_apart():
     """
     assert ta.still_overlaps((581, 1005), (701, 1005))
     assert not ta.still_overlaps((581, 700), (701, 1005))
-    assert not ta.still_overlaps((0, 100), (100, 200))     # touching, not overlapping
+    # T1: inclusive integer ranges. Sharing the value 100 is an overlap; a
+    # one-value interval overlaps whatever contains it; adjacency is not.
+    assert ta.still_overlaps((0, 100), (100, 200))
+    assert ta.still_overlaps((6, 6), (4, 9))
+    assert not ta.still_overlaps((0, 100), (101, 200))
 
 
 def test_structurally_alignable_vetoes_a_lone_sentinel():
@@ -2095,20 +2167,25 @@ def test_align_stats_records_the_factor_and_the_total_separately(delta_rel):
 def _block_purchase_then_more_pair():
     """One feature where round 1 BUYS a block and round 2 still sheds.
 
-        rf1 cuts {3, 4, 27, 31} + F,   rf2 cuts {32, 56, 57} + F,
-        F = 100..133 (34 cuts both models share, so they never form a pair
-        but do count toward the pooled width).
+        rf1 cuts F + {234, 236, 250},   rf2 cuts F + {204, 228, 231},
+        F = 1..35 (35 cuts both models share, so they never form a pair but
+        do count toward the pooled width).
 
     Pooled width 41 bits = 6 crossbar bytes (factor 2). Round 1 accepts two
-    moves (targets (0, 3) and (58, 100)), bringing the width to 39 = 5 bytes,
-    factor 1: a real purchase, priced by the real total_blocks. Only round 2
-    then reaches the pair that the round-1 moves created, target (5, 27),
-    shedding one more bit (width 38). Found by a random search over small
-    hand-built cut sets, then padded with F to sit on the 40-bit ladder step.
+    moves (targets (36, 204) and (251, INFINITE)), bringing the width to
+    39 = 5 bytes, factor 1: a real purchase, priced by the real
+    total_blocks. Only round 2 then reaches the pair the round-1 moves
+    created, target (205, 228), shedding one more bit (width 38). Found by a
+    random search over small hand-built cut sets, then shifted up by 200 and
+    padded below with F to sit on the 40-bit ladder step.
+
+    Re-picked 2026-09-28 under T1: the first fixture ({3,4,27,31} vs
+    {32,56,57} + 34 fillers above) now accepts the one-value pair (57, 57)
+    in round 1 and never reaches a round 2.
     """
-    filler = list(range(100, 134))
-    rf1 = _hand_built_forest([3, 4, 27, 31] + filler)
-    rf2 = _hand_built_forest([32, 56, 57] + filler)
+    filler = list(range(1, 36))
+    rf1 = _hand_built_forest(filler + [234, 236, 250])
+    rf2 = _hand_built_forest(filler + [204, 228, 231])
     X = np.array([[0.0], [50.0], [500.0], [1500.0],
                   [2500.0], [4000.0], [7000.0], [65535.0]])
     y1 = np.array([0, 0, 1, 1, 2, 2, 0, 1])
@@ -2122,7 +2199,7 @@ def test_a_feature_keeps_shedding_after_it_buys_a_block():
 
     Under the deleted exit this fixture stopped after round 1 at width 39:
     the purchase (41 -> 39 bits, factor 2 -> 1) retired the feature before
-    round 2 could reach the (5, 27) move. Now round 2 runs and sheds it.
+    round 2 could reach the (205, 228) move. Now round 2 runs and sheds it.
     """
     rf1, rf2, X, y1, y2 = _block_purchase_then_more_pair()
     stats, log = {}, []
@@ -2130,7 +2207,7 @@ def test_a_feature_keeps_shedding_after_it_buys_a_block():
                            align_stats=stats, candidate_log=log)
 
     accepted = [(e['round'], e['target']) for e in log if e['accepted']]
-    assert accepted == [(1, (0, 3)), (1, (58, 100)), (2, (5, 27))]
+    assert accepted == [(1, (36, 204)), (1, (251, INFINITE)), (2, (205, 228))]
     assert stats['codeword_before'] == 41 and stats['factor_before'] == 2
     # The block was bought in round 1 (39 bits is already factor 1) ...
     assert stats['factor_after'] == 1
@@ -2142,7 +2219,7 @@ def test_the_truncation_guard_still_raises_on_a_feature_that_bought_a_block(
         monkeypatch):
     """The fixpoint check is now simply `progressed and rounds > 1`. With the
     cap patched to 2 the fixture above is cut off in round 2 while still
-    accepting (round 2 accepts (5, 27)), so it must raise -- the purchase in
+    accepting (round 2 accepts (205, 228)), so it must raise -- the purchase in
     round 1 no longer exempts it, because nothing leaves a feature early any
     more."""
     monkeypatch.setattr(ta, 'MAX_RECOMPUTE_ROUNDS', 2)
