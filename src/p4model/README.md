@@ -54,9 +54,10 @@ example that builds a pool from real fitted forests.
   `src/p4gen/build_p4_script.py`, unconditional on every generated design), the packer follows the
   identical order, a stage's first-placed key pays its ordinary `codeword_to_blocks` price and
   every later key pays a leftover price computed by `src/p4model/lanes.py`'s crossbar-lane
-  simulation (not a flat +1 margin), and a stage totalling more than 62 combined crossbar bytes
-  across distinct keys is refused outright as a safety net (`TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE`)
-  rather than priced. The older fitted 58-byte margin and its "charge the worst key ordering"
+  simulation (not a flat +1 margin). (The 62-combined-byte refusal that once sat on top was RETIRED
+  2026-09-29: the generator now also pins every `code_*` field with `@pa_no_overlay` and
+  `@pa_container_size`, from `lanes.key_layout`; only the 64-byte crossbar limit and the lanes decide
+  a mixed stage, and the retirement is valid only while those pins are emitted.) The older fitted 58-byte margin and its "charge the worst key ordering"
   search (`offsets_for`/`key_width`/the old `fits()`/`charged()`) are deleted, not just superseded —
   `src/p4model/packing.py:crossbar_stages_needed`, `fits_two_columns`, `_stage_shards`,
   `_ordered_stage_simulation`, `_stage_key_prices`, and `src/p4model/lanes.py`. A single-key pool
@@ -115,68 +116,56 @@ See the function's own docstring in `src/p4model/packing.py` and
 
 ## 5. Validation basis
 
-**Current primary gate (2026-09-28, C1 + C5).** A unified 43-design set, compiled **with** the C5
+**Current primary gate (2026-09-29): the 73-design pragmas archive, `results/compiler_calibration_pragmas_2026_09_29/`, table below.** Its lineage: a unified 43-design set, first compiled **with** the C5
 generator pragmas that pin ternary-table placement order (`@placement_priority`, `@pa_no_overlay`
 — the same 43 designs the older v6/extra/margin_screen archives below used to compile separately,
 now re-compiled once so the model's placement decision and p4c's agree by construction rather than
-chance): `results/compiler_calibration_pinned/`, scored by `scripts/validation_table.py`.
+chance): `results/compiler_calibration_pinned/`, is now INFORMATIONAL only (scored by
+`scripts/validation_table.py`, 41/43 `stage_depth`); the table below is the pragmas archive.
 
 | quantity | comparable rows | exact | under-predictions |
 |---|---|---|---|
-| `blocks` | 38 of 38 | **38/38** | 0 |
-| `stage_depth` | 43 of 43 | **42/43** (1 under, known — see below) | 1 (accepted) |
+| `blocks` (feasible designs) | 60 of 60 | **60/60** | 0 |
+| `stage_depth` (feasible designs, <= 12 stages) | 60 of 60 | **60/60** | 0 |
+| `stage_depth` (all 73) | 73 of 73 | 70/73 (all three misses infeasible) | 2 (infeasible) |
 
-A frozen held-out batch (C6, 2026-09-28) of 30 designs never used for fitting, drawn by a
-pre-recorded seed from `results/campaign_backup_20260825`, generated with the C5 pragmas and
-compiled/scored exactly once (`results/heldout_2026_09_28/`): `stage_depth` **28/30 exact** (1
-under, 1 over), `blocks` **21/22 exact** of 22 designs with a committed allocation (0 under, 1
-over; 8 of the 30 exceed the 12-stage ceiling). Per-table, both the classification pool (144/144)
-and the range pool (443/443) are exact against p4c's committed placement — see the caveat at the
-end of this section before citing either per-table figure as validating C5 specifically.
+That is the PRIMARY gate as of 2026-09-29: `results/compiler_calibration_pragmas_2026_09_29/`, the 43
+pinned + 30 held-out designs recompiled with the `code_*` pins. The older pinned archive
+(`results/compiler_calibration_pinned/`, no `code_*` pins) is informational and now scores
+`stage_depth` 41/43 (misses `independent_high_sd12` and `margin_independent_M150_k7_s11`), `blocks`
+38/38. The frozen held-out batch (C6, 2026-09-28, `results/heldout_2026_09_28/`, also pre-pin) scored
+`stage_depth` 28/30, `blocks` 21/22; per-table, classification 144/144 and range 443/443 exact against
+p4c's committed placement - see the caveat at the end of this section before citing either per-table
+figure as validating C5 specifically.
 
-**Three accepted under-predictions exist in the current state:**
+**Remaining misses (2026-09-29), all infeasible or archive artifacts:**
 
-1. `independent_high_sd12` (pinned primary gate) — model 13, p4c 14. The single design where
-   pinning the tree placement order itself cost p4c a stage it did not need unpinned; infeasible
-   either way, since both exceed `TOFINO_PIPELINE_STAGES = 12`, so nothing in the search loop is
-   misled by it.
-2. `margin_independent_M150_k5_s12` (pre-pragma adversarial replay only, `results/tcam_margin_screen/`)
-   — model 66, unpinned p4c 68 blocks; p4c happened to serve its keys in a costlier order there.
-   The **pinned** compile of the identical design costs exactly the model's predicted 66 — the
-   miss is an artifact of replaying an archive p4c never compiled deterministically, not a pricing
-   error, and does not appear on the primary gate. Outside what C5's accuracy claim covers, since
-   that claim is conditioned on the pragmas being present (now always true for any newly-generated
-   design).
-3. `heldout_independent_M150_k14_s13` (C6 held-out) — model 11, p4c 12. Confirmed PRE-EXISTING (not
-   a C1/C5 regression) by re-running four historical commits, including one from before this
-   branch's work began, against the identical frozen design: all four reproduce the same 1-stage
-   gap. The mechanism is in the RANGE POOL's placement ORDER, not its price — p4c spills one range
-   table to a later stage than the model's eager bin-packing does, and a classification tree then
-   waits one stage longer than C1 predicted for it. Out of scope for this run, left open.
+1. `independent_high_sd12` - model 13, p4c 14. Infeasible either way (both exceed
+   `TOFINO_PIPELINE_STAGES = 12`).
+2. `heldout_independent_M250_k14_s12` - model 15, p4c 16, infeasible; the extra stage comes from p4c's
+   `REDO_PHV2` retry rounds on a program that does not fit.
+3. `margin_independent_M150_k7_s11` - pre-pin pinned archive and the pre-pragma `tcam_margin_screen` adversarial archive (never with the `code_*` pins), model 11 vs p4c 12, a PHV layout
+   artifact; exact with the `code_*` pins.
 
-Older archives, replayed informationally against current code (pre-pragma, i.e. without the C5
-placement pinning): `results/compiler_calibration_v6.csv` (19 fitted designs) is `stage_depth`
-19/19, `blocks` 17/17 of 17 comparable; `results/compiler_calibration_extra/` (8 held-out designs)
-is `stage_depth` 8/8, `blocks` 5/5; `results/tcam_margin_screen/` (16 adversarial designs) is
-`stage_depth` 16/16, `blocks` 15/16 (the `margin_independent_M150_k5_s12` miss above). These
-pre-pragma numbers are historical — the pinned 43-design set above, not this list, is the number to
-quote.
+Plus, unchanged, `margin_independent_M150_k5_s12` (pre-pragma adversarial replay only, model 66 vs
+p4c 68 blocks; its pinned compile costs exactly 66), and one over-prediction,
+`heldout_independent_M150_k15_s16` (14 vs 13, infeasible). `heldout_independent_M150_k14_s13` (the old
+C6 miss) is **closed**: it was PHV overlay dependencies, not a range-pool order rule
+(`reviews/p4_tofino_reference.md` Appendix B "Mechanism H"); exact with the pins.
 
-**A second gate exists because a per-design total hides a per-table error.** `blocks` sat at a
-clean-looking 17/17 through an entire earlier calibration study with a 24-key **per-table** error
-underneath it, because design totals let a +1 on one table cancel a −1 on another.
 `scripts/tcam_table_scoreboard.py` scores every individual table observation this project has
 collected — **405 rows across 14 CSVs** — and is run alongside `validation_table.py`. Current
 result: the production per-table price is exact on **100/100** archived classification tables and
 **50/50** held-out ones (the published headline form over-predicts 8 of the archived ones by
 exactly 1 block), and the charged price has **0 under-predictions** on every placement the packer
-emits; 16 rows sit at stages the packer refuses (> 62 bytes) and are reported, not scored.
+emits; 16 rows sit at stages the (pre-2026-09-29) packer refused above 62 bytes; that refusal is now retired, so they are priced by the lane simulation.
 
 **The F5 gap, closed 2026-09-25 and unaffected by the 2026-09-28 C5 rewrite.** `dsp41`/`dsp42` in
 `results/tcam_discount_scan.csv` (key `(84, 84)`, model 5 blocks, p4c 7, beside a 41-42-byte
-spacer) sit at 63-64 combined bytes, a stage the packer refuses outright — the refusal introduced
-2026-09-25 survives unchanged as C5's safety net (`TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62`).
-What changed 2026-09-28 is everything BELOW that refusal threshold: the fitted 58-byte "+1 to the
+spacer) sit at 63-64 combined bytes. Until 2026-09-29 the packer refused such a stage outright (the
+62-byte refusal, `TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE`, now deleted); the lane simulation now
+prices it up to the real 64-byte limit.
+What changed 2026-09-28 was everything below the old refusal threshold: the fitted 58-byte "+1 to the
 non-first key" margin is **deleted**, replaced by pinning the placement order at generation time
 (`@placement_priority`/`@pa_no_overlay`) and pricing a later key by simulating the actual crossbar
 lanes it inherits (`src/p4model/lanes.py`), rather than charging a flat margin against not knowing
@@ -191,9 +180,8 @@ Beneath the headline numbers:
   (`scripts/tcam_column_sweep.py`, Appendix B "Mechanism C").
 - **34 compiles** behind `tables.tail_is_isolatable`'s isolation table
   (`scripts/tcam_phv_slice_sweep.py`: 12 pays / 12 free / 0 disagreements against the direct
-  observable), and behind the sharing rule's 62-byte refusal threshold (originally derived for the
-  now-deleted 58/62 fitted margin, and unchanged by its replacement — C5's lane simulation only
-  changed what happens below 62 bytes) **9 compiles / 40 tables**
+  observable), and behind the sharing rule (its 58/62 fitted margin and the 62-byte refusal are both
+  deleted; the lane simulation replaced them) **9 compiles / 40 tables**
   (`scripts/tcam_stretch_sweep.py`: the ragged 49-byte key at 9 blocks alone, 10 beside a 12-byte
   key), **47 probe compiles** (`scripts/tcam_mixed_key_cap_sweep.py`) and **16 real campaign
   designs** (`scripts/tcam_margin_screen.py`).
@@ -204,16 +192,10 @@ Beneath the headline numbers:
 **Evidence state — three things here are deliberately inexact or not hardware-confirmed**, and
 should not be quoted as if they were exact:
 
-1. **The 62-byte refusal is a safety net, not a proof.** SHIPPED 2026-09-28 (C5): the old fitted
-   58-byte "+1 to the non-first key" margin this item used to describe is deleted — below 62 bytes,
-   a shared stage is now priced by simulating the actual crossbar lanes (`src/p4model/lanes.py`),
-   not a flat margin, and that simulation is exact on every real key measured so far (§1/§2 above).
-   What remains inexact is the refusal itself: it can reject a placement the lane simulation could
-   still legally price, because p4c's own greedy allocator has been observed to give up on a
-   placement the simulation can compute (`M150_k7_s11`: 22+41=63 bytes, p4c moved the later key a
-   stage; no simulation of any kind reproduced that particular give-up). Exact prediction there
-   would mean simulating p4c's crossbar allocator's failure modes too, which this model
-   deliberately does not do.
+1. **The 62-byte refusal is RETIRED (2026-09-29), and the retirement is conditional.** Its one real
+   case, `M150_k7_s11` (22+41=63 bytes), was a PHV layout artifact removed by the generator's
+   `code_*` pins (`@pa_no_overlay`, `@pa_container_size` from `lanes.key_layout`). Nothing in the
+   model enforces that coupling: a generator change that drops those pins re-exposes the failure.
 2. **`packing._stage_shards`' wider-than-one-column path.** No calibration design has a table over
    12 blocks. The finding-1.5a rounding fix rests on one probe compile
    (`scripts/tcam_stage_shard_probe.py`: a 13-block table places as 12|1 in one stage, charged 13).
@@ -226,7 +208,7 @@ read as "13 groups in a stage that has 12" was counting **blocks**, and its two 
 — the assembly uses groups 0-11, exactly 12 of 12. `target.py` records
 `TERNARY_CROSSBAR_GROUPS_PER_STAGE = 12` and `TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE = 6` for
 provenance, but **nothing consumes them**: no group-budget term is modelled. The residual it would
-price, the F5 gap, is handled by C5's lane simulation plus the 62-byte refusal instead.
+price, the F5 gap, is handled by C5's lane simulation instead.
 
 **Row parity (Finding C) was investigated and found vacuous.** Rows `2i`/`2i+1` share a half-byte
 selector, so an even-height block run may start only on an even row. The rule is real (confirmed
@@ -297,16 +279,16 @@ different definition of `stage_depth`/`blocks`, not a fresh anomaly:
   crossbar-lane stage simulation, `src/p4model/lanes.py`) both shipped. C1: a `disjoint` task's
   trees wait only for their OWN task's range tables, not both tasks' — closes
   `independent_high_sd12`'s and `margin_independent_M250_k4_s15`'s false-late placement. C5: below
-  the (unchanged) 62-byte refusal, a shared stage's later key is now priced by simulation rather
+  the then-62-byte refusal (retired 2026-09-29), a shared stage's later key is now priced by simulation rather
   than a flat +1 margin, and `build_p4_script.py` unconditionally emits `@placement_priority`/
   `@pa_no_overlay` so the model's placement order and p4c's agree by construction. Primary gate
   moved to a single 43-design set compiled WITH the pragmas
-  (`results/compiler_calibration_pinned/`): `stage_depth` 42/43, `blocks` 38/38. A frozen 30-design
+  (`results/compiler_calibration_pinned/`): `stage_depth` 42/43 (41/43 once re-scored 2026-09-29, informational), `blocks` 38/38. A frozen 30-design
   held-out batch (**C6**) scored once: `stage_depth` 28/30, `blocks` 21/22, found one genuine
   pre-existing (not C1/C5-caused) range-pool placement-order gap,
-  `heldout_independent_M150_k14_s13`. See §5 above and `reviews/p4_tofino_reference.md` §4.3/§4.6.
+  `heldout_independent_M150_k14_s13` (since closed 2026-09-29: PHV overlay, fixed by `code_*` pins; primary gate is now `results/compiler_calibration_pragmas_2026_09_29/`, feasible `stage_depth` 60/60, `blocks` 60/60). See §5 above and `reviews/p4_tofino_reference.md` §4.3/§4.6.
 - **2026-09-25** — the **crowded-stage rule**: a stage holding two different ternary keys that fill
-  more than 58 crossbar bytes charges every non-first table +1, and more than 62 is refused
+  more than 58 crossbar bytes charges every non-first table +1, and more than 62 is refused (both retired since)
   (`target.TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE`,
   `TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE`). Closes the F5 under-prediction. The per-key
   **saturation margin** of 2026-09-21 is **retired** in the same change: it is now the only sharing
