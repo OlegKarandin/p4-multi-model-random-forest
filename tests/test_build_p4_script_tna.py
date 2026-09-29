@@ -1931,8 +1931,11 @@ def test_generate_P4_code_selected_features_without_flag_changes_only_sizes(tmp_
 # name SwitchIngress binds it to.
 # ---------------------------------------------------------------------------
 
+# `_val` fields only: since spec 2026-09-29 every tree-key code_* field also
+# carries a @pa_container_size, and a one-container one (`..., 8)`) matches the
+# single-size shape below -- it is not what these value-field tests are about.
 _PA_PRAGMA_RE = re.compile(
-    r'@pa_container_size\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*,\s*(\d+)\s*\)')
+    r'@pa_container_size\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+_val)"\s*,\s*(\d+)\s*\)')
 
 
 def test_generate_P4_code_pins_every_feature_value_field_to_a_16_bit_container(tmp_path):
@@ -2178,7 +2181,7 @@ def test_generate_P4_code_placement_priority_pragma_precedes_its_table(tmp_path)
   assert found > 0, "fixture produced no classification tree tables at all"
 
 
-def test_generate_P4_code_class_tree_fields_get_pa_no_overlay_next_to_solitary(tmp_path):
+def test_generate_P4_code_every_solitary_field_gets_pa_no_overlay_next_to_it(tmp_path):
   clf_app = _tiny_app_forest()
   clf_ddos = _tiny_ddos_forest()
   app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
@@ -2191,52 +2194,165 @@ def test_generate_P4_code_class_tree_fields_get_pa_no_overlay_next_to_solitary(t
   with open(written_path) as f:
     text = f.read()
 
-  class_tree_solitary = set(
-      m.group(1) for m in _PA_SOLITARY_RE.finditer(text)
-      if m.group(1).startswith("class_tree_"))
-  no_overlay = set(re.findall(
-      r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)', text))
-
-  assert class_tree_solitary, "fixture produced no per-tree result fields at all"
-  # Exactly the class_tree_* solitary fields get @pa_no_overlay, no more, no
-  # fewer, and never duplicated (a duplicate pragma is a p4c error, same as
-  # for @pa_solitary above).
-  assert no_overlay == class_tree_solitary
+  solitary = set(_PA_SOLITARY_RE.findall(text))
   no_overlay_list = re.findall(
       r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)', text)
+
+  assert any(f.startswith("class_tree_") for f in solitary)
+  assert any(f.startswith("code_") for f in solitary)
+  # Every solitary field -- class_tree_* (C5) and, since spec 2026-09-29,
+  # code_* -- gets @pa_no_overlay: no more, no fewer, never duplicated (a
+  # duplicate pragma is a p4c error).
+  assert set(no_overlay_list) == solitary
   assert len(no_overlay_list) == len(set(no_overlay_list))
 
-  # And each @pa_no_overlay sits directly under its own @pa_solitary line --
-  # not just present somewhere in the file.
-  for field in class_tree_solitary:
+  # Each @pa_no_overlay sits directly under its own @pa_solitary line.
+  for field in solitary:
     assert (
         '@pa_solitary("ingress", "ig_md.' + field + '")\n'
         '@pa_no_overlay("ingress", "ig_md.' + field + '")\n'
     ) in text
 
 
-def test_generate_P4_code_never_adds_pa_no_overlay_to_code_fields(tmp_path):
-  # The brief's explicit "never" case: @pa_no_overlay must not appear next to
-  # (or anywhere naming) a code_<feature> field -- only class_tree_* fields
-  # get it. code_<feature> keeps its pre-existing overlay behaviour.
-  clf_app = _tiny_app_forest()
-  clf_ddos = _tiny_ddos_forest()
-  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
-  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)],
-                    "fwd_packet_length_max": [(0, 8), (9, INFINITE)]}
+# ---------------------------------------------------------------------------
+# Spec 2026-09-29 (overlay and key-layout pragmas): every code_* field gets
+# @pa_no_overlay, and every tree-key code_* field a @pa_container_size pinned
+# to the layout lanes.key_layout prices its key with. Pinning OUR side of any
+# overlay pair blocks every partner, known or not; pinning the layout keeps
+# p4c from choosing a split the model does not price.
+# ---------------------------------------------------------------------------
+from src.p4model import lanes  # noqa: E402
+
+_PA_NO_OVERLAY_RE = re.compile(
+    r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)')
+_PA_CODE_SIZE_RE = re.compile(
+    r'@pa_container_size\(\s*"ingress"\s*,\s*"ig_md\.(code_[A-Za-z0-9_]+)"'
+    r'((?:\s*,\s*\d+)+)\s*\)')
+
+# margin_independent_M50_k8_s13's two real keys (spec Sec 4 test 2): the ddos
+# key prices with the RELAXED layout, the app key with the plain one.
+_DDOS_WIDTHS = {"bwd_iat_min": 18, "bwd_packet_length_max": 19,
+                "bwd_packet_length_mean": 18, "fwd_iat_mean": 27,
+                "fwd_iat_min": 21, "fwd_packet_length_max": 18,
+                "fwd_packet_length_mean": 24, "packet_length_mean": 19}
+_APP_WIDTHS = {"bwd_iat_mean": 33, "bwd_packet_length_max": 46,
+               "bwd_packet_length_mean": 31, "bwd_packet_length_min": 7,
+               "flow_iat_min": 17, "fwd_packet_length_max": 39,
+               "fwd_packet_length_mean": 34, "packet_length_mean": 36}
+
+
+def _intervals_of_width(width):
+  """width + 1 intervals, i.e. a bit<width> code_* field."""
+  return [(i, i) for i in range(width)] + [(width, INFINITE)]
+
+
+def _generate(tmp_path, name, app_intervals, ddos_intervals, clf_app=None,
+              clf_ddos=None):
   written_path = bps.generate_P4_code(
-      3, 2, clf_app, clf_ddos,
+      3 if clf_app is not None else 0, 2, clf_app,
+      clf_ddos if clf_ddos is not None else _tiny_ddos_forest(),
       feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
-      output_dir=str(tmp_path) + os.sep, output_filename="no_overlay_never_code.p4")
+      output_dir=str(tmp_path) + os.sep, output_filename=name)
   with open(written_path) as f:
-    text = f.read()
+    return f.read()
 
-  code_solitary = set(
-      m.group(1) for m in _PA_SOLITARY_RE.finditer(text)
-      if m.group(1).startswith("code_"))
-  no_overlay = set(re.findall(
-      r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)', text))
 
-  assert code_solitary, "fixture produced no codeword fields at all"
-  assert not (code_solitary & no_overlay)
-  assert all(not name.startswith("code_") for name in no_overlay)
+def _code_pins(text):
+  pins = [(field, [int(s) for s in re.findall(r"\d+", sizes)])
+          for field, sizes in _PA_CODE_SIZE_RE.findall(text)]
+  assert len(pins) == len({field for field, _ in pins}), \
+      "duplicate @pa_container_size is a p4c error"
+  return dict(pins)
+
+
+def test_every_code_field_gets_exactly_one_pa_no_overlay(tmp_path):
+  # Disjoint with all three kinds of resolved entry: shared (identical
+  # intervals, un-prefixed), namespaced (app_/ddos_), and single-model.
+  shared = _intervals_of_width(3)
+  app = {"flow_iat_max": shared, "fwd_iat_max": _intervals_of_width(5),
+         "bwd_iat_min": _intervals_of_width(2)}
+  ddos = {"flow_iat_max": shared, "fwd_iat_max": _intervals_of_width(9),
+          "fwd_iat_min": _intervals_of_width(4)}
+  text = _generate(tmp_path, "no_overlay_all.p4", app, ddos,
+                   clf_app=_tiny_app_forest())
+  declared = set(re.findall(r"bit<\d+> (code_[A-Za-z0-9_]+);", text))
+  assert declared == {"code_flow_iat_max", "code_app_fwd_iat_max",
+                      "code_ddos_fwd_iat_max", "code_bwd_iat_min",
+                      "code_fwd_iat_min"}
+  no_overlay = [f for f in _PA_NO_OVERLAY_RE.findall(text) if f.startswith("code_")]
+  assert sorted(no_overlay) == sorted(declared)
+
+
+def test_joint_design_pins_each_field_once(tmp_path):
+  joint = {"flow_iat_max": _intervals_of_width(19),
+           "fwd_iat_max": _intervals_of_width(64)}
+  text = _generate(tmp_path, "joint_pins.p4", joint, joint,
+                   clf_app=_tiny_app_forest())
+  # One key, (19, 64): plain layout -- W for 19 bits, two W for 64.
+  assert _code_pins(text) == {"code_flow_iat_max": [32],
+                              "code_fwd_iat_max": [32, 32]}
+  assert sorted(f for f in _PA_NO_OVERLAY_RE.findall(text)
+                if f.startswith("code_")) == ["code_flow_iat_max",
+                                              "code_fwd_iat_max"]
+
+
+def test_tree_key_fields_are_pinned_to_the_layout_their_key_prices(tmp_path):
+  app = {name: _intervals_of_width(w) for name, w in _APP_WIDTHS.items()}
+  ddos = {name: _intervals_of_width(w) for name, w in _DDOS_WIDTHS.items()}
+  assert lanes.key_layout(list(_DDOS_WIDTHS.values())) is lanes.relaxed_layout
+  assert lanes.key_layout(list(_APP_WIDTHS.values())) is lanes.layout
+  text = _generate(tmp_path, "layout_pins.p4", app, ddos,
+                   clf_app=_tiny_app_forest())
+  # Names both models select come out namespaced (their widths differ);
+  # the rest keep their own name.
+  expected = {
+      # ddos key, relaxed: 17..32-bit fields split H16 + remainder.
+      "code_bwd_iat_min": [16, 8], "code_ddos_bwd_packet_length_max": [16, 8],
+      "code_ddos_bwd_packet_length_mean": [16, 8], "code_fwd_iat_mean": [16, 16],
+      "code_fwd_iat_min": [16, 8], "code_ddos_fwd_packet_length_max": [16, 8],
+      "code_ddos_fwd_packet_length_mean": [16, 8],
+      "code_ddos_packet_length_mean": [16, 8],
+      # app key, plain width rule.
+      "code_bwd_iat_mean": [8, 32], "code_app_bwd_packet_length_max": [16, 32],
+      "code_app_bwd_packet_length_mean": [32], "code_bwd_packet_length_min": [8],
+      "code_flow_iat_min": [32], "code_app_fwd_packet_length_max": [8, 32],
+      "code_app_fwd_packet_length_mean": [8, 32],
+      "code_app_packet_length_mean": [8, 32],
+  }
+  assert _code_pins(text) == expected
+
+
+def test_a_tree_less_task_pins_no_layout_but_still_forbids_overlay(tmp_path):
+  # No app trees: there is no app key to price, so a field only the app side
+  # selected gets no layout pin -- but it is still a range-table output and
+  # still gets @pa_no_overlay.
+  app = {"fwd_iat_max": _intervals_of_width(5)}
+  ddos = {"flow_iat_max": _intervals_of_width(3)}
+  text = _generate(tmp_path, "treeless.p4", app, ddos)   # clf_app=None
+  assert _code_pins(text) == {"code_flow_iat_max": [8]}
+  assert set(f for f in _PA_NO_OVERLAY_RE.findall(text)
+             if f.startswith("code_")) == {"code_flow_iat_max", "code_fwd_iat_max"}
+
+
+def test_a_shared_field_whose_two_keys_disagree_on_its_layout_raises(tmp_path):
+  # flow_iat_max: 19 bits, identical in both models, so ONE shared field.
+  # The app key (19, 64) prices it plain -> [32]; the ddos key
+  # (19, 18, 18, 18, 19, 21, 24, 27) prices relaxed -> [16, 8]. One pragma
+  # cannot pin both (spec Sec 3.1 step 2).
+  shared = _intervals_of_width(19)
+  app = {"flow_iat_max": shared, "fwd_iat_max": _intervals_of_width(64)}
+  ddos = {"flow_iat_max": shared}
+  for name, w in zip(("bwd_iat_min", "bwd_iat_mean", "bwd_iat_max",
+                      "fwd_iat_min", "fwd_iat_mean", "flow_iat_mean",
+                      "packet_length_mean"),
+                     (18, 18, 18, 19, 21, 24, 27)):
+    ddos[name] = _intervals_of_width(w)
+  with pytest.raises(ValueError, match=r"code_flow_iat_max.*app.*ddos|code_flow_iat_max.*ddos.*app"):
+    _generate(tmp_path, "conflict.p4", app, ddos, clf_app=_tiny_app_forest())
+
+
+def test_code_field_container_sizes_skips_a_zero_width_field():
+  plan = bps._resolve_disjoint_feature_plan(
+      {"flow_iat_max": [(0, INFINITE)], "fwd_iat_max": _intervals_of_width(3)},
+      {})
+  assert bps.code_field_container_sizes(plan, ["app"]) == {"fwd_iat_max": [8]}

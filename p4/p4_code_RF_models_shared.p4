@@ -20,8 +20,14 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 @pa_container_size("ingress", "ig_md.flow_iat_max_val", 16)
 @pa_container_size("ingress", "ig_md.fwd_packet_length_max_val", 16)
 @pa_solitary("ingress", "ig_md.code_app_flow_iat_max")
+@pa_no_overlay("ingress", "ig_md.code_app_flow_iat_max")
+@pa_container_size("ingress", "ig_md.code_app_flow_iat_max", 8)
 @pa_solitary("ingress", "ig_md.code_ddos_flow_iat_max")
+@pa_no_overlay("ingress", "ig_md.code_ddos_flow_iat_max")
+@pa_container_size("ingress", "ig_md.code_ddos_flow_iat_max", 8)
 @pa_solitary("ingress", "ig_md.code_fwd_packet_length_max")
+@pa_no_overlay("ingress", "ig_md.code_fwd_packet_length_max")
+@pa_container_size("ingress", "ig_md.code_fwd_packet_length_max", 8)
 struct metadata_t {
     bit<32> flow_hash;
     bit<1>  fwd;

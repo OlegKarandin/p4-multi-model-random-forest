@@ -27,6 +27,7 @@ from src.p4model.target import (
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
+from src.p4model import lanes
 from src.p4model.names import normalise_feature_name
 
 INFINITE = (2**16)-1
@@ -917,6 +918,47 @@ def _resolve_disjoint_feature_plan(feature_intervals_app, feature_intervals_ddos
   return resolved
 
 
+def code_field_container_sizes(resolved_plan, tasks):
+  '''resolved_name -> @pa_container_size sizes (low slice first) for every
+  code_<resolved_name> field some classification key reads.
+
+  One key per task in `tasks` (the tasks that HAVE trees -- a tree-less task
+  has no key to price): the code_* fields whose `models` include that task,
+  the same field set evaluation prices through
+  tables.ternary_key_field_bits. Each key's layout is lanes.key_layout's
+  choice, the one the model prices it with, so pinning it makes p4c lay the
+  key out the way it is priced (spec 2026-09-29 Sec 1.2: unpinned, PHV
+  pressure moved 17-32-bit fields into whole W containers and cost +1 block
+  per tree on M50_k8_s13 / M150_k7_s11).
+
+  A field with no bits has no layout and gets no entry (a pragma with no
+  sizes does not parse). A field two keys read (disjoint, identical
+  intervals) is pinned once when both keys agree; when they do not, this
+  RAISES -- the model would otherwise price one key with a layout the
+  program does not have. 0 of 73 archived designs hit it (spec Sec 7).'''
+  sizes, owner = {}, {}
+  for task in tasks:
+    names = [name for name, (_, _, models) in resolved_plan.items() if task in models]
+    if not names:
+      continue
+    widths = [max(len(resolved_plan[name][1]) - 1, 0) for name in names]
+    lay = lanes.key_layout(widths)
+    for name, width in zip(names, widths):
+      pin = lanes.container_sizes(width, lay)
+      if not pin:
+        continue
+      if name in sizes and sizes[name] != pin:
+        raise ValueError(
+            "code_{} is read by both the {} and the {} classification keys, "
+            "which this model prices with different PHV layouts ({} vs {}); "
+            "one @pa_container_size cannot pin both (spec 2026-09-29 Sec 7: "
+            "price both keys relaxed, or namespace the field per task)".format(
+                name, owner[name], task, sizes[name], pin))
+      sizes.setdefault(name, pin)
+      owner.setdefault(name, task)
+  return sizes
+
+
 def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):
   """
       action <ACTION_NAME> (bit<<ACTION_CODE_LENGTH>> code) {
@@ -1441,9 +1483,9 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
         # container overlay each other when they are written on mutually
         # exclusive paths, which would make the field's PHV placement -- and
         # therefore which stage its table lands in -- depend on overlay
-        # decisions the (later) stage simulation cannot see. Only class_tree_*
-        # fields get this: code_<feature> keeps its existing overlay
-        # behaviour (its @pa_solitary is emitted separately, below).
+        # decisions the (later) stage simulation cannot see. code_<feature>
+        # fields get the same pragma since spec 2026-09-29 (emitted with their
+        # @pa_solitary, below) -- for a different reason, explained there.
         phv_pragmas += ('@pa_no_overlay("ingress", "ig_md.class_tree_'
                         + task + "_" + str(i) + '")\n')
       # generate_voting_code (below) writes to meta.classification_<task>; the
@@ -1502,10 +1544,39 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   # (10 -> 9 stages once pinned). One pragma per RESOLVED name, matching the
   # declaration exactly: under disjoint namespacing app_/ddos_ entries have
   # separate codeword fields even when they share one raw value field.
+  # Spec 2026-09-29: two more pragmas per codeword field, pinning p4c to what
+  # the resource model assumes rather than modelling p4c's PHV choices.
+  #   * @pa_no_overlay on EVERY code_* field. p4c may overlay a range table's
+  #     output onto a live field with a disjoint live range; each overlay adds
+  #     a hidden "all readers of the old field first" placement edge
+  #     (phv/add_initialization.cpp), and Tofino-1's backfill snapshot then
+  #     stranded a range table at a stage boundary (C6 miss
+  #     heldout_independent_M150_k14_s13: 11 predicted, 12 real). 125 range
+  #     tables in 65 of 73 archived compiles were delayed this way; with the
+  #     pragma, 0. Pinning OUR side blocks every partner -- pinning the
+  #     partners (*_val, fwd) left residual overlays on flow_hash /
+  #     now_pseudo_us.
+  #   * @pa_container_size on every TREE-KEY code_* field, to the layout
+  #     lanes.key_layout prices its key with. No-overlay alone changes PHV
+  #     pressure and p4c then put some 17-32-bit fields whole in W containers:
+  #     same bytes, worse lanes, +1 block per tree. The model's 62-byte
+  #     mixed-key refusal was retired on the strength of these pins
+  #     (target.py) -- dropping them re-exposes M150_k7_s11.
+  # Evidence: results/compiler_calibration_pragmas_2026_09_29/ (73 designs,
+  # feasible stage_depth 60/60, blocks 60/60; cost +4.7 PHV containers).
+  tasks_with_trees = [task for task, n_trees in (("app", num_trees_app),
+                                                 ("ddos", num_trees_ddos))
+                      if n_trees > 0]
+  code_container_sizes = code_field_container_sizes(resolved_plan, tasks_with_trees)
   for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
     codeword_width = len(intervals) - 1
     metadata_code += "\tbit<"+str(codeword_width)+"> code_"+resolved_name+";\n"
     phv_pragmas += '@pa_solitary("ingress", "ig_md.code_'+resolved_name+'")\n'
+    phv_pragmas += '@pa_no_overlay("ingress", "ig_md.code_'+resolved_name+'")\n'
+    if resolved_name in code_container_sizes:
+      phv_pragmas += ('@pa_container_size("ingress", "ig_md.code_' + resolved_name + '", '
+                      + ", ".join(str(size) for size in code_container_sizes[resolved_name])
+                      + ')\n')
 
   # Task 3, point 3: registers must be resolved against the DEDUPLICATED set
   # of RAW feature names, never the (possibly namespaced) resolved names --
