@@ -49,9 +49,10 @@ PINNED_CSV = os.path.join(ROOT, "results", "compiler_calibration_pinned.csv")
 
 
 def group_of(row_id):
-    """'joint' or 'independent' -- the P4 encoding family ('joint' / 'disjoint')
-    the design was generated with, read from its row id."""
-    return "joint" if row_id.startswith("joint_") else "independent"
+    """'joint' or 'independent' -- the P4 encoding family the design was
+    generated with, read from its row id (joint_*, heldout_joint-*_*,
+    independent_*, margin_independent_*, heldout_independent_*)."""
+    return "independent" if "independent" in row_id else "joint"
 
 
 def pinned_rows(root=PINNED_ROOT):

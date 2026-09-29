@@ -89,3 +89,30 @@ def test_pinned_pairs_are_informational_since_the_code_pins():
     blocks = vt.aggregate(blocks_pairs)
     assert (blocks["n_compared"], blocks["exact"], blocks["under"],
             blocks["over"]) == (38, 38, 0, 0)
+
+
+def test_pragmas_pairs_are_the_primary_gate():
+    # results/compiler_calibration_pragmas_2026_09_29/ (spec 2026-09-29 Sec 5):
+    # the 43 pinned + 30 held-out designs recompiled with the generator's
+    # code_* pins. Every FEASIBLE design (<= 12 stages, 60 of 73) is exact on
+    # stage_depth; the three misses are all infeasible under both model and
+    # p4c. Blocks 60/60 (13 designs never got a TCAM allocation).
+    import os
+    if not (os.path.isfile(vt.PRAGMAS_CSV)
+            and os.path.isdir(os.path.join(vt.PRAGMAS_ROOT, "compiles"))):
+        pytest.skip("needs results/compiler_calibration_pragmas_2026_09_29 (gitignored)")
+    stage_pairs, blocks_pairs = vt.pragmas_pairs()
+    stages = vt.aggregate(stage_pairs)
+    blocks = vt.aggregate(blocks_pairs)
+    assert (stages["n_compared"], stages["exact"]) == (73, 70)
+    misses = {p["row_id"]: p["predicted"] - p["real"] for p in stage_pairs
+              if p["predicted"] != p["real"]}
+    assert misses == {"independent_high_sd12": -1,
+                      "heldout_independent_M150_k15_s16": 1,
+                      "heldout_independent_M250_k14_s12": -1}
+    assert set(misses) == set(vt.KNOWN_PRAGMAS_MISSES)
+    feasible = [p for p in stage_pairs if p["real"] <= 12]
+    assert len(feasible) == 60
+    assert all(p["predicted"] == p["real"] for p in feasible)
+    assert (blocks["n_compared"], blocks["exact"], blocks["under"],
+            blocks["over"]) == (60, 60, 0, 0)

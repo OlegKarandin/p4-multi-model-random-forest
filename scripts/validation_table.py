@@ -1,24 +1,28 @@
 """Validation table: this project's resource-model predictions (recomputed
 with CURRENT code) against real Tofino p4c ground truth.
 
-PRIMARY GATE -- THE PINNED ARCHIVE (results/compiler_calibration_pinned/,
-ground truth results/compiler_calibration_pinned.csv, written by
-scripts/build_pinned_calibration_csv.py). 43 designs generated with the
-@placement_priority / @pa_no_overlay pragmas the generator now emits (audit
-C5; "arm D" of reviews/model_audit_2026-09-27.md §7.3) and compiled one at a
-time. The pragmas pin the order p4c places the classification trees in --
-the order packing.crossbar_stages_needed's ordered stage simulation replays --
-so this is the only archive whose compiles match what the generator produces
-today. Every design is replayed END TO END from its generated program
-(scripts/p4_artifact_replay.replay_design): the model's own per-table prices,
-packed by the model's own packer. CURRENT STANDING (2026-09-28):
-stage_depth 42/43, blocks 38/38 (5 designs never got a TCAM allocation: they
-need more than 12 stages). The one miss, KNOWN_PINNED_MISSES below, is
-independent_high_sd12: predicted 13, p4c 14 -- the one design where the
-pragma itself cost p4c a stage (13 without it); infeasible either way. It is
-an UNDER-prediction and is printed as one, deliberately un-silenced. The
-same numbers, design for design, as the audit's prototype
-(reviews/model_audit_scratch/proto_model.py --c1, FILL=lane).
+PRIMARY GATE -- THE PRAGMAS ARCHIVE (results/compiler_calibration_pragmas_2026_09_29/,
+ground truth results/compiler_calibration_pragmas_2026_09_29.csv, written by
+scripts/build_pinned_calibration_csv.py --root ... --out ...). The 43 pinned
+designs plus the 30 C6 held-out designs, recompiled from their frozen programs
+with the code_* @pa_no_overlay / @pa_container_size pins the generator now
+emits on top of @placement_priority (spec 2026-09-29; the archive's
+manifest.json records source sha256s and the pin set). Every design is replayed
+END TO END from its generated program (scripts/p4_artifact_replay.replay_design):
+the model's own per-table prices, packed by the model's own packer. CURRENT
+STANDING (2026-09-29): stage_depth 60/60 on every feasible design (<= 12
+stages), 70/73 over all 73; blocks 60/60 (13 designs never got a TCAM
+allocation). The three misses, KNOWN_PRAGMAS_MISSES below, are all on designs
+neither the model nor p4c fits in 12 stages, and are printed, deliberately
+un-silenced.
+
+PINNED, PRE-CODE-PIN, INFORMATIONAL (results/compiler_calibration_pinned/,
+results/compiler_calibration_pinned.csv). 43 designs compiled with
+@placement_priority / @pa_no_overlay on the class_tree_* fields but WITHOUT the
+code_* pins (audit C5). Its two known misses, KNOWN_PINNED_MISSES below, are
+independent_high_sd12 (predicted 13, p4c 14; infeasible either way) and
+margin_independent_M150_k7_s11 (predicted 11, p4c 12; exact in the pragmas
+archive). Both are UNDER-predictions and are printed as such.
 
 PRE-PRAGMA, INFORMATIONAL. Three older archives were compiled WITHOUT the
 pragmas, so p4c chose its own tree order there, which the model no longer
@@ -78,8 +82,29 @@ from scripts.p4_artifact_replay import replay_design  # noqa: E402
 
 DEFAULT_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "resource_model_golden.json")
 DEFAULT_CSV = os.path.join(ROOT, "results", "compiler_calibration_v6.csv")
-# PRIMARY GATE: the 43 pragma'd compiles (see the module docstring). Ground
-# truth only; predictions are recomputed from p4_src/ every run.
+# PRIMARY GATE since 2026-09-29: the 73 designs of the pinned archive (43)
+# and the C6 held-out draw (30), recompiled from their frozen programs with
+# the code_* @pa_no_overlay / @pa_container_size pins the generator now
+# emits (spec 2026-09-29; manifest.json in the archive records source
+# sha256s and the pin set). Ground truth only, from build_pinned_calibration_csv.
+PRAGMAS_ROOT = os.path.join(ROOT, "results", "compiler_calibration_pragmas_2026_09_29")
+PRAGMAS_CSV = os.path.join(ROOT, "results", "compiler_calibration_pragmas_2026_09_29.csv")
+# Its three misses: all on designs neither the model nor p4c fits in 12 stages.
+KNOWN_PRAGMAS_MISSES = {
+    "independent_high_sd12": (
+        "stage_depth 13 vs p4c 14 (UNDER by 1, infeasible either way); "
+        "pre-existing, see KNOWN_PINNED_MISSES"),
+    "heldout_independent_M150_k15_s16": (
+        "stage_depth 14 vs p4c 13 (OVER by 1, infeasible either way); "
+        "pre-existing"),
+    "heldout_independent_M250_k14_s12": (
+        "stage_depth 15 vs p4c 16 (UNDER by 1, infeasible either way), "
+        "produced in p4c's REDO_PHV2 retry rounds for a program that does not "
+        "fit (spec 2026-09-29 Sec 5.1)"),
+}
+# INFORMATIONAL: the 43 pinned compiles without the code_* pins (see the
+# module docstring). Ground truth only; predictions are recomputed from
+# p4_src/ every run.
 PINNED_ROOT = os.path.join(ROOT, "results", "compiler_calibration_pinned")
 PINNED_CSV = os.path.join(ROOT, "results", "compiler_calibration_pinned.csv")
 # The pinned archive's one known miss, printed with its reason rather than
@@ -200,6 +225,12 @@ def heldout_pairs(root=HELDOUT_ROOT, csv_path=HELDOUT_CSV):
 
 def pinned_pairs(root=PINNED_ROOT, csv_path=PINNED_CSV):
     """(stage_pairs, blocks_pairs) for the PRIMARY gate, the pinned archive,
+    replayed end to end exactly as heldout_pairs replays the held-out one."""
+    return heldout_pairs(root, csv_path)
+
+
+def pragmas_pairs(root=PRAGMAS_ROOT, csv_path=PRAGMAS_CSV):
+    """(stage_pairs, blocks_pairs) for the PRIMARY gate, the pragmas archive,
     replayed end to end exactly as heldout_pairs replays the held-out one."""
     return heldout_pairs(root, csv_path)
 
@@ -378,9 +409,24 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
 
+    if (os.path.isfile(PRAGMAS_CSV)
+            and os.path.isdir(os.path.join(PRAGMAS_ROOT, "compiles"))):
+        print("## PRIMARY GATE -- 73 compiles with the code_* pins "
+              "(results/compiler_calibration_pragmas_2026_09_29)")
+        pr_stage, pr_blocks = pragmas_pairs()
+        _print_section("stage_depth (pragmas)", pr_stage, "stage_depth")
+        _print_section("blocks (pragmas)", pr_blocks, "blocks")
+        for row_id, reason in KNOWN_PRAGMAS_MISSES.items():
+            print("  known miss, %s: %s" % (row_id, reason))
+    else:
+        print("(pragmas archive %s not present -- PRIMARY GATE SKIPPED; build "
+              "its CSV with scripts/build_pinned_calibration_csv.py --root ... "
+              "--out ...)" % PRAGMAS_ROOT)
+
     if (os.path.isfile(PINNED_CSV)
             and os.path.isdir(os.path.join(PINNED_ROOT, "compiles"))):
-        print("## PRIMARY GATE -- 43 pragma'd compiles "
+        print("\n\n## PINNED, PRE-CODE-PIN, INFORMATIONAL -- 43 compiles with "
+              "@placement_priority but without the code_* pins "
               "(results/compiler_calibration_pinned)")
         pin_stage, pin_blocks = pinned_pairs()
         _print_section("stage_depth (pinned)", pin_stage, "stage_depth")
@@ -388,7 +434,7 @@ def main(argv=None):
         for row_id, reason in KNOWN_PINNED_MISSES.items():
             print("  known miss, %s: %s" % (row_id, reason))
     else:
-        print("(pinned archive %s not present -- PRIMARY GATE SKIPPED)"
+        print("(pinned archive %s not present -- section skipped)"
               % PINNED_ROOT)
 
     print("\n\n## PRE-PRAGMA, INFORMATIONAL -- archives compiled without "

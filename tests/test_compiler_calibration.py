@@ -1012,6 +1012,47 @@ def test_the_model_matches_p4c_on_every_pinned_design(row_id, tcam_real,
 
 
 # ---------------------------------------------------------------------------
+# THE PRAGMAS ARCHIVE -- the primary gate since 2026-09-29. The 43 pinned and
+# 30 held-out designs recompiled with the generator's code_* @pa_no_overlay /
+# @pa_container_size pins (spec 2026-09-29). Ground truth:
+# results/compiler_calibration_pragmas_2026_09_29.csv
+# (scripts/build_pinned_calibration_csv.py --root/--out).
+# ---------------------------------------------------------------------------
+
+_PRAGMAS_ROOT = os.path.join('results', 'compiler_calibration_pragmas_2026_09_29')
+_PRAGMAS_CSV = os.path.join('results', 'compiler_calibration_pragmas_2026_09_29.csv')
+
+# Every miss is on a design neither the model nor p4c fits in 12 stages.
+_PRAGMAS_KNOWN_STAGE_MISSES = {'independent_high_sd12': -1,
+                               'heldout_independent_M150_k15_s16': 1,
+                               'heldout_independent_M250_k14_s12': -1}
+
+
+def _pragmas_rows():
+    if not os.path.isfile(_PRAGMAS_CSV):
+        return []
+    return [(r.row_id, r.tcam_real, int(r.stages_real))
+            for r in pd.read_csv(_PRAGMAS_CSV).itertuples()]
+
+
+@pytest.mark.parametrize('row_id,tcam_real,stages_real', _pragmas_rows())
+def test_the_model_matches_p4c_on_every_pragmas_design(row_id, tcam_real,
+                                                       stages_real):
+    """stage_depth 70/73 (the three infeasible misses above; every feasible
+    design exact, including margin_independent_M150_k7_s11 and the former C6
+    miss heldout_independent_M150_k14_s13), blocks 60/60."""
+    if not os.path.isdir(os.path.join(_PRAGMAS_ROOT, 'compiles', row_id)):
+        pytest.skip('needs %s (gitignored)' % _PRAGMAS_ROOT)
+    depth, blocks = cc.replay_design(row_id, _PRAGMAS_ROOT)
+    expected = _PRAGMAS_KNOWN_STAGE_MISSES.get(row_id, 0)
+    assert depth - stages_real == expected
+    if expected:
+        assert stages_real > 12 and depth > 12   # infeasible either way
+    if not pd.isna(tcam_real):
+        assert blocks == int(tcam_real)
+
+
+# ---------------------------------------------------------------------------
 # PRE-PRAGMA, INFORMATIONAL: 16 REAL campaign designs compiled specifically to
 # exercise the (since retired) stage-sharing margin and crowded-stage rule
 # (scripts/tcam_margin_screen.py): disjoint designs whose two keys can share a
