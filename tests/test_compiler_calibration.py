@@ -967,7 +967,8 @@ def test_the_model_matches_p4c_on_every_held_out_design(row_id, tcam_real,
 _PINNED_ROOT = os.path.join('results', 'compiler_calibration_pinned')
 _PINNED_CSV = os.path.join('results', 'compiler_calibration_pinned.csv')
 
-# The pinned archive's one miss, by name: independent_high_sd12 predicts 13
+# The pinned archive's two misses, by name (independent_high_sd12 and
+# margin_independent_M150_k7_s11; the first: it predicts 13
 # stages where p4c needs 14 -- an UNDER-prediction by 1 on a design that is
 # infeasible either way (> 12 stages). It is the one design where the pragmas
 # themselves cost p4c a stage (13 without them, which the model matches on the

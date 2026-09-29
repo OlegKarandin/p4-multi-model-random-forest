@@ -38,7 +38,8 @@ assumes. They are still reported, for continuity, but are not the gate:
     fit the model): stage_depth 8/8, blocks 5/5.
   * ADVERSARIAL (results/tcam_margin_screen/, 16 real campaign designs, USED
     TO CHOOSE the retired 58/62 crowded-stage margin -- not held out):
-    stage_depth 16/16, blocks 15/16 -- margin_independent_M150_k5_s12 reads
+    stage_depth 15/16 (margin_independent_M150_k7_s11 reads 11 vs
+    p4c's 12), blocks 15/16 -- margin_independent_M150_k5_s12 reads
     66 against p4c's 68, an UNDER-prediction of 2 blocks. Unpinned, p4c
     served that design's keys in an order that cost 2 more blocks; its pinned
     compile (the primary gate) costs 66, exactly as predicted (audit §7.3:
@@ -107,7 +108,7 @@ KNOWN_PRAGMAS_MISSES = {
 # p4_src/ every run.
 PINNED_ROOT = os.path.join(ROOT, "results", "compiler_calibration_pinned")
 PINNED_CSV = os.path.join(ROOT, "results", "compiler_calibration_pinned.csv")
-# The pinned archive's one known miss, printed with its reason rather than
+# The pinned archive's two known misses, printed with its reason rather than
 # silenced: an UNDER-prediction on a design p4c cannot fit anyway.
 KNOWN_PINNED_MISSES = {
     "independent_high_sd12": (
@@ -472,6 +473,8 @@ def main(argv=None):
         print("  margin_independent_M150_k5_s12's UNDER: unpinned, p4c served "
               "its keys in an order costing 2 more blocks; the pinned compile "
               "of the same design costs exactly the predicted 66.")
+        print("  margin_independent_M150_k7_s11's UNDER (stage_depth 11 vs "
+              "12): %s" % KNOWN_PINNED_MISSES["margin_independent_M150_k7_s11"])
 
 
 if __name__ == "__main__":

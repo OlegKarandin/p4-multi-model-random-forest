@@ -143,6 +143,9 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             selected_features_ddos=feature_names_ddos,
             config=config)
     except ValueError as e:
+        # NB: this also swallows generate_P4_code's shared-field layout-conflict
+        # ValueError (build_p4_script.code_field_container_sizes); practically
+        # unreachable, and it would be recorded under this 'unavailable' label.
         # No register catalog entry for some selected feature (F2). Hardware
         # validation is unavailable for this feature set; the row records why
         # rather than the split dying. FEATURE_REGISTER_CATALOG now covers

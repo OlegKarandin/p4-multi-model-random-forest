@@ -552,8 +552,9 @@ def test_the_lane_price_alone_keeps_two_probes_off_a_crowded_spacer():
     assert (two.occupied, two.blocks, two.table_stages) == (2, 20, (0, 1, 0))
 
 
-def test_the_m150_k7_s11_shape_now_shares_one_stage():
-    # 41 + 22 = 63 bytes of two different keys: refused by the old 62-byte
+def test_a_41_plus_22_byte_mixed_stage_now_shares_one_stage():
+    # The dsp41 shape (not M150_k7_s11's real keys): 41 + 22 = 63 bytes of
+    # two different keys, refused by the old 62-byte
     # net; with the generator's layout pins p4c places both in one stage
     # (spec 2026-09-29 Sec 5.2), and so does the packer. Probe listed last,
     # so placed first at its own 5; the spacer behind it pays its lane
