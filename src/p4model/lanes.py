@@ -8,7 +8,7 @@ keys), but a LATER key in the same stage gets only what the earlier keys left,
 and whether those leftovers can hold it depends on WHICH slots are free, not how
 many. This module models that, in three layers:
 
-  1. Layout (`layout`, `relaxed_layout`, `key_bytes`): each `code_*` field's
+  1. Layout (`layout`, `relaxed_layout`, `key_layout`, `key_bytes`, `container_sizes`): each `code_*` field's
      PHV container layout, predicted from its bit width alone -- the model runs
      before any compile, so it has no PHV log. Audit Sec 7.4.
   2. Lane price (`standalone`, `price_with_supply`): the smallest block count
@@ -149,9 +149,9 @@ def _price_le(a, b):
   return a <= b
 
 
-def key_bytes(field_bit_widths):
-  """The byte list this model uses for a key: THE LAYOUT FALLBACK RULE of
-  audit Sec 7.4.
+def key_layout(field_bit_widths):
+  """The layout function -- `layout` or `relaxed_layout` -- this model prices
+  a key with: THE LAYOUT FALLBACK RULE of audit Sec 7.4.
 
   Use the width-rule layout (`layout`), unless its standalone lane price is
   ABOVE the production width-only price `tables.codeword_to_blocks` -- then
@@ -159,15 +159,42 @@ def key_bytes(field_bit_widths):
   whole W ones), so use the relaxed layout (`relaxed_layout`) if it prices no
   worse than the width-rule one. With this rule the lane price from widths
   equals the lane price from the REAL PHV layout on 148/148 real keys
-  (audit `layout_rule_check.py`)."""
+  (audit `layout_rule_check.py`).
+
+  Returned as a function, not a byte list, because the generator needs it
+  too: it pins every tree-key code_* field to exactly this layout with
+  @pa_container_size (build_p4_script.code_field_container_sizes), so p4c
+  can no longer pick a different split under PHV pressure (spec 2026-09-29
+  Sec 1.2). Pricing (key_bytes) and pinning share this one decision so the
+  two cannot drift."""
   field_bit_widths = list(field_bit_widths)
   prod = codeword_to_blocks(tuple(sorted(field_bit_widths)))
-  plain = bytes_from_widths(field_bit_widths)
-  plain_price = standalone(plain)
+  plain_price = standalone(bytes_from_widths(field_bit_widths))
   if _price_le(plain_price, prod):
-    return plain
+    return layout
   relaxed = bytes_from_layout(field_bit_widths, relaxed_layout)
-  return relaxed if _price_le(standalone(relaxed), plain_price) else plain
+  return relaxed_layout if _price_le(standalone(relaxed), plain_price) else layout
+
+
+def key_bytes(field_bit_widths):
+  """The byte list this model uses for a key: its fields laid out by
+  `key_layout`'s choice."""
+  field_bit_widths = list(field_bit_widths)
+  return bytes_from_layout(field_bit_widths, key_layout(field_bit_widths))
+
+
+# The PHV container size each slice kind names, in the unit
+# @pa_container_size takes.
+CONTAINER_BITS = {'B': 8, 'H': 16, 'W': 32}
+
+
+def container_sizes(w, lay=layout):
+  """The @pa_container_size argument list for one `w`-bit field laid out by
+  `lay`: one container size per slice, LOW SLICE FIRST (p4c honours `16, 8`
+  as bits [15:0] in an H and the rest in a B -- code_bwd_iat_min[15:0] ->
+  H142, [17:16] -> B77, spec 2026-09-29 Sec 3.1). Empty for a field with no
+  bits, which must then get no pragma at all."""
+  return [CONTAINER_BITS[kind] for kind, _ in lay(w)]
 
 
 # --------------------------------------------------------------------------

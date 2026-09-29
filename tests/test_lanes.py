@@ -220,6 +220,43 @@ def test_fallback_keeps_the_width_layout_when_it_already_matches_production():
   assert lanes.key_bytes((19, 64)) == lanes.bytes_from_widths((19, 64))
 
 
+# ------------------------------------------------ key_layout (spec 2026-09-29)
+# The generator pins every tree-key code_* field to the layout this model
+# prices the key with (@pa_container_size), so the layout DECISION must be one
+# function both sides call -- key_layout -- not a byte list the generator
+# would have to reverse-engineer.
+
+@pytest.mark.parametrize('widths', REAL_DESIGN_KEYS + (
+    (19, 20, 21, 21, 23, 23, 28), (18, 18, 18, 19, 19, 21, 24, 27)))
+def test_key_bytes_is_key_layout_applied(widths):
+  lay = lanes.key_layout(widths)
+  assert lay is lanes.layout or lay is lanes.relaxed_layout
+  assert lanes.key_bytes(widths) == lanes.bytes_from_layout(widths, lay)
+
+
+@pytest.mark.parametrize('widths,relaxed', [
+    ((18, 18, 18, 19, 19, 21, 24, 27), True),    # M50_k8_s13 ddos key
+    ((7, 17, 31, 33, 34, 36, 39, 46), False),    # M50_k8_s13 app key
+    ((19, 20, 21, 21, 23, 23, 28), True),        # M150_k7_s11 ddos key
+    ((19, 64), False),
+])
+def test_key_layout_picks_relaxed_only_where_key_bytes_does(widths, relaxed):
+  assert lanes.key_layout(widths) is (
+      lanes.relaxed_layout if relaxed else lanes.layout)
+
+
+def test_container_sizes_are_container_widths_low_slice_first():
+  assert lanes.container_sizes(19, lanes.relaxed_layout) == [16, 8]
+  assert lanes.container_sizes(28, lanes.relaxed_layout) == [16, 16]
+  assert lanes.container_sizes(19) == [32]
+  assert lanes.container_sizes(7) == [8]
+  assert lanes.container_sizes(33) == [8, 32]    # B8 low, W25 top
+  assert lanes.container_sizes(46) == [16, 32]   # H16 low, W30 top
+  assert lanes.container_sizes(56) == [32, 32]   # W24 low, W32 top
+  assert lanes.container_sizes(0) == []
+  assert lanes.container_sizes(0, lanes.relaxed_layout) == []
+
+
 def test_byte_list_marks_nibble_only_bytes():
   assert lanes.bytes_from_widths((12,)) == [('H', 0, False), ('H', 1, True)]
 
