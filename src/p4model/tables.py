@@ -235,8 +235,9 @@ def codeword_to_blocks_headline(field_bit_widths):
   off -- the conservative arm of the refinement layer (Sec 13.1's "Off" row):
   exact on 92 of the 100 archived classification tables, over by exactly one
   block per tree on the other 8 (the two 33-byte, 15-feature keys), and NEVER
-  observed to under-predict across 405 table observations (389 scorable, 16
-  refused at > 62 crossbar bytes -- scripts/tcam_table_scoreboard.py).
+  observed to under-predict across 405 table observations (389 standalone observations; the 16 rows
+  p4c charged beside another key at 63-64 bytes are later keys, priced by the lane
+  simulation rather than this function -- scripts/tcam_table_scoreboard.py).
   `codeword_to_blocks`
   never returns MORE than this function does -- see
   test_the_isolation_refinement_never_raises_the_headline_price.

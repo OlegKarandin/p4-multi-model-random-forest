@@ -1,4 +1,8 @@
-"""E1-lite: does TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62 hold for probe
+"""HISTORICAL: the cap this sweep tested was retired 2026-09-29 (spec
+2026-09-29-overlay-and-layout-pragmas-design.md Sec 5.2); the summary now checks
+the lane price instead.
+
+E1-lite: does TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62 hold for probe
 keys other than the one it was read off?
 
 The cap (src/p4model/target.py) was set from ONE probe, results/
@@ -30,7 +34,7 @@ import pandas as pd  # noqa: E402
 from scripts.tcam_offset_scan import collect  # noqa: E402
 from scripts.tcam_stretch_sweep import key_bytes_for  # noqa: E402
 from src.p4model.tables import codeword_to_blocks  # noqa: E402
-from src.p4model.target import TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE  # noqa: E402
+from src.p4model.packing import _stage_key_prices  # noqa: E402
 
 DEFAULT_OUT = 'results/tcam_mixed_key_cap_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_mixed_key_cap_sweep'
@@ -59,12 +63,19 @@ def summarize(out):
             'probe_predicted_blocks_at_0', 'probe_real_blocks', 'extra']
     print(frame[cols].to_string(index=False))
     shared = frame[frame['both_in_one_stage'] == True]  # noqa: E712
-    missed = shared[(shared['total_bytes'] <= TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE)
-                    & (shared['extra'] > 0)]
-    print('\nshared-stage points paying extra at <= %d bytes (cap would MISS): %d'
-          % (TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE, len(missed)))
+    def lane_price(row):
+        # The spacer is one solid field (tcam_offset_scan's key 'b'); the
+        # CSV stores probe_fields space-separated (e.g. "54 56").
+        spacer = (8 * int(row['spacer_bytes']),)
+        probe = tuple(int(x) for x in str(row['probe_fields'])
+                      .replace(',', ' ').replace('(', ' ').replace(')', ' ').split())
+        prices = _stage_key_prices((), (spacer, probe))
+        return None if prices is None else prices[1]
+    shared = shared.assign(lane=shared.apply(lane_price, axis=1))
+    missed = shared[shared['lane'].isna() | (shared['lane'] < shared['probe_real_blocks'])]
+    print('\nshared-stage points the lane price would MISS (under p4c): %d' % len(missed))
     if len(missed):
-        print(missed[cols].to_string(index=False))
+        print(missed[cols + ['lane']].to_string(index=False))
 
 
 def main(argv=None):

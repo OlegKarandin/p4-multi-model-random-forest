@@ -39,7 +39,7 @@ TARGET_NAMES = (
     "TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE", "MAX_CODEWORD_LENGTH",
     "METER_ALUS_PER_STAGE", "TOFINO_PIPELINE_STAGES", "MAX_RANGE_KEY_BITS",
     "RANGE_WORST_CASE_ENTRY_FRACTION", "RANGE_WORST_CASE_ROWS_CAP",
-    "CODEWORD_KEY_OVERHEAD_BITS", "TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE",
+    "CODEWORD_KEY_OVERHEAD_BITS",
 )
 
 PROGRAM_NAMES = (
@@ -52,6 +52,8 @@ PROGRAM_NAMES = (
 # and the helpers that served it. Nothing may bring them back by name.
 RETIRED_NAMES = (
     (target, "TERNARY_CROSSBAR_MIXED_KEY_FREE_BYTES_PER_STAGE"),
+    # Retired by spec 2026-09-29: the 62-byte mixed-key refusal (valid only while the generator pins code_* layouts).
+    (target, "TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE"),
 )
 
 
@@ -371,8 +373,10 @@ def test_a_deep_table_pays_a_later_keys_price_once_per_row_word():
 # the table listed LAST first), and each stage's distinct keys are priced in
 # that order -- the first key its declared blocks, every later key its lane
 # LEFTOVER price in the crossbar lanes the keys before it left
-# (src/p4model/lanes.py). Above 62 combined bytes two different keys never
-# share a stage (the greedy-give-up safety net).
+# (src/p4model/lanes.py). Two different keys share a stage whenever the lanes
+# price them and the real 64-byte crossbar limit holds; the 62-byte refusal
+# that used to sit on top was retired by spec 2026-09-29 once the generator
+# pinned every key's PHV layout.
 #
 # It replaced the fitted CROWDED-STAGE margin (+1 to every non-first key when
 # two different keys filled more than 58 of a stage's 64 crossbar bytes, and
@@ -524,22 +528,42 @@ _SPACER = frozenset({(("code", "spacer"), 41)})
 _PROBE = frozenset({(("code", "probe_a"), 11), (("code", "probe_b"), 11)})
 
 
-def test_two_keys_past_the_mixed_key_byte_cap_do_not_share_a_stage():
-    # The F5 gap, results/tcam_discount_scan.csv rows dsp41/dsp42: a (84, 84)
-    # probe key (22 crossbar bytes, 5 blocks alone) beside a spacer key of 41-42
-    # bytes costs p4c 7 blocks, not 5 -- the stage's groups run out and the
-    # probe's bytes are routed through midbyte nibbles. Priced at 5, one 8-block
-    # spacer plus two probes looks like 8 | 5+5 and packs one stage; at the real
-    # 8 | 7+7 it cannot (14 > 12 rows). 41 + 22 = 63 bytes is past the 62-byte
-    # greedy-give-up safety net (target.TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE),
-    # so the co-location is refused outright, whatever the order.
+def test_the_lane_price_alone_keeps_two_probes_off_a_crowded_spacer():
+    # results/tcam_discount_scan.csv dsp41: a (84, 84) probe key (22 crossbar
+    # bytes, 5 blocks alone) behind a 41-byte spacer costs p4c 7 blocks, not 5,
+    # and p4c kept both in ONE stage. The lane simulation charges exactly that
+    # 7 (spacer placed first by priority). With two probes it is 8 | 7+7,
+    # which a 12-row column cannot hold, so the second probe moves on -- the
+    # price keeps them apart, no byte threshold needed (the 62-byte refusal
+    # was retired by spec 2026-09-29).
+    from src.p4model.packing import crossbar_stages_needed
+
+    one = crossbar_stages_needed(
+        [(8, 41), (5, 22)], readiness_levels=[0] * 2,
+        key_fields=[_SPACER, _PROBE], key_field_bits=[(328,), (84, 84)],
+        placement_priority=[2, 1])
+    assert (one.occupied, one.blocks, one.table_stages) == (1, 15, (0, 0))
+
+    two = crossbar_stages_needed(
+        [(8, 41), (5, 22), (5, 22)], readiness_levels=[0] * 3,
+        key_fields=[_SPACER, _PROBE, _PROBE],
+        key_field_bits=[(328,), (84, 84), (84, 84)],
+        placement_priority=[2, 1, 1])
+    assert (two.occupied, two.blocks, two.table_stages) == (2, 20, (0, 1, 0))
+
+
+def test_the_m150_k7_s11_shape_now_shares_one_stage():
+    # 41 + 22 = 63 bytes of two different keys: refused by the old 62-byte
+    # net; with the generator's layout pins p4c places both in one stage
+    # (spec 2026-09-29 Sec 5.2), and so does the packer. Probe listed last,
+    # so placed first at its own 5; the spacer behind it pays its lane
+    # leftover 8.
     from src.p4model.packing import crossbar_stages_needed
 
     plan = crossbar_stages_needed(
-        [(8, 41), (5, 22), (5, 22)], readiness_levels=[0] * 3,
-        key_fields=[_SPACER, _PROBE, _PROBE],
-        key_field_bits=[(328,), (84, 84), (84, 84)])
-    assert plan.occupied == 2
+        [(8, 41), (5, 22)], readiness_levels=[0] * 2,
+        key_fields=[_SPACER, _PROBE], key_field_bits=[(328,), (84, 84)])
+    assert (plan.occupied, plan.blocks, plan.table_stages) == (1, 13, (0, 0))
 
 
 def test_a_later_key_pays_its_lane_leftover_price():
@@ -815,7 +839,7 @@ def test_seed_range_keys_are_placed_ahead_of_every_tree_key():
     # audit C1 the two pools never shared a stage), so they are not exempted.
     # Without a seed the spacer (listed last, so placed first) and the probe
     # share stage 0 at 9 + 3 = 12. With two 2-byte range keys already there,
-    # 4 + 44 + 14 = 62 bytes pass the 62-byte net, but the lanes do not: the
+    # 4 + 44 + 14 = 62 bytes are within the 64-byte crossbar, but the lanes are not: the
     # spacer still fits behind the range keys, the probe then finds no legal
     # fit and moves to stage 1. The seed itself is never charged.
     from src.p4model.packing import crossbar_stages_needed
@@ -850,11 +874,11 @@ def test_a_tree_key_behind_a_seed_pays_its_leftover_price_never_less():
     assert plan.blocks == 1
 
 
-def test_a_seed_past_the_mixed_key_byte_cap_refuses_the_stage():
-    # 44 + 14 + 6 = 64 bytes: within the raw 64-byte limit but past the
-    # 62-byte safety net for different keys, which a seed's range keys are.
-    # The probe (listed last, placed first) takes stage 0 beside the seed at
-    # 20 bytes; the spacer cannot join it and moves on.
+def test_a_seed_and_tree_keys_share_a_stage_up_to_64_bytes_if_the_lanes_fit():
+    # 44 + 14 + 6 = 64 bytes, three range keys ahead of two tree keys. The old
+    # 62-byte net refused this outright; now only the lanes and the real
+    # 64-byte limit decide. The lanes still cannot fit the spacer behind the
+    # seed and the probe, so it moves on -- same placement, new reason.
     from src.p4model.packing import crossbar_stages_needed, stage_load_fits
 
     spacer = frozenset({(("code", "spacer"), 44)})
@@ -863,10 +887,11 @@ def test_a_seed_past_the_mixed_key_byte_cap_refuses_the_stage():
         [(9, 44), (3, 14)], readiness_levels=[0] * 2,
         key_fields=[spacer, probe], key_field_bits=[(352,), (54, 56)],
         seed_stages=[_seed(0, [1, 1, 1], [2, 2, 2])])
-    assert plan.table_stages == (1, 0)
-    # The same shape judged after the fact: two pools, 64 bytes > 62.
-    assert not stage_load_fits([_seed(0, [1], [6]), _seed(0, [9, 3], [58])])
-    assert stage_load_fits([_seed(0, [1], [4]), _seed(0, [9, 3], [58])])
+    assert (plan.occupied, plan.blocks, plan.table_stages) == (2, 12, (1, 0))
+    # Judged after the fact: two pools totalling exactly 64 bytes now fit;
+    # 66 bytes are past the real crossbar limit and still do not.
+    assert stage_load_fits([_seed(0, [1], [6]), _seed(0, [9, 3], [58])])
+    assert not stage_load_fits([_seed(0, [1], [8]), _seed(0, [9, 3], [58])])
 
 
 def test_seed_stages_need_readiness_levels_and_one_load_per_stage():

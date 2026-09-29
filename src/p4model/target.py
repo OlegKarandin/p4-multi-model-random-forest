@@ -37,8 +37,7 @@ CROSSBAR_PRIVATE_BYTES_PER_GROUP = 5
 # The stage's crossbar, in the two units the groups above come in. Documentation
 # and provenance ONLY -- deliberately consumed by nothing, because no group-BUDGET
 # term exists in this model. The near-cap effect a budget would price (spec F5)
-# is handled by the lane simulation (lanes.py) plus a placement refusal:
-# TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE below.
+# is handled by the lane simulation (lanes.py) alone; the placement refusal that once sat beside it was retired 2026-09-29 (see below).
 #
 # Provenance, and a retraction. scripts/tcam_group_cap_probe.py's point
 # `groups_13_bytes_64` was read for months as "a per-stage group cap was probed
@@ -56,21 +55,19 @@ TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 # 09-27.md Appendix C).
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
 TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
-# The greedy-give-up safety net: a stage holding two or more DIFFERENT keys
-# (in the classification pool, or a range seed beside tree keys) is refused
-# above this many combined crossbar bytes, whatever the lane simulation says.
-# It is NOT a pricing margin -- packing.crossbar_stages_needed prices a later
-# key by simulating the lanes the earlier keys left (lanes.py, audit C5). It
-# exists because p4c's own greedy allocator can give up on a later key the
-# simulation can still price: M150_k7_s11's stage 8 would hold 22 + 41 = 63
-# bytes, p4c gave the first key groups 0,1,3,4, the app key then needed 9
-# blocks and the placer moved it a stage -- no simulation reproduced that
-# (reviews/model_audit_2026-09-27.md §7.6: without the refusal M150_k7_s11's
-# stage_depth under-predicts, 11 vs 12). Above 62 bytes the measured extra
-# also reaches +2 blocks (dsp41/dsp42, tcam_mixed_key_cap_sweep at 63-64).
-# (The fitted 58-byte "crowded stage" +1 margin that used to sit below this
-# threshold was replaced by the lane simulation, audit C5.)
-TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62
+# RETIRED 2026-09-29: TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62, the
+# "greedy-give-up safety net" that refused a stage holding two different keys
+# past 62 combined crossbar bytes. Its one real-design case, M150_k7_s11
+# (22 + 41 = 63 bytes, p4c moved the app key a stage), was a PHV LAYOUT
+# artifact: with the generator's @pa_container_size pins on every tree-key
+# code_* field (build_p4_script.code_field_container_sizes), p4c places both
+# keys in one stage, as the lane simulation does. Every probe point at 56-64
+# bytes (tcam_mixed_key_cap_sweep, tcam_discount_scan dsp01-42) stayed in one
+# stage and _stage_key_prices reproduces all 42 charges; dsp43-45 at 65-67 bytes
+# are refused by the real limit above. Evidence: spec
+# docs/superpowers/specs/2026-09-29-overlay-and-layout-pragmas-design.md
+# Sec 5.2. THE RETIREMENT HOLDS ONLY WHILE THOSE PINS ARE EMITTED -- a
+# generator change that drops them re-exposes M150_k7_s11.
 # MAX_CODEWORD_LENGTH is a CONSEQUENCE of TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE, not an
 # independent limit: a single-stage ternary table can occupy at most the 64-byte-per-stage
 # crossbar budget above, so a codeword wider than 64 bytes (512 bits) could never fit in one

@@ -90,6 +90,12 @@ KNOWN_PINNED_MISSES = {
         "> 12 stages). The one design where the @pa_no_overlay/"
         "@placement_priority pragmas themselves cost p4c a stage -- 13 without "
         "them (reviews/model_audit_2026-09-27.md §7.3/§7.6)"),
+    "margin_independent_M150_k7_s11": (
+        "stage_depth 11 vs p4c 12 (UNDER by 1) since the 62-byte refusal was "
+        "retired: this archive predates the code_* layout pins, and unpinned "
+        "p4c split the ddos key's fields into whole W containers and moved the "
+        "app key a stage. Its pinned compile (results/"
+        "compiler_calibration_pragmas_2026_09_29) is 11, exact"),
 }
 # PRE-PRAGMA, INFORMATIONAL (see the module docstring). HELD OUT: 8 real
 # compiles never used to fit or re-tune the model. Its CSV's blocks/

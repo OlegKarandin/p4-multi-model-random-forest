@@ -2,7 +2,7 @@
 mixed-key byte cap can act, and score the model on them.
 
 WHY. Both one-sided placement rules in src/p4model/packing.py -- the +1 margin
-on a saturated, not-first key and the 62-byte mixed-key cap -- are supported
+on a saturated, not-first key and the (retired 2026-09-29) 62-byte mixed-key cap -- are supported
 by one archived design (independent_low_sd9) plus synthetic sweeps. Neither
 the fitted archive nor the held-out one (results/compiler_calibration_extra)
 contains a real stage where they fire. This script looks for campaign designs
@@ -45,7 +45,7 @@ from src.p4model.tables import (  # noqa: E402
     codeword_fields_to_bytes_from_bits, codeword_to_blocks, crossbar_capacity,
     ternary_key_field_bits)
 from src.p4model.target import (  # noqa: E402
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE, TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE)
+    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
 
 SCREEN_OUT = 'results/tcam_margin_screen.csv'
 COMPILE_OUT = 'results/tcam_margin_screen_compiled.csv'
@@ -184,10 +184,8 @@ def stage_account(row_id):
             cells.append('%s:B%d g%d%s real%d' % (name.replace('get_classification_tree_', ''),
                                                   B, g, '*' if sat else '',
                                                   committed[name]['blocks']))
-        lines.append('   stage %2d  keys=%d bytes=%2d%s  %s' % (
-            stage, len(keys), total,
-            ' >CAP' if len(keys) > 1 and total > TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE else '',
-            '  '.join(cells)))
+        lines.append('   stage %2d  keys=%d bytes=%2d  %s' % (
+            stage, len(keys), total, '  '.join(cells)))
     return lines
 
 

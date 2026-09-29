@@ -973,7 +973,13 @@ _PINNED_CSV = os.path.join('results', 'compiler_calibration_pinned.csv')
 # themselves cost p4c a stage (13 without them, which the model matches on the
 # pre-pragma compile: test_per_task_readiness_makes_these_designs_exact
 # below). Pinned so it cannot silently spread to a feasible design.
-_PINNED_KNOWN_STAGE_MISSES = {'independent_high_sd12': -1}
+# margin_independent_M150_k7_s11 predicts 11 where this archive's p4c needed
+# 12, since the 62-byte refusal was retired (spec 2026-09-29): these compiles
+# predate the generator's code_* layout pins, and unpinned p4c laid the ddos
+# key's fields out whole in W containers and moved the app key a stage. With
+# the pins (results/compiler_calibration_pragmas_2026_09_29) it is 11, exact.
+_PINNED_KNOWN_STAGE_MISSES = {'independent_high_sd12': -1,
+                              'margin_independent_M150_k7_s11': -1}
 
 
 def _pinned_rows():
@@ -994,7 +1000,7 @@ def test_the_pinned_archive_holds_all_43_designs():
 @pytest.mark.parametrize('row_id,tcam_real,stages_real', _pinned_rows())
 def test_the_model_matches_p4c_on_every_pinned_design(row_id, tcam_real,
                                                       stages_real):
-    """stage_depth 42/43 (independent_high_sd12 the known miss), blocks 38/38
+    """stage_depth 41/43 (the two known misses above), blocks 38/38
     -- design for design the same as the audit's prototype
     (reviews/model_audit_scratch/proto_model.py --c1, FILL=lane)."""
     if not os.path.isdir(os.path.join(_PINNED_ROOT, 'compiles', row_id)):
@@ -1024,6 +1030,8 @@ _MARGIN_CSV = os.path.join('results', 'tcam_margin_screen_compiled.csv')
 # as predicted (audit §7.3: "1 better (M150_k5_s12 -2 blocks)"). Pinned by
 # name so no other design can join it unnoticed.
 _MARGIN_PRE_PRAGMA_BLOCK_DELTAS = {'margin_independent_M150_k5_s12': -2}
+# Same design, same reason as in _PINNED_KNOWN_STAGE_MISSES: pre-pin compile.
+_MARGIN_PRE_PRAGMA_STAGE_DELTAS = {'margin_independent_M150_k7_s11': -1}
 
 
 def _margin_rows():
@@ -1039,7 +1047,7 @@ def test_the_model_on_the_pre_pragma_crowded_real_designs(row_id, tcam_real,
     if not os.path.isdir(os.path.join(_MARGIN_ROOT, 'compiles', row_id)):
         pytest.skip('needs %s (gitignored)' % _MARGIN_ROOT)
     depth, blocks = cc.replay_design(row_id, _MARGIN_ROOT)
-    assert depth == stages_real
+    assert depth - stages_real == _MARGIN_PRE_PRAGMA_STAGE_DELTAS.get(row_id, 0)
     if not pd.isna(tcam_real):
         assert (blocks - int(tcam_real)
                 == _MARGIN_PRE_PRAGMA_BLOCK_DELTAS.get(row_id, 0))

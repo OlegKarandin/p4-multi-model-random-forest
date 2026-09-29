@@ -29,9 +29,8 @@ THREE PREDICTED QUANTITIES, per row:
                       must hit 0 under.
 
 Rows whose stage the packer would never produce are marked placement_refused
-and excluded from the gate: two different keys past 62 combined bytes (the
-greedy-give-up safety net, target.TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE),
-or a key the lane simulation cannot fit into the stage. (Until
+and excluded from the gate: a key the lane simulation cannot fit into the
+stage (the 62-byte mixed-key net was retired 2026-09-29). (Until
 2026-09-28 blocks_charged instead added the fitted crowded-stage margin, +1
 to a non-first key when two different keys filled more than 58 bytes; before
 2026-09-25, the per-key SATURATION margin. Both retired.)
@@ -59,7 +58,7 @@ WHICH KEY IS "NOT FIRST", AND WHAT IS AHEAD OF IT, resolved per source:
     the `layout` JSON (its blocks_a/blocks_b columns are a STALE predicted
     price). The file cannot say which of two co-located keys p4c served
     first, so both orders are scored and the WORSE one that the packer could
-    emit is charged; a stage of two keys past 62 bytes is refused either way.
+    emit is charged; a stage of two keys up to 64 bytes is priced by the lanes.
   * tcam_offset_harvest and tcam_heldout_harvest record measured_start_group
     but not the other keys of the stage, so no stage-mate is known and
     blocks_charged is the refined price. The design-level lane simulation on
@@ -88,9 +87,6 @@ from src.p4model.tables import (  # noqa: E402
     crossbar_capacity,
 )
 from src.p4model.packing import _stage_key_prices  # noqa: E402
-from src.p4model.target import (  # noqa: E402
-    TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE,
-)
 
 RESULTS_DIR = os.path.join(ROOT, "results")
 DEFAULT_OUT = os.path.join(RESULTS_DIR, "tcam_table_scoreboard.csv")
@@ -144,17 +140,11 @@ def price_in_stage(field_bit_widths, ahead=(), behind=()):
     `ahead` of it and `behind` it (field-bit tuples, in placement order) --
     the packer's own pricing (packing._stage_key_prices): the first key pays
     codeword_to_blocks, every later key its lane leftover price. refused is
-    True when the packer would never emit that stage: two or more different
-    keys past TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE combined bytes (the
-    greedy-give-up safety net), or some key with no lane-legal fit (charged
-    is then None). Keys behind this one cannot change its price, only refuse
+    True when some key has no lane-legal fit (charged is then None). Keys behind this one cannot change its price, only refuse
     the stage."""
     field_bit_widths = tuple(field_bit_widths)
     sequence = (tuple(tuple(key) for key in ahead) + (field_bit_widths,)
                 + tuple(tuple(key) for key in behind))
-    total = sum(codeword_fields_to_bytes_from_bits(key) for key in sequence)
-    if len(sequence) > 1 and total > TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE:
-        return None, True
     prices = _stage_key_prices((), sequence)
     if prices is None:
         return None, True
@@ -285,7 +275,7 @@ def score_stretch_sweep(path):
     shares this table's stage in the committed layout. This file carries no
     crossbar evidence to say which of two co-located keys is truly first, so
     both orders are candidates and the worse emittable one is charged; a
-    stage of two keys past 62 bytes (a32 + b32 = 64) is refused."""
+    stage of two keys up to 64 bytes is priced by the lanes."""
     frame = pd.read_csv(path)
     rows = []
     for _, r in frame.iterrows():
@@ -509,8 +499,7 @@ def under_predictions(rows, diff_key="diff_charged"):
 
 
 def refused_placements(rows):
-    """Rows observed at a stage the packer refuses (the 62-byte safety net,
-    or no lane-legal fit)."""
+    """Rows observed at a stage the packer refuses (no lane-legal fit)."""
     return [r for r in rows if r["placement_refused"]]
 
 
@@ -546,9 +535,7 @@ def main(argv=None):
                   r["behind_other_key"]))
 
     refused = refused_placements(rows)
-    print("\n### placements the packer refuses (two keys > %d bytes, or no "
-          "lane fit): %d\n" % (TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE,
-                               len(refused)))
+    print("\n### placements the packer refuses (no lane fit): %d\n" % len(refused))
     for r in refused:
         print("  %s / %s: field_bit_widths=%s blocks_charged=%d observed_blocks=%d"
               % (r["source"], r["identifier"], r["field_bit_widths"],

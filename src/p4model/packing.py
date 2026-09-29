@@ -29,7 +29,6 @@ from src.p4model.target import (
     TERNARY_CROSSBAR_GROUPS_PER_STAGE,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
-    TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE,
 )
 
 
@@ -98,10 +97,7 @@ def stage_load_fits(loads):
   """Whether several pools' StageLoads for the SAME stage index fit together
   under the per-stage limits: <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
   tables, <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes of distinct key
-  fields, a 12x2 column packing of every shard (fits_two_columns), and --
-  two or more non-empty pools being two different keys at least -- no more
-  than TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE (62) combined bytes, the
-  greedy-give-up safety net. The check crossbar_stages_needed's seed_stages
+  fields, and a 12x2 column packing of every shard (fits_two_columns). The check crossbar_stages_needed's seed_stages
   makes while placing (there on per-key byte SUMS, which are never below
   this union), restated as a predicate so a caller can assert it after the
   fact. The lane prices themselves are already inside each load's charged
@@ -109,11 +105,8 @@ def stage_load_fits(loads):
   loads = list(loads)
   fields = frozenset().union(*(load.fields for load in loads))
   total_bytes = sum(field_bytes for _, field_bytes in fields)
-  pools = sum(1 for load in loads if load.fields)
   return (sum(load.tables for load in loads) <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
           and total_bytes <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
-          and not (pools > 1
-                   and total_bytes > TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE)
           and fits_two_columns([b for load in loads for b in load.blocks]))
 
 
@@ -349,9 +342,6 @@ def _stage_charges(units, seed):
   A stage fits when all of these hold:
     * at most TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE tables (seed included);
     * at most TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes of distinct fields;
-    * two or more different keys (a seed's range fields count as keys) total
-      at most TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE (62) bytes -- the
-      greedy-give-up safety net (target.py);
     * every key has a lane price (_stage_key_prices);
     * the charged blocks, seed shards included, pack 12x2 (fits_two_columns).
   """
@@ -361,19 +351,12 @@ def _stage_charges(units, seed):
   if (sum(field_bytes for _, field_bytes in present)
       > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE):
     return None
-  order, key_bits, key_bytes_of = [], {}, {}
+  order, key_bits = [], {}
   for unit in units:
     if unit.fields not in key_bits:
       order.append(unit.fields)
       key_bits[unit.fields] = unit.bits
-      key_bytes_of[unit.fields] = unit.width
   seed_fields = sorted(seed.fields, key=repr)
-  distinct_keys = len(order) + len(seed_fields)
-  key_bytes_total = (sum(key_bytes_of.values())
-                     + sum(field_bytes for _, field_bytes in seed_fields))
-  if (distinct_keys > 1
-      and key_bytes_total > TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE):
-    return None
   prices = _stage_key_prices(
       tuple((8 * field_bytes,) for _, field_bytes in seed_fields),
       tuple(key_bits[key] for key in order))
@@ -529,13 +512,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       price per 512-row word. A seeded stage's range keys come first, so
       every tree key there is a later key -- never charged below
       codeword_to_blocks.
-    * Fit -- at most 8 tables, every key priced, the charged blocks pack
-      12x2, and two or more different keys total at most
-      TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE (62) crossbar bytes: the
-      greedy-give-up safety net. p4c's own allocator can fail to fit a later
-      key the simulation can price (M150_k7_s11: 22 + 41 = 63 bytes, the app
-      key moved a stage) -- no simulation reproduced that, so such stages
-      are refused rather than priced.
+    * Fit -- at most 8 tables, at most 64 bytes of distinct key fields,
+      every key priced, and the charged blocks pack 12x2. There is no
+      mixed-key byte threshold below 64: the 62-byte refusal was retired
+      2026-09-29, valid only while the generator pins every tree key's PHV
+      layout (target.py).
   A table charged more than one stage's 24 blocks is split into chunks of
   whole rows that each fit a stage.
 

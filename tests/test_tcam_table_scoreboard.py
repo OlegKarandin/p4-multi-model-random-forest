@@ -17,16 +17,13 @@ pytestmark = pytest.mark.skipif(
     reason="needs results/*.csv (gitignored, real p4c compile output) -- "
            "see scripts/tcam_table_scoreboard.py's SOURCE_FILES")
 
-# Observations at a stage the packer refuses: two DIFFERENT keys past
-# target.TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE (62 bytes, the
-# greedy-give-up safety net), where p4c's extra charge reaches +2 (dsp41/dsp42:
-# the (84, 84) probe at 63/64 bytes, 7 blocks instead of 5). They are reported
-# as REFUSED, not scored: the gate is 0 under on every placement the model can
-# actually emit. (59-62-byte rows are scored, at their lane leftover price.)
-KNOWN_REFUSED_PLACEMENTS = frozenset({
-    ("tcam_discount_scan", "dsp41"),
-    ("tcam_discount_scan", "dsp42"),
-})
+# The packer refused no archived placement once the 62-byte mixed-key net
+# was retired (spec 2026-09-29): every observation is scored, and the lane
+# price reproduces p4c's charge on every later key except the four
+# a32x2_b32x2 tables (two solid 32-byte keys at exactly 64 bytes), charged
+# 7 against p4c's 6 -- an over-prediction, the safe side.
+OVER_PREDICTED_BESIDE_ANOTHER_KEY = frozenset(
+    "a32x2_b32x2/tern_%s%d" % (tag, i) for tag in "ab" for i in (0, 1))
 
 
 def test_total_observation_count_is_405():
@@ -60,26 +57,12 @@ def test_blocks_charged_never_under_predicts_a_placement_the_model_emits():
     assert unders == [], [(r["source"], r["identifier"]) for r in unders]
 
 
-def test_the_refused_placements_are_exactly_the_rows_past_the_cap():
-    """Rows are excluded from the gate only because the packer refuses their
-    stage: every one sits above 62 combined bytes (none is refused for want
-    of a lane fit alone)."""
+def test_no_archived_placement_is_refused():
+    """Without the 62-byte net the packer can emit every archived shared
+    stage: none is refused, and none for want of a lane fit either."""
     rows = scoreboard.score_all()
 
-    refused = scoreboard.refused_placements(rows)
-    by_source = {}
-    for r in refused:
-        by_source.setdefault(r["source"], set()).add(r["identifier"])
-
-    assert by_source.pop("tcam_discount_scan") == {i for _, i in KNOWN_REFUSED_PLACEMENTS}
-    assert by_source.pop("tcam_mixed_key_cap_sweep") == {
-        "%s_t%d" % (tag, t) for tag in ("solid22", "rag11", "rag14", "four26", "hik16")
-        for t in (63, 64)}
-    # Two solid 32-byte keys sharing one stage at 64 bytes; p4c charged
-    # nothing extra, the packer refuses the stage (an over-prediction).
-    assert by_source.pop("tcam_stretch_sweep") == {
-        "a32x2_b32x2/tern_%s%d" % (tag, i) for tag in "ab" for i in (0, 1)}
-    assert by_source == {}
+    assert scoreboard.refused_placements(rows) == []
 
 
 def test_every_charge_above_the_refined_price_is_what_p4c_charged():
@@ -87,31 +70,35 @@ def test_every_charge_above_the_refined_price_is_what_p4c_charged():
     different key was placed ahead of it in its stage -- and on every such
     emitted row the lane leftover price is exactly p4c's count: the ragged
     (179, 204) key at 10 behind a 12-byte key (tcam_stretch_sweep), the
-    (54, 56) probe at 4 behind a spacer at 59-62 bytes, and the
-    (46, 46, 48, 64) probe at 6 at 61 bytes (tcam_mixed_key_cap_sweep).
+    (54, 56) probe at 4 behind a spacer at 59-62 bytes, the
+    (46, 46, 48, 64) probe at 6 at 61 bytes (tcam_mixed_key_cap_sweep), the
+    dsp41/dsp42 (84, 84) probe at 7 at 63-64 bytes, rag11 at 5 at 64, rag14
+    at 5 at 63-64. The one exception is the a32x2_b32x2 over-prediction (7
+    against p4c's 6, two solid 32-byte keys at exactly 64 bytes).
     The retired crowded-stage margin charged +1 by byte total alone."""
     rows = scoreboard.score_all()
 
     extra = [r for r in rows if r["blocks_charged"] > r["blocks_refined"]
              and not r["placement_refused"]]
 
-    assert len(extra) == 7
+    assert len(extra) == 16
     assert all(r["not_first"] and r["behind_other_key"] for r in extra)
-    assert all(r["diff_charged"] == 0 for r in extra), [
-        (r["identifier"], r["blocks_charged"], r["observed_blocks"])
-        for r in extra]
+    over = {r["identifier"] for r in extra if r["diff_charged"] != 0}
+    assert over == OVER_PREDICTED_BESIDE_ANOTHER_KEY
+    assert all(r["diff_charged"] == 1 for r in extra
+               if r["identifier"] in OVER_PREDICTED_BESIDE_ANOTHER_KEY)
 
 
-def test_a_later_key_is_charged_its_lane_price_at_59_to_62_bytes():
+def test_a_later_key_is_charged_its_lane_price_at_59_to_64_bytes():
     """rag14 = (54, 56), not saturated: 3 blocks alone, 4 behind a solid
     spacer at 59-62 bytes -- the lanes the spacer leaves hold its bytes only
     at 4 blocks. Charged 4 there, as p4c did."""
     rows = {r["identifier"]: r for r in scoreboard.score_all()
             if r["source"] == "tcam_mixed_key_cap_sweep"}
-    for t in (59, 60, 61, 62):
+    for t, blocks in ((59, 4), (60, 4), (61, 4), (62, 4), (63, 5), (64, 5)):
         row = rows["rag14_t%d" % t]
         assert not row["saturated"]
-        assert (row["blocks_charged"], row["observed_blocks"]) == (4, 4)
+        assert (row["blocks_charged"], row["observed_blocks"]) == (blocks, blocks)
 
 
 def test_the_solid_wide_key_is_charged_nothing_behind_a_narrow_key():
