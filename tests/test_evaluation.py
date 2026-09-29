@@ -1271,6 +1271,39 @@ def test_joint_range_tables_are_fewer_than_disjoint_on_the_same_feature_union():
     assert joint.range_tables < disjoint.range_tables
 
 
+@pytest.mark.parametrize("ddos_labels, ddos_seed", [([0, 1, 2], 0), ([-1, 1], 7)])
+def test_disjoint_prices_exactly_the_range_tables_the_generator_emits(ddos_labels,
+                                                                     ddos_seed):
+    # _resolve_disjoint_feature_plan emits ONE shared, un-prefixed range table
+    # for a feature both models split identically, and one per model
+    # otherwise. The pool must price the same tables: one spec per resolved
+    # entry, labelled SHARED_TASK exactly when both models read its code
+    # field. The first case trains the SAME forest for both models, so every
+    # feature is shared (the heldout_independent_M150_k14_s13 bug, there on
+    # min_packet_length alone, priced it twice: 51 blocks vs p4c's 50); the
+    # second shares nothing, and must stay one table per model.
+    from src.p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
+
+    clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
+    clf_ddos = _forest_using_all_four_catalog_features(ddos_labels, seed=ddos_seed)
+    pool = ev._pool_inputs(clf_app, clf_ddos, _M2_CATALOG_FEATURES,
+                           _M2_CATALOG_FEATURES, 'disjoint')
+
+    plan = bps._resolve_disjoint_feature_plan(
+        bps.get_feature_intervals(clf_app, _M2_CATALOG_FEATURES),
+        bps.get_feature_intervals(clf_ddos, _M2_CATALOG_FEATURES))
+    expected_tasks = sorted(
+        SHARED_TASK if models == {"app", "ddos"}
+        else (APP_TASK if models == {"app"} else DDOS_TASK)
+        for _raw, _intervals, models in plan.values())
+
+    assert sorted(pool["range_task"]) == expected_tasks
+    assert len(pool["range_table_specs"]) == len(plan)
+    assert len(pool["range_levels"]) == len(plan)
+    assert len(pool["range_fields"]) == len(plan)
+    assert pool["range_blocks"] == sum(blocks for blocks, _ in pool["range_table_specs"])
+
+
 def test_register_depth_is_identical_under_joint_and_disjoint_encoding():
     # D1 as a unit test (spec Sec 5.2, Sec 7): the premise the whole
     # attribution rests on. register_depth is a function of the SELECTED

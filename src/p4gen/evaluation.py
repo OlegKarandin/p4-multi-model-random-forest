@@ -210,7 +210,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   ternary_table_specs respectively. Labels are src.p4model.program's
   APP_TASK ('app') and DDOS_TASK ('ddos'); a range table can also be
   SHARED_TASK ('shared'), meaning every task's trees key on its code field --
-  every range table under 'joint', none under 'disjoint' here. ternary_task
+  every range table under 'joint', and under 'disjoint' the one table of a
+  feature both models split identically (the generator emits it once,
+  _resolve_disjoint_feature_plan). ternary_task
   is never SHARED_TASK: under 'joint' the trees still come from two forests,
   app trees first. assemble_usage reads the labels for per-task tree
   readiness (audit C1): a tree waits only for range tables labelled with its
@@ -280,6 +282,24 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
      range_table_specs_ddos, ternary_table_specs_ddos) = single_model_memory_evaluation(
         clf_ddos, selected_features_ddos, use_default_action_discount=use_default_action_discount)
 
+    # A feature both models split identically is ONE range table in the
+    # generated program, not two: _resolve_disjoint_feature_plan emits it
+    # once, un-prefixed, and both tasks' trees key on its single code field.
+    # So the ddos side prices only the features it does NOT share, and the
+    # app copy of each shared one is labelled SHARED_TASK below. Pricing it
+    # twice cost heldout_independent_M150_k14_s13 a phantom range table
+    # (min_packet_length): 51 blocks predicted vs 50 real.
+    feature_intervals_app = get_feature_intervals(clf_app, selected_features_app)
+    feature_intervals_ddos = get_feature_intervals(clf_ddos, selected_features_ddos)
+    shared_features = {
+        feature for feature, intervals in feature_intervals_ddos.items()
+        if feature_intervals_app.get(feature) == intervals}
+    ddos_only_intervals = {feature: intervals
+                           for feature, intervals in feature_intervals_ddos.items()
+                           if feature not in shared_features}
+    (range_entries_ddos, range_blocks_ddos,
+     range_table_specs_ddos) = range_matching_resource_usage(ddos_only_intervals)
+
     range_blocks = range_blocks_app + range_blocks_ddos
     range_entries = range_entries_app + range_entries_ddos
 
@@ -298,12 +318,10 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     ternary_table_specs = ternary_table_specs_app + ternary_table_specs_ddos
     # Which task each table serves, in the same concatenation order: a tree
     # waits only for its own task's range tables (assemble_usage, audit C1).
-    # Each model's range tables are its own here, even for a feature both
-    # models split identically, which the generator emits as ONE shared table
-    # (p4_artifact_replay labels that one SHARED_TASK). This branch already
-    # prices such a feature as two tables, one per model, with the same
-    # readiness level, so each copy gates its own task's trees.
-    range_task = ([APP_TASK] * len(range_table_specs_app)
+    # A shared feature's one table is SHARED_TASK -- both tasks' trees wait
+    # for it, as p4_artifact_replay labels the generated table.
+    range_task = ([SHARED_TASK if feature in shared_features else APP_TASK
+                   for feature in feature_intervals_app]
                   + [DDOS_TASK] * len(range_table_specs_ddos))
     ternary_task = ([APP_TASK] * len(ternary_table_specs_app)
                     + [DDOS_TASK] * len(ternary_table_specs_ddos))
@@ -314,12 +332,10 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # (a register a feature needs is emitted once, however many models select
     # that feature), so both calls must read their levels off a schedule of
     # the UNION -- see readiness_levels_for's emitted_features.
-    feature_intervals_app = get_feature_intervals(clf_app, selected_features_app)
-    feature_intervals_ddos = get_feature_intervals(clf_ddos, selected_features_ddos)
     emitted_features = list(feature_intervals_app) + list(feature_intervals_ddos)
     range_levels = (
         readiness_levels_for(feature_intervals_app, emitted_features=emitted_features) +
-        readiness_levels_for(feature_intervals_ddos, emitted_features=emitted_features))
+        readiness_levels_for(ddos_only_intervals, emitted_features=emitted_features))
     # Same per-model split, same concatenation order, for the crossbar field
     # identities. Two models that selected the same feature resolve to the
     # same range field (the raw _val field is always shared) and, when their
@@ -327,7 +343,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # sharing rules _resolve_disjoint_feature_plan implements.
     range_fields = (
         range_key_fields_for(feature_intervals_app) +
-        range_key_fields_for(feature_intervals_ddos))
+        range_key_fields_for(ddos_only_intervals))
     ternary_fields = (
         [ternary_key_fields(feature_intervals_app)] * len(ternary_table_specs_app) +
         [ternary_key_fields(feature_intervals_ddos)] * len(ternary_table_specs_ddos))
