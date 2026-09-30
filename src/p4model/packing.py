@@ -88,6 +88,12 @@ class StagePlan:
   stage_loads: tuple = ()  # one StageLoad per occupied stage, sorted by index: what
                          # this pool put where. Pass it as the NEXT pool's seed_stages
                          # so that pool sees these stages as partly full.
+  table_blocks: tuple = ()  # one CHARGED block count per table_specs entry, positionally
+                         # aligned like table_stages: the declared count in the
+                         # declared-price paths, the sum of its chunks' charges (a
+                         # later key's lane price included) in the ordered
+                         # simulation. sum(table_blocks) == blocks. What model.json's
+                         # per-table list reports (spec 2026-09-29 §5.3).
 
   def __int__(self):     # transitional: `stages` is still the occupancy count
     return self.occupied
@@ -590,7 +596,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     return seeds.get(index) or StageLoad(index=index, blocks=(),
                                          fields=frozenset(), tables=0)
 
-  def plan(loads, table_stages):
+  def plan(loads, table_stages, table_blocks):
     loads = sorted(loads, key=lambda load: load.index)
     return StagePlan(occupied=len(loads),
                      depth=(loads[-1].index + 1) if loads else 0,
@@ -598,7 +604,9 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                      blocks=sum(sum(load.blocks) for load in loads),
                      table_stages=tuple(table_stages[idx]
                                         for idx in range(len(table_specs))),
-                     stage_loads=tuple(loads))
+                     stage_loads=tuple(loads),
+                     table_blocks=tuple(table_blocks.get(idx, 0)
+                                        for idx in range(len(table_specs))))
 
   distinct_keys = {key_fields[idx] if key_fields is not None
                    else ("<private>", idx) for idx in range(len(table_specs))}
@@ -613,6 +621,10 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
         table_specs, key_fields, key_field_bits, levels, priorities,
         frozenset(unavailable_stages) if readiness_levels is not None
         else frozenset(), seed_at, max(seeds, default=0))
+    charged = {}
+    for placed in by_index.values():
+      for unit, charge in placed:
+        charged[unit.table_idx] = charged.get(unit.table_idx, 0) + charge
     loads = []
     for index, placed in by_index.items():
       loads.append(StageLoad(
@@ -621,7 +633,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                        for width, _ in _stage_shards(charge, 1)),
           fields=frozenset().union(*(unit.fields for unit, _ in placed)),
           tables=len(placed)))
-    return plan(loads, table_stages)
+    return plan(loads, table_stages, charged)
 
   # ---- the range pool, and a single-key classification pool (see the
   # docstring): every table charged its declared blocks, placed as before C5.
@@ -661,6 +673,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
             for index, stage in stages_by_index.items()]
 
   table_stages = {}
+  table_blocks = {}
   if readiness_levels is None:
     stages = []
     for blocks, _width, table_idx, fields in sorted(shards, key=load,
@@ -675,7 +688,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
         place(stages[-1], blocks, fields)
       table_stages[table_idx] = max(position,
                                     table_stages.get(table_idx, position))
-    return plan(as_loads(dict(enumerate(stages))), table_stages)
+      table_blocks[table_idx] = table_blocks.get(table_idx, 0) + blocks
+    return plan(as_loads(dict(enumerate(stages))), table_stages, table_blocks)
 
   # Dependency-aware placement. Three differences from the packer above, all
   # chosen to track the REAL compiler rather than the theoretical optimum:
@@ -704,4 +718,5 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       by_index[index] = empty(seed_at(index))
     place(by_index[index], blocks, fields)
     table_stages[table_idx] = max(index, table_stages.get(table_idx, index))
-  return plan(as_loads(by_index), table_stages)
+    table_blocks[table_idx] = table_blocks.get(table_idx, 0) + blocks
+  return plan(as_loads(by_index), table_stages, table_blocks)
