@@ -22,9 +22,15 @@ from src.p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 from src.p4model.usage import tree_readiness_levels
 
 
-_RESOURCE_TABLE_ROW = re.compile(
-    r"^\|\s*(\S+)\s*\|\s*(-?\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|"
-    r"\s*(\d+)\s*\|\s*(\d+)\s*\|")
+# The committed-allocation parsers live in the library now (spec 2026-09-29
+# §6.2: library code never imports from scripts/). Re-exported under their
+# old names so every script and test that imports them from here is unchanged.
+from src.p4gen.p4_ground_truth import (  # noqa: F401
+    RESOURCE_TABLE_ROW as _RESOURCE_TABLE_ROW,
+    committed_blocks as _committed_blocks,
+    committed_stages_real,
+    committed_table_stages,
+)
 
 
 def _p4_table_keys(p4_path):
@@ -59,23 +65,6 @@ def _p4_table_keys(p4_path):
     return tables, widths, bits
 
 
-def _committed_blocks(logs_dir):
-    """table basename -> physical TCAM block count, from the COMMITTED
-    allocation in mau.resources.log. Returns None when the backend never got
-    as far as allocating resources (see replay_stage_depth's raise)."""
-    path = os.path.join(logs_dir, 'mau.resources.log')
-    with open(path, encoding='utf-8', errors='replace') as handle:
-        text = handle.read()
-    if 'Allocated Resource Usage' not in text:
-        return None
-    blocks = {}
-    for line in text.partition('Allocated Resource Usage')[2].splitlines():
-        match = _RESOURCE_TABLE_ROW.match(line)
-        if match and not match.group(1).endswith('$action'):
-            blocks[match.group(1).split('.')[-1]] = int(match.group(7))
-    return blocks
-
-
 def committed_register_stages(logs_dir):
     """register base name -> the stage the compiler ran its RegisterAction in,
     from the COMMITTED allocation in mau.resources.log.
@@ -94,29 +83,6 @@ def committed_register_stages(logs_dir):
         if match and match.group(1).endswith('_reg'):
             name = match.group(1).split('.')[-1]
             stages[name[:-len('_reg')]] = int(match.group(2))
-    return stages
-
-
-def committed_table_stages(logs_dir):
-    """table basename -> the stage the compiler placed it in, from the
-    COMMITTED allocation in mau.resources.log.
-
-    The measurement Mechanism B is checked against: a stage the placer spends
-    entirely inside a gated register block can hold no table of the outer
-    sequence, so it shows up here as a HOLE in the range pool's occupancy --
-    a stage index between two occupied ones that no table landed in. Returns
-    None when the backend never allocated resources, exactly as
-    _committed_blocks does."""
-    path = os.path.join(logs_dir, 'mau.resources.log')
-    with open(path, encoding='utf-8', errors='replace') as handle:
-        text = handle.read()
-    if 'Allocated Resource Usage' not in text:
-        return None
-    stages = {}
-    for line in text.partition('Allocated Resource Usage')[2].splitlines():
-        match = _RESOURCE_TABLE_ROW.match(line)
-        if match and not match.group(1).endswith('$action'):
-            stages[match.group(1).split('.')[-1]] = int(match.group(2))
     return stages
 
 
@@ -185,22 +151,6 @@ def phv_advanced_tables(logs_dir):
         name = re.sub(r'_\d+$', '', moved)
         advanced[name] = max(int(stage), advanced.get(name, 0))
     return advanced
-
-
-def committed_stages_real(logs_dir):
-    """The compiler's FINAL stage count for a program.
-
-    table_summary.log holds one "Number of stages in table allocation" line
-    per placement round (INITIAL, then NOCC_TRY/REDO_PHV retries), and only
-    the LAST is the allocation the compiler commits to -- cross-checked
-    against mau.resources.log, which only ever reflects the committed one.
-    Reading the first instead (a bare re.search) over-reported 4 of this
-    study's 19 rows by 1-2 stages."""
-    path = os.path.join(logs_dir, 'table_summary.log')
-    with open(path, encoding='utf-8', errors='replace') as handle:
-        last_round = handle.read().split('Table allocation done ')[-1]
-    return int(re.search(r'stages in table allocation:\s*(\d+)',
-                          last_round).group(1))
 
 
 def replay_stage_depth(row_id, artifacts_root, readiness_levels=None):
