@@ -75,7 +75,8 @@ def min_samples_split_from_mult(min_samples_leaf, mult):
     return int(mult) * int(min_samples_leaf)
 
 
-def _vary_hyperparams(params: dict, n_trees: int, max_depth: int) -> dict:
+def _vary_hyperparams(params: dict, n_trees: int, max_depth: int,
+                      rng: np.random.Generator) -> dict:
     """
     Create a variation of hyperparameters for warm-start diversity.
 
@@ -86,16 +87,16 @@ def _vary_hyperparams(params: dict, n_trees: int, max_depth: int) -> dict:
 
     for key in varied:
         if 'n_estimators' in key:
-            delta = np.random.choice([-2, 0, 2])
+            delta = int(rng.choice([-2, 0, 2]))
             varied[key] = max(1, min(n_trees, varied[key] + delta))
         elif 'max_depth' in key:
-            delta = np.random.choice([-1, 0, 1])
+            delta = int(rng.choice([-1, 0, 1]))
             varied[key] = max(2, min(max_depth, varied[key] + delta))
         elif 'min_samples_leaf' in key:
-            delta = np.random.choice([-10, 0, 10])
+            delta = int(rng.choice([-10, 0, 10]))
             varied[key] = max(5, min(55, varied[key] + delta))
         elif 'min_samples_split_mult' in key:
-            delta = np.random.choice([-2, -1, 0, 1, 2])
+            delta = int(rng.choice([-2, -1, 0, 1, 2]))
             varied[key] = max(MIN_SAMPLES_SPLIT_MULT_MIN,
                               min(MIN_SAMPLES_SPLIT_MULT_MAX, varied[key] + delta))
 
@@ -219,7 +220,7 @@ def train_multi_RF_Optuna_multi_constrained(
         val_select_A, val_select_B,
         features_A, features_B,
         max_blocks, encoding, cfg,
-        warm_start_params=None):
+        warm_start_params=None, optuna_seed=None):
     """Search hyperparameters for both tasks under a shared block budget.
 
     Spec B.1/B.2. One fit per trial on the FULL training set: that single model
@@ -231,6 +232,11 @@ def train_multi_RF_Optuna_multi_constrained(
     val_align_*, val_select_* : (X, y) tuples. val_align serves alignment and
         nothing else; val_select serves this objective and, one level up,
         permutation_importance. Disjoint by construction (splits.py).
+
+    optuna_seed: seeds TPE and the warm-start variations (spec 2026-09-29 §5.4).
+        Trials run sequentially (no n_jobs), so the whole search is then a
+        deterministic function of (data, seed) in one environment. None keeps
+        the unseeded behaviour.
 
     Returns a TrainResult (see its docstring for the full field list).
 
@@ -390,7 +396,9 @@ def train_multi_RF_Optuna_multi_constrained(
         # resolution.
         return acc_A, acc_B, float(usage.blocks)
 
+    rng = np.random.default_rng(optuna_seed)
     sampler = TPESampler(
+        seed=optuna_seed,
         n_startup_trials=10,
         n_ei_candidates=24,
         multivariate=True,
@@ -409,7 +417,7 @@ def train_multi_RF_Optuna_multi_constrained(
             study.enqueue_trial(warm_start_params)
             for _ in range(2):
                 study.enqueue_trial(
-                    _vary_hyperparams(warm_start_params, cfg.n_trees, cfg.max_depth))
+                    _vary_hyperparams(warm_start_params, cfg.n_trees, cfg.max_depth, rng))
         except Exception:
             pass  # Ignore if enqueue fails (e.g. bounds changed between k)
 
