@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -54,6 +55,8 @@ class CompileResult:
     sram: Optional[int] = None
     map_ram: Optional[int] = None
     tcam: Optional[int] = None
+    # Combined stdout+stderr of p4c, truncated to the last 20,000 characters.
+    output: str = ''
 
 
 # The four mau.resources.log columns parse_compile_logs extracts, mapped to
@@ -273,13 +276,28 @@ def _to_wsl_path(windows_path: str) -> str:
 _ERRORS_WARNINGS_RE = re.compile(r"(\d+)\s+errors?,\s*(\d+)\s+warnings?\s+generated")
 
 
+class P4CompileTimeout(RuntimeError):
+    """p4c ran past timeout_seconds. A RuntimeError subclass so existing
+    `except RuntimeError` callers are unaffected; the verifier catches it by
+    type to record TIMEOUT rather than COMPILE_ERROR (spec 2026-09-29 §6.3)."""
+
+
+def _native_p4c():
+    """A p4c on PATH on a POSIX host (the Codespace image, spec §8.1), else
+    None -- Windows always takes the WSL route below."""
+    if os.name == 'nt':
+        return None
+    return shutil.which('p4c')
+
+
 def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
                 target: str = "tofino",
                 include_path: str = "resources",
                 p4c_path: str = "~/open-p4studio/install/bin/p4c",
                 timeout_seconds: int = 300) -> CompileResult:
-    """Blocking: runs the real Tofino compiler over WSL2 and parses its
-    resource report.
+    """Blocking: runs the real Tofino compiler and parses its resource
+    report. The tool runs natively when `p4c` is on PATH (Linux/Codespace)
+    and over WSL2 otherwise.
 
     Invokes `wsl -e bash -lc '<full command>'` rather than `["wsl", p4c_path,
     ...]` -- WSL2 only expands `~` in p4c_path and sources PATH/profile when
@@ -343,6 +361,29 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     # (it fills output_dir's contents rather than nesting under it), but
     # output_dir's immediate parent must still already exist for that `cp`
     # to succeed.
+    native = _native_p4c()
+    if native:
+        cmd = [native, '-b', target, '-a', architecture,
+               '-I', _resolve_repo_relative(include_path),
+               '-g', '--verbose', '2', '-o', output_dir, p4_path]
+    else:
+        cmd = _wsl_command(p4_path, output_dir, architecture, target,
+                           include_path, p4c_path)
+    # stdin explicitly closed rather than inherited from the caller: standard
+    # practice for a non-interactive subprocess invocation (avoids ever
+    # blocking on unexpected input).
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds,
+                               stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as e:
+        raise P4CompileTimeout(
+            "p4c compilation timed out after %d seconds"
+            % (timeout_seconds,)) from e
+
+    return _finish_compile(proc, output_dir)
+
+
+def _wsl_command(p4_path, output_dir, architecture, target, include_path, p4c_path):
     wsl_p4_path = _to_wsl_path(p4_path)
     wsl_output_dir = _to_wsl_path(output_dir)
     wsl_include_path = _to_wsl_path(_resolve_repo_relative(include_path))
@@ -361,21 +402,10 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
         f"[ -d \"$SCRATCH/output\" ] && cp -rT \"$SCRATCH/output\" {shlex.quote(wsl_output_dir)}; "
         "rm -rf \"$SCRATCH\"; exit $P4C_STATUS"
     )
-    cmd = ["wsl", "-e", "bash", "-lc", full_command]
-    # stdin explicitly closed rather than inherited from the caller: standard
-    # practice for a non-interactive subprocess invocation (avoids ever
-    # blocking on unexpected input). Note this was NOT the fix for the
-    # pytest-only failure hit while writing the slow integration test below
-    # -- that was output_dir pre-creation (see the comment above); this is
-    # just good hygiene kept alongside it.
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds,
-                               stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError(
-            "p4c compilation timed out after %d seconds"
-            % (timeout_seconds,)) from e
+    return ["wsl", "-e", "bash", "-lc", full_command]
 
+
+def _finish_compile(proc, output_dir):
     result = parse_compile_logs(output_dir)
 
     # p4c reports its own aggregated errors/warnings count in a single
@@ -398,6 +428,7 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
             "in its output, so this is a toolchain failure, not a compile failure:\n%s"
             % (proc.returncode, combined_output[-2000:]))
 
+    result.output = combined_output[-20000:]
     return result
 
 

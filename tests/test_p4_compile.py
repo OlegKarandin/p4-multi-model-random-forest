@@ -18,8 +18,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.p4gen import build_p4_script as bps
+from src.p4gen import p4_compile
 from src.p4gen import p4_compile as pc
 from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
+
+
+@pytest.fixture(autouse=True)
+def _pin_native_p4c_off(request, monkeypatch):
+    """A real p4c on a Codespace's PATH must not divert the WSL-route tests
+    that mock subprocess.run. Real-toolchain (slow) tests are left alone."""
+    if request.node.get_closest_marker("slow") is None:
+        monkeypatch.setattr(pc, "_native_p4c", lambda: None)
 
 
 # main.py:308-314's live 18-feature pool, verbatim -- the exact spelling
@@ -609,3 +618,46 @@ def test_parse_compile_logs_reads_the_committed_allocation_not_the_first(tmp_pat
         table_placement_text="Placement error(s):0 stages required:11\n",
     )
     assert pc.parse_compile_logs(log_dir).stages == 11
+
+
+def test_native_p4c_on_path_is_run_directly_without_wsl(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="0 errors, 1 warnings generated.", stderr="")
+
+    monkeypatch.setattr(p4_compile, "_native_p4c", lambda: "/opt/p4c/bin/p4c")
+    monkeypatch.setattr(p4_compile.subprocess, "run", fake_run)
+    result = p4_compile.compile_p4(str(tmp_path / "prog.p4"), str(tmp_path / "out"))
+    assert calls[0][0] == "/opt/p4c/bin/p4c"
+    assert "wsl" not in calls[0]
+    assert calls[0][calls[0].index("-o") + 1] == str(tmp_path / "out")
+    assert (result.errors, result.warnings) == (0, 1)
+    assert "0 errors" in result.output
+
+
+def test_without_native_p4c_the_wsl_route_is_used(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(p4_compile, "_native_p4c", lambda: None)
+    monkeypatch.setattr(p4_compile.subprocess, "run", lambda cmd, **kw: (
+        calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "0 errors, 0 warnings generated.", "")))
+    p4_compile.compile_p4(str(tmp_path / "prog.p4"), str(tmp_path / "out"))
+    assert calls[0][:3] == ["wsl", "-e", "bash"]
+
+
+def test_a_timeout_raises_the_typed_error_that_is_still_a_runtime_error(tmp_path, monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 5)
+
+    monkeypatch.setattr(p4_compile, "_native_p4c", lambda: "/opt/p4c/bin/p4c")
+    monkeypatch.setattr(p4_compile.subprocess, "run", fake_run)
+    with pytest.raises(p4_compile.P4CompileTimeout):
+        p4_compile.compile_p4(str(tmp_path / "prog.p4"), str(tmp_path / "out"), timeout_seconds=5)
+    assert issubclass(p4_compile.P4CompileTimeout, RuntimeError)
+
+
+def test_native_p4c_is_never_used_on_windows(monkeypatch):
+    monkeypatch.setattr(p4_compile.os, "name", "nt")
+    monkeypatch.setattr(p4_compile.shutil, "which", lambda name: "C:/p4c.exe")
+    assert p4_compile._native_p4c() is None
