@@ -195,6 +195,65 @@ def test_errors_without_a_table_summary_are_a_compile_error(tmp_path):
         assert tar.getnames() == ["p4c_output.txt"]
 
 
+def test_a_native_compile_keeps_its_row_named_bfa_as_prog_bfa(tmp_path):
+    """The native route compiles designs/<row_id>.p4, so p4c writes
+    pipe/<row_id>.bfa; the tarball keeps it under the stable pipe/prog.bfa."""
+    def native(output_dir):
+        _write_logs(output_dir)
+        os.remove(os.path.join(output_dir, "pipe", "prog.bfa"))
+        with open(os.path.join(output_dir, "pipe", "r.bfa"), "w", newline="") as handle:
+            handle.write("native bfa\n")
+        return CompileResult(errors=0, warnings=0, output="")
+
+    run_dir = _run_dir(tmp_path)
+    runner.verify_row(run_dir, "r", compile_fn=FakeCompiler(native))
+    with tarfile.open(os.path.join(run_dir, "verify", "r.tar.gz")) as tar:
+        assert "pipe/r.bfa" not in tar.getnames()
+        assert tar.extractfile("pipe/prog.bfa").read().decode() == "native bfa\n"
+
+
+def test_errors_with_a_feasible_table_summary_are_a_compile_error(tmp_path):
+    """errors > 0 with <= 12 stages logged and no allocation: not a verified
+    compile (it would score NaN blocks downstream)."""
+    def errored(output_dir):
+        _write_logs(output_dir, resources="| Stage Number | SRAM | Map RAM | TCAM |\n",
+                    summary="Table allocation done 1 time(s), state = INITIAL\n"
+                            "Number of stages in table allocation: 11\n")
+        return CompileResult(errors=1, warnings=0,
+                             output="error: no fit\n1 error, 0 warnings generated.\n")
+
+    run_dir = _run_dir(tmp_path)
+    record = runner.verify_row(run_dir, "r", compile_fn=FakeCompiler(errored))
+    assert record["verdict"] == "COMPILE_ERROR" and record["unverified"] is True
+    assert record["failure"] == "p4c_errors"
+    with tarfile.open(os.path.join(run_dir, "verify", "r.tar.gz")) as tar:
+        assert "error: no fit" in tar.extractfile("p4c_output.txt").read().decode()
+
+
+def test_errors_over_12_stages_stay_false_feasible(tmp_path):
+    def too_deep(output_dir):
+        _write_logs(output_dir, resources="| Stage Number | SRAM | Map RAM | TCAM |\n",
+                    summary="Table allocation done 1 time(s), state = INITIAL\n"
+                            "Number of stages in table allocation: 13\n")
+        return CompileResult(errors=1, warnings=0, output="error: no fit\n")
+
+    run_dir = _run_dir(tmp_path)
+    record = runner.verify_row(run_dir, "r", compile_fn=FakeCompiler(too_deep))
+    assert record["verdict"] == "FALSE_FEASIBLE" and record["failure"] is None
+
+
+def test_a_compile_without_a_stage_count_is_a_p4c_error(tmp_path):
+    def no_summary(output_dir):
+        os.makedirs(os.path.join(output_dir, "pipe", "logs"))
+        return CompileResult(errors=0, warnings=0, output="odd p4c output\n")
+
+    run_dir = _run_dir(tmp_path)
+    record = runner.verify_row(run_dir, "r", compile_fn=FakeCompiler(no_summary))
+    assert record["verdict"] == "COMPILE_ERROR" and record["failure"] == "p4c_errors"
+    with tarfile.open(os.path.join(run_dir, "verify", "r.tar.gz")) as tar:
+        assert tar.extractfile("p4c_output.txt").read().decode() == "odd p4c output\n"
+
+
 def test_a_generator_error_is_recorded_without_compiling(tmp_path):
     run_dir = _run_dir(tmp_path, stage_depth=None, blocks=None, tables=None,
                        hw_feasible=False, budget_feasible=False,
@@ -246,12 +305,18 @@ def test_low_disk_compiles_nothing_and_exits_2(tmp_path, capsys):
 
 
 def test_rescore_uses_edited_model_json_without_compiling(tmp_path, monkeypatch):
+    """model.json edited in place (its budget M) plus a model recompute from
+    the saved program (stage_depth 11): both reach the rescored record, and
+    nothing is compiled."""
     run_dir = _run_dir(tmp_path)
     runner.verify_row(run_dir, "r", compile_fn=FakeCompiler())
-    os.remove(os.path.join(run_dir, "designs", "r.p4"))  # model side from model.json
     path = os.path.join(run_dir, "designs", "r.model.json")
     with open(path, "w") as handle:
-        handle.write(canonical_json(_model("r", stage_depth=11)))
+        handle.write(canonical_json(_model("r", M=5)))
+    monkeypatch.setattr(runner, "parse_program", lambda p4: ("parsed", p4))
+    monkeypatch.setattr(runner, "model_breakdown",
+                        lambda program, row_id: {"stage_depth": 11, "blocks": 6,
+                                                 "tables": _TABLES})
 
     def never(*a, **k):
         raise AssertionError("rescore must not compile")
@@ -260,8 +325,18 @@ def test_rescore_uses_edited_model_json_without_compiling(tmp_path, monkeypatch)
     runner.rescore(run_dir)
     record = _verify_json(run_dir)
     assert record["verdict"] == "UNDER" and record["model_stage_depth"] == 11
+    assert record["M"] == 5 and record["model_budget_feasible"] is False
+    assert record["p4c_over_budget"] is True
     assert record["p4c_stage_depth"] == 12 and record["p4c_blocks"] == 6
     assert _csv_rows(run_dir)[0]["verdict"] == "UNDER"
+
+
+def test_rescore_raises_when_a_rows_program_is_missing(tmp_path):
+    run_dir = _run_dir(tmp_path)
+    runner.verify_row(run_dir, "r", compile_fn=FakeCompiler())
+    os.remove(os.path.join(run_dir, "designs", "r.p4"))
+    with pytest.raises(FileNotFoundError, match="r"):
+        runner.rescore(run_dir)
 
 
 def test_rescore_recomputes_the_model_from_the_saved_program(tmp_path, monkeypatch):
@@ -314,4 +389,27 @@ def test_verify_archive_names_the_differing_table_and_exits_1(tmp_path, monkeypa
     assert "get_classification_tree_app_0" in out and "median compile seconds" in out
 
     monkeypatch.setattr(runner, "compile_p4", FakeCompiler())
+    assert cli.main(["--archive", archive]) == 1
+
+
+def test_verify_archive_reports_a_raising_design_as_error_and_goes_on(
+        tmp_path, monkeypatch, capsys):
+    archive = _archive(tmp_path)
+    ok = FakeCompiler()
+
+    def flaky(p4_path, output_dir, timeout_seconds=300, **kw):
+        if os.path.basename(p4_path) == "d1.p4":
+            raise P4CompileTimeout("p4c compilation timed out after 1800 seconds")
+        return ok(p4_path, output_dir, timeout_seconds=timeout_seconds)
+
+    results = runner.verify_archive(archive, compile_fn=flaky)
+    assert [r["row"] for r in results] == ["d1", "d2"]
+    assert results[0]["match"] is False and "timed out" in results[0]["error"]
+    assert results[1]["tables_differing"] == [
+        {"table": "get_classification_tree_app_0", "new": 5, "archived": 4}]
+    out = capsys.readouterr().out
+    assert "d1: ERROR" in out and "timed out" in out
+    assert "d2: DIFF" in out and "total: 0/2 match" in out
+
+    monkeypatch.setattr(runner, "compile_p4", flaky)
     assert cli.main(["--archive", archive]) == 1

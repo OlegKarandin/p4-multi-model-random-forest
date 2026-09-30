@@ -109,7 +109,7 @@ def parse_M_grid(text):
         if 'must be' in str(e):
             raise
         raise ValueError('--M-grid: {}'.format(text))
-    return result
+    return list(dict.fromkeys(result))  # a repeated M names the same cell
 
 
 def optuna_seed(split, k):

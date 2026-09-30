@@ -12,7 +12,6 @@ Holm families; `allow_partial_family=True` is the documented escape for such a
 pilot (see `run_plot_mode`)."""
 import json
 import os
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
@@ -36,8 +35,10 @@ _METRICS = {"phv": {"normal": [{"bit_width": 8, "containers_occupied": 16},
                                {"bit_width": 16, "containers_occupied": 29}]}}
 
 
-def _threads(max_workers):
-    return ThreadPoolExecutor(max_workers=max_workers)
+def _serial(max_workers):
+    """Stage 1 runs serially: concurrent training THREADS share global state
+    (production uses processes), and a 2-thread pool failed once in 20 runs."""
+    return ThreadPoolExecutor(max_workers=1)
 
 
 def _resources(tables):
@@ -97,14 +98,13 @@ def _row_ids(run_dir):
 def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("THESIS_P4C_IMAGE", raising=False)
     monkeypatch.delenv("THESIS_P4STUDIO_COMMIT", raising=False)
-    started = time.time()
     run_dir = str(tmp_path / "run")
 
     # Stage 1: train.
     arms = [("joint", TrainConfig(**_CFG)), ("independent", TrainConfig(**_CFG))]
     jobs = campaign_runner.plan_jobs(arms, [_M], [0], run_dir)
-    summary = campaign_runner.run_jobs(jobs, _synthetic_data(), run_dir, "deadbeef", 2,
-                                       executor_factory=_threads)
+    summary = campaign_runner.run_jobs(jobs, _synthetic_data(), run_dir, "deadbeef", 1,
+                                       executor_factory=_serial)
     assert summary.failed == {}, summary.failed
     feasible = _row_ids(run_dir)
     slugs = {job.slug for job in jobs}
@@ -146,5 +146,3 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
     for row_id, blocks in zip(frame["row_id"], frame["blocks"]):
         assert blocks == p4c_blocks[row_id], row_id
     assert not frame["flagged"].any()
-    print("e2e campaign test ran in {:.1f} s ({} designs)".format(
-        time.time() - started, len(design_ids)))

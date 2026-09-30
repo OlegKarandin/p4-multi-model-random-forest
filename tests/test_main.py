@@ -346,6 +346,32 @@ def test_redo_forces_recomputation(tmp_path):
     assert len(second) == 6
 
 
+def test_redo_is_refused_once_the_run_has_verify_results(tmp_path, capsys):
+    """A redo rewrites designs/<row_id>.p4 under the same row_id while the old
+    verify/<row_id>.json still counts as done: stale p4c numbers for a
+    different program. Refused before any data load or training."""
+    import pytest
+    verify = tmp_path / "run" / "verify"
+    verify.mkdir(parents=True)
+    (verify / "x.json").write_text("{}")
+    calls = []
+    with pytest.raises(SystemExit) as exc:
+        _run_compute(_compute_args(tmp_path, "--redo"), calls)
+    assert exc.value.code not in (0, None)
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "--redo" in err and "new --run" in err
+
+
+def test_without_redo_a_verified_run_still_resumes(tmp_path):
+    verify = tmp_path / "run" / "verify"
+    verify.mkdir(parents=True)
+    (verify / "x.json").write_text("{}")
+    calls = []
+    _run_compute(_compute_args(tmp_path), calls)
+    assert len(calls) == 6
+
+
 def test_redo_flag_defaults_to_off():
     assert m.parse_args([]).redo is False
     assert m.parse_args(['--redo']).redo is True
@@ -745,3 +771,10 @@ def test_run_main_plot_mode_passes_the_results_dir_through():
         mock_plot.return_value = []
         m.run_main()
     assert mock_plot.call_args.kwargs['results_dir'] == 'runs/r1'
+
+
+def test_arm_slugs_flag_drops_duplicate_slugs_keeping_first_order():
+    args = m.parse_args(['--mode', 'compute', '--run', 'r',
+                         '--arm-slugs', 'joint,independent,joint'])
+
+    assert args.arm_slugs == ['joint', 'independent']

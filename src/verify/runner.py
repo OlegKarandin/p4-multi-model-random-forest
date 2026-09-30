@@ -17,6 +17,7 @@ input the original compile output did.
 import csv
 import datetime
 import functools
+import glob
 import hashlib
 import io
 import json
@@ -113,8 +114,15 @@ def _kept_files(output_dir):
     if rounds:
         name = max(rounds)[1]
         kept.append((os.path.join(logs, name), 'pipe/logs/' + name))
+    # p4c names the assembly after the program: the WSL route compiles a copy
+    # named prog.p4 (pipe/prog.bfa), the native route designs/<row_id>.p4
+    # (pipe/<row_id>.bfa). Either is archived as pipe/prog.bfa.
     bfa = os.path.join(output_dir, 'pipe', 'prog.bfa')
-    if os.path.isfile(bfa):
+    if not os.path.isfile(bfa):
+        found = glob.glob(os.path.join(glob.escape(os.path.join(output_dir, 'pipe')),
+                                       '*.bfa'))
+        bfa = found[0] if len(found) == 1 else None
+    if bfa is not None:
         kept.append((bfa, 'pipe/prog.bfa'))
     return kept
 
@@ -240,6 +248,14 @@ def verify_row(run_dir, row_id, compile_fn=None, timeout=300, retry_timeout=1800
                     os.path.join(output_dir, 'pipe', 'logs', 'table_summary.log')):
                 failure, message = 'p4c_errors', result.output
             p4c = p4c_numbers(os.path.join(output_dir, 'pipe', 'logs'))
+            # No stage count at all, or errors on a program that fits in the
+            # pipeline, is not a verified compile. Errors over 12 stages are
+            # the expected FALSE_FEASIBLE path and stay classified.
+            if failure is None and (
+                    p4c.stage_depth is None
+                    or ((result.errors or 0) > 0
+                        and p4c.stage_depth <= TOFINO_PIPELINE_STAGES)):
+                failure, message = 'p4c_errors', result.output
             verdict = classify(model, p4c, M, _FAILURE_VERDICT.get(failure))
             _write_tarball(os.path.join(paths.verify, row_id + '.tar.gz'), output_dir,
                            p4c_output=message if failure else None)
@@ -340,12 +356,16 @@ def run(run_dir, workers=1, compile_fn=None, min_free_bytes=5 * 1024 ** 3):
 
 def _rescored_model(paths, row_id, model):
     """model.json with its model side recomputed by the current code from the
-    saved program. Falls back to model.json as stored when the program is
-    missing. model.json itself is never rewritten (it is byte-deterministic
-    training output)."""
+    saved program; a generator-error row (no program) is returned as stored.
+    A missing program on any other row raises: keeping model.json's values
+    under a new verifier commit would pass them off as rescored. model.json
+    itself is never rewritten (it is byte-deterministic training output)."""
     p4_path = os.path.join(paths.designs, row_id + '.p4')
-    if _generator_failed(paths, row_id, model) or not os.path.isfile(p4_path):
+    if _generator_failed(paths, row_id, model):
         return model
+    if not os.path.isfile(p4_path):
+        raise FileNotFoundError(
+            f"{row_id}: cannot rescore, designs/{row_id}.p4 is missing")
     fresh = model_breakdown(parse_program(p4_path), row_id)
     model = dict(model)
     model.update({
@@ -408,6 +428,17 @@ def _blocks_or_none(logs_dir):
 
 
 def _verify_archived_design(archive_dir, row, compile_fn):
+    """One design's comparison; an exception becomes an ERROR result so one
+    bad design never hides the others."""
+    try:
+        return _compare_archived_design(archive_dir, row, compile_fn)
+    except Exception as exc:
+        return {'row': row, 'stages_new': None, 'stages_archived': None,
+                'tables_differing': [], 'match': False, 'compile_seconds': None,
+                'error': f"{type(exc).__name__}: {exc}"}
+
+
+def _compare_archived_design(archive_dir, row, compile_fn):
     p4_path = os.path.join(archive_dir, 'p4_src', row + '.p4')
     stored_logs = os.path.join(archive_dir, 'compiles', row, 'pipe', 'logs')
     with tempfile.TemporaryDirectory(prefix='archive_' + row + '_') as tmp:
@@ -446,6 +477,9 @@ def verify_archive(archive_dir, workers=1, compile_fn=None):
         results = list(pool.map(
             lambda row: _verify_archived_design(archive_dir, row, compile_fn), rows))
     for r in results:
+        if r.get('error') is not None:
+            print(f"{r['row']}: ERROR {r['error']}")
+            continue
         line = (f"{r['row']}: {'OK' if r['match'] else 'DIFF'} stages "
                 f"{r['stages_new']} (archived {r['stages_archived']})")
         for t in r['tables_differing']:
@@ -453,7 +487,7 @@ def verify_archive(archive_dir, workers=1, compile_fn=None):
         print(line)
     matched = sum(r['match'] for r in results)
     print(f"total: {matched}/{len(results)} match")
-    if results:
-        print(f"median compile seconds: "
-              f"{statistics.median(r['compile_seconds'] for r in results):.1f}")
+    seconds = [r['compile_seconds'] for r in results if r['compile_seconds'] is not None]
+    if seconds:
+        print(f"median compile seconds: {statistics.median(seconds):.1f}")
     return results

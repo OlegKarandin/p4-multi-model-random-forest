@@ -24,6 +24,7 @@ from src.reporting import figures
 from src.reporting.manifest import git_provenance, write_campaign_manifest
 
 import argparse
+import glob
 import os
 import sys
 import numpy as np
@@ -220,7 +221,7 @@ def _parse_arm_slugs(value):
     if not slugs:
         raise argparse.ArgumentTypeError(
             "--arm-slugs needs at least one slug, got {!r}".format(value))
-    return slugs
+    return list(dict.fromkeys(slugs))  # a repeated slug names the same arm
 
 
 def _parse_max_workers(value):
@@ -430,6 +431,14 @@ def run_compute_mode(args):
     failed, so the campaign log shows it. A failed job writes no file, so the
     next invocation retries it.
     """
+    if args.redo and glob.glob(os.path.join(
+            glob.escape(campaign_run.run_paths(args.run).verify), '*.json')):
+        # A redo rewrites designs/<row_id>.p4 under the same row_id while the
+        # old verify/<row_id>.json still counts as done, so the verifier
+        # would keep p4c numbers for a different program.
+        print("error: --redo refused: {} already holds verify results; "
+              "use a new --run directory".format(args.run), file=sys.stderr)
+        sys.exit(2)
     arms = (select_arm_slugs(args.arm_slugs) if args.arm_slugs is not None
             else select_arms(args.arms))
     M_values = args.M

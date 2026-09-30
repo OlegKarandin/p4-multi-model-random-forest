@@ -72,3 +72,8 @@ def test_parse_M_grid_rejects_what_m_token_cannot_name(text):
     row_id hours into a run, and 'INF' used to raise a bare OverflowError."""
     with pytest.raises(ValueError):
         cr.parse_M_grid(text)
+
+
+def test_parse_M_grid_drops_duplicates_keeping_first_order():
+    assert cr.parse_M_grid("35,35,15") == [35, 15]
+    assert cr.parse_M_grid("inf,15,inf") == [cr.INF, 15]
