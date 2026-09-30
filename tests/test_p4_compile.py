@@ -629,6 +629,7 @@ def test_native_p4c_on_path_is_run_directly_without_wsl(tmp_path, monkeypatch):
 
     monkeypatch.setattr(p4_compile, "_native_p4c", lambda: "/opt/p4c/bin/p4c")
     monkeypatch.setattr(p4_compile.subprocess, "run", fake_run)
+    (tmp_path / "prog.p4").write_text("// program")
     result = p4_compile.compile_p4(str(tmp_path / "prog.p4"), str(tmp_path / "out"))
     assert calls[0][0] == "/opt/p4c/bin/p4c"
     assert "wsl" not in calls[0]
@@ -652,6 +653,7 @@ def test_a_timeout_raises_the_typed_error_that_is_still_a_runtime_error(tmp_path
 
     monkeypatch.setattr(p4_compile, "_native_p4c", lambda: "/opt/p4c/bin/p4c")
     monkeypatch.setattr(p4_compile.subprocess, "run", fake_run)
+    (tmp_path / "prog.p4").write_text("// program")
     with pytest.raises(p4_compile.P4CompileTimeout):
         p4_compile.compile_p4(str(tmp_path / "prog.p4"), str(tmp_path / "out"), timeout_seconds=5)
     assert issubclass(p4_compile.P4CompileTimeout, RuntimeError)
@@ -661,3 +663,29 @@ def test_native_p4c_is_never_used_on_windows(monkeypatch):
     monkeypatch.setattr(p4_compile.os, "name", "nt")
     monkeypatch.setattr(p4_compile.shutil, "which", lambda name: "C:/p4c.exe")
     assert p4_compile._native_p4c() is None
+
+
+def test_native_route_compiles_a_prog_p4_copy_and_cleans_it_up(tmp_path, monkeypatch):
+    # p4c names its compiler-generated tables (tbl_<program>l202...) and the assembly
+    # after the program's file name, so the native route must compile a copy called
+    # prog.p4 exactly as the WSL route does -- otherwise a native run differs from the
+    # archived WSL compiles in those names (R1, 2026-09-30: 13/73 matched before this).
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        program = cmd[-1]
+        seen["name"] = os.path.basename(program)
+        seen["text"] = open(program, encoding="utf-8").read()
+        seen["dir"] = os.path.dirname(program)
+        return subprocess.CompletedProcess(cmd, 0, stdout="0 errors, 0 warnings generated.", stderr="")
+
+    monkeypatch.setattr(p4_compile, "_native_p4c", lambda: "/opt/p4c/bin/p4c")
+    monkeypatch.setattr(p4_compile.subprocess, "run", fake_run)
+    source = tmp_path / "designs" / "joint_M035_s00_k03.p4"
+    source.parent.mkdir()
+    source.write_text("// the generated program")
+    p4_compile.compile_p4(str(source), str(tmp_path / "out"))
+    assert seen["name"] == "prog.p4"
+    assert seen["text"] == "// the generated program"
+    assert not os.path.exists(seen["dir"])
+    assert source.read_text() == "// the generated program"
