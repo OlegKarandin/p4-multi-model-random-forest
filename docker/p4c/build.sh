@@ -58,6 +58,10 @@ rm -f "$LIBLIST"
 
 docker build --build-arg P4STUDIO_COMMIT="$COMMIT" -t "$IMAGE" "$CTX"
 docker run --rm "$IMAGE" p4c --version
+# `p4c --version` only runs the python wrapper; the real compiler is p4c-barefoot, and a
+# missing shared library there shows up only when it starts (measured 2026-09-30: 30
+# libabsl libs unresolved in the Codespace). Fail the build before pushing if any is.
+docker run --rm "$IMAGE" bash -c 'ldd /opt/open-p4studio/install/bin/p4c-barefoot | { ! grep "not found"; }'
 docker push "$IMAGE"
 
 DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"

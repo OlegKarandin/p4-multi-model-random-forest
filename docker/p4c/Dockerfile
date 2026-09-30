@@ -17,7 +17,10 @@ RUN curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download
 ARG P4STUDIO_COMMIT
 COPY install /opt/open-p4studio/install
 COPY extra-libs/ /usr/local/lib/thesis-p4c/
-RUN echo /usr/local/lib/thesis-p4c > /etc/ld.so.conf.d/thesis-p4c.conf && ldconfig \
+# install/lib joins the loader cache: p4c-barefoot's RUNPATH ($ORIGIN/../lib) covers only its
+# direct dependencies, while ~30 libabsl libs are transitive deps with no RUNPATH of their own
+# (the WSL host resolves them through its system cache; a bare image does not).
+RUN printf '/opt/open-p4studio/install/lib\n/usr/local/lib/thesis-p4c\n' > /etc/ld.so.conf.d/thesis-p4c.conf && ldconfig \
  && apt-get update && apt-get install -y --no-install-recommends cpp libboost-all-dev \
  && rm -rf /var/lib/apt/lists/*
 ENV PATH=/opt/open-p4studio/install/bin:$PATH \
