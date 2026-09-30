@@ -1,5 +1,6 @@
-"""P7c: the thesis deliverables (spec C.5) -- seven from the original plan
-plus deliverable 8 (S3.3, T12's entries-vs-blocks question).
+"""P7c: the thesis deliverables (spec C.5) -- seven from the original plan,
+deliverable 8 (S3.3, T12's entries-vs-blocks question), and, for a
+compiler-verified RUN only, deliverables 9 and 10 (spec section 7.3).
 
 Everything upstream of this module exists to make these artifacts correct.
 `campaign_data.load_campaign` supplies the frame, `claims.py` supplies
@@ -15,8 +16,10 @@ every statistic, and this module does one thing: render them.
 | 6 | appendix: capacity-ceiling rederivation (B.7) | replaces "chosen manually" |
 | 7 | appendix: elimination order per split | reproducibility |
 | 8 | entries vs blocks, faceted by k (S3.3) | T12: is the joint-mapping saving real, or an artifact of TCAM block quantization? |
+| 9 | model-vs-p4c agreement per arm x M, plus every miss (run only) | does the cost model the numbers were selected by agree with the compiler? |
+| 10 | budget binding per arm x M (run only) | does each block budget M actually bind? |
 
-Four, five and eight are tables and six is a replay, so `Deliverable`
+Four, five, eight, nine and ten are tables and six is a replay, so `Deliverable`
 carries a `figure` that is None for those; every deliverable is
 independently callable, because `main.py --mode plot` (P7d) and the pilot
 cell both need to invoke them one at a time.
@@ -68,13 +71,31 @@ reproduce:
   filter and no accuracy filter anywhere in this module; feasibility
   filtering already happened once, at load.
 
-Arm ordering follows `claims.JOINT_ARM_SLUGS` (the sweep order), with the
-independent baseline first and any arm slug this module has never heard of
-appended at the end rather than dropped -- an unrecognised arm is a thing
-to see in the figure, not to hide.
+Arm ordering follows `claims.JOINT_ARM_SLUGS` -- the 3-arm design since
+Task 13: `independent` first, then `joint-off`, then `joint` -- and any arm
+slug this module has never heard of is appended at the end rather than
+dropped: an unrecognised arm is a thing to see in the figure, not to hide.
+That includes an ARCHIVED 7-arm frame's delta arms (`joint-d005`,
+`joint-dinf`, ...): the figures that overlay arms (1, 2, 7, 8) still draw
+them, after the current arms, but the claims families (3, 4, 5) run only
+over `claims.JOINT_ARM_SLUGS`, so on archived data those deliverables cover
+`joint-off` alone (and the default family-size gate refuses them).
+
+**M may be infinite.** A run's unbudgeted cell has `M = inf` (float64), so
+every label that prints an M goes through `format_M` ('25', or the infinity
+sign), never `str(M)`, which would print '25.0' or 'inf'. The CSVs keep M as
+a number (`inf` round-trips through pandas); only human-facing text is
+formatted.
+
+**Flagged rows.** In a run, a row p4c could not verify (compile error,
+timeout) is `flagged` and carries the MODEL's numbers. Every scatter splits
+its rows on `flagged` and draws the flagged ones with `FLAGGED_MARKER` and
+`gid='flagged:{arm}'`, so a reader can always tell a compiler-checked point
+from an unchecked one.
 """
 import contextlib
 import io
+import json
 import os
 from dataclasses import dataclass, field, replace
 from typing import Optional, Tuple
@@ -156,6 +177,45 @@ _MAX_FIGURE_HEIGHT = 3 * _PANEL_HEIGHT
 # more arms than the qualitative colormap has colours stays readable.
 _MARKERS = ('o', 's', '^', 'D', 'v', 'P', 'X', '*', '<', '>')
 
+# A flagged (unverified) point: p4c never confirmed its numbers, so it is
+# drawn differently from every compiler-checked point, in every scatter.
+FLAGGED_MARKER = 'x'
+
+_INFINITY_SIGN = '\u221e'
+
+
+def format_M(M):
+    """An M value as a label: '25' for a whole number (never '25.0'), the
+    infinity sign for the unbudgeted cell (never 'inf'), '{:g}' otherwise.
+    Every figure and table label that prints an M goes through this."""
+    value = float(M)
+    if np.isinf(value):
+        return _INFINITY_SIGN
+    if value.is_integer():
+        return str(int(value))
+    return '{:g}'.format(value)
+
+
+def _flagged(frame, column='flagged'):
+    """`frame[column]` as a bool Series (all False when absent): a run's
+    parsed bools, or the literal 'True'/'False' text."""
+    if column not in frame.columns:
+        return pd.Series(False, index=frame.index)
+    values = frame[column]
+    if values.dtype == bool:
+        return values
+    return values.map(lambda value: str(value).strip().lower() == 'true')
+
+
+def _flagged_sentence(n_flagged, n_rows, unit='rows'):
+    """The caption sentence for flagged points, or '' when there are none."""
+    if not n_flagged:
+        return ''
+    return (' {} of {} {} are FLAGGED and drawn as "{}": p4c did not verify '
+            'them (a compile error or a timeout), so they carry the MODEL\'s '
+            'numbers, not the compiler\'s.'.format(
+                n_flagged, n_rows, unit, FLAGGED_MARKER))
+
 
 @dataclass
 class Deliverable:
@@ -175,6 +235,9 @@ class Deliverable:
     figure: Optional[Figure] = None
     markdown_body: Optional[str] = None
     paths: Tuple[str, ...] = field(default=())
+    # Further tables written beside `data` as `<stem>_<suffix>.csv`, e.g.
+    # deliverable 9's misses next to its summary.
+    extra_data: Tuple[Tuple[str, pd.DataFrame], ...] = field(default=())
 
 
 def _log(message):
@@ -189,13 +252,14 @@ def _log(message):
 
 def ordered_arms(df, include_baseline=True,
                  baseline=claims.INDEPENDENT_ARM_SLUG):
-    """The arm slugs present in `df`, in sweep order.
+    """The arm slugs present in `df`, in design order.
 
-    Known arms come first in `claims.JOINT_ARM_SLUGS` order (the two
-    anchors, then increasing delta), so tables and figures read left to
-    right as the sweep. An arm slug this module does not recognise is
-    APPENDED rather than dropped: a campaign that grew an arm should show
-    up in the figure, not vanish from it.
+    Known arms come first in `claims.JOINT_ARM_SLUGS` order (`joint-off`,
+    then `joint`), so tables and figures read left to right as the design.
+    An arm slug this module does not recognise -- including an archived
+    delta arm such as `joint-d005` -- is APPENDED rather than dropped: a
+    campaign that grew an arm should show up in the figure, not vanish from
+    it.
     """
     present = list(dict.fromkeys(df['arm_slug'].tolist()))
     known = list(claims.JOINT_ARM_SLUGS)
@@ -226,11 +290,13 @@ def require_baseline(df, baseline, where):
 
 
 def _delta_tick_label(arm_slug, delta_num, is_inf):
-    """The x-axis label for one arm on the delta sweep.
+    """The x-axis label for one arm on the joint-arm axis.
 
-    Both non-numeric arms keep their own identity instead of being given an
-    invented numeric position: `joint-dinf` is the accept-all anchor (not a
-    large number) and `joint-off` never ran alignment at all (not delta 0).
+    Non-numeric arms keep their own identity instead of being given an
+    invented numeric position: `joint-off` never ran alignment at all (not
+    delta 0) and `joint` is the aligned arm (no tolerance axis since
+    2026-09-15). An archived frame's `joint-dinf` (the accept-all anchor,
+    not a large number) keeps 'inf', and its numeric delta arms their delta.
     """
     if bool(is_inf):
         return 'inf'
@@ -330,9 +396,21 @@ def _markdown_table(frame, float_format='{:.6g}'):
              '|' + '|'.join(['---'] * len(columns)) + '|']
     for _, row in frame.iterrows():
         lines.append('| ' + ' | '.join(
-            _markdown_cell(row[column], float_format)
+            _markdown_M_cell(row[column]) if column == 'M'
+            else _markdown_cell(row[column], float_format)
             for column in columns) + ' |')
     return '\n'.join(lines)
+
+
+def _markdown_M_cell(value):
+    """An `M` table cell through `format_M` ('25', the infinity sign)."""
+    if value is None or (isinstance(value, (float, np.floating))
+                         and np.isnan(value)):
+        return ''
+    try:
+        return format_M(value)
+    except (TypeError, ValueError):
+        return _markdown_cell(value, '{:.6g}')
 
 
 def _project_columns(table, columns):
@@ -367,6 +445,11 @@ def _write(deliverable, output_dir):
         csv_path = stem + '.csv'
         deliverable.data.to_csv(csv_path, index=False)
         paths.append(csv_path)
+
+    for suffix, frame in deliverable.extra_data:
+        extra_path = '{}_{}.csv'.format(stem, suffix)
+        frame.to_csv(extra_path, index=False)
+        paths.append(extra_path)
 
     markdown_path = stem + '.md'
     sections = ['# Figure/Table {}. {}'.format(deliverable.number,
@@ -466,6 +549,7 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
 
     for arm in arms:
         arm_rows = df[df['arm_slug'] == arm]
+        arm_flagged = _flagged(arm_rows)
         front = claims.pareto_front_3d(arm_rows)
         projections = claims.pareto_projections(front)
         colour, marker = styles[arm]
@@ -480,9 +564,22 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
                     cell_rows = arm_rows[arm_rows['k'] == k]
                     plane_k = (plane[plane['k'] == k]
                               if 'k' in plane.columns else plane)
-                axis.scatter(cell_rows['blocks'], cell_rows[accuracy_column],
+                # Split on `flagged` the way the trade row below splits on
+                # front membership: an unverified cell (model numbers, not
+                # p4c's) is drawn as FLAGGED_MARKER, never as an ordinary
+                # cell.
+                cell_flagged = arm_flagged.loc[cell_rows.index].to_numpy()
+                plain_rows = cell_rows[~cell_flagged]
+                flagged_rows = cell_rows[cell_flagged]
+                axis.scatter(plain_rows['blocks'], plain_rows[accuracy_column],
                              s=10, alpha=0.25, color=colour, linewidths=0,
                              gid='cells:{}'.format(arm))
+                if len(flagged_rows):
+                    axis.scatter(flagged_rows['blocks'],
+                                 flagged_rows[accuracy_column],
+                                 s=36, color=colour, marker=FLAGGED_MARKER,
+                                 linewidths=1.4,
+                                 gid='flagged:{}'.format(arm))
                 axis.plot(plane_k['blocks'], plane_k[accuracy_column],
                           marker=marker, color=colour, linewidth=1.6,
                           markersize=5, label=arm, gid='front:{}'.format(arm))
@@ -502,8 +599,18 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
             axis = axes[trade_row][col_index]
             cell_rows = arm_rows if k is None else arm_rows[arm_rows['k'] == k]
             on_front = cell_rows.index.isin(front_index)
-            off_rows = cell_rows[~on_front]
+            cell_flagged = arm_flagged.loc[cell_rows.index].to_numpy()
+            # A flagged point keeps its ring when it sits on the front (front
+            # membership is a fact about the numbers it carries), but is
+            # never drawn as an ordinary faint cell: it gets FLAGGED_MARKER.
+            off_rows = cell_rows[~on_front & ~cell_flagged]
             on_rows = cell_rows[on_front]
+            flagged_rows = cell_rows[cell_flagged]
+            if len(flagged_rows):
+                axis.scatter(flagged_rows['acc_app'], flagged_rows['acc_ddos'],
+                             c=flagged_rows['blocks'], cmap=trade_cmap,
+                             norm=trade_norm, s=40, marker=FLAGGED_MARKER,
+                             linewidths=1.4, gid='flagged:{}'.format(arm))
             if len(off_rows):
                 axis.scatter(off_rows['acc_app'], off_rows['acc_ddos'],
                              c=off_rows['blocks'], cmap=trade_cmap,
@@ -649,7 +756,7 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     caption = (
         'Per-task accuracy against TCAM blocks: the top two rows are the '
         'two tasks, never averaged, and columns are odd feature counts k '
-        '(1, 3, 5, ..., 17), with every arm of the sweep overlaid in every '
+        '(1, 3, 5, ..., 17), with every arm of the design overlaid in every '
         'panel. A single mean accuracy hides a model that is excellent on '
         'one task and unusable on the other, and pooling every k into one '
         'panel hides how the trade-off moves as k grows.{} '
@@ -673,8 +780,9 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         'dominated in both accuracy-vs-blocks rows above. It carries no '
         'connecting line: unlike blocks on the x-axis of the rows above, '
         'acc_app and acc_ddos have no ordering between them for a line to '
-        'imply.{}'.format(facet_sentence, coverage_sentence,
-                          hypervolume_sentence))
+        'imply.{}{}'.format(facet_sentence, coverage_sentence,
+                            hypervolume_sentence,
+                            _flagged_sentence(int(_flagged(df).sum()), len(df))))
 
     data = (pd.concat(front_frames, ignore_index=True)
             if front_frames else pd.DataFrame())
@@ -812,9 +920,10 @@ def delta_frontier_table(df, baseline=claims.INDEPENDENT_ARM_SLUG,
 def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
                             baseline=claims.INDEPENDENT_ARM_SLUG,
                             confidence=0.95):
-    """What the alignment tolerance buys: block saving and per-task relative
-    error change (on accuracy AND F1) against delta, mean +/- CI across
-    splits.
+    """What each joint arm buys against the baseline: block saving and
+    per-task relative error change (on accuracy AND F1) per arm, mean +/- CI
+    across splits. (The slug and function name keep "delta" from the retired
+    tolerance sweep; the x axis is now the joint arms.)
 
     A grid of panels: rows are the five reported quantities (the two tasks'
     accuracy relative-error change, the two tasks' F1 relative-error change,
@@ -825,10 +934,11 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
     reported here because it is a tested metric wherever accuracy is
     (D2 admits F1 for exactly this reason -- a minority-class collapse is
     what accuracy alone hides). The x axis within each panel is categorical
-    in sweep order rather than numeric: `joint-off` (alignment never ran)
-    and `joint-dinf` (accept every move) are anchors, not numbers, and
-    placing them on a numeric axis would require inventing coordinates for
-    them.
+    in `ordered_arms` order rather than numeric: `joint-off` (alignment
+    never ran) and `joint` (aligned) are arms, not numbers, and placing them
+    on a numeric axis would require inventing coordinates for them. An
+    archived frame's delta arms are appended after them, labelled by their
+    delta (`joint-dinf` as 'inf').
     """
     table = delta_frontier_table(df, baseline=baseline, confidence=confidence)
     arms = [arm for arm in ordered_arms(df, include_baseline=False,
@@ -884,7 +994,7 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
             axis.axhline(0.0, color='0.4', linewidth=1.0, linestyle=':')
             axis.set_xticks(x)
             axis.set_xticklabels(tick_labels)
-            axis.set_xlabel('alignment tolerance delta')
+            axis.set_xlabel('joint arm')
             axis.set_ylabel(labels[metric])
             if k is not None:
                 axis.set_title('k={}'.format(k))
@@ -916,25 +1026,26 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
         'is one value of k ({}), shown separately, because the paper\'s '
         'conclusion is k-dependent (main.tex:591) and a k-pooled mean '
         'cannot reproduce it. '.format(
-            ', '.join(str(value) for value in pooled_m) or 'none present',
+            ', '.join(format_M(value) for value in pooled_m) or 'none present',
             ', '.join(str(value) for value in pooled_k) or 'none present'))
 
     caption = (
-        'The alignment tolerance sweep: block change and per-task relative '
-        'error change, on BOTH accuracy and F1, against delta, each point a '
-        'mean over splits with a {:.0%} Student-t confidence interval, '
-        'paired against the {} arm on (M, split, k). {}The two tasks are '
+        'The joint arms against the baseline: block change and per-task '
+        'relative error change, on BOTH accuracy and F1, one point per joint '
+        'arm, each a mean over splits with a {:.0%} Student-t confidence '
+        'interval, paired against the {} arm on (M, split, k). {}The two '
+        'tasks are '
         'shown on separate panels for each metric and are never averaged; '
-        'relative error ((e_delta - e_base) / e_base) is reported because '
+        'relative error ((e_arm - e_base) / e_base) is reported because '
         'the tasks have very different error scales, so equal accuracy (or '
         'F1) losses are not equal degradations. F1 is shown alongside '
         'accuracy because a minority-class collapse is exactly what '
-        'accuracy alone can hide. The two anchors '
-        'carry no numeric delta and are labelled as themselves: "off" never '
-        'ran alignment at all, and "inf" accepts every move. '
-        'THE FEATURE SETS DIFFER ACROSS DELTA BY CONSTRUCTION -- alignment '
-        'changes which thresholds, and hence which intervals and which '
-        'eliminated features, each arm ends up with, so the arms are not '
+        'accuracy alone can hide. The arms carry no numeric position and are '
+        'labelled as themselves: "off" shares one encoding but never ran '
+        'threshold alignment, and "joint" is the aligned arm. '
+        'THE FEATURE SETS DIFFER ACROSS ARMS BY CONSTRUCTION -- sharing and '
+        'alignment change which thresholds, and hence which intervals and '
+        'which eliminated features, each arm ends up with, so the arms are not '
         'evaluated on identical inputs. Split-level replication is what '
         'controls the resulting variance: each interval is built over '
         'per-split mean differences, one observation per split, so the '
@@ -944,7 +1055,7 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
 
     return _write(Deliverable(
         number=2, slug='delta_frontier',
-        title='Delta frontier: block and per-task relative-error change',
+        title='Joint-arm frontier: block and per-task relative-error change',
         caption=caption, data=table, figure=figure), output_dir)
 
 
@@ -976,15 +1087,16 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
     `claims.substitution_test_all_arms`: the Pearson r, the partial r
     controlling for the block delta (two accuracy deltas can correlate
     purely because both track how much TCAM the cell was allowed), the
-    Holm-corrected one-sided p across the seven arms, and the quadrant
-    fractions.
+    Holm-corrected one-sided p across the joint arms
+    (`claims.SUBSTITUTION_FAMILY_SIZE`, one test per arm in
+    `claims.JOINT_ARM_SLUGS`), and the quadrant fractions.
 
     The F1 row is DESCRIPTIVE ONLY -- the same question (does one task's
     gain come at the other's expense?) is live for F1 too, since a
     minority-class collapse is exactly what accuracy alone can hide (R3
     §IV(d), the reason D2 admits F1 at all) -- but it adds nothing to either
-    Holm family: `claims.SUBSTITUTION_FAMILY_SIZE` stays 7 (the accuracy
-    test count), never 14, and there is no parallel
+    Holm family: `claims.SUBSTITUTION_FAMILY_SIZE` stays one test per joint
+    arm (the accuracy test count), never doubled, and there is no parallel
     `claims.substitution_test_all_arms`-style correlation test run on F1.
     The tested F1 comparisons live in deliverable 4
     (`claims.paired_tests`' superiority family already includes `f1_app` /
@@ -993,9 +1105,11 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
     `d_f1_app` / `d_f1_ddos` via `claims.DEFAULT_METRICS` -- with no new
     statistic computed here.
 
-    The test runs at every arm, not just the largest delta, so the claim
-    defended is "no task sacrifices itself at any tolerance" rather than "at
-    one operating point".
+    The test runs at every joint arm, so the claim defended is "no task
+    sacrifices itself under either joint arm" rather than "at one operating
+    point". A pair with either side `flagged` (unverified, model numbers) is
+    drawn with `FLAGGED_MARKER` and `gid='flagged:{arm}'` on both rows; the
+    statistics above still include it, exactly as `claims.py` computes them.
 
     `expected_family_size` defaults to None so a partial campaign (the pilot
     cell) still renders; pass `claims.SUBSTITUTION_FAMILY_SIZE` to turn a
@@ -1016,14 +1130,29 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
         for axis in axes.ravel():
             figure.delaxes(axis)
 
+    n_pairs_total, n_pairs_flagged = 0, 0
     for col_index, arm in enumerate(arms):
         record = table[table['treatment'] == arm].iloc[0]
         deltas = claims.arm_deltas(df, arm, baseline)
+        # `arm_deltas` is built row-for-row from `pair_arms` (same join,
+        # index reset), so the pair's flags line up by position: a pair is
+        # flagged when EITHER side carries the model's numbers.
+        paired = pair_arms(df, arm, baseline)
+        pair_flagged = (_flagged(paired, 'flagged_treatment')
+                        | _flagged(paired, 'flagged_baseline')).to_numpy()
+        plain = deltas[~pair_flagged]
+        marked = deltas[pair_flagged]
+        n_pairs_total += len(deltas)
+        n_pairs_flagged += len(marked)
 
         axis = axes[accuracy_row][col_index]
-        axis.scatter(deltas['d_acc_app'], deltas['d_acc_ddos'],
+        axis.scatter(plain['d_acc_app'], plain['d_acc_ddos'],
                      s=14, alpha=0.55, linewidths=0,
                      gid='substitution:{}'.format(arm))
+        if len(marked):
+            axis.scatter(marked['d_acc_app'], marked['d_acc_ddos'],
+                         s=30, color='C3', marker=FLAGGED_MARKER,
+                         linewidths=1.2, gid='flagged:{}'.format(arm))
         axis.axhline(0.0, color='0.3', linewidth=1.0)
         axis.axvline(0.0, color='0.3', linewidth=1.0)
         for column, (x, y, ha, va, name) in _QUADRANT_ANCHORS.items():
@@ -1043,9 +1172,13 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
         # (none are computed for F1 here -- see the docstring). Quadrant
         # zero lines are kept for visual continuity with the row above.
         f1_axis = axes[f1_row][col_index]
-        f1_axis.scatter(deltas['d_f1_app'], deltas['d_f1_ddos'],
+        f1_axis.scatter(plain['d_f1_app'], plain['d_f1_ddos'],
                         s=14, alpha=0.55, linewidths=0,
                         gid='substitution-f1:{}'.format(arm))
+        if len(marked):
+            f1_axis.scatter(marked['d_f1_app'], marked['d_f1_ddos'],
+                            s=30, color='C3', marker=FLAGGED_MARKER,
+                            linewidths=1.2, gid='flagged:{}'.format(arm))
         f1_axis.axhline(0.0, color='0.3', linewidth=1.0)
         f1_axis.axvline(0.0, color='0.3', linewidth=1.0)
         f1_axis.set_title('{} (F1, descriptive)'.format(arm), fontsize='medium')
@@ -1069,16 +1202,18 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
         'one-sided p for rho < 0 after Holm-Bonferroni correction across '
         'the {} arms tested, and the quadrant fractions. Arms where '
         'substitution is detected at alpha = {:g} after correction: {}. The '
-        'test is run at every tolerance, so the claim is about the whole '
-        'sweep and not one operating point. Cells within a split share a '
+        'test is run at every joint arm, so the claim is about the whole '
+        'design and not one operating point. Cells within a split share a '
         'training split, so these p-values are anti-conservative relative to '
         'the number of independent splits. The F1 row is DESCRIPTIVE ONLY -- '
         'the same substitution question is live for F1 (a minority-class '
         'collapse is exactly what accuracy alone can hide), but no '
         'correlation test is run on it here and it adds nothing to either '
-        'Holm family; the tested F1 comparisons are in Table 4.'.format(
+        'Holm family; the tested F1 comparisons are in Table 4.{}'.format(
             baseline, len(arms), alpha,
-            ', '.join(detected) if detected else 'none'))
+            ', '.join(detected) if detected else 'none',
+            _flagged_sentence(n_pairs_flagged, n_pairs_total,
+                              'paired cells (either side flagged)')))
 
     return _write(Deliverable(
         number=3, slug='substitution_scatter',
@@ -1091,7 +1226,7 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
 # ---------------------------------------------------------------------------
 
 _PAIRED_TEST_MARKDOWN_COLUMNS = (
-    'family', 'unit', 'contrast', 'metric', 'alternative', 'n_pairs',
+    'family', 'subset', 'unit', 'contrast', 'metric', 'alternative', 'n_pairs',
     'n_splits', 'median_diff', 'mean_diff_split_level', 'ci_low', 'ci_high',
     'p_value', 'p_holm', 'significant_holm')
 
@@ -1102,19 +1237,28 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
                          expected_family_size=None,
                          expected_noninferiority_family_size=None):
     """The pre-registered paired tests, Holm-corrected -- rendered, not
-    recomputed. Every number is `claims.paired_tests`' or
+    recomputed. Every number is `claims.paired_tests_robustness`' (whose
+    `'all'` subset IS `claims.paired_tests`) or
     `claims.noninferiority_tests`'.
 
     Two INDEPENDENT test families sit in this one table, discriminated by
-    the `family` column:
+    the `family` column, plus the superiority family's robustness lines:
 
     * `family='superiority'` -- `claims.paired_tests`' pre-registered
-      35-comparison family (`claims.PRE_REGISTERED_FAMILY_SIZE`): "no
-      detectable loss" (or non-inferiority within `margin` when `margin >
-      0`) on `acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, plus a two-sided
-      test on `blocks`, for each of the seven joint arms against `baseline`.
+      family (`claims.PRE_REGISTERED_FAMILY_SIZE`, one test per metric in
+      `claims.DEFAULT_METRICS` for each arm in `claims.JOINT_ARM_SLUGS`):
+      "no detectable loss" (or non-inferiority within `margin` when `margin
+      > 0`) on `acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, plus a two-sided
+      test on `blocks`, for each joint arm against `baseline`.
+    * `family='robustness'` -- directly under it, the same tests re-run by
+      `claims.paired_tests_robustness` on its extra subsets, labelled by the
+      `subset` column: `no_flagged` (without unverified rows; only when any
+      row is flagged) and `heldout_splits` (without the development splits).
+      Checks on the headline, not families of their own: each is
+      Holm-corrected over what it ran and none is held to the family size.
+      A subset with no rows is skipped, and the markdown says so.
     * `family='noninferiority'` -- `claims.noninferiority_tests`' D13 family
-      (`claims.NONINFERIORITY_FAMILY_SIZE` = 14): non-inferiority of each
+      (`claims.NONINFERIORITY_FAMILY_SIZE`): non-inferiority of each
       joint arm to `baseline` on `acc_app`/`acc_ddos` ONLY, at a margin sized
       per row as a FRACTION of that row's own baseline error (see that
       function's docstring for why this cannot reuse `paired_tests(...,
@@ -1158,25 +1302,52 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
     `expected_noninferiority_family_size=claims.NONINFERIORITY_FAMILY_SIZE`
     on the complete campaign to turn either shrunken family into an error.
     """
-    superiority_tables = [
-        claims.paired_tests(
+    superiority_tables, robustness_tables = [], []
+    for unit in units:
+        stacked = claims.paired_tests_robustness(
             df, baseline=baseline, metrics=claims.DEFAULT_METRICS,
             margin=margin, alpha=alpha, unit=unit,
             expected_family_size=expected_family_size)
-        for unit in units
-    ]
+        main = stacked[stacked['subset'] == 'all'].reset_index(drop=True)
+        extra = stacked[stacked['subset'] != 'all'].reset_index(drop=True)
+        main.insert(0, 'family', 'superiority')
+        extra.insert(0, 'family', 'robustness')
+        superiority_tables.append(main)
+        robustness_tables.append(extra)
     noninferiority_tables = [
         claims.noninferiority_tests(
             df, baseline=baseline, alpha=alpha, unit=unit,
             expected_family_size=expected_noninferiority_family_size)
         for unit in units
     ]
-    for one_table in superiority_tables:
-        one_table.insert(0, 'family', 'superiority')
     for one_table in noninferiority_tables:
         one_table.insert(0, 'family', 'noninferiority')
-    table = pd.concat(superiority_tables + noninferiority_tables,
-                      ignore_index=True)
+        one_table.insert(1, 'subset', 'all')
+    # The robustness lines sit directly UNDER the main family they check.
+    table = pd.concat(superiority_tables + robustness_tables
+                      + noninferiority_tables, ignore_index=True)
+
+    # Which robustness subsets `paired_tests_robustness` would run on this
+    # frame, and which it skipped for having no rows -- said on the face of
+    # the table, so a missing line reads as "empty", not as "forgotten".
+    expected_subsets = []
+    if _flagged(df).any():
+        expected_subsets.append('no_flagged')
+    expected_subsets.append('heldout_splits')
+    ran_subsets = set(table.loc[table['family'] == 'robustness', 'subset'])
+    skipped_subsets = [name for name in expected_subsets
+                       if name not in ran_subsets]
+    robustness_note = (
+        'ROBUSTNESS LINES (`family` = robustness, labelled by `subset`) '
+        're-run the superiority family on: {}. Each is Holm-corrected over '
+        'the comparisons it ran and none is held to the pre-registered '
+        'size; they check the headline, they are not families of their '
+        'own.{}'.format(
+            ', '.join('`{}`'.format(name) for name in expected_subsets
+                      if name in ran_subsets) or 'none',
+            ' Skipped for having no rows: {}.'.format(
+                ', '.join('`{}`'.format(name) for name in skipped_subsets))
+            if skipped_subsets else ''))
 
     # n_comparisons is the same family size for every unit within a family
     # (it counts contrasts x metrics, not pairs), so one note per family
@@ -1191,18 +1362,20 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
         'reported ALONGSIDE the superiority tests, never instead of them. '
         '`superiority`: {} comparisons were Holm-corrected within EACH unit '
         '(pair and split are corrected independently of each other); the '
-        'pre-registered family is {} (7 joint arms x 5 tests). {} '
+        'pre-registered family is {} ({} joint arms x {} tests). {} '
         '`noninferiority`: {} comparisons were Holm-corrected within EACH '
-        'unit; the pre-registered family is {} (7 joint arms x 2 accuracy '
+        'unit; the pre-registered family is {} ({} joint arms x {} accuracy '
         'metrics -- F1 is not retested here, it stays in the superiority '
         'family). {}'.format(
             n_superiority, claims.PRE_REGISTERED_FAMILY_SIZE,
+            len(claims.JOINT_ARM_SLUGS), len(claims.DEFAULT_METRICS),
             'The superiority family is complete.'
             if n_superiority == claims.PRE_REGISTERED_FAMILY_SIZE else
             'The superiority family is INCOMPLETE, so this correction is '
             'weaker than the pre-registered one and its adjusted p-values '
             'below are correspondingly optimistic.',
             n_noninferiority, claims.NONINFERIORITY_FAMILY_SIZE,
+            len(claims.JOINT_ARM_SLUGS), len(claims.NONINFERIORITY_METRICS),
             'The non-inferiority family is complete.'
             if n_noninferiority == claims.NONINFERIORITY_FAMILY_SIZE else
             'The non-inferiority family is INCOMPLETE, so this correction '
@@ -1213,12 +1386,14 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
         'Paired Wilcoxon signed-rank tests, one per (family, unit, contrast, '
         'task) and one per (family, unit, contrast) on blocks. Two '
         'INDEPENDENT test families are stacked in this one table (the '
-        '`family` column): `superiority` is the pre-registered 35-comparison '
-        'family ("no detectable loss", or non-inferiority within `margin` '
-        'when `margin` > 0) and `noninferiority` is D13\'s 14-comparison '
-        'family testing non-inferiority of accuracy at a margin sized per '
-        'row as a fraction of that row\'s own baseline error -- reported '
-        'ALONGSIDE the superiority tests, never in their place. Within each '
+        '`family` column): `superiority` is the pre-registered '
+        '{}-comparison family ("no detectable loss", or non-inferiority '
+        'within `margin` when `margin` > 0) and `noninferiority` is D13\'s '
+        '{}-comparison family testing non-inferiority of accuracy at a '
+        'margin sized per row as a fraction of that row\'s own baseline '
+        'error -- reported ALONGSIDE the superiority tests, never in their '
+        'place. The superiority family\'s robustness lines (`family` = '
+        'robustness) follow it directly, one block per `subset`. Within each '
         'family, two units are reported for every comparison, per Ruling '
         'P7-3: `pair` tests one difference per (M, split, k) cell -- the '
         'spec-mandated primary, paired exactly as spec C.3 requires -- but '
@@ -1237,18 +1412,22 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
         'blocks as well as save them. The non-inferiority tests are '
         'one-sided in the same direction, against a per-row margin rather '
         'than a flat one. '
-        '{}'.format(
-            'd + {:g}'.format(margin) if margin > 0 else 'd', family_note))
+        '{} {}'.format(
+            claims.PRE_REGISTERED_FAMILY_SIZE,
+            claims.NONINFERIORITY_FAMILY_SIZE,
+            'd + {:g}'.format(margin) if margin > 0 else 'd', family_note,
+            robustness_note))
 
     markdown = _markdown_table(
         _project_columns(table, _PAIRED_TEST_MARKDOWN_COLUMNS))
-    body = '\n'.join([markdown, '', family_note, '',
+    body = '\n'.join([markdown, '', family_note, '', robustness_note, '',
                       'Hypotheses, verbatim from `claims.paired_tests` '
-                      '(family=superiority) and `claims.noninferiority_tests` '
+                      '(family=superiority/robustness) and '
+                      '`claims.noninferiority_tests` '
                       '(family=noninferiority):', ''] +
-                     ['* `{}` / `{}` / `{}` / `{}`: {}'.format(
-                         row['family'], row['unit'], row['contrast'],
-                         row['metric'], row['hypothesis'])
+                     ['* `{}` / `{}` / `{}` / `{}` / `{}`: {}'.format(
+                         row['family'], row['subset'], row['unit'],
+                         row['contrast'], row['metric'], row['hypothesis'])
                       for _, row in table.iterrows()])
 
     return _write(Deliverable(
@@ -1271,7 +1450,7 @@ def table_5_ablation(df, output_dir=DEFAULT_FIGURE_DIR, confidence=0.95):
 
     Two components, and the second's baseline is the point of the whole
     table: `sharing` is `joint-off - independent`, and `alignment` is
-    `joint-<delta> - joint-off`. Measuring alignment against `independent`
+    `joint - joint-off`. Measuring alignment against `independent`
     instead would re-count the sharing effect inside every alignment number
     and the two components would not add up.
     """
@@ -1283,7 +1462,7 @@ def table_5_ablation(df, output_dir=DEFAULT_FIGURE_DIR, confidence=0.95):
         'and on blocks, never pooled across tasks. "sharing" is '
         'joint-off minus independent: joint-off skips threshold alignment '
         'entirely, so the contrast isolates the cost of sharing one feature '
-        'encoding. "alignment" is each swept delta minus joint-off, measured '
+        'encoding. "alignment" is the aligned joint arm minus joint-off, measured '
         'against joint-off rather than against independent so that the '
         'sharing effect is not counted twice and the two components add up. '
         'Descriptive only: no p-values, because testing these contrasts too '
@@ -1742,6 +1921,97 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
 
 
 # ---------------------------------------------------------------------------
+# Deliverable 9 -- model-vs-p4c agreement (compiler-verified runs only)
+# ---------------------------------------------------------------------------
+
+def _tables_differing_text(tables):
+    """`tables_differing` (a list of {table, model, p4c}) as one readable
+    markdown cell: 'tbl_x: model 4, p4c 6; ...'."""
+    return '; '.join('{}: model {}, p4c {}'.format(
+        entry.get('table'), entry.get('model'), entry.get('p4c'))
+        for entry in tables)
+
+
+def table_9_agreement(verification, output_dir=DEFAULT_FIGURE_DIR):
+    """Model-vs-p4c agreement per arm x M, and every miss -- rendered from
+    `claims.agreement_table`, not recomputed (spec section 7.3).
+
+    `verification` is `campaign_data.load_verification`'s frame: EVERY
+    verified design, including the ones `load_campaign` drops as
+    p4c-infeasible, because this table is about the cost model, not about
+    the reported designs. `.data` is the summary (one row per arm x M); the
+    misses go beside it as `<stem>_misses.csv` (with `tables_differing` as
+    JSON text), and the markdown carries both frames.
+    """
+    summary, misses = claims.agreement_table(verification)
+
+    misses_csv = misses.copy()
+    misses_csv['tables_differing'] = [
+        json.dumps(tables, sort_keys=True) for tables in misses['tables_differing']]
+    misses_markdown = misses.copy()
+    misses_markdown['tables_differing'] = [
+        _tables_differing_text(tables) for tables in misses['tables_differing']]
+
+    n_rows = int(summary['n'].sum()) if len(summary) else 0
+    caption = (
+        'Agreement between the cost model and p4c, per arm and block budget '
+        'M, over every design of the run p4c was asked to compile ({} rows) '
+        '-- including designs the reported frame drops because p4c found '
+        'them infeasible: this table is about the model, not about the '
+        'reported designs. `stage_depth_exact` and `blocks_exact` count the '
+        'rows whose model number equals p4c\'s exactly; `blocks_na` counts '
+        'verified rows where p4c never allocated blocks (over 12 stages), '
+        'so blocks agreement reads out of `n - blocks_na` at most. An '
+        'unverified row (compile error or timeout) is exact on neither. '
+        'Below the summary, every row whose verdict is not EXACT, with both '
+        'numbers and the tables that differ.'.format(n_rows))
+
+    body = '\n'.join([
+        _markdown_table(summary) if len(summary) else '(no verified rows)',
+        '', '## Misses ({})'.format(len(misses)), '',
+        _markdown_table(misses_markdown) if len(misses_markdown)
+        else '(none: every verified row is EXACT)'])
+
+    return _write(Deliverable(
+        number=9, slug='agreement',
+        title='Model-vs-p4c agreement per arm and block budget',
+        caption=caption, data=summary, markdown_body=body,
+        extra_data=(('misses', misses_csv),)), output_dir)
+
+
+# ---------------------------------------------------------------------------
+# Deliverable 10 -- budget binding (compiler-verified runs only)
+# ---------------------------------------------------------------------------
+
+def table_10_budget_binding(df, output_dir=DEFAULT_FIGURE_DIR, share=0.9):
+    """Per arm x M, the share of rows whose blocks reach `share * M` --
+    rendered from `claims.budget_binding` (spec section 7.3).
+
+    `df` is `load_campaign`'s frame, whose `blocks` holds p4c's numbers for
+    every verified row and the MODEL's for a flagged one; the caption says
+    how many flagged rows there are.
+    """
+    table = claims.budget_binding(df, share=share)
+    flagged = _flagged(df)
+    caption = (
+        'Budget binding: for each arm and block budget M, the share of '
+        'designs whose TCAM blocks reach {:g} x M. A budget that binds shows '
+        'a high share; M = 75 near zero and indistinguishable from the '
+        'unbudgeted cell confirms the top of the grid, and any other '
+        'non-binding M is reported as such rather than hidden. The '
+        'unbudgeted cell (M = {}) has no budget to bind and its share is '
+        'left blank. Blocks are p4c\'s numbers for every verified design; '
+        '{} of {} rows are flagged (unverified) and carry the model\'s '
+        'numbers instead.'.format(share, format_M(float('inf')),
+                                  int(flagged.sum()), len(df)))
+    body = _markdown_table(table) if len(table) else '(no rows)'
+    return _write(Deliverable(
+        number=10, slug='budget_binding',
+        title='Budget binding per arm and block budget',
+        caption=caption, data=table, markdown_body=body), output_dir)
+
+
+# ---------------------------------------------------------------------------
 # The whole set
 # ---------------------------------------------------------------------------
 
@@ -1750,8 +2020,14 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
                baseline=claims.INDEPENDENT_ARM_SLUG,
                expected_family_size=None,
                expected_noninferiority_family_size=None,
-               expected_substitution_family_size=None):
+               expected_substitution_family_size=None,
+               verification=None):
     """Render every §C.5 deliverable and return them in order.
+
+    `verification` is `campaign_data.load_verification`'s frame for a
+    compiler-verified RUN (a directory with `rows/`); passing it adds
+    deliverables 9 (agreement) and 10 (budget binding), which only a run
+    can support. None -- a legacy flat directory -- omits both.
 
     `ceiling_csv=None` omits deliverable 6 -- the capacity-ceiling appendix
     replays a measurement that either exists on disk or does not, and a
@@ -1786,4 +2062,8 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
     deliverables.append(
         figure_8_entries_vs_blocks(df, output_dir=output_dir,
                                    baseline=baseline))
+    if verification is not None:
+        deliverables.append(
+            table_9_agreement(verification, output_dir=output_dir))
+        deliverables.append(table_10_budget_binding(df, output_dir=output_dir))
     return tuple(sorted(deliverables, key=lambda item: item.number))

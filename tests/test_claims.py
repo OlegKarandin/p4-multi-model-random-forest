@@ -1385,3 +1385,17 @@ def test_paired_tests_robustness_holds_only_all_to_the_family_size():
     df = df[df['arm_slug'] != 'joint']
     with pytest.raises(ValueError, match='(?i)famil'):
         paired_tests_robustness(df, expected_family_size=PRE_REGISTERED_FAMILY_SIZE)
+
+
+def test_paired_tests_robustness_skips_an_empty_subset_instead_of_crashing():
+    """Task 14: a run holding only development splits leaves `heldout_splits`
+    empty, and a run with every row flagged leaves `no_flagged` empty. An
+    empty robustness subset has nothing to test; it is skipped (absent from
+    `subset`), never allowed to crash the headline `all` family."""
+    df = _robustness_frame()
+    df = df[df['split'].isin([10, 11, 12, 13])].copy()
+    df['flagged'] = True
+
+    table = paired_tests_robustness(df)
+
+    assert set(table['subset']) == {'all'}

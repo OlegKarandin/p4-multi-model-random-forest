@@ -1398,7 +1398,10 @@ def paired_tests_robustness(df, **paired_kwargs):
 
     The two robustness subsets are checks on the headline result, not new
     families, so `expected_family_size` is dropped for them; each is still
-    Holm-corrected over the comparisons it ran.
+    Holm-corrected over the comparisons it ran. A robustness subset with no
+    rows (only development splits present, or every row flagged) has
+    nothing to test and is SKIPPED -- absent from `subset` -- rather than
+    allowed to crash the headline `'all'` family.
     """
     subsets = [('all', df)]
     if 'flagged' in df.columns:
@@ -1411,6 +1414,8 @@ def paired_tests_robustness(df, **paired_kwargs):
                          if key != 'expected_family_size'}
     tables = []
     for name, subset in subsets:
+        if name != 'all' and len(subset) == 0:
+            continue
         kwargs = paired_kwargs if name == 'all' else robustness_kwargs
         table = paired_tests(subset, **kwargs)
         table.insert(0, 'subset', name)

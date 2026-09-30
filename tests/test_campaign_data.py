@@ -584,19 +584,23 @@ def _ver(row_id, verdict='EXACT', p4c_stage_depth=10, p4c_blocks=32,
 
 
 def _write_run(tmp_path, rows, verification, manifest=None, name='run'):
-    """Write a run directory: rows/ per-split CSVs grouped by (M, split),
-    named as split_csv_name names them (rf_t7_d14_M035_joint_s00.csv, and an
-    Minf file for unbudgeted rows), plus verification.csv in the verifier's
-    own column order and run_manifest.json."""
+    """Write a run directory: rows/ per-split CSVs grouped by (arm, M,
+    split), named as split_csv_name names them (rf_t7_d14_M035_joint_s00.csv,
+    and an Minf file for unbudgeted rows), plus verification.csv in the
+    verifier's own column order and run_manifest.json. The arm slug in each
+    filename is read off the row's own `row_id` ({arm_slug}_M...), so a run
+    of several arms (Task 14's end-to-end render) writes one file per arm."""
     run = tmp_path / name
     (run / 'rows').mkdir(parents=True)
     groups = {}
     for row in rows:
         token = 'inf' if row['M'] == '' else '{:03d}'.format(int(row['M']))
-        groups.setdefault((token, row['split']), []).append(row)
-    for (token, split), group in groups.items():
+        arm_slug = row['row_id'].rsplit('_M', 1)[0]
+        groups.setdefault((arm_slug, token, row['split']), []).append(row)
+    for (arm_slug, token, split), group in groups.items():
         pd.DataFrame(group).to_csv(
-            run / 'rows' / 'rf_t7_d14_M{}_joint_s{:02d}.csv'.format(token, split),
+            run / 'rows' / 'rf_t7_d14_M{}_{}_s{:02d}.csv'.format(
+                token, arm_slug, split),
             index=False)
     pd.DataFrame(verification, columns=list(VERIFICATION_COLUMNS)).to_csv(
         run / 'verification.csv', index=False)

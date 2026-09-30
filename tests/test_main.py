@@ -567,17 +567,21 @@ def _write_small_two_arm_campaign(results_dir):
                        blocks=30 + s)
         for s in range(3) for k in (5, 9)
     ]
+    # The fresh aligned arm (no delta_align tolerance since 2026-09-15), so
+    # this legacy flat-directory campaign pairs one of claims.JOINT_ARM_SLUGS
+    # against the baseline -- the archived 'joint-d005' slug is no longer a
+    # contrast any claims.py family runs.
     joint_rows = [
         _plot_mode_row('joint', 'multi', split=s, k=k,
-                       alignment_enabled=True, delta_align='0.05',
-                       overlap_threshold='0.5',
+                       alignment_enabled=True, delta_align='',
+                       overlap_threshold='',
                        acc_app=0.91 + 0.001 * s, acc_ddos=0.82 + 0.001 * k,
                        blocks=25 + s)
         for s in range(3) for k in (5, 9)
     ]
     _write_plot_mode_campaign_file(results_dir, 11, 14, 25, 'independent',
                                    independent_rows)
-    _write_plot_mode_campaign_file(results_dir, 11, 14, 25, 'joint-d005',
+    _write_plot_mode_campaign_file(results_dir, 11, 14, 25, 'joint',
                                    joint_rows)
 
 
@@ -624,9 +628,9 @@ def test_plot_mode_end_to_end_writes_all_deliverables_that_apply_to_a_campaign_w
 
 def test_plot_mode_end_to_end_raises_on_a_partial_campaign_when_allow_partial_family_is_not_set(tmp_path):
     """A two-arm synthetic campaign can never assemble the pre-registered
-    7-arm family, so the default (allow_partial_family=False) must raise
-    rather than silently Holm-correcting over the 3 comparisons this
-    campaign actually has."""
+    3-arm family (independent + both joint arms), so the default
+    (allow_partial_family=False) must raise rather than silently
+    Holm-correcting over the comparisons this campaign actually has."""
     import pytest
 
     results_dir = tmp_path / 'results'
@@ -660,3 +664,84 @@ def test_arm_slugs_defaults_to_none_so_arms_presets_still_apply():
 
     assert args.arm_slugs is None
     assert args.arms == 'primary'
+
+
+# ---------------------------------------------------------------------------
+# Task 14: a compiler-verified RUN through --mode plot -- the render gate
+# (every design row must carry a verdict) and deliverables 9 and 10.
+# ---------------------------------------------------------------------------
+
+def _verified_run_rows(splits=(0, 1, 2, 3), ks=(5, 6), Ms=(35, 'inf')):
+    """Rows and verification lines for a small three-arm run, built on Task
+    12's `_run_row` / `_ver` builders."""
+    from tests.test_campaign_data import _run_row, _ver
+
+    arms = (('independent', 'independent', 'single', False, 0.000, 0),
+            ('joint-off', 'joint', 'multi', False, 0.004, -2),
+            ('joint', 'joint', 'multi', True, 0.008, -4))
+    rows, lines = [], []
+    for slug, arm, method, aligned, gain, saving in arms:
+        for M in Ms:
+            for split in splits:
+                for k in ks:
+                    blocks = 30 + split + k + saving
+                    row = _run_row(split=split, k=k, M=M, blocks=blocks)
+                    token = 'inf' if M == 'inf' else '{:03d}'.format(M)
+                    row_id = '{}_M{}_s{:02d}_k{:02d}'.format(slug, token, split, k)
+                    row.update({
+                        'arm': arm, 'method': method,
+                        'alignment_enabled': aligned, 'row_id': row_id,
+                        'acc_app': 0.80 + 0.01 * split + 0.002 * k + gain,
+                        'f1_app': 0.78 + 0.01 * split + 0.002 * k + gain,
+                        'acc_ddos': 0.90 + 0.005 * split - 0.001 * k + gain,
+                        'f1_ddos': 0.88 + 0.005 * split - 0.001 * k + gain,
+                    })
+                    rows.append(row)
+                    lines.append(_ver(row_id, M='' if M == 'inf' else M,
+                                      p4c_stage_depth=9, p4c_blocks=blocks))
+    return rows, lines
+
+
+def test_plot_mode_end_to_end_over_a_verified_run_renders_deliverables_9_and_10(tmp_path):
+    from tests.test_campaign_data import _write_run
+
+    rows, lines = _verified_run_rows()
+    run = _write_run(tmp_path, rows, lines)
+
+    deliverables = m.run_plot_mode(results_dir=run,
+                                   output_dir=str(tmp_path / 'figures'))
+
+    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 7, 8, 9, 10]
+    for deliverable in deliverables:
+        assert deliverable.paths
+        for path in deliverable.paths:
+            assert os.path.isfile(path)
+
+
+def test_plot_mode_refuses_to_render_a_run_with_a_missing_verdict(tmp_path, capsys):
+    from src.reporting.campaign_data import UnverifiedRowsError
+    from tests.test_campaign_data import _write_run
+
+    rows, lines = _verified_run_rows(splits=(0,), ks=(5,), Ms=(35,))
+    missing = lines.pop()['row_id']
+    run = _write_run(tmp_path, rows, lines)
+
+    with pytest.raises(UnverifiedRowsError):
+        m.run_plot_mode(results_dir=run, output_dir=str(tmp_path / 'figures'))
+    out = capsys.readouterr().out
+    assert 'refusing to render: 1 rows have no verdict:' in out
+    assert missing in out
+    assert not (tmp_path / 'figures').exists()
+
+
+def test_parse_args_results_dir_defaults_to_results():
+    assert m.parse_args([]).results_dir == 'results'
+    assert m.parse_args(['--results-dir', 'runs/r1']).results_dir == 'runs/r1'
+
+
+def test_run_main_plot_mode_passes_the_results_dir_through():
+    with patch("src.main.run_plot_mode") as mock_plot,          patch.object(sys, "argv",
+                      ["main.py", "--mode", "plot", "--results-dir", "runs/r1"]):
+        mock_plot.return_value = []
+        m.run_main()
+    assert mock_plot.call_args.kwargs['results_dir'] == 'runs/r1'

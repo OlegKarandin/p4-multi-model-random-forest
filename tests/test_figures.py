@@ -57,6 +57,9 @@ _DELTA_BY_SLUG = {
     'joint-d010': (0.10, False),
     'joint-d020': (0.20, False),
     'joint-dinf': (float('nan'), True),
+    # The fresh aligned arm (2026-09-15 onward) carries no delta column at
+    # all, so it parses to NaN like joint-off.
+    'joint': (float('nan'), False),
 }
 
 _FEATURES = ('Flow.IAT.Max', 'Flow.IAT.Min', 'Fwd.IAT.Mean',
@@ -76,7 +79,7 @@ def _features_at(split, task, k):
     return ';'.join(_feature_order(split, task)[:k])
 
 
-def _row(arm_slug='joint-d005', M=25, split=0, k=5,
+def _row(arm_slug='joint', M=25, split=0, k=5,
          acc_app=0.90, acc_ddos=0.50, blocks=40.0, stages=3.0,
          f1_app=None, f1_ddos=None,
          range_entries=100.0, ternary_entries=50.0):
@@ -160,7 +163,7 @@ def _constant_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS,
     return _frame(rows)
 
 
-def _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off', 'joint-d005'),
+def _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off', 'joint'),
                      n_splits=3, m_values=(25, 50, 75), k_values=(3, 4, 5),
                      seed=11):
     """A frame whose accuracies and blocks vary with (M, k, split), so the
@@ -383,7 +386,10 @@ def test_deliverable_1_never_plots_the_average_of_the_two_task_accuracies():
 
 
 def test_deliverable_1_overlays_every_arm_present_including_unknown_ones():
-    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off',
+    # 'joint-d005' / 'joint-dinf' are archived 7-arm slugs: no longer in
+    # claims.JOINT_ARM_SLUGS, so they are "unrecognised" here exactly like
+    # 'joint-experimental', and must still be appended, not dropped.
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off', 'joint',
                                 'joint-d005', 'joint-dinf'))
     df = pd.concat([df, df[df.arm_slug == 'joint-off'].assign(
         arm_slug='joint-experimental')], ignore_index=True)
@@ -392,8 +398,8 @@ def test_deliverable_1_overlays_every_arm_present_including_unknown_ones():
     # give 2 odd k columns, so 2 tasks x 2 k columns = 4 lines per arm.
     n_odd_k = len({int(k) for k in df['k'].unique() if int(k) % 2 == 1})
     expected = len(figures.TASKS) * n_odd_k
-    for arm in ('independent', 'joint-off', 'joint-d005', 'joint-dinf',
-                'joint-experimental'):
+    for arm in ('independent', 'joint-off', 'joint', 'joint-d005',
+                'joint-dinf', 'joint-experimental'):
         assert len(_lines_by_gid(deliverable.figure, 'front:' + arm)) == expected
 
 
@@ -405,7 +411,7 @@ def test_deliverable_1_draws_the_3d_pareto_front_claims_computed_not_a_2d_one():
     each k column only shows that k's slice of the one pooled front, which
     is what this test checks for k=3, the first (smallest odd) column."""
     df = _spread_campaign()
-    arm = 'joint-d005'
+    arm = 'joint'
     k = 3
     pooled = claims.pareto_projections(
         claims.pareto_front_3d(df[df.arm_slug == arm]))['acc_app_vs_blocks']
@@ -428,7 +434,7 @@ def test_deliverable_1_keeps_a_low_accuracy_cell_at_k_17():
     """`plotting.py:356-361` drops any front point below 0.8 accuracy, but
     only when k == 17 -- a magic filter on a magic k."""
     df = _spread_campaign(k_values=(16, 17))
-    df.loc[(df.k == 17) & (df.arm_slug == 'joint-d005'), 'acc_app'] = 0.31
+    df.loc[(df.k == 17) & (df.arm_slug == 'joint'), 'acc_app'] = 0.31
     deliverable = figures.figure_1_accuracy_vs_blocks(df, output_dir=None)
     assert _contains(_drawn_values(deliverable.figure), 0.31)
 
@@ -616,7 +622,7 @@ def test_deliverable_2_pooling_sentence_reflects_the_joined_grid_not_the_raw_fra
     for M in (25,):    # the joint arm only ran at M=25
         for split in range(3):
             for k in (4, 5):
-                rows.append(_row(arm_slug='joint-d005', M=M, split=split, k=k,
+                rows.append(_row(arm_slug='joint', M=M, split=split, k=k,
                                  acc_app=BASE_ACC_APP - 0.10,
                                  acc_ddos=BASE_ACC_DDOS - 0.10, blocks=35.0))
     df = _frame(rows)
@@ -662,15 +668,26 @@ def test_deliverable_2_uses_split_level_replication_for_its_confidence_interval(
 
 
 def test_deliverable_2_places_the_two_non_numeric_arms_without_inventing_a_delta():
-    """`joint-off` (alignment never ran) and `joint-dinf` (accept-all) both
-    carry a NaN parsed delta and must not be dropped or given a made-up
-    numeric position."""
+    """The 3-arm design's two joint arms, `joint-off` (alignment never ran)
+    and `joint` (aligned, no tolerance axis since 2026-09-15), both carry a
+    NaN parsed delta and must not be dropped or given a made-up numeric
+    position: each is labelled as itself, in sweep order."""
     deliverable = figures.figure_2_delta_frontier(
         _constant_campaign(), output_dir=None)
     ticks = [t.get_text() for t in deliverable.figure.axes[0].get_xticklabels()]
-    assert 'inf' in ticks
-    assert any('off' in tick for tick in ticks)
+    assert ticks == ['off', 'joint']
     assert set(deliverable.data['arm_slug']) == set(JOINT_ARM_SLUGS)
+
+
+def test_deliverable_2_still_labels_an_archived_accept_all_arm_inf():
+    """Archived 7-arm frames still render: `joint-dinf` (accept-all, a NaN
+    delta flagged inf) keeps its own 'inf' label rather than a made-up
+    number, appended after the current arms."""
+    deliverable = figures.figure_2_delta_frontier(
+        _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off',
+                                 'joint-dinf')), output_dir=None)
+    ticks = [t.get_text() for t in deliverable.figure.axes[0].get_xticklabels()]
+    assert ticks == ['off', 'inf']
 
 
 def test_deliverable_2_facets_by_k_instead_of_averaging_it_away():
@@ -687,11 +704,13 @@ def test_deliverable_2_facets_by_k_instead_of_averaging_it_away():
 # F1) per arm column
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('n_arms', [2, 5, 7])
+@pytest.mark.parametrize('n_arms', [1, 2])
 def test_deliverable_3_draws_two_panels_per_arm_whatever_the_arm_count(n_arms):
     """The old module hardcoded a 3x3 grid for exactly nine k values. Task
     19 Part 5 adds an F1 row alongside the existing accuracy row, so the
-    panel count is 2 x n_arms, not n_arms."""
+    panel count is 2 x n_arms, not n_arms. The substitution family is
+    `claims.JOINT_ARM_SLUGS` (2 arms since Task 13), so 1 and 2 are the arm
+    counts it can take."""
     arms = (INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:n_arms]
     deliverable = figures.figure_3_substitution_scatter(
         _spread_campaign(arms=arms), output_dir=None)
@@ -700,10 +719,13 @@ def test_deliverable_3_draws_two_panels_per_arm_whatever_the_arm_count(n_arms):
 
 def test_deliverable_3_scatters_the_per_task_deltas_claims_paired():
     df = _spread_campaign()
-    arm = 'joint-d005'
+    arm = 'joint'
     expected = claims.arm_deltas(df, arm, INDEPENDENT_ARM_SLUG)
     deliverable = figures.figure_3_substitution_scatter(df, output_dir=None)
-    panel = [ax for ax in deliverable.figure.axes if arm in ax.get_title()][0]
+    # Exact match on the title's first line: 'joint' is a substring of
+    # 'joint-off', so a substring test would pick the wrong arm's panel.
+    panel = [ax for ax in deliverable.figure.axes
+             if ax.get_title().splitlines()[0] == arm][0]
     offsets = np.asarray(panel.collections[0].get_offsets(), dtype='float64')
     assert np.allclose(np.sort(offsets[:, 0]),
                        np.sort(expected['d_acc_app'].to_numpy()))
@@ -727,7 +749,7 @@ def test_deliverable_3_f1_row_scatters_the_per_task_f1_deltas():
     `claims.arm_deltas` (which already carries `d_f1_app`/`d_f1_ddos` via
     `claims.DEFAULT_METRICS`) -- no new statistic is computed for it."""
     df = _spread_campaign()
-    arm = 'joint-d005'
+    arm = 'joint'
     expected = claims.arm_deltas(df, arm, INDEPENDENT_ARM_SLUG)
     deliverable = figures.figure_3_substitution_scatter(df, output_dir=None)
     f1_panel = [ax for ax in deliverable.figure.axes
@@ -743,9 +765,11 @@ def test_deliverable_3_f1_row_scatters_the_per_task_f1_deltas():
 def test_deliverable_3_f1_row_adds_nothing_to_either_holm_family():
     """The natural mistake here is to let the doubled panel count leak into
     a family-size expectation. `claims.SUBSTITUTION_FAMILY_SIZE` (the
-    accuracy substitution test count) must stay 7, and the F1 row must not
-    introduce its own correlation-test table."""
-    assert claims.SUBSTITUTION_FAMILY_SIZE == 7
+    accuracy substitution test count) must stay one test per joint arm --
+    never doubled by the F1 row -- and the F1 row must not introduce its own
+    correlation-test table."""
+    assert claims.SUBSTITUTION_FAMILY_SIZE == len(JOINT_ARM_SLUGS)
+    assert claims.SUBSTITUTION_FAMILY_SIZE != 2 * len(JOINT_ARM_SLUGS)
     df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS)
     deliverable = figures.figure_3_substitution_scatter(df, output_dir=None)
     # `.data` is still exactly claims.substitution_test_all_arms' table --
@@ -771,7 +795,7 @@ def test_deliverable_3_passes_the_expected_family_size_through_to_claims(tmp_pat
     `claims.substitution_test_all_arms` -- not be silently dropped inside
     `figure_3_substitution_scatter` -- by checking it raises on a family
     shrunk by a missing arm, exactly as deliverable 4's two gates do."""
-    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:3])
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:1])
     with pytest.raises(ValueError):
         figures.figure_3_substitution_scatter(
             df, output_dir=None,
@@ -782,7 +806,7 @@ def test_a_paired_figure_refuses_to_render_blank_when_the_baseline_is_absent():
     """With no baseline rows every (M, split, k) join is empty, so the figure
     would render complete but with nothing plotted -- the plausible-looking
     wrong artifact. `claims.paired_tests` already raises here; so do these."""
-    df = _spread_campaign(arms=('joint-off', 'joint-d005'))
+    df = _spread_campaign(arms=('joint-off', 'joint'))
     for render in (figures.figure_2_delta_frontier,
                    figures.figure_3_substitution_scatter):
         with pytest.raises(ValueError, match='baseline'):
@@ -809,7 +833,12 @@ def test_deliverable_4_is_exactly_the_holm_corrected_table_claims_produced(tmp_p
     deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
 
     assert set(deliverable.data['unit']) == {'pair', 'split'}
-    assert set(deliverable.data['family']) == {'superiority', 'noninferiority'}
+    # Task 14 adds the superiority family's robustness lines under it (here
+    # `heldout_splits`: splits 0-2 are all held out); they are labelled
+    # `family='robustness'` so the two pre-registered families stay exactly
+    # these two.
+    assert set(deliverable.data['family']) == {'superiority', 'noninferiority',
+                                               'robustness'}
     superiority = deliverable.data[deliverable.data['family'] == 'superiority']
     got_pair = superiority[superiority['unit'] == 'pair'].reset_index(drop=True)
     got_split = superiority[superiority['unit'] == 'split'].reset_index(drop=True)
@@ -885,7 +914,7 @@ def test_deliverable_4_markdown_records_how_many_comparisons_were_corrected(tmp_
     """A shrunken family weakens Holm for every comparison in it, so the
     count has to be on the face of the table, not implicit. The family size
     is per-unit (contrasts x metrics), not the doubled row count."""
-    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:3])
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:1])
     deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
     markdown = open([p for p in deliverable.paths if p.endswith('.md')][0],
                     encoding='utf-8').read()
@@ -896,7 +925,7 @@ def test_deliverable_4_markdown_records_how_many_comparisons_were_corrected(tmp_
 
 
 def test_deliverable_4_passes_the_expected_family_size_through_to_claims(tmp_path):
-    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:3])
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:1])
     with pytest.raises(ValueError):
         figures.table_4_paired_tests(
             df, output_dir=str(tmp_path),
@@ -909,7 +938,7 @@ def test_deliverable_4_passes_the_expected_noninferiority_family_size_through_to
     actually reaches `claims.noninferiority_tests` -- not silently dropped
     somewhere in `table_4_paired_tests`' call chain -- by checking it raises
     on a partial family, exactly as the superiority-family gate does."""
-    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:3])
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS[:1])
     with pytest.raises(ValueError):
         figures.table_4_paired_tests(
             df, output_dir=str(tmp_path),
@@ -1110,7 +1139,7 @@ def test_deliverable_7_records_the_features_that_survived_to_the_smallest_k():
 
 
 def test_deliverable_7_writes_one_row_per_arm_M_and_split(tmp_path):
-    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'),
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'),
                           n_splits=2, m_values=(25, 50), k_values=(3, 4, 5))
     deliverable = figures.appendix_7_elimination_order(df,
                                                        output_dir=str(tmp_path))
@@ -1140,9 +1169,9 @@ def test_deliverable_8_rounding_loss_matches_the_hand_computed_ratio_gap():
     form: entries_saving = (500 - 400) / 500 = 0.20, blocks_saving =
     (40 - 35) / 40 = 0.125, so rounding_loss = 0.20 - 0.125 = 0.075 on
     every paired cell, for every joint arm."""
-    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'))
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'))
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
-    rows = deliverable.data[deliverable.data['arm_slug'] == 'joint-d005']
+    rows = deliverable.data[deliverable.data['arm_slug'] == 'joint']
     assert len(rows) > 0
     np.testing.assert_allclose(rows['rounding_loss'].to_numpy(), 0.075,
                                atol=1e-9)
@@ -1155,7 +1184,7 @@ def test_deliverable_8_caption_states_the_pooled_entries_and_blocks_savings():
     """The caption must let a reader make or refute the claim directly:
     'joint mapping removes N% of table entries; the block column moves by
     M%; the gap is quantization.'"""
-    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'))
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'))
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
     assert '20.0%' in deliverable.caption
     assert '12.5%' in deliverable.caption
@@ -1170,7 +1199,7 @@ def test_deliverable_8_caption_states_entries_unavailable_when_columns_are_all_n
     blocks_saving stays populated -- the caption must say entries data is
     unavailable instead of formatting NaN into 'nan%' prose, and must still
     report the real blocks-saving percentage."""
-    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'))
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'))
     df['range_entries'] = np.nan
     df['ternary_entries'] = np.nan
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
@@ -1214,13 +1243,13 @@ def test_deliverable_8_facets_the_markdown_summary_by_odd_k_only():
     df = _spread_campaign()    # k values (3, 4, 5): 4 is even
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
     assert set(deliverable.data['k'].unique()) == {3, 4, 5}
-    assert '| joint-d005 | 3 |' in deliverable.markdown_body
-    assert '| joint-d005 | 5 |' in deliverable.markdown_body
-    assert '| joint-d005 | 4 |' not in deliverable.markdown_body
+    assert '| joint | 3 |' in deliverable.markdown_body
+    assert '| joint | 5 |' in deliverable.markdown_body
+    assert '| joint | 4 |' not in deliverable.markdown_body
 
 
 def test_deliverable_8_writes_csv_and_markdown_but_no_pdf(tmp_path):
-    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-d005'))
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'))
     deliverable = figures.figure_8_entries_vs_blocks(df,
                                                       output_dir=str(tmp_path))
     assert deliverable.figure is None
@@ -1272,3 +1301,221 @@ def test_the_log_helper_prints_to_stdout(capsys):
     figures._log('test message')
     out = capsys.readouterr().out
     assert 'test message' in out
+
+
+# ---------------------------------------------------------------------------
+# Task 14: compiler-verified runs -- flagged markers, M = inf labels, the
+# agreement and budget-binding deliverables, robustness lines in Table 4
+# ---------------------------------------------------------------------------
+
+import re  # noqa: E402
+
+_INF = float('inf')
+
+
+def test_format_M_prints_whole_numbers_and_the_infinity_sign():
+    assert figures.format_M(float('inf')) == '∞'
+    assert figures.format_M(25) == '25'
+    assert figures.format_M(25.0) == '25'
+    assert figures.format_M(np.float64(75.0)) == '75'
+
+
+def test_the_flagged_marker_is_an_x():
+    assert figures.FLAGGED_MARKER == 'x'
+
+
+def _flagged_campaign():
+    df = _spread_campaign()
+    df['flagged'] = False
+    target = df.index[(df.arm_slug == 'joint') & (df.k == 3) & (df.M == 50)
+                      & (df.split == 1)][0]
+    df.loc[target, 'flagged'] = True
+    return df, df.loc[target]
+
+
+def test_deliverable_1_draws_a_flagged_row_as_its_own_artist_holding_only_it():
+    df, row = _flagged_campaign()
+    fig = figures.figure_1_accuracy_vs_blocks(df, output_dir=None).figure
+    flagged = [c for ax in fig.axes for c in ax.collections
+               if c.get_gid() == 'flagged:joint']
+    assert flagged
+    expected = [(row['blocks'], row['acc_app']), (row['blocks'], row['acc_ddos']),
+                (row['acc_app'], row['acc_ddos'])]
+    for collection in flagged:
+        offsets = np.asarray(collection.get_offsets(), dtype='float64')
+        assert offsets.shape == (1, 2)
+        assert any(np.allclose(offsets[0], point) for point in expected)
+    # ...and the flagged point is not also drawn as an ordinary cell
+    for ax in fig.axes:
+        for collection in ax.collections:
+            if collection.get_gid() in ('cells:joint', 'trade-cells:joint'):
+                offsets = np.asarray(collection.get_offsets(), dtype='float64')
+                assert not any(np.allclose(o, p) for o in offsets
+                               for p in expected)
+    # no other arm gains a flagged artist
+    assert not [c for ax in fig.axes for c in ax.collections
+                if str(c.get_gid()).startswith('flagged:')
+                and c.get_gid() != 'flagged:joint']
+
+
+def test_deliverable_1_without_a_flagged_column_draws_no_flagged_artist():
+    fig = figures.figure_1_accuracy_vs_blocks(_spread_campaign(),
+                                              output_dir=None).figure
+    assert not [c for ax in fig.axes for c in ax.collections
+                if str(c.get_gid()).startswith('flagged:')]
+
+
+def test_deliverable_3_draws_a_pair_with_a_flagged_side_as_flagged():
+    df, row = _flagged_campaign()
+    fig = figures.figure_3_substitution_scatter(df, output_dir=None).figure
+    flagged = [c for ax in fig.axes for c in ax.collections
+               if c.get_gid() == 'flagged:joint']
+    # one on the accuracy row, one on the F1 row, each exactly one pair
+    assert len(flagged) == 2
+    deltas = claims.arm_deltas(df, 'joint', INDEPENDENT_ARM_SLUG)
+    cell = deltas[(deltas.M == row['M']) & (deltas.split == row['split'])
+                  & (deltas.k == row['k'])].iloc[0]
+    offsets = [np.asarray(c.get_offsets(), dtype='float64') for c in flagged]
+    assert all(o.shape == (1, 2) for o in offsets)
+    assert any(np.allclose(o[0], (cell['d_acc_app'], cell['d_acc_ddos']))
+               for o in offsets)
+    main = [c for ax in fig.axes for c in ax.collections
+            if c.get_gid() == 'substitution:joint'][0]
+    assert len(main.get_offsets()) == len(deltas) - 1
+
+
+def _unbudgeted_campaign():
+    """A run-shaped frame: M is float64 with an inf unbudgeted cell."""
+    df = _spread_campaign(m_values=(25.0, _INF))
+    df['M'] = df['M'].astype('float64')
+    # `_spread_campaign` derives blocks/entries from M; an unbudgeted cell
+    # still uses a finite number of blocks, so give it one (joint saves 2).
+    unbudgeted = np.isinf(df['M'])
+    joint = df['arm_slug'] != INDEPENDENT_ARM_SLUG
+    finite_use = 60.0 - 3.0 * df['k'] - np.where(joint, 2.0, 0.0)
+    df.loc[unbudgeted, 'blocks'] = finite_use[unbudgeted]
+    df.loc[unbudgeted, 'range_entries'] = 10.0 * finite_use[unbudgeted]
+    df.loc[unbudgeted, 'ternary_entries'] = 5.0 * finite_use[unbudgeted]
+    df['flagged'] = False
+    return df
+
+
+def _no_bad_M_text(text):
+    # A trailing '.0' is an unformatted float M ('25.0'); a percentage such
+    # as '26.0%' (deliverable 8's savings) is not an M and is allowed.
+    return re.search(r'\binf\b', text) is None and \
+        re.search(r'\b\d+\.0\b(?!%)', text) is None
+
+
+def _verification_for(df, miss_row_id=None):
+    """A `load_verification`-shaped frame for every row of `df` (literal
+    CSV text for the flags, parsed arm_slug / M / split / k)."""
+    lines = []
+    for _, row in df.iterrows():
+        token = 'inf' if np.isinf(row['M']) else '{:03d}'.format(int(row['M']))
+        row_id = '{}_M{}_s{:02d}_k{:02d}'.format(row['arm_slug'], token,
+                                                 int(row['split']), int(row['k']))
+        miss = row_id == miss_row_id
+        lines.append({
+            'row_id': row_id, 'verdict': 'UNDER' if miss else 'EXACT',
+            'model_stage_depth': '9', 'p4c_stage_depth': '9',
+            'model_blocks': str(int(row['blocks'])),
+            'p4c_blocks': str(int(row['blocks']) + (2 if miss else 0)),
+            'p4c_over_budget': 'False', 'p4c_over_stages': 'False',
+            'unverified': 'False',
+            'tables_differing': ('[{"model":4,"p4c":6,"table":"tbl_x"}]'
+                                 if miss else '[]'),
+            'arm_slug': row['arm_slug'], 'M': float(row['M']),
+            'split': int(row['split']), 'k': int(row['k']),
+        })
+    return pd.DataFrame(lines)
+
+
+def test_no_figure_or_table_prints_M_as_inf_or_with_a_trailing_point_zero():
+    df = _unbudgeted_campaign()
+    deliverables = figures.render_all(df, output_dir=None, ceiling_csv=None,
+                                      verification=_verification_for(df))
+    for deliverable in deliverables:
+        texts = [deliverable.caption, deliverable.markdown_body or '']
+        if deliverable.figure is not None:
+            texts += _texts(deliverable.figure)
+        for text in texts:
+            assert _no_bad_M_text(text), (deliverable.number, text[:300])
+    by_number = {d.number: d for d in deliverables}
+    assert '25, ∞' in by_number[2].caption
+    assert '| ∞ |' in by_number[7].markdown_body
+    assert '| ∞ |' in by_number[9].markdown_body
+    assert '| ∞ |' in by_number[10].markdown_body
+
+
+def test_deliverable_9_renders_both_agreement_frames(tmp_path):
+    df = _unbudgeted_campaign()
+    miss = 'joint_M025_s00_k03'
+    verification = _verification_for(df, miss_row_id=miss)
+    summary, misses = claims.agreement_table(verification)
+    deliverable = figures.table_9_agreement(verification,
+                                            output_dir=str(tmp_path))
+    assert deliverable.number == 9
+    pd.testing.assert_frame_equal(deliverable.data, summary)
+    csvs = sorted(p for p in deliverable.paths if p.endswith('.csv'))
+    assert len(csvs) == 2
+    written_misses = pd.read_csv([p for p in csvs if 'misses' in p][0])
+    assert written_misses['row_id'].tolist() == misses['row_id'].tolist() == [miss]
+    markdown = open([p for p in deliverable.paths if p.endswith('.md')][0],
+                    encoding='utf-8').read()
+    assert miss in markdown and 'tbl_x' in markdown
+    assert 'stage_depth_exact' in markdown and 'blocks_exact' in markdown
+
+
+def test_deliverable_10_renders_budget_binding(tmp_path):
+    df = _unbudgeted_campaign()
+    expected = claims.budget_binding(df)
+    deliverable = figures.table_10_budget_binding(df, output_dir=str(tmp_path))
+    assert deliverable.number == 10
+    pd.testing.assert_frame_equal(deliverable.data, expected)
+    assert any(p.endswith('.csv') for p in deliverable.paths)
+    assert 'binding_share' in deliverable.markdown_body
+
+
+def test_render_all_adds_deliverables_9_and_10_only_for_a_run():
+    df = _unbudgeted_campaign()
+    run = figures.render_all(df, output_dir=None, ceiling_csv=None,
+                             verification=_verification_for(df))
+    assert [d.number for d in run] == [1, 2, 3, 4, 5, 7, 8, 9, 10]
+    legacy = figures.render_all(df, output_dir=None, ceiling_csv=None)
+    assert [d.number for d in legacy] == [1, 2, 3, 4, 5, 7, 8]
+
+
+def test_deliverable_4_adds_the_robustness_subsets_as_labelled_lines(tmp_path):
+    df = _spread_campaign(n_splits=3)
+    df['flagged'] = False
+    df.loc[df.split == 1, 'flagged'] = True
+    deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
+    data = deliverable.data
+    robustness = data[data['family'] == 'robustness']
+    assert set(robustness['subset']) == {'no_flagged', 'heldout_splits'}
+    # the main family is exactly paired_tests' own output, untouched
+    superiority = data[data['family'] == 'superiority']
+    assert set(superiority['subset']) == {'all'}
+    expected = claims.paired_tests_robustness(df, unit='pair')
+    got = robustness[robustness['unit'] == 'pair'].reset_index(drop=True)
+    want = expected[expected['subset'] != 'all'].reset_index(drop=True)
+    assert list(got['subset']) == list(want['subset'])
+    assert np.allclose(got['p_holm'], want['p_holm'], equal_nan=True)
+    # robustness lines sit under the main family, not above it
+    families = list(data['family'])
+    assert families.index('robustness') > max(
+        i for i, f in enumerate(families) if f == 'superiority')
+    markdown = open([p for p in deliverable.paths if p.endswith('.md')][0],
+                    encoding='utf-8').read()
+    assert 'no_flagged' in markdown and 'heldout_splits' in markdown
+
+
+def test_deliverable_4_renders_when_every_split_is_a_development_split(tmp_path):
+    """Only development splits (10-13) present: the held-out subset is
+    empty, which must be skipped rather than crash the table."""
+    df = _spread_campaign(n_splits=3)
+    df['split'] = df['split'] + 10
+    df['flagged'] = False
+    deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
+    assert 'heldout_splits' not in set(deliverable.data['subset'].dropna())

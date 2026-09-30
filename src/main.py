@@ -17,7 +17,8 @@ from src.training.config import TrainConfig
 from src.training import campaign_run
 from src.training.campaign_runner import plan_jobs, run_jobs
 
-from src.reporting.campaign_data import load_campaign
+from src.reporting.campaign_data import (
+    UnverifiedRowsError, load_campaign, load_verification)
 from src.reporting import claims
 from src.reporting import figures
 from src.reporting.manifest import git_provenance, write_campaign_manifest
@@ -159,15 +160,22 @@ def parse_args(argv=None):
              "every core on a small machine (e.g. --max-workers 4 on a 4-core "
              "Codespace) at the cost of the orchestrator competing with workers")
     parser.add_argument(
+        "--results-dir", dest="results_dir", default="results",
+        help="in plot mode, the directory to render: a compiler-verified run "
+             "(one with rows/, verification.csv and run_manifest.json -- "
+             "adds the agreement and budget-binding tables, and refuses to "
+             "render while any design row has no verdict) or a legacy flat "
+             "directory of rf_*.csv files. Defaults to 'results'")
+    parser.add_argument(
         "--allow-partial-family", dest="allow_partial_family",
         action="store_true",
-        help="in plot mode, render even when the campaign under results/ "
-             "does not yet cover the full 7-arm sweep (e.g. a single-M "
-             "pilot). The default requires the complete pre-registered "
-             "35-comparison Holm family (7 joint arms x 5 tests) and raises "
-             "otherwise, so a partial campaign never silently applies a "
-             "weaker multiplicity correction than the one pre-registered "
-             "in spec C.3")
+        help="in plot mode, render even when the campaign does not yet "
+             "cover the full 3-arm design (e.g. a single-M pilot). The "
+             "default requires the complete pre-registered Holm families "
+             "(2 joint arms x 5 tests, and their non-inferiority and "
+             "substitution companions) and raises otherwise, so a partial "
+             "campaign never silently applies a weaker multiplicity "
+             "correction than the one pre-registered in spec C.3")
     args = parser.parse_args(argv)
     if args.mode == "compute" and args.run is None:
         parser.error("--run <dir> is required in compute mode")
@@ -450,6 +458,11 @@ def run_compute_mode(args):
     return summary
 
 
+# How many missing-verdict row ids the render gate prints before "... and N
+# more" (spec section 7.2).
+_UNVERIFIED_ROWS_SHOWN = 50
+
+
 def run_plot_mode(results_dir='results', output_dir=None,
                   allow_partial_family=False):
     """`--mode plot`'s entire body: load the campaign, render every §C.5
@@ -483,26 +496,48 @@ def run_plot_mode(results_dir='results', output_dir=None,
     `allow_partial_family` controls the thing carried forward from Task 13,
     now gating deliverable 4's two independent Holm families PLUS
     deliverable 3's separate substitution family:
-    `claims.paired_tests` (the 35-comparison superiority family),
-    `claims.noninferiority_tests` (D13's 14-comparison non-inferiority
-    family, Task 19), and `claims.substitution_test_all_arms` (the
-    7-comparison substitution family, Task 23) all default their
+    `claims.paired_tests` (the superiority family,
+    `claims.PRE_REGISTERED_FAMILY_SIZE`), `claims.noninferiority_tests`
+    (D13's non-inferiority family, Task 19), and
+    `claims.substitution_test_all_arms` (the substitution family, Task 23)
+    -- sized from the 3-arm design's two joint arms -- all default their
     `expected_family_size` to None, which lets Holm-Bonferroni quietly
     correct over however many contrasts happen to be present -- a weaker
     correction than the pre-registered size on any campaign that has not
-    yet run all seven joint arms, silent apart from a line in the rendered
+    yet run both joint arms, silent apart from a line in the rendered
     markdown. The default here (False) instead passes
     `claims.PRE_REGISTERED_FAMILY_SIZE`, `claims.NONINFERIORITY_FAMILY_SIZE`
     and `claims.SUBSTITUTION_FAMILY_SIZE` explicitly, so a partial campaign
     RAISES rather than silently weakening any of the three corrections. Pass
     `--allow-partial-family` (allow_partial_family=True) to render anyway --
     e.g. a single-M pilot, which by construction can never assemble the
-    full 7-arm family and is not trying to support any corrected claim yet.
+    full family and is not trying to support any corrected claim yet.
+
+    The render gate (spec section 7.2): for a compiler-verified RUN
+    (`results_dir/rows/` exists) `load_campaign` raises
+    `UnverifiedRowsError` when any design row has no verdict. This prints
+    `refusing to render: N rows have no verdict:` and the first
+    `_UNVERIFIED_ROWS_SHOWN` row ids, then re-raises -- nothing is written.
+    A run also gets deliverables 9 (agreement, from `load_verification`)
+    and 10 (budget binding); a legacy flat directory does not.
     """
     if output_dir is None:
         output_dir = figures.DEFAULT_FIGURE_DIR
 
-    df = load_campaign(results_dir=results_dir)
+    try:
+        df = load_campaign(results_dir=results_dir)
+    except UnverifiedRowsError as error:
+        print(f"refusing to render: {len(error.row_ids)} rows have no verdict:")
+        for row_id in error.row_ids[:_UNVERIFIED_ROWS_SHOWN]:
+            print(f"  {row_id}")
+        hidden = len(error.row_ids) - _UNVERIFIED_ROWS_SHOWN
+        if hidden > 0:
+            print(f"  ... and {hidden} more")
+        raise
+
+    verification = (load_verification(results_dir)
+                    if os.path.isdir(os.path.join(results_dir, 'rows'))
+                    else None)
 
     ceiling_csv = os.path.join(results_dir, 'capacity_ceiling.csv')
     if not os.path.exists(ceiling_csv):
@@ -522,7 +557,8 @@ def run_plot_mode(results_dir='results', output_dir=None,
         df, output_dir=output_dir, ceiling_csv=ceiling_csv,
         expected_family_size=expected_family_size,
         expected_noninferiority_family_size=expected_noninferiority_family_size,
-        expected_substitution_family_size=expected_substitution_family_size)
+        expected_substitution_family_size=expected_substitution_family_size,
+        verification=verification)
 
     for deliverable in deliverables:
         print(f"\n=== {deliverable.number}. {deliverable.title} ===")
@@ -539,7 +575,8 @@ def run_main():
         run_compute_mode(args)
 
     else:
-        run_plot_mode(allow_partial_family=args.allow_partial_family)
+        run_plot_mode(results_dir=args.results_dir,
+                      allow_partial_family=args.allow_partial_family)
 
 
 if __name__ == '__main__':
