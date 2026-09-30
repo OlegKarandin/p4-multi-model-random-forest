@@ -12,6 +12,10 @@
 // This container now runs BOTH campaign stages: training (run_campaign.sh)
 // and p4c verification (run_verify.sh). Its image is thesis-p4c, built from
 // the WSL open-p4studio install by docker/p4c/build.sh (spec 2026-09-29 §8.1).
+// PREREQUISITE: that image must already be published to GHCR (run
+// `bash docker/p4c/build.sh olegkarandin` in WSL first) and its package must be
+// public, or linked to this repo, so a Codespace can pull it. Creating or
+// rebuilding a Codespace before then fails with an image-pull error.
 //
 // NOTE on idle timeout (spec D11 / task-27-brief Step 1: Codespaces maximum,
 // 240 minutes): there is NO devcontainer.json field for this. Confirmed

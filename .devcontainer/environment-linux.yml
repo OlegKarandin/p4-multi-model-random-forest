@@ -31,7 +31,7 @@ name: thesis-codespace
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  - python>=3.11.4,<3.12
   - numpy=1.26.4
   - scipy=1.13.1
   - scikit-learn=1.6.1
