@@ -9,6 +9,9 @@
 // NOT-auto-invoked script that actually launches the several-hour compute
 // campaign under nohup (Tasks 28-29 are out of scope for automatic
 // execution -- they spend real money and need a human's explicit go-ahead).
+// This container now runs BOTH campaign stages: training (run_campaign.sh)
+// and p4c verification (run_verify.sh). Its image is thesis-p4c, built from
+// the WSL open-p4studio install by docker/p4c/build.sh (spec 2026-09-29 §8.1).
 //
 // NOTE on idle timeout (spec D11 / task-27-brief Step 1: Codespaces maximum,
 // 240 minutes): there is NO devcontainer.json field for this. Confirmed
@@ -23,7 +26,12 @@
 // Settings > Codespaces, themselves.
 {
   "name": "thesis-campaign",
-  "image": "mcr.microsoft.com/devcontainers/miniconda:3",
+  "image": "ghcr.io/olegkarandin/thesis-p4c:0e81a468",
+
+  // Keep equal to "image" above; records which p4c build this container has.
+  "containerEnv": {
+    "THESIS_P4C_IMAGE": "ghcr.io/olegkarandin/thesis-p4c:0e81a468"
+  },
 
   // `gh codespace ssh` (the CLI path used to drive this container headlessly
   // for the Task 28/29 rerun) needs a real sshd inside the container --

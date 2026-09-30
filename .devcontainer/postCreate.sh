@@ -82,6 +82,8 @@ if ! grep -q "# Added by .devcontainer/postCreate.sh" "$HOME/.bashrc" 2>/dev/nul
     log "appended conda activation to ~/.bashrc"
 fi
 
+p4c --version || fail "p4c not on PATH -- the image is not the thesis-p4c image (spec §8.1)"
+
 # ---------------------------------------------------------------------------
 # 2 & 3. Fetch + verify datasets
 # ---------------------------------------------------------------------------
@@ -185,5 +187,9 @@ cat <<EOF
     logs/. --redo is off by default in src/main.py, so re-running the same
     command after an idle-stop/reconnect resumes rather than restarts
     (src/main.py:333-402).
+
+  * To verify the finished designs with p4c (also nohup, resumable):
+        bash .devcontainer/run_verify.sh RUN_DIR [--workers N]
+    It launches 'python -m src.verify --run RUN_DIR' and logs to logs/.
 
 EOF

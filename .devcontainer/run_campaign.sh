@@ -9,16 +9,17 @@
 #
 # Resumable by construction, not by anything this script adds: --redo is off
 # by default in src/main.py, so re-running the exact same command after a
-# disconnect/idle-stop/reboot skips any (arm, M) cell whose result file
-# already exists (the file is written atomically via os.replace, so its
-# existence is a reliable completion marker -- src/main.py:333-402).
+# disconnect/idle-stop/reboot skips any (arm, M, split) whose file under
+# <run>/rows/ already exists (written atomically via os.replace, so its
+# existence is a reliable completion marker -- src/main.py).
 #
 # Usage:
-#   bash .devcontainer/run_campaign.sh                  # today's full grid, primary arms
-#   bash .devcontainer/run_campaign.sh --M 25 --n-splits 2   # a quick pilot cell
-#   bash .devcontainer/run_campaign.sh --arms all             # primary + sensitivity arms
+#   bash .devcontainer/run_campaign.sh --run results/campaign_2026_10 --splits 0-9
+#   bash .devcontainer/run_campaign.sh --run results/pilot --M 25 --splits 0-1   # quick pilot
 #
-# Any arguments are forwarded verbatim to `python -m src.main --mode compute`.
+# --run <dir> is required by src/main.py in compute mode. Any arguments are
+# forwarded verbatim to `python -m src.main --mode compute`. (--n-splits no
+# longer exists; use --splits A-B.) When done, verify with run_verify.sh.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,4 +52,4 @@ pid=$!
 echo "[run_campaign] started, PID $pid. Safe to disconnect now."
 echo "[run_campaign] check progress:   tail -f $LOG"
 echo "[run_campaign] after a disconnect/idle-stop, just re-run this same command --"
-echo "[run_campaign] completed (arm, M) cells under results/ are skipped automatically."
+echo "[run_campaign] completed (arm, M, split) files under <run>/rows/ are skipped automatically."
