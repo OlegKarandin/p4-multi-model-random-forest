@@ -23,7 +23,10 @@ from src.reporting.claims import (
     NONINFERIORITY_FAMILY_SIZE,
     PRE_REGISTERED_FAMILY_SIZE,
     SUBSTITUTION_FAMILY_SIZE,
+    UNBUDGETED_REFERENCE_BLOCKS,
     ablation_decomposition,
+    agreement_table,
+    budget_binding,
     arm_deltas,
     coverage_ratio_3d,
     default_contrast_family,
@@ -33,6 +36,7 @@ from src.reporting.claims import (
     hypervolume_by_arm,
     noninferiority_tests,
     paired_tests,
+    paired_tests_robustness,
     pareto_front_3d,
     pareto_projections,
     substitution_test,
@@ -53,7 +57,19 @@ _DELTA_BY_SLUG = {
     'joint-d010': (0.10, False),
     'joint-d020': (0.20, False),
     'joint-dinf': (float('nan'), True),
+    # The compiler-verified campaign's aligned arm: no tolerance axis.
+    'joint': (float('nan'), False),
 }
+
+# The archived seven-arm sweep the pre-registration used to name. The
+# 3-arm design (spec 2026-09-29 section 7.3) replaced it with
+# JOINT_ARM_SLUGS = ('joint-off', 'joint'); tests that exercise the Holm
+# correction over a LARGE family keep using these seven via an explicit
+# `arms=`, so their numbers (raw p, Holm-adjusted p) are unchanged.
+_ARCHIVED_SEVEN_SLUGS = (
+    'joint-off', 'joint-d000', 'joint-d002', 'joint-d005',
+    'joint-d010', 'joint-d020', 'joint-dinf',
+)
 
 
 def _row(arm_slug='joint-d005', M=25, split=0, k=5,
@@ -110,7 +126,7 @@ def _paired_frame(d_app, d_ddos, d_blocks, treatment='joint-d005',
 def _noninferiority_frame(acc_app_base=0.90, acc_ddos_base=0.85,
                           app_relative_degradation=0.0,
                           ddos_relative_degradation=0.0,
-                          treatment='joint-d005', baseline=INDEPENDENT_ARM_SLUG,
+                          treatment='joint', baseline=INDEPENDENT_ARM_SLUG,
                           n_splits=6, M=25, k=5):
     """One baseline row and one treatment row per split, where the
     treatment's accuracy is offset from the baseline by a stated FRACTION
@@ -599,7 +615,7 @@ def test_substitution_test_all_arms_covers_every_joint_arm_present():
 
     assert list(table['treatment']) == list(JOINT_ARM_SLUGS)
     assert (table['baseline'] == INDEPENDENT_ARM_SLUG).all()
-    assert len(table) == 7
+    assert len(table) == 2      # 3-arm design: joint-off and joint
 
 
 # ---------------------------------------------------------------------------
@@ -627,12 +643,16 @@ def test_delta_frontier_groups_by_arm_and_M_and_k_so_arms_are_never_pooled():
     table = delta_frontier(_full_campaign_frame(m_values=(25, 50), k_values=(5, 9)),
                            metrics=('blocks',))
 
-    assert len(table) == 8 * 2 * 2
+    assert len(table) == 3 * 2 * 2      # 3-arm design: 3 arms x 2 M x 2 k
     assert set(table['arm_slug']) == {INDEPENDENT_ARM_SLUG} | set(JOINT_ARM_SLUGS)
 
 
 def test_delta_frontier_carries_the_parsed_delta_so_the_sweep_can_be_ordered():
-    table = delta_frontier(_full_campaign_frame(), metrics=('blocks',))
+    # The 3-arm grid has no delta arms any more, so archived ones are built
+    # explicitly: the parsed delta must still be carried when they appear.
+    rows = [_row(arm_slug=slug, M=25, split=s, k=5)
+            for slug in ('joint-d005', 'joint-dinf') for s in range(2)]
+    table = delta_frontier(_frame(rows), metrics=('blocks',))
 
     dinf = table[table['arm_slug'] == 'joint-dinf'].iloc[0]
     d005 = table[table['arm_slug'] == 'joint-d005'].iloc[0]
@@ -657,7 +677,7 @@ def test_delta_frontier_allows_pooling_when_the_caller_says_so_explicitly():
     table = delta_frontier(df, metrics=('blocks',), group_columns=('arm_slug', 'M'),
                            allow_repeated_splits=True)
 
-    assert len(table) == 8 * 2
+    assert len(table) == 3 * 2      # 3-arm design: 3 arms x 2 M
 
 
 def test_delta_frontier_leaves_a_single_observation_groups_ci_undefined():
@@ -699,12 +719,13 @@ def test_ablation_decomposition_recovers_an_exactly_injected_block_saving():
     for split in range(4):
         rows.append(_row(arm_slug=INDEPENDENT_ARM_SLUG, split=split, blocks=40.0))
         rows.append(_row(arm_slug='joint-off', split=split, blocks=34.0))
-        rows.append(_row(arm_slug='joint-d005', split=split, blocks=30.0))
+        # 3-arm design: the aligned arm is `joint` (was archived `joint-d005`).
+        rows.append(_row(arm_slug='joint', split=split, blocks=30.0))
 
     table = ablation_decomposition(_frame(rows), metrics=('blocks',))
 
     sharing = table[(table['component'] == 'sharing')].iloc[0]
-    alignment = table[(table['treatment'] == 'joint-d005')].iloc[0]
+    alignment = table[(table['treatment'] == 'joint')].iloc[0]
 
     assert sharing['mean_diff_split_level'] == pytest.approx(-6.0)
     assert alignment['mean_diff_split_level'] == pytest.approx(-4.0)
@@ -797,16 +818,17 @@ def test_default_contrast_family_is_the_seven_joint_arms_against_independent():
     assert family == tuple((slug, INDEPENDENT_ARM_SLUG) for slug in JOINT_ARM_SLUGS)
 
 
-def test_paired_tests_runs_exactly_the_pre_registered_thirty_five_comparisons():
-    """D2: F1 joins the tested family (7 arms x 5 metrics), answering R3
-    section IV(d) -- accuracy hides minority classes. Decided PRE-campaign;
-    the cost is a stricter Holm bar, 0.05/35 = 0.0014 rather than 0.0024."""
+def test_paired_tests_runs_exactly_the_pre_registered_ten_comparisons():
+    """D2: F1 joins the tested family (joint arms x 5 metrics), answering R3
+    section IV(d) -- accuracy hides minority classes. 3-arm design (spec
+    2026-09-29 section 7.3): 2 joint arms x 5 tests = 10, down from the
+    archived sweep's 7 x 5 = 35."""
     table = paired_tests(_full_campaign_frame(),
                          expected_family_size=PRE_REGISTERED_FAMILY_SIZE)
 
-    assert PRE_REGISTERED_FAMILY_SIZE == 35
-    assert len(table) == 35
-    assert table['treatment'].nunique() == 7
+    assert PRE_REGISTERED_FAMILY_SIZE == 10
+    assert len(table) == 10
+    assert table['treatment'].nunique() == 2
     assert set(table['metric']) == {'acc_app', 'f1_app', 'acc_ddos', 'f1_ddos', 'blocks'}
 
 
@@ -818,10 +840,26 @@ def test_f1_is_one_sided_greater_like_accuracy():
 
 def test_paired_tests_raises_when_the_family_is_not_the_size_the_caller_expected():
     df = _full_campaign_frame()
-    df = df[df['arm_slug'] != 'joint-d020']
+    df = df[df['arm_slug'] != 'joint']
 
     with pytest.raises(ValueError, match='(?i)famil'):
         paired_tests(df, expected_family_size=PRE_REGISTERED_FAMILY_SIZE)
+
+
+def test_the_family_sizes_are_derived_from_the_three_arm_grid():
+    assert PRE_REGISTERED_FAMILY_SIZE == 10
+    assert SUBSTITUTION_FAMILY_SIZE == 2
+    assert NONINFERIORITY_FAMILY_SIZE == 4
+    assert JOINT_ARM_SLUGS == ('joint-off', 'joint')
+
+
+def test_a_frame_with_only_joint_off_still_raises_under_the_family_of_ten():
+    """Spec section 7.3: 'a missing arm still raises'."""
+    df = _full_campaign_frame()
+    df = df[df['arm_slug'].isin([INDEPENDENT_ARM_SLUG, 'joint-off'])]
+
+    with pytest.raises(ValueError, match='(?i)famil'):
+        paired_tests(df, expected_family_size=10)
 
 
 def test_paired_tests_uses_a_one_sided_alternative_on_each_accuracy_metric():
@@ -914,12 +952,13 @@ def test_paired_tests_holm_column_corrects_over_the_whole_family_it_ran():
 
 
 def test_paired_tests_holm_makes_a_marginal_result_non_significant():
-    """A p just under 0.05 in a family of 35 must not survive the correction;
-    this is the whole reason the correction exists."""
+    """A p just under 0.05 in a family of 10 must not survive the correction;
+    this is the whole reason the correction exists. (3-arm design: the
+    family is 10, so 0.04 * 10 = 0.4; under the archived 35 it was 1.4.)"""
     table = paired_tests(_full_campaign_frame())
     marginal = 0.04
 
-    assert holm_bonferroni([marginal] + [0.9] * 34)[0] > 0.05
+    assert holm_bonferroni([marginal] + [0.9] * (PRE_REGISTERED_FAMILY_SIZE - 1))[0] > 0.05
     assert len(table) == PRE_REGISTERED_FAMILY_SIZE
 
 
@@ -1032,12 +1071,13 @@ def test_zero_difference_counts_are_reported_before_and_after_the_margin_shift()
 # corrected within itself.
 # ---------------------------------------------------------------------------
 
-def _substitution_sweep_frame(seed, correlated_arm, rho, n=30):
+def _substitution_sweep_frame(seed, correlated_arm, rho, n=30,
+                              slugs=JOINT_ARM_SLUGS):
     """Every joint arm against one shared independent baseline. Only
     `correlated_arm` carries a genuine negative association; the rest are
     independent draws."""
     rows = []
-    for i, slug in enumerate(JOINT_ARM_SLUGS):
+    for i, slug in enumerate(slugs):
         r = rho if slug == correlated_arm else 0.0
         rng = np.random.default_rng(seed + i)
         x = rng.standard_normal(n)
@@ -1054,13 +1094,13 @@ def _substitution_sweep_frame(seed, correlated_arm, rho, n=30):
     return _frame(rows)
 
 
-def test_substitution_sweep_exposes_a_holm_column_over_its_own_seven_arms():
+def test_substitution_sweep_exposes_a_holm_column_over_its_own_joint_arms():
     table = substitution_test_all_arms(_full_campaign_frame())
 
     assert 'pearson_p_negative_one_sided_holm' in table.columns
     assert 'substitution_detected_holm' in table.columns
     assert table['n_substitution_comparisons'].eq(SUBSTITUTION_FAMILY_SIZE).all()
-    assert SUBSTITUTION_FAMILY_SIZE == 7
+    assert SUBSTITUTION_FAMILY_SIZE == 2      # 3-arm design: 2 joint arms
 
 
 def test_substitution_sweep_holm_column_is_the_holm_adjustment_of_the_raw_column():
@@ -1075,8 +1115,12 @@ def test_substitution_sweep_holm_demotes_a_flag_that_only_fired_because_seven_ra
     p = 0.0079 fires at alpha = 0.05, Holm over the seven arms lifts it to
     0.055 and it does not. Reading the seven raw flags across the sweep as
     one test is exactly the error this column exists to prevent."""
+    # The archived seven arms, passed explicitly: the point is Holm over a
+    # seven-member family, which the 3-arm grid no longer has on its own.
     table = substitution_test_all_arms(
-        _substitution_sweep_frame(seed=1, correlated_arm='joint-d010', rho=-0.35))
+        _substitution_sweep_frame(seed=1, correlated_arm='joint-d010', rho=-0.35,
+                                  slugs=_ARCHIVED_SEVEN_SLUGS),
+        arms=_ARCHIVED_SEVEN_SLUGS)
 
     assert table['substitution_detected'].sum() == 1
     assert table['substitution_detected_holm'].sum() == 0
@@ -1086,7 +1130,9 @@ def test_substitution_sweep_corrected_flag_never_fires_where_the_raw_one_did_not
     """The correction may only ever demote; a Holm-adjusted p is never below
     its raw p."""
     table = substitution_test_all_arms(
-        _substitution_sweep_frame(seed=4, correlated_arm='joint-d020', rho=-0.9))
+        _substitution_sweep_frame(seed=4, correlated_arm='joint-d020', rho=-0.9,
+                                  slugs=_ARCHIVED_SEVEN_SLUGS),
+        arms=_ARCHIVED_SEVEN_SLUGS)
 
     assert (table['pearson_p_negative_one_sided_holm']
             >= table['pearson_p_negative_one_sided'] - 1e-12).all()
@@ -1099,12 +1145,13 @@ def test_substitution_sweep_excludes_an_undefined_arm_from_its_correction_family
     """An arm whose deltas are constant produced no test at all, not a null
     result; counting it would inflate the family with a comparison nobody
     ran."""
-    df = _substitution_sweep_frame(seed=2, correlated_arm='joint-d010', rho=-0.5)
+    df = _substitution_sweep_frame(seed=2, correlated_arm='joint-d010', rho=-0.5,
+                                   slugs=_ARCHIVED_SEVEN_SLUGS)
     flat = df['arm_slug'] == 'joint-d002'
     df.loc[flat, 'acc_app'] = 0.90
     df.loc[flat, 'acc_ddos'] = 0.85
 
-    table = substitution_test_all_arms(df)
+    table = substitution_test_all_arms(df, arms=_ARCHIVED_SEVEN_SLUGS)
 
     assert table['n_substitution_comparisons'].eq(6).all()
     flat_row = table[table['treatment'] == 'joint-d002'].iloc[0]
@@ -1117,8 +1164,8 @@ def test_substitution_test_refuses_a_family_shrunk_by_a_MISSING_arm():
     precisely because the campaign runs in chunks, where a missing arm is
     the normal intermediate state -- and a smaller family is a WEAKER Holm
     correction applied silently."""
-    frame = _substitution_sweep_frame(seed=3, correlated_arm='joint-d005', rho=-0.8)
-    frame = frame[frame['arm_slug'] != 'joint-d020']
+    frame = _substitution_sweep_frame(seed=3, correlated_arm='joint', rho=-0.8)
+    frame = frame[frame['arm_slug'] != 'joint']
     with pytest.raises(ValueError, match='family'):
         substitution_test_all_arms(
             frame, expected_family_size=SUBSTITUTION_FAMILY_SIZE)
@@ -1127,7 +1174,7 @@ def test_substitution_test_refuses_a_family_shrunk_by_a_MISSING_arm():
 def test_substitution_test_reports_the_split_count_next_to_the_pair_count():
     """The cell-dependence caveat is only checkable if both numbers are
     there."""
-    result = substitution_test(_full_campaign_frame(n_splits=4), 'joint-d005')
+    result = substitution_test(_full_campaign_frame(n_splits=4), 'joint')
 
     assert result['n_pairs'] == 16
     assert result['n_splits'] == 4
@@ -1148,14 +1195,14 @@ def test_non_inferiority_margin_is_relative_to_each_task_own_error():
     assert ddos['margin'] == pytest.approx(0.05 * 0.03)
 
 
-def test_the_non_inferiority_family_is_corrected_separately_from_the_35():
+def test_the_non_inferiority_family_is_corrected_separately_from_the_superiority_family():
     """Mirrors how `pair` and `split` units are already corrected
     independently. Leaves the superiority family's power untouched."""
     table = noninferiority_tests(_full_campaign_frame())
-    assert NONINFERIORITY_FAMILY_SIZE == 14      # 7 arms x 2 accuracies
-    assert len(table) == 14
+    assert NONINFERIORITY_FAMILY_SIZE == 4      # 3-arm design: 2 arms x 2 accuracies
+    assert len(table) == 4
     assert set(table['metric']) == {'acc_app', 'acc_ddos'}
-    assert (table['n_comparisons'] == 14).all()
+    assert (table['n_comparisons'] == 4).all()
 
 
 def test_the_margin_is_capable_of_failing():
@@ -1165,3 +1212,176 @@ def test_the_margin_is_capable_of_failing():
     table = noninferiority_tests(frame)
     ddos = table[table['metric'] == 'acc_ddos'].iloc[0]
     assert not ddos['significant_holm']
+
+
+# ---------------------------------------------------------------------------
+# Task 13: M = inf hypervolume, agreement table, budget binding, robustness
+# ---------------------------------------------------------------------------
+
+def test_the_unbudgeted_reference_is_the_whole_pipe():
+    assert UNBUDGETED_REFERENCE_BLOCKS == 24 * 12 == 288
+
+
+def test_hypervolume_by_arm_at_M_inf_uses_the_whole_pipe_as_reference():
+    """O2: (0.5, inf) would be an infinite reference; the pipe's 288 blocks
+    stand in for it. Finite M keeps (0.5, M)."""
+    inf = float('inf')
+    rows = [
+        _row(arm_slug=INDEPENDENT_ARM_SLUG, M=inf, split=0, acc_app=0.8, blocks=100.0),
+        _row(arm_slug='joint', M=inf, split=0, acc_app=0.9, blocks=40.0),
+        _row(arm_slug='joint', M=inf, split=1, acc_app=0.7, blocks=20.0),
+        _row(arm_slug='joint', M=25.0, split=0, acc_app=0.9, blocks=20.0),
+    ]
+    table = hypervolume_by_arm(_frame(rows))
+
+    at_inf = table[(table['arm_slug'] == 'joint') & (table['M'] == inf)
+                   & (table['task'] == 'app')].iloc[0]
+    expected = hypervolume_2d([(0.9, 40.0), (0.7, 20.0)], (0.5, 288))
+    assert np.isfinite(at_inf['hypervolume'])
+    assert at_inf['hypervolume'] == pytest.approx(expected)
+    baseline = hypervolume_2d([(0.8, 100.0)], (0.5, 288))
+    assert at_inf['hypervolume_gain'] == pytest.approx(expected / baseline)
+
+    finite = table[(table['arm_slug'] == 'joint') & (table['M'] == 25.0)
+                   & (table['task'] == 'app')].iloc[0]
+    assert finite['hypervolume'] == pytest.approx(
+        hypervolume_2d([(0.9, 20.0)], (0.5, 25.0)))
+
+
+def _verification_line(arm_slug, M, split, k=5, verdict='EXACT',
+                       model_stage_depth=9, p4c_stage_depth=9,
+                       model_blocks=30, p4c_blocks=30, unverified=False,
+                       tables_differing='[]'):
+    """One row as `campaign_data.load_verification` returns it: literal CSV
+    text ('True'/'False', '' for None) except the parsed arm_slug / M
+    (float64, inf when unbudgeted) / split / k."""
+    token = 'inf' if M == float('inf') else '{:03d}'.format(int(M))
+
+    def cell(value):
+        return '' if value is None else str(value)
+
+    return {
+        'row_id': '{}_M{}_s{:02d}_k{:02d}'.format(arm_slug, token, split, k),
+        'verdict': verdict,
+        'model_stage_depth': cell(model_stage_depth),
+        'p4c_stage_depth': cell(None if unverified else p4c_stage_depth),
+        'model_blocks': cell(model_blocks),
+        'p4c_blocks': cell(None if unverified else p4c_blocks),
+        'p4c_over_budget': 'False', 'p4c_over_stages': 'False',
+        'unverified': str(bool(unverified)),
+        'tables_differing': tables_differing,
+        'arm_slug': arm_slug, 'M': float(M), 'split': split, 'k': k,
+    }
+
+
+def _verification_frame(lines):
+    frame = pd.DataFrame(lines)
+    frame['M'] = frame['M'].astype('float64')
+    return frame
+
+
+def test_agreement_table_counts_exact_out_of_n_per_arm_and_M():
+    inf = float('inf')
+    differing = '[{"model":4,"p4c":6,"table":"tbl_x"}]'
+    lines = [
+        _verification_line('joint', 25, 0),
+        _verification_line('joint', 25, 1, model_blocks=30, p4c_blocks=32,
+                           verdict='UNDER', tables_differing=differing),
+        _verification_line('joint', 25, 2, model_stage_depth=11,
+                           p4c_stage_depth=13, p4c_blocks=None,
+                           verdict='FALSE_FEASIBLE'),
+        _verification_line('joint', inf, 0),
+        _verification_line('joint', inf, 1, unverified=True,
+                           verdict='COMPILE_ERROR'),
+        _verification_line('joint-off', 25, 0),
+    ]
+    summary, misses = agreement_table(_verification_frame(lines))
+
+    assert list(summary.columns) == ['arm_slug', 'M', 'n', 'stage_depth_exact',
+                                     'blocks_exact', 'blocks_na']
+    cell = summary[(summary['arm_slug'] == 'joint') & (summary['M'] == 25)].iloc[0]
+    assert (cell['n'], cell['stage_depth_exact'], cell['blocks_exact'],
+            cell['blocks_na']) == (3, 2, 1, 1)
+    cell = summary[(summary['arm_slug'] == 'joint') & (summary['M'] == inf)].iloc[0]
+    assert (cell['n'], cell['stage_depth_exact'], cell['blocks_exact'],
+            cell['blocks_na']) == (2, 1, 1, 0)
+    cell = summary[summary['arm_slug'] == 'joint-off'].iloc[0]
+    assert (cell['n'], cell['stage_depth_exact'], cell['blocks_exact']) == (1, 1, 1)
+
+    assert list(misses.columns) == ['row_id', 'verdict', 'model_stage_depth',
+                                    'p4c_stage_depth', 'model_blocks',
+                                    'p4c_blocks', 'tables_differing']
+    assert sorted(misses['verdict']) == ['COMPILE_ERROR', 'FALSE_FEASIBLE', 'UNDER']
+    under = misses[misses['verdict'] == 'UNDER'].iloc[0]
+    assert under['tables_differing'] == [{'model': 4, 'p4c': 6, 'table': 'tbl_x'}]
+    assert under['model_blocks'] == 30 and under['p4c_blocks'] == 32
+    false_feasible = misses[misses['verdict'] == 'FALSE_FEASIBLE'].iloc[0]
+    assert false_feasible['row_id'] == 'joint_M025_s02_k05'
+    assert false_feasible['p4c_stage_depth'] == 13
+    assert np.isnan(false_feasible['p4c_blocks'])
+
+
+def test_agreement_table_accepts_parsed_bools_as_well_as_csv_text():
+    lines = [_verification_line('joint', 25, 0),
+             _verification_line('joint', 25, 1, unverified=True,
+                                verdict='TIMEOUT')]
+    frame = _verification_frame(lines)
+    frame['unverified'] = frame['unverified'] == 'True'
+    summary, _ = agreement_table(frame)
+
+    cell = summary.iloc[0]
+    assert (cell['n'], cell['stage_depth_exact'], cell['blocks_na']) == (2, 1, 0)
+
+
+def test_budget_binding_is_the_share_of_rows_at_ninety_percent_of_M():
+    inf = float('inf')
+    rows = [
+        _row(arm_slug='joint', M=50.0, split=0, blocks=45.0),   # = 0.9 M: binding
+        _row(arm_slug='joint', M=50.0, split=1, blocks=49.0),   # binding
+        _row(arm_slug='joint', M=50.0, split=2, blocks=44.9),
+        _row(arm_slug='joint', M=50.0, split=3, blocks=20.0),
+        _row(arm_slug='joint', M=inf, split=0, blocks=200.0),
+        _row(arm_slug='joint', M=inf, split=1, blocks=20.0),
+    ]
+    table = budget_binding(_frame(rows))
+
+    assert list(table.columns) == ['arm_slug', 'M', 'n', 'binding_share']
+    finite = table[table['M'] == 50.0].iloc[0]
+    assert finite['n'] == 4
+    assert finite['binding_share'] == pytest.approx(0.5)
+    unbudgeted = table[table['M'] == inf].iloc[0]
+    assert unbudgeted['n'] == 2
+    assert np.isnan(unbudgeted['binding_share'])
+
+
+def _robustness_frame(flagged_split=None):
+    df = _full_campaign_frame(n_splits=16, m_values=(25,), k_values=(5,))
+    df['flagged'] = False
+    if flagged_split is not None:
+        df.loc[df['split'] == flagged_split, 'flagged'] = True
+    return df
+
+
+def test_paired_tests_robustness_runs_heldout_splits_and_omits_no_flagged_when_clean():
+    table = paired_tests_robustness(
+        _robustness_frame(), expected_family_size=PRE_REGISTERED_FAMILY_SIZE)
+
+    assert set(table['subset']) == {'all', 'heldout_splits'}
+    heldout = table[table['subset'] == 'heldout_splits']
+    assert len(heldout) == PRE_REGISTERED_FAMILY_SIZE
+    assert heldout['n_splits'].eq(12).all()        # 16 splits minus 10-13
+    assert table[table['subset'] == 'all']['n_splits'].eq(16).all()
+
+
+def test_paired_tests_robustness_adds_no_flagged_when_any_row_is_flagged():
+    table = paired_tests_robustness(_robustness_frame(flagged_split=3))
+
+    assert set(table['subset']) == {'all', 'no_flagged', 'heldout_splits'}
+    assert table[table['subset'] == 'no_flagged']['n_splits'].eq(15).all()
+
+
+def test_paired_tests_robustness_holds_only_all_to_the_family_size():
+    df = _robustness_frame()
+    df = df[df['arm_slug'] != 'joint']
+    with pytest.raises(ValueError, match='(?i)famil'):
+        paired_tests_robustness(df, expected_family_size=PRE_REGISTERED_FAMILY_SIZE)

@@ -72,43 +72,48 @@ two-sided, and the two are not interchangeable:
   as well as save them (alignment adds intervals before it merges any), so
   assuming a direction here would be assuming the result.
 
-**The correction family, stated explicitly.** The arm grid this family was
-pre-registered against -- `src/main.py`'s `PRIMARY_ARMS + SENSITIVITY_ARMS`
-before the 2026-09-15 deletion of the delta_align sweep, and the archive that
-grid produced -- is one independent arm plus seven joint arms. The
-pre-registered family is therefore
+**The correction family, stated explicitly.** The compiler-verified campaign
+(spec 2026-09-29, section 7.3) runs one independent arm plus TWO joint arms
+(`JOINT_ARM_SLUGS`): `joint-off` (sharing only) and `joint` (sharing plus
+threshold alignment -- the delta_align tolerance axis was deleted on
+2026-09-15, so the seven archived `joint-d*` arms no longer exist). The
+family is therefore
 
-    7 contrasts   joint-off, joint-d000, joint-d002, joint-d005,
-                  joint-d010, joint-d020, joint-dinf -- each against
-                  `independent`
+    2 contrasts   joint-off, joint -- each against `independent`
   x 5 tests       acc_app (one-sided), f1_app (one-sided),
                   acc_ddos (one-sided), f1_ddos (one-sided),
                   blocks (two-sided)
-  = 35 comparisons
+  = 10 comparisons
 
-`PRE_REGISTERED_FAMILY_SIZE` is that 35, `default_contrast_family` builds
-those seven contrasts, and `paired_tests` reports `n_comparisons` on every
+and every family size below is DERIVED from `JOINT_ARM_SLUGS` and asserted,
+never written as a literal (the stale 35 = 7 x 5 of the archived sweep is
+exactly the mistake a literal invites). The archived seven-arm frames can
+still be analysed by passing `arms=` explicitly.
+
+`PRE_REGISTERED_FAMILY_SIZE` is that 10, `default_contrast_family` builds
+those contrasts, and `paired_tests` reports `n_comparisons` on every
 row so a reader can check the correction covered what was actually run.
 Pass `expected_family_size=PRE_REGISTERED_FAMILY_SIZE` to make a shrunken
 family (an arm missing from the frame) an error rather than a quietly weaker
-correction. Holm-Bonferroni is applied across all 35 at once -- not per task,
+correction. Holm-Bonferroni is applied across all 10 at once -- not per task,
 not per arm. `f1_app`/`f1_ddos` read the same one-sided direction as their
 accuracy counterparts -- "small p is the positive finding" -- because a
 per-class F1 collapse that raw accuracy hides (spec R3 section IV(d)) is
 exactly the failure mode this family exists to catch.
 
 **The substitution tests are a SECOND, SEPARATE family, and they are not
-part of the 35.** `substitution_test` returns six p-value fields, and
-`substitution_test_all_arms` runs it at all seven joint arms; taken raw that
-is 42 uncorrected p-values and seven uncorrected decision flags, and under
-the null at least one of seven flags at alpha = 0.05 fires roughly 30% of
-the time. They are kept out of the pre-registered 35 deliberately -- folding
+part of the pre-registered 10.** `substitution_test` returns six p-value
+fields, and `substitution_test_all_arms` runs it at every joint arm; taken
+raw that is six uncorrected p-values and one uncorrected decision flag per
+arm (on the archived seven-arm sweep, at least one of seven flags at alpha =
+0.05 fired under the null roughly 30% of the time). They are kept out of the
+pre-registered family deliberately -- folding
 them in would dilute the Holm correction protecting the primary accuracy
 claims with tests that answer a different question -- but
 kept out is not the same as unreported, so:
 
 * `substitution_test_all_arms` emits `pearson_p_negative_one_sided_holm`
-  and `substitution_detected_holm`, Holm-corrected across the seven arms
+  and `substitution_detected_holm`, Holm-corrected across the joint arms
   (`SUBSTITUTION_FAMILY_SIZE`), with `n_substitution_comparisons` recording
   how many arms actually yielded a defined test. Report the corrected flag.
 * The other five p-value fields on each row stay uncorrected diagnostics
@@ -132,17 +137,18 @@ kept out is not the same as unreported, so:
   anti-conservative relative to the number of independent splits.
 
 **`noninferiority_tests` is a THIRD, SEPARATE family (D13), and it is not
-part of the 35 either.** It answers a different question from
+part of the pre-registered 10 either.** It answers a different question from
 `paired_tests`' default `margin=0`: not "is there no detectable loss" but
 "is any loss small enough to call the two arms equivalent". Equivalence
 needs a margin, and D13 sizes it as **5% of each row's OWN baseline
 error**, per `(M, split, k)` cell -- not the flat accuracy-point constant
 `paired_tests`' `margin` parameter adds, which would test App (around 0.70
 accuracy, about 30% error) and DDoS (around 0.97, about 3% error) at
-wildly different strictness. The family is the seven joint arms x
-`acc_app`/`acc_ddos` only (`f1_app`/`f1_ddos` stay in the 35; they are not
-retested here) = 14 comparisons (`NONINFERIORITY_FAMILY_SIZE`),
-Holm-corrected on its own -- never mixed with the 35's p-values, because
+wildly different strictness. The family is the two joint arms x
+`acc_app`/`acc_ddos` only (`f1_app`/`f1_ddos` stay in the superiority
+family; they are not retested here) = 4 comparisons
+(`NONINFERIORITY_FAMILY_SIZE`), Holm-corrected on its own -- never mixed
+with the superiority family's p-values, because
 the two families answer different questions (superiority vs equivalence)
 and pooling their corrections would weaken both. See
 `noninferiority_tests` for the exact H0/H1 and the pre-registration
@@ -191,39 +197,33 @@ Report hypervolume as gain relative to the independent arm, matching the
 paper's framing, even though the absolute values differ from what is
 published.
 """
+import json
+
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from src.p4model.target import TCAM_BLOCKS_PER_STAGE, TOFINO_PIPELINE_STAGES
 from src.reporting.campaign_data import pair_arms
+from src.training.campaign_run import DEVELOPMENT_SPLITS
 
 INDEPENDENT_ARM_SLUG = 'independent'
 
-# Spec A.2's arm grid, minus the independent baseline: the seven treatment
-# arms every contrast in the pre-registered family is built from. Order is
-# the sweep order (the two anchors first, then increasing delta), so tables
-# and figures come out in a readable order without re-sorting.
-#
-# DELIBERATELY UNCHANGED by the 2026-09-15 deletion of the delta_align axis
-# (Track 5: delta_helps = FALSE -- mean_d000 0.7956173344395895 vs mean_d020
-# 0.7861922400433382, cells_favouring_d020 14/24), even though six of the
-# seven can no longer be produced. This tuple is the PRE-REGISTERED family:
-# it fixes the 35 comparisons `paired_tests` runs and the Holm correction
-# over them, and it names the arms of the archive those comparisons were
-# registered against. Adding the surviving `joint` slug here would silently
-# restate the plan as 40 comparisons over an eighth arm with no archived
-# data, which is a campaign-design decision and not a consequence of deleting
-# a mechanism. `figures.ordered_arms` APPENDS an unrecognised slug rather
-# than dropping it, so a fresh `joint` arm still appears in every figure.
-JOINT_ARM_SLUGS = (
-    'joint-off',
-    'joint-d000',
-    'joint-d002',
-    'joint-d005',
-    'joint-d010',
-    'joint-d020',
-    'joint-dinf',
-)
+# The compiler-verified campaign's joint arms (spec 2026-09-29 section 7.3),
+# in sweep order: sharing alone, then sharing plus threshold alignment.
+# Replaces the archived seven-arm sweep (`joint-off`, `joint-d000` ...
+# `joint-dinf`), whose six delta arms can no longer be produced since the
+# 2026-09-15 deletion of the delta_align axis (Track 5: delta_helps = FALSE).
+# Every family size below is derived from this tuple, so the pre-registered
+# family follows the grid instead of silently drifting from it.
+# `figures.ordered_arms` APPENDS an unrecognised slug rather than dropping it,
+# so an archived `joint-d*` arm still appears in every figure.
+JOINT_ARM_SLUGS = ('joint-off', 'joint')
+
+# Blocks available to a whole Tofino pipe. The hypervolume reference budget
+# for the unbudgeted cell (M = inf), where `(0.5, M)` would be an infinite
+# reference (O2): the pipe's own capacity is the natural finite stand-in.
+UNBUDGETED_REFERENCE_BLOCKS = TCAM_BLOCKS_PER_STAGE * TOFINO_PIPELINE_STAGES
 
 # The three outcomes of spec C.3, in front-objective order.
 FRONT_OBJECTIVES = ('acc_app', 'acc_ddos', 'blocks')
@@ -258,18 +258,20 @@ METRIC_ALTERNATIVE = {
     'blocks': 'two-sided',
 }
 
-# 7 joint arms x 5 tests. Stated as a literal so a reader can check it
-# against the arm grid, and asserted against the derived family below.
-PRE_REGISTERED_FAMILY_SIZE = 35
+# Joint arms x 5 tests, derived from the grid (spec section 7.3) and asserted
+# so a changed grid cannot quietly change the family size.
+PRE_REGISTERED_FAMILY_SIZE = len(JOINT_ARM_SLUGS) * len(DEFAULT_METRICS)
+assert PRE_REGISTERED_FAMILY_SIZE == 10
 
 # The SEPARATE substitution family: one one-sided correlation test per joint
-# arm. Explicitly not folded into the 35 -- see the module docstring -- but
-# Holm-corrected across its own seven so the seven decision flags are not
-# read raw.
-SUBSTITUTION_FAMILY_SIZE = 7
+# arm. Explicitly not folded into the pre-registered family -- see the module
+# docstring -- but Holm-corrected across its own arms so the per-arm
+# decision flags are not read raw.
+SUBSTITUTION_FAMILY_SIZE = len(JOINT_ARM_SLUGS)
+assert SUBSTITUTION_FAMILY_SIZE == 2
 
 # D13's non-inferiority family: acc_app and acc_ddos only. F1 stays in the
-# 35-comparison superiority family -- it is not retested here.
+# pre-registered superiority family -- it is not retested here.
 NONINFERIORITY_METRICS = ('acc_app', 'acc_ddos')
 
 # D13's pre-registered margin: 5% of EACH ROW's OWN baseline error, not an
@@ -277,11 +279,11 @@ NONINFERIORITY_METRICS = ('acc_app', 'acc_ddos')
 # for why `paired_tests`' `margin` parameter cannot be reused for this.
 NONINFERIORITY_MARGIN = 0.05
 
-# 7 joint arms x 2 accuracy metrics (NONINFERIORITY_METRICS). A THIRD family,
-# separate from PRE_REGISTERED_FAMILY_SIZE's 35 and from
-# SUBSTITUTION_FAMILY_SIZE's 7 -- see the module docstring and
-# `noninferiority_tests`.
-NONINFERIORITY_FAMILY_SIZE = 14
+# Joint arms x 2 accuracy metrics (NONINFERIORITY_METRICS). A THIRD family,
+# separate from PRE_REGISTERED_FAMILY_SIZE's and SUBSTITUTION_FAMILY_SIZE's --
+# see the module docstring and `noninferiority_tests`.
+NONINFERIORITY_FAMILY_SIZE = len(JOINT_ARM_SLUGS) * len(NONINFERIORITY_METRICS)
+assert NONINFERIORITY_FAMILY_SIZE == 4
 
 # Wilcoxon zero handling. The default 'wilcox' DISCARDS tied pairs, which
 # throws away the observations that most directly support a no-detectable-loss
@@ -501,6 +503,13 @@ def hypervolume_2d(front, reference):
     return hv
 
 
+def _reference_blocks(M):
+    """The hypervolume reference budget at `M`: `M` itself, or
+    `UNBUDGETED_REFERENCE_BLOCKS` for the unbudgeted cell (O2), where an
+    infinite reference would make every hypervolume infinite."""
+    return UNBUDGETED_REFERENCE_BLOCKS if np.isinf(M) else M
+
+
 def hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG, arms=None):
     """Per-(arm, M, task) 2-D hypervolume, reported as gain relative to
     `baseline` (D5, amended by A2 -- see the module docstring's
@@ -518,7 +527,8 @@ def hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG, arms=None):
     `TASK_FRONT_OBJECTIVES` pair -- deliberately NOT `pareto_front_3d`'s
     3-D front, see `_pareto_front_2d`'s docstring -- and calls
     `hypervolume_2d` on the filtered `(accuracy, blocks)` pairs against the
-    per-M reference `(0.5, M)`. Pareto-filtering first is not optional:
+    per-M reference `(0.5, M)` -- or `(0.5, UNBUDGETED_REFERENCE_BLOCKS)`
+    (288, the whole pipe) at `M = inf` (O2). Pareto-filtering first is not optional:
     `hypervolume_2d`'s sweep assumes the front it is given is already
     non-dominated, and a raw, unfiltered set of cells would silently give a
     wrong hypervolume.
@@ -560,7 +570,7 @@ def hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG, arms=None):
         front = _pareto_front_2d(cell, objectives, TASK_FRONT_MAXIMIZE,
                                  'hypervolume_by_arm')
         pairs = list(zip(front[objectives[0]], front[objectives[1]]))
-        return hypervolume_2d(pairs, reference=(0.5, M))
+        return hypervolume_2d(pairs, reference=(0.5, _reference_blocks(M)))
 
     rows = []
     for M in m_values:
@@ -607,7 +617,7 @@ def arm_deltas(df, treatment, baseline=INDEPENDENT_ARM_SLUG, metrics=DEFAULT_MET
     """
     paired = pair_arms(df, treatment, baseline)
     out = pd.DataFrame({
-        'M': paired['M'] if len(paired) else pd.Series(dtype='int64'),
+        'M': paired['M'] if len(paired) else pd.Series(dtype='float64'),
         'split': paired['split'] if len(paired) else pd.Series(dtype='int64'),
         'k': paired['k'] if len(paired) else pd.Series(dtype='int64'),
     })
@@ -735,13 +745,12 @@ def substitution_test(df, treatment, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05):
     TWO CAVEATS ON THE p-VALUES THIS RETURNS, both of which the caller owns:
 
     1. They are UNCORRECTED. This function returns six p-value fields, and
-       `substitution_test_all_arms` runs it at seven arms; none of those 42
-       values, and not `substitution_detected` either, belong to the
-       pre-registered 35-comparison family that `paired_tests` corrects (see
-       the module docstring for why they are kept separate). Under the null,
-       at least one of seven raw flags fires roughly 30% of the time. Prefer
+       `substitution_test_all_arms` runs it at every joint arm; none of
+       those values, and not `substitution_detected` either, belong to the
+       pre-registered family that `paired_tests` corrects (see the module
+       docstring for why they are kept separate). Prefer
        `substitution_test_all_arms`, which adds a Holm-corrected flag across
-       the seven arms.
+       the joint arms.
     2. The pairs are `(M, split, k)` cells, and cells inside one split share
        a training split, so they are not independent observations. The
        effective sample size is smaller than `n_pairs` and the p-values are
@@ -796,7 +805,7 @@ def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
     campaign still produces a table -- unless `expected_family_size` is
     given, mirroring `paired_tests`: passing
     `expected_family_size=SUBSTITUTION_FAMILY_SIZE` turns a family shrunk by
-    a MISSING arm (fewer rows in `df` than the pre-registered seven) into an
+    a MISSING arm (fewer arms in `df` than `JOINT_ARM_SLUGS`) into an
     error rather than a quietly weaker Holm correction. This is checked
     against how many arms were actually run (`len(arms)`), not against
     `n_substitution_comparisons`: an arm that ran but produced no DEFINED
@@ -804,15 +813,16 @@ def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
     never appeared in the frame at all, and only the latter is what this
     guard exists to catch.
 
-    THIS IS A SEPARATE FAMILY FROM THE PRE-REGISTERED 35. Running one
-    one-sided test per arm means seven decision flags, and at alpha = 0.05
-    at least one fires under the null roughly 30% of the time, so the raw
+    THIS IS A SEPARATE FAMILY FROM THE PRE-REGISTERED ONE. Running one
+    one-sided test per arm means one decision flag per arm (on the archived
+    seven-arm sweep, at least one fired under the null roughly 30% of the
+    time at alpha = 0.05), so the raw
     `substitution_detected` must not be read across the sweep as if it were
     a single test. Two extra columns fix that:
 
     * `pearson_p_negative_one_sided_holm` -- the flag-driving p-value,
       Holm-corrected across the arms in THIS table only. It is deliberately
-      not pooled with `paired_tests`' 35: folding a different question into
+      not pooled with `paired_tests`' family: folding a different question into
       that family would dilute the correction protecting the primary
       accuracy claims.
     * `substitution_detected_holm` -- the corrected decision. Report this
@@ -1081,11 +1091,11 @@ def holm_bonferroni(pvalues):
 # ---------------------------------------------------------------------------
 
 def default_contrast_family(df=None, arms=None, baseline=INDEPENDENT_ARM_SLUG):
-    """The pre-registered contrast family: each of the seven joint arms
-    against `independent`.
+    """The pre-registered contrast family: each joint arm
+    (`JOINT_ARM_SLUGS`) against `independent`.
 
-    Seven contrasts x five tests (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`,
-    `blocks`) is the 35-comparison family `PRE_REGISTERED_FAMILY_SIZE` names.
+    Two contrasts x five tests (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`,
+    `blocks`) is the 10-comparison family `PRE_REGISTERED_FAMILY_SIZE` names.
     When `df` is given, only arms actually present in it are returned, so a
     partial campaign yields a smaller -- and explicitly smaller -- family.
     """
@@ -1118,9 +1128,9 @@ def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
     """Paired Wilcoxon tests over the whole contrast family, Holm-corrected.
 
     The family, stated so it can be checked (see the module docstring): the
-    seven joint arms of spec A.2's grid, each against `independent`, times
+    joint arms of `JOINT_ARM_SLUGS`, each against `independent`, times
     five tests -- `acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `blocks` -- for
-    35 comparisons. Holm-Bonferroni is applied across ALL of them at once;
+    10 comparisons. Holm-Bonferroni is applied across ALL of them at once;
     `n_comparisons` on every row records how many were actually corrected
     over, and `expected_family_size=PRE_REGISTERED_FAMILY_SIZE` turns a
     shrunken family (an arm missing from `df`) into an error rather than a
@@ -1260,6 +1270,155 @@ def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
 
 
 # ---------------------------------------------------------------------------
+# Compiler-verified campaign: agreement, budget binding, robustness (spec 7.3)
+# ---------------------------------------------------------------------------
+
+def _as_bool(series):
+    """A flag column as bools, whether it holds parsed bools or the literal
+    verification.csv text ('True'/'False', '' for None -> False)."""
+    if series.dtype == bool:
+        return series
+    return series.map(lambda v: v is True or (isinstance(v, (bool, np.bool_)) and bool(v))
+                      or (isinstance(v, str) and v.strip().lower() == 'true'))
+
+
+def _as_number(series):
+    """A numeric column as float64; '' / None (p4c never got that far) -> NaN."""
+    return pd.to_numeric(series.replace('', np.nan), errors='coerce').astype('float64')
+
+
+def _as_list(value):
+    """`tables_differing` as a list: JSON text as written by the verifier, a
+    list already, or [] for empty / missing."""
+    if isinstance(value, list):
+        return value
+    if value is None or (isinstance(value, float) and np.isnan(value)) or value == '':
+        return []
+    return json.loads(value)
+
+
+def _cell_order(frame):
+    """(arm_slug, M) cells in reading order: the independent baseline, then
+    JOINT_ARM_SLUGS, then any other arm; M ascending (inf last)."""
+    known = [INDEPENDENT_ARM_SLUG] + list(JOINT_ARM_SLUGS)
+    rank = {slug: i for i, slug in enumerate(known)}
+    return frame.assign(
+        _arm_rank=frame['arm_slug'].map(lambda a: rank.get(a, len(known)))
+    ).sort_values(['_arm_rank', 'arm_slug', 'M']).drop(columns='_arm_rank') \
+        .reset_index(drop=True)
+
+
+def agreement_table(verification):
+    """Model-vs-p4c agreement per arm x M (spec section 7.3), from the frame
+    `campaign_data.load_verification` returns -- EVERY verified design,
+    including the ones `load_campaign` drops as p4c-infeasible (O1): the
+    agreement table is about the model, not about the reported designs.
+
+    Returns `(summary, misses)`:
+
+    * `summary`, one row per `(arm_slug, M)`: `n` rows, `stage_depth_exact`
+      rows whose model stage depth equals p4c's, `blocks_exact` rows whose
+      model blocks equal p4c's, and `blocks_na` VERIFIED rows where p4c
+      never allocated (`p4c_blocks` empty -- over 12 stages), so the blocks
+      column reads as `blocks_exact / (n - blocks_na - unverified)` at most.
+      An unverified row (compile error / timeout) is exact on neither.
+    * `misses`, every row whose `verdict` is not `EXACT`, with both numbers
+      and `tables_differing` parsed to a list of `{table, model, p4c}`.
+
+    Accepts the literal CSV text load_verification keeps ('True'/'False',
+    '' for None) or parsed bools and numbers; `M` may be inf.
+    """
+    frame = verification.copy()
+    for column in ('model_stage_depth', 'p4c_stage_depth', 'model_blocks',
+                   'p4c_blocks'):
+        frame[column] = _as_number(frame[column])
+    unverified = _as_bool(frame['unverified']) if 'unverified' in frame.columns \
+        else pd.Series(False, index=frame.index)
+    frame['_stage_exact'] = frame['model_stage_depth'] == frame['p4c_stage_depth']
+    frame['_blocks_exact'] = frame['model_blocks'] == frame['p4c_blocks']
+    frame['_blocks_na'] = ~unverified & frame['p4c_blocks'].isna()
+
+    rows = []
+    for (arm, M), cell in frame.groupby(['arm_slug', 'M'], sort=False):
+        rows.append({
+            'arm_slug': arm, 'M': float(M), 'n': int(len(cell)),
+            'stage_depth_exact': int(cell['_stage_exact'].sum()),
+            'blocks_exact': int(cell['_blocks_exact'].sum()),
+            'blocks_na': int(cell['_blocks_na'].sum()),
+        })
+    summary = pd.DataFrame(rows, columns=['arm_slug', 'M', 'n', 'stage_depth_exact',
+                                          'blocks_exact', 'blocks_na'])
+    if len(summary):
+        summary = _cell_order(summary)
+
+    miss_columns = ['row_id', 'verdict', 'model_stage_depth', 'p4c_stage_depth',
+                    'model_blocks', 'p4c_blocks', 'tables_differing']
+    misses = frame.loc[frame['verdict'] != 'EXACT', miss_columns].copy()
+    misses['tables_differing'] = [_as_list(v) for v in misses['tables_differing']]
+    return summary, misses.reset_index(drop=True)
+
+
+def budget_binding(df, share=0.9):
+    """Per `(arm_slug, M)` cell, the share of rows whose (p4c) `blocks` reach
+    `share * M` (spec section 7.3): `M = 75` near 0 and identical to `inf`
+    confirms the grid; a non-binding M other than 75/inf is reported as such.
+
+    `df` is `load_campaign`'s frame, whose `blocks` already holds p4c's
+    numbers. `n` counts the rows with a defined `blocks`; `binding_share` is
+    NaN for `M = inf` (there is no budget to bind, and `0.9 * inf` is not a
+    threshold) and for a cell with no defined `blocks`.
+    """
+    frame = df[['arm_slug', 'M']].copy()
+    frame['M'] = frame['M'].astype('float64')
+    frame['blocks'] = _as_number(df['blocks'])
+    frame = frame[frame['blocks'].notna()]
+
+    rows = []
+    for (arm, M), cell in frame.groupby(['arm_slug', 'M'], sort=False):
+        n = int(len(cell))
+        if np.isinf(M) or n == 0:
+            binding = float('nan')
+        else:
+            binding = float((cell['blocks'] >= share * M).mean())
+        rows.append({'arm_slug': arm, 'M': float(M), 'n': n,
+                     'binding_share': binding})
+    table = pd.DataFrame(rows, columns=['arm_slug', 'M', 'n', 'binding_share'])
+    return _cell_order(table) if len(table) else table
+
+
+def paired_tests_robustness(df, **paired_kwargs):
+    """`paired_tests` on three subsets, stacked with a `subset` column (spec
+    section 7.3's robustness lines):
+
+    * `'all'` -- every row; the only subset held to `expected_family_size`.
+    * `'no_flagged'` -- without `flagged` rows (unverified designs carrying
+      the model's numbers); run only when any row is flagged.
+    * `'heldout_splits'` -- only splits not used during development
+      (`split not in DEVELOPMENT_SPLITS`, i.e. excluding 10-13).
+
+    The two robustness subsets are checks on the headline result, not new
+    families, so `expected_family_size` is dropped for them; each is still
+    Holm-corrected over the comparisons it ran.
+    """
+    subsets = [('all', df)]
+    if 'flagged' in df.columns:
+        flagged = _as_bool(df['flagged'])
+        if flagged.any():
+            subsets.append(('no_flagged', df[~flagged]))
+    subsets.append(('heldout_splits', df[~df['split'].isin(DEVELOPMENT_SPLITS)]))
+
+    robustness_kwargs = {key: value for key, value in paired_kwargs.items()
+                         if key != 'expected_family_size'}
+    tables = []
+    for name, subset in subsets:
+        kwargs = paired_kwargs if name == 'all' else robustness_kwargs
+        table = paired_tests(subset, **kwargs)
+        table.insert(0, 'subset', name)
+        tables.append(table)
+    return pd.concat(tables, ignore_index=True)
+
+
+# ---------------------------------------------------------------------------
 # Non-inferiority at a per-row relative-error margin (D13)
 # ---------------------------------------------------------------------------
 
@@ -1296,12 +1455,12 @@ def noninferiority_tests(df, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05,
     to a per-row fraction of baseline error.
 
     Scope is deliberately just `NONINFERIORITY_METRICS` (`acc_app`,
-    `acc_ddos`). F1 is NOT tested here -- it stays in `paired_tests`' 35-
-    comparison superiority family, which answers a different question.
+    `acc_ddos`). F1 is NOT tested here -- it stays in `paired_tests`'
+    superiority family, which answers a different question.
 
-    The family is the seven joint arms x these two metrics = 14
+    The family is the two joint arms x these two metrics = 4
     (`NONINFERIORITY_FAMILY_SIZE`), Holm-corrected on its OWN: this
-    function's p-values are never mixed into `paired_tests`' 35 -- see the
+    function's p-values are never mixed into `paired_tests`' family -- see the
     module docstring for why pooling the two would weaken both. Pass
     `expected_family_size=NONINFERIORITY_FAMILY_SIZE` to turn a shrunken
     family (an arm missing from `df`) into an error rather than a quietly
