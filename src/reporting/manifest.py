@@ -203,3 +203,90 @@ def write_run_manifest(arms, M_values, n_splits, n_rows_app, n_rows_ddos,
               'provenance for this invocation:', file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return None
+
+
+# ---------------------------------------------------------------------------
+# The compiler-verified campaign's run-level manifest (spec §5.2): ONE
+# run_manifest.json per run directory, grown by every invocation that adds
+# splits to that run rather than one file per invocation.
+# ---------------------------------------------------------------------------
+
+SEED_RULES = {'data': '42 + split', 'optuna': '1000 * split + k'}
+
+# Fields that define the run's grid. A later invocation into the same run
+# directory must agree on all of them, or the run would silently mix grids.
+_GRID_FIELDS = ('arms', 'M_values', 'dataset_rows', 'seed_rules')
+
+
+def env_hash():
+    """sha256 of `conda list --explicit`, or None. Never raises: conda being
+    absent (a plain venv, a container) is an ordinary state, not an error."""
+    import hashlib
+    for exe in filter(None, (os.environ.get('CONDA_EXE'), 'conda')):
+        try:
+            listing = subprocess.check_output(
+                [exe, 'list', '--explicit'],
+                stderr=subprocess.DEVNULL, timeout=120)
+        except Exception:
+            continue
+        return hashlib.sha256(listing).hexdigest()
+    return None
+
+
+def _json_M(M):
+    """M as it is stored in the manifest: an int, or the string 'inf' (strict
+    JSON has no Infinity)."""
+    return 'inf' if M == float('inf') else int(M)
+
+
+def write_campaign_manifest(run_dir, arms, M_values, splits, n_rows_app, n_rows_ddos,
+                            cwd=None):
+    """Create or extend <run_dir>/run_manifest.json and return its content.
+
+    The first invocation writes build_manifest(...)'s content plus run_dir,
+    splits, seed_rules, env_hash, p4c_image, open_p4studio_commit and a
+    one-element `batches` list. Every later invocation checks that the grid
+    fields (arms, M_values, dataset_rows, seed_rules) match what is on disk
+    -- raising ValueError otherwise -- then appends its own
+    {splits, started_utc, git} batch and widens `splits` to the union.
+
+    Unlike write_run_manifest this is NOT best-effort: it runs before any
+    training, so a grid mismatch should stop the invocation.
+    """
+    from src.training.campaign_run import atomic_write_text, canonical_json, run_paths
+
+    path = run_paths(run_dir).manifest
+    splits = sorted(int(s) for s in splits)
+    fresh = build_manifest(arms, [_json_M(M) for M in M_values], len(splits),
+                           n_rows_app, n_rows_ddos, cwd=cwd)
+    fresh['seed_rules'] = dict(SEED_RULES)
+    # Round-trip through JSON so tuples compare equal to the lists on disk.
+    fresh = json.loads(json.dumps(fresh))
+    batch = {'splits': splits, 'started_utc': fresh['timestamp_utc'],
+             'git': fresh['git']}
+
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            manifest = json.load(f)
+        for field in _GRID_FIELDS:
+            if manifest.get(field) != fresh[field]:
+                raise ValueError(
+                    '{}: {} differs from this invocation ({!r} on disk, {!r} now); '
+                    'use a new --run directory for a different grid'.format(
+                        path, field, manifest.get(field), fresh[field]))
+        manifest['batches'].append(batch)
+        manifest['splits'] = sorted(set(manifest['splits']) | set(splits))
+        manifest['n_splits'] = len(manifest['splits'])
+    else:
+        manifest = fresh
+        manifest.update({
+            'run_dir': run_dir,
+            'splits': splits,
+            'env_hash': env_hash(),
+            'p4c_image': os.environ.get('THESIS_P4C_IMAGE') or None,
+            'open_p4studio_commit': os.environ.get('THESIS_P4STUDIO_COMMIT') or None,
+            'batches': [batch],
+        })
+
+    atomic_write_text(path, canonical_json(manifest))
+    return manifest

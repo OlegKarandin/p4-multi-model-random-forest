@@ -1,6 +1,9 @@
 import os
 import sys
 from unittest.mock import patch
+
+import pytest
+
 from src import main as m
 
 
@@ -13,7 +16,7 @@ def test_parse_args_defaults_to_plot_mode():
 
 
 def test_parse_args_accepts_compute_mode():
-    args = m.parse_args(["--mode", "compute"])
+    args = m.parse_args(["--mode", "compute", "--run", "results/r"])
     assert args.mode == "compute"
 
 
@@ -24,16 +27,16 @@ def test_parse_args_rejects_unknown_mode():
 
 
 def test_main_block_dispatches_to_compute_path_when_mode_is_compute():
-    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
+    with patch("src.main.run_compute_mode") as mock_compute, \
          patch("src.main.run_plot_mode") as mock_plot, \
-         patch.object(sys, "argv", ["main.py", "--mode", "compute"]):
+         patch.object(sys, "argv", ["main.py", "--mode", "compute", "--run", "r"]):
         m.run_main()
         assert mock_compute.called
         assert not mock_plot.called
 
 
 def test_main_block_dispatches_to_plot_path_when_mode_is_plot():
-    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
+    with patch("src.main.run_compute_mode") as mock_compute, \
          patch("src.main.run_plot_mode") as mock_plot, \
          patch.object(sys, "argv", ["main.py", "--mode", "plot"]):
         mock_plot.return_value = []
@@ -252,168 +255,95 @@ def test_implement_tree_models_in_P4_requires_trained_models():
         m.implement_tree_models_in_P4()
 
 
-def test_compute_mode_runs_one_arm_per_cell_and_writes_one_file_each(tmp_path, monkeypatch):
-    """A run is one (arm, M) cell. If a run produced both arms, the
-    independent baseline would be recomputed once per joint arm -- six
-    identical copies, about half the campaign's compute."""
+# ---------------------------------------------------------------------------
+# run_compute_mode: one CSV per (arm, M, split) under --run <dir>/rows/.
+# Replaces compare_independent_joint_mapping's one-file-per-(arm, M) loop; the
+# intents below (one arm per job, per-arm alignment column, resume, --redo,
+# never write a failed unit of work, the manifest records the grid actually
+# used) carry over to the per-split unit.
+# ---------------------------------------------------------------------------
+
+def _compute_args(tmp_path, *extra):
+    return m.parse_args(["--mode", "compute", "--run", str(tmp_path / "run"),
+                         "--M", "25", "--splits", "0-1", *extra])
+
+
+def _stub_split_worker(calls, error=None):
+    from src.training.feature_selection import SplitResult
+
+    def fake(split_idx, X_app, X_ddos, y_app, y_ddos, max_blocks, feature_names,
+             random_state, arm='independent', cfg=None, row_context=None, **kw):
+        calls.append((arm, cfg, max_blocks, split_idx))
+        rows = [{'row_id': 'x', 'arm': arm, 'split': split_idx, 'k': 3}]
+        return SplitResult(split_idx=split_idx, results=rows, error=error)
+    return fake
+
+
+def _run_compute(args, calls, error=None, rows_app=10, rows_ddos=10):
     import numpy as np
+    from concurrent.futures import ThreadPoolExecutor
+    data = (np.zeros((rows_app, 4)), np.zeros((rows_ddos, 4)),
+            np.zeros(rows_app), np.zeros(rows_ddos), ['Flow.IAT.Max'])
+    with patch("src.main.load_campaign_data", return_value=data), \
+         patch("src.training.campaign_runner._process_single_split",
+               new=_stub_split_worker(calls, error)), \
+         patch("src.training.campaign_runner.ProcessPoolExecutor",
+               new=ThreadPoolExecutor):
+        return m.run_compute_mode(args)
+
+
+def test_compute_mode_runs_one_arm_per_job_and_writes_one_file_each(tmp_path):
+    """A job is one (arm, M, split). If a job produced both arms, the
+    independent baseline would be recomputed once per joint arm."""
+    calls = []
+    _run_compute(_compute_args(tmp_path), calls)
+
+    assert len(calls) == 3 * 2              # 3 primary arms x 2 splits
+    # Each job carried ITS OWN (arm, cfg) pair -- not the same cfg reused, and
+    # not arm/cfg transposed between jobs.
+    assert sorted((m.PRIMARY_ARMS.index((arm, cfg)), s)
+                  for arm, cfg, _M, s in calls) == \
+        [(i, s) for i in range(3) for s in (0, 1)]
+    rows_dir = tmp_path / "run" / "rows"
+    written = sorted(p.name for p in rows_dir.iterdir())
+    assert len(written) == 6
+    assert all(name.endswith('.csv') for name in written)   # no .partial left
+    assert 'rf_t7_d14_M025_joint_s01.csv' in written
+
+
+def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp_path):
+    """Regression: TrainConfig() defaults to alignment_enabled=True, the SAME
+    value the aligned joint arm uses, so it must be stamped per arm (spec
+    A.2/C.1). overlap_threshold and delta_align are no longer written at all."""
     import pandas as pd
-    from unittest.mock import patch
-
-    frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
-    X = np.zeros((10, 4))
-
-    # A real to_csv either raises or leaves a file at the path it's called
-    # with; a side-effect-free mock is not an accurate stand-in for that, and
-    # lets an unconditional os.replace(tmp_path, path) go completely
-    # unexercised. Run in an isolated cwd with a real results/ dir so the
-    # side effect actually creates the file os.replace needs.
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / 'results').mkdir()
-
-    with patch("src.main.compare_feature_selection_approaches_parallel",
-               return_value=frame) as mock_run, \
-         patch("src.main.read_app_dataset"), \
-         patch("src.main.read_DDOS_dataset"), \
-         patch("src.main.remove_correlated_features_both_datasets",
-               return_value=(X, X, ['Flow.IAT.Max'])), \
-         patch("pandas.DataFrame.to_csv",
-               side_effect=lambda p, **kw: open(p, 'w').close()) as mock_csv:
-        m.compare_independent_joint_mapping(
-            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
-
-    assert mock_run.call_count == 3       # one call per primary arm
-    # Each call actually carried ITS OWN (arm, cfg) pair, not e.g. the same
-    # cfg reused across calls or arm/cfg transposed between calls.
-    assert [c.kwargs['arm'] for c in mock_run.call_args_list] == \
-        [arm for arm, _ in m.PRIMARY_ARMS]
-    assert [c.kwargs['cfg'] for c in mock_run.call_args_list] == \
-        [cfg for _, cfg in m.PRIMARY_ARMS]
-    assert mock_csv.call_count == 3       # one file per (arm, M)
-    # Overwrite, never append: a re-run cell must replace its rows, not double
-    # them. Every C.3 claim is a paired test on (M, split, k).
-    for call in mock_csv.call_args_list:
-        assert call.kwargs.get('mode', 'w') == 'w'
-    # os.replace actually ran (not short-circuited): the three real files
-    # exist under results/, with no leftover .partial temp files. Filtered to
-    # the (arm, M) CSVs: this invocation also writes a manifests/ subdir
-    # (write_run_manifest now sees X_app/X_ddos -- real numpy arrays from the
-    # mocked remove_correlated_features_both_datasets -- rather than a bare
-    # Mock's unserialisable .shape, so the manifest write, previously
-    # swallowed by write_run_manifest's best-effort exception handling,
-    # succeeds here too; see test_a_run_manifest_lands_in_results_manifests_
-    # with_the_grid_actually_used for that path exercised directly).
-    written = sorted(p.name for p in (tmp_path / 'results').iterdir()
-                     if p.name.endswith('.csv'))
-    assert len(written) == 3
-    assert all(not name.endswith('.partial') for name in written)
-
-
-def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp_path, monkeypatch):
-    """Regression: TrainConfig() defaults to alignment_enabled=True -- the SAME
-    value the aligned joint arm uses -- so writing it unconditionally for every
-    arm made the independent baseline's rows byte-identical to the joint arm's
-    on this column, even though alignment never runs for the independent arm
-    (spec A.2/C.1: alignment_enabled should read as "off" there).
-
-    The `delta_align` column this test also covered is no longer written at all
-    (2026-09-15, Track 5's delta_helps = FALSE verdict), so it is asserted
-    ABSENT here, the same way `overlap_threshold` already is."""
-    import numpy as np
-    import pandas as pd
-    from unittest.mock import patch
-
-    written = {}
-
-    def fake_to_csv(self, path, **kw):
-        written[path] = self.copy()
-        open(path, 'w').close()
-
-    frame = pd.DataFrame([{'arm': 'x', 'split': 10, 'k': 3}])
-    X = np.zeros((10, 4))
-
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / 'results').mkdir()
-
-    with patch("src.main.compare_feature_selection_approaches_parallel",
-               return_value=frame), \
-         patch("src.main.read_app_dataset"), \
-         patch("src.main.read_DDOS_dataset"), \
-         patch("src.main.remove_correlated_features_both_datasets",
-               return_value=(X, X, ['Flow.IAT.Max'])), \
-         patch("pandas.DataFrame.to_csv", new=fake_to_csv):
-        m.compare_independent_joint_mapping(
-            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
-
-    independent_df = next(df for p, df in written.items() if 'independent' in p)
-    # '_joint.csv' rather than 'joint' alone: the joint-off arm's path also
-    # contains 'joint', and the write is temp-then-rename so the path seen here
-    # carries a '.partial' suffix.
-    joint_df = next(df for p, df in written.items() if '_joint.csv' in p)
+    _run_compute(_compute_args(tmp_path), [])
+    rows_dir = tmp_path / "run" / "rows"
+    independent_df = pd.read_csv(rows_dir / 'rf_t7_d14_M025_independent_s00.csv')
+    joint_df = pd.read_csv(rows_dir / 'rf_t7_d14_M025_joint_s00.csv')
 
     assert (~independent_df['alignment_enabled']).all()
     assert joint_df['alignment_enabled'].all()
-
-    # Neither overlap_threshold (Task 7, design D4) nor delta_align
-    # (2026-09-15) is written at all any more: both tunables are gone from
-    # TrainConfig, so there is nothing left to suppress or distinguish per arm.
     for column in ('overlap_threshold', 'delta_align'):
         assert column not in independent_df.columns
         assert column not in joint_df.columns
-
-    # The two arms must actually differ -- guards against a fix that makes
-    # the column constant across arms instead of correctly arm-dependent.
     assert not independent_df['alignment_enabled'].equals(joint_df['alignment_enabled'])
 
 
-def test_a_cell_whose_file_already_exists_is_skipped():
-    """Resumability: the campaign is ~40 h at a +/-2x estimate over seven
-    independent M values, so re-invoking the same command must continue rather
-    than redo -- and must not append to what is already there."""
-    import numpy as np
-    import pandas as pd
-    from unittest.mock import patch
-
-    frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
-    X = np.zeros((10, 4))
-
-    with patch("src.main.compare_feature_selection_approaches_parallel",
-               return_value=frame) as mock_run, \
-         patch("src.main.read_app_dataset"), \
-         patch("src.main.read_DDOS_dataset"), \
-         patch("src.main.remove_correlated_features_both_datasets",
-               return_value=(X, X, ['Flow.IAT.Max'])), \
-         patch("src.main.write_run_manifest"), \
-         patch("src.main.os.path.exists", return_value=True), \
-         patch("pandas.DataFrame.to_csv"):
-        m.compare_independent_joint_mapping(
-            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
-
-    assert mock_run.call_count == 0
+def test_a_split_whose_file_already_exists_is_skipped(tmp_path):
+    """Resumability: re-invoking the same command continues rather than
+    redoes -- and never appends to what is already there."""
+    first, second = [], []
+    _run_compute(_compute_args(tmp_path), first)
+    _run_compute(_compute_args(tmp_path), second)
+    assert len(first) == 6
+    assert second == []
 
 
-def test_redo_forces_recomputation():
-    import numpy as np
-    import pandas as pd
-    from unittest.mock import patch
-
-    frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
-    X = np.zeros((10, 4))
-
-    with patch("src.main.compare_feature_selection_approaches_parallel",
-               return_value=frame) as mock_run, \
-         patch("src.main.read_app_dataset"), \
-         patch("src.main.read_DDOS_dataset"), \
-         patch("src.main.remove_correlated_features_both_datasets",
-               return_value=(X, X, ['Flow.IAT.Max'])), \
-         patch("src.main.write_run_manifest"), \
-         patch("src.main.os.path.exists", return_value=True), \
-         patch("src.main.os.replace"), \
-         patch("pandas.DataFrame.to_csv"):
-        m.compare_independent_joint_mapping(
-            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS, skip_existing=False)
-
-    assert mock_run.call_count == 3
+def test_redo_forces_recomputation(tmp_path):
+    first, second = [], []
+    _run_compute(_compute_args(tmp_path), first)
+    _run_compute(_compute_args(tmp_path, "--redo"), second)
+    assert len(second) == 6
 
 
 def test_redo_flag_defaults_to_off():
@@ -421,48 +351,50 @@ def test_redo_flag_defaults_to_off():
     assert m.parse_args(['--redo']).redo is True
 
 
-def test_a_cell_where_every_split_failed_is_not_written():
-    """compare_feature_selection_approaches_parallel swallows per-split
-    exceptions into SplitResult.error and returns a 0-row frame when every
-    split failed. Writing that as a "complete" file would make skip_existing
-    treat the cell as permanently done -- silent data loss for the life of
-    the campaign -- so it must be skipped instead, leaving the cell to retry
-    on the next invocation."""
-    import numpy as np
-    import pandas as pd
-    from unittest.mock import patch
-
-    empty_frame = pd.DataFrame([])
-    X = np.zeros((10, 4))
-
-    with patch("src.main.compare_feature_selection_approaches_parallel",
-               return_value=empty_frame) as mock_run, \
-         patch("src.main.read_app_dataset"), \
-         patch("src.main.read_DDOS_dataset"), \
-         patch("src.main.remove_correlated_features_both_datasets",
-               return_value=(X, X, ['Flow.IAT.Max'])), \
-         patch("src.main.write_run_manifest"), \
-         patch("src.main.os.path.exists", return_value=False), \
-         patch("src.main.os.replace") as mock_replace, \
-         patch("pandas.DataFrame.to_csv") as mock_csv:
-        m.compare_independent_joint_mapping(
-            M_values=[25], n_splits=2, arms=m.PRIMARY_ARMS)
-
-    assert mock_run.call_count == 3
-    assert mock_csv.call_count == 0
-    assert mock_replace.call_count == 0
+def test_a_split_that_failed_is_not_written_and_the_run_exits_non_zero(tmp_path):
+    """A SplitResult with an error writes NO file (the next invocation
+    retries it), and run_compute_mode exits non-zero so the campaign log
+    shows it."""
+    import pytest
+    with pytest.raises(SystemExit) as exc:
+        _run_compute(_compute_args(tmp_path), [], error='boom')
+    assert exc.value.code != 0
+    rows_dir = tmp_path / "run" / "rows"
+    assert not rows_dir.exists() or list(rows_dir.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
-# --M / --n-splits
+# --run / --splits / --M
 #
-# M and n_splits were hardcoded in run_main(), so running one small pilot
-# cell meant editing main.py -- exactly the kind of edit that gets committed
-# by accident and silently truncates a later full run. --M is comma-separated
-# (a single flag reads better than a repeated one for a short list of
-# integers, and keeps "--M 25" trivial for a one-cell pilot while "--M
-# 25,40,60" stays a single, greppable token for a partial sweep).
+# The grid is a command, not an edit to main.py. --splits replaces the
+# removed --n-splits (a count could not say WHICH splits, so a run could not
+# be resumed or sharded); --M accepts 'inf' for the unbudgeted cell.
 # ---------------------------------------------------------------------------
+
+def test_compute_mode_requires_run(capsys):
+    import pytest
+    with pytest.raises(SystemExit):
+        m.parse_args(["--mode", "compute"])
+    assert '--run' in capsys.readouterr().err
+
+
+def test_splits_and_M_parse_ranges_and_inf():
+    args = m.parse_args(["--mode", "compute", "--run", "r",
+                         "--splits", "0-2", "--M", "15,inf"])
+    assert args.splits == [0, 1, 2]
+    assert args.M == [15, float('inf')]
+
+
+def test_n_splits_is_removed_and_the_error_names_splits(capsys):
+    import pytest
+    with pytest.raises(SystemExit):
+        m.parse_args(["--mode", "compute", "--run", "r", "--n-splits", "3"])
+    assert '--splits' in capsys.readouterr().err
+
+
+def test_splits_defaults_to_0_to_9():
+    assert m.parse_args([]).splits == list(range(10))
+
 
 def test_M_flag_parses_a_comma_separated_list():
     assert m.parse_args(["--M", "25,40,60"]).M == [25, 40, 60]
@@ -472,72 +404,47 @@ def test_M_flag_accepts_a_single_value():
     assert m.parse_args(["--M", "25"]).M == [25]
 
 
-def test_M_and_n_splits_flags_default_to_none_so_run_main_can_supply_todays_values():
-    args = m.parse_args([])
-    assert args.M is None
-    assert args.n_splits is None
+def test_M_flag_defaults_to_the_campaign_grid():
+    assert m.parse_args([]).M == [15, 25, 35, 50, 75, float('inf')]
 
 
-def test_n_splits_flag_parses_as_an_int():
-    assert m.parse_args(["--n-splits", "3"]).n_splits == 3
-
-
-def test_n_splits_flag_rejects_zero_with_error_mentioning_flag_name(capsys):
-    """--n-splits 0 must fail with an error message that names the flag,
-    not fail incidentally inside ProcessPoolExecutor with a cryptic message."""
-    import pytest
+@pytest.mark.parametrize("bad", ["15.5", "2000", "-inf", "INF", "0"])
+def test_M_flag_rejects_an_unnameable_budget_at_parse_time(bad, capsys):
+    """Fail fast: a budget m_token cannot name would otherwise crash inside
+    row_id hours into a run."""
     with pytest.raises(SystemExit):
-        m.parse_args(["--n-splits", "0"])
-    captured = capsys.readouterr()
-    assert 'n_splits' in captured.err or '--n-splits' in captured.err
+        m.parse_args(["--M", bad])
+    assert '--M' in capsys.readouterr().err
 
 
-def test_n_splits_flag_rejects_negative_with_error_mentioning_flag_name(capsys):
-    """--n-splits with a negative value must fail with an error message that
-    names the flag, not fail incidentally inside ProcessPoolExecutor."""
-    import pytest
-    with pytest.raises(SystemExit):
-        m.parse_args(["--n-splits", "-1"])
-    captured = capsys.readouterr()
-    assert 'n_splits' in captured.err or '--n-splits' in captured.err
-
-
-def test_omitting_M_and_n_splits_reproduces_todays_grid_exactly():
-    """The property that matters most: a campaign invocation with no --M or
-    --n-splits must run the exact same grid it runs today. A test asserting
-    only that the flags parse would not catch a default that quietly drifted
-    from [25, 50, 100, 150, 250] / 15 -- the failure mode this guards against
-    is a full ~40h campaign that silently runs a truncated grid and looks
-    like it succeeded."""
-    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
-         patch.object(sys, "argv", ["main.py", "--mode", "compute"]):
+def test_omitting_M_and_splits_runs_the_campaign_grid_exactly():
+    """A campaign invocation with no --M or --splits must run the pre-
+    registered grid; a default that quietly drifted would be a full campaign
+    that silently runs a truncated grid and looks like it succeeded."""
+    with patch("src.main.run_compute_mode") as mock_compute, \
+         patch.object(sys, "argv", ["main.py", "--mode", "compute", "--run", "r"]):
         m.run_main()
+    args = mock_compute.call_args.args[0]
+    assert args.M == [15, 25, 35, 50, 75, float('inf')]
+    assert args.splits == list(range(10))
 
-    assert mock_compute.call_args.kwargs['M_values'] == [25, 50, 100, 150, 250]
-    assert mock_compute.call_args.kwargs['n_splits'] == 15
 
-
-def test_M_and_n_splits_flags_actually_take_effect():
-    """This is what makes a pilot cell a command rather than a patch: --M 25
-    --n-splits 2 must reach compare_independent_joint_mapping unchanged, not
-    just parse into args.M/args.n_splits."""
-    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
-         patch.object(sys, "argv",
-                      ["main.py", "--mode", "compute", "--M", "25,40", "--n-splits", "2"]):
-        m.run_main()
-
-    assert mock_compute.call_args.kwargs['M_values'] == [25, 40]
-    assert mock_compute.call_args.kwargs['n_splits'] == 2
+def test_M_and_splits_flags_actually_take_effect(tmp_path):
+    """--M 25 --splits 0-1 must reach the jobs unchanged, not just parse."""
+    calls = []
+    _run_compute(_compute_args(tmp_path), calls)
+    assert {M for _a, _c, M, _s in calls} == {25}
+    assert {s for _a, _c, _M, s in calls} == {0, 1}
 
 
 # ---------------------------------------------------------------------------
 # --max-workers
 #
-# max_workers was hardcoded to None (auto: min(n_splits, cpu_count - 1)) in
+# max_workers was hardcoded to None (auto: min(n_jobs, cpu_count - 1)) in
 # run_main(), reserving one core for the orchestrator process. A small
 # Codespace (e.g. a 4-core account ceiling) wants every core instead --
 # --max-workers makes that a command-line flag rather than an edit to this
-# file, same pattern as --M/--n-splits.
+# file, same pattern as --M/--splits.
 # ---------------------------------------------------------------------------
 
 def test_max_workers_flag_defaults_to_none_so_run_main_can_supply_auto():
@@ -566,95 +473,50 @@ def test_max_workers_flag_rejects_negative_with_error_mentioning_flag_name(capsy
     assert 'max_workers' in captured.err or '--max-workers' in captured.err
 
 
-def test_omitting_max_workers_reproduces_todays_auto_behavior():
-    """The property that matters most: a campaign invocation with no
-    --max-workers must still let compare_independent_joint_mapping apply its
-    own min(n_splits, cpu_count - 1) auto-detection, not silently pin a
-    worker count."""
-    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
-         patch.object(sys, "argv", ["main.py", "--mode", "compute"]):
-        m.run_main()
-
-    assert mock_compute.call_args.kwargs['max_workers'] is None
-
-
-def test_max_workers_flag_actually_takes_effect():
-    with patch("src.main.compare_independent_joint_mapping") as mock_compute, \
-         patch.object(sys, "argv",
-                      ["main.py", "--mode", "compute", "--max-workers", "4"]):
-        m.run_main()
-
-    assert mock_compute.call_args.kwargs['max_workers'] == 4
-
-
-# ---------------------------------------------------------------------------
-# Gap 6 (P5): the run manifest, exercised end to end through
-# compare_independent_joint_mapping rather than only at the module level
-# (tests/test_manifest.py covers that). This is what proves the hook itself
-# is wired to the grid actually passed in, lands in results/manifests/ (not
-# results/, where it would trip skip_existing and the protected file-listing
-# assertion above), and round-trips.
-# ---------------------------------------------------------------------------
-
-def test_a_run_manifest_lands_in_results_manifests_with_the_grid_actually_used(
-        tmp_path, monkeypatch):
-    import json
-    import os
+def test_omitting_max_workers_reproduces_todays_auto_behavior(tmp_path):
+    """No --max-workers must still let run_jobs apply its own
+    min(n_jobs, cpu_count - 1) auto-detection, not silently pin a count."""
     import numpy as np
-    import pandas as pd
-    from unittest.mock import patch
+    from src.training.campaign_runner import RunSummary
+    data = (np.zeros((3, 1)), np.zeros((3, 1)), np.zeros(3), np.zeros(3), ['f'])
+    with patch("src.main.load_campaign_data", return_value=data), \
+         patch("src.main.run_jobs", return_value=RunSummary([], {})) as mock_run:
+        m.run_compute_mode(_compute_args(tmp_path))
+    assert mock_run.call_args.kwargs['max_workers'] is None
 
-    frame = pd.DataFrame([{'arm': 'independent', 'split': 10, 'k': 3}])
-    # Real DataFrames (unlike the bare-Mock read_*_dataset used by the other
-    # compute-mode tests above) so df_app.shape[0] is a genuine, JSON-able
-    # int -- the manifest write only actually lands when its inputs really
-    # are picklable/serialisable, by design (see write_run_manifest's
-    # docstring: build-then-serialise before any I/O).
-    df_app = pd.DataFrame({'f': range(37), 'Label': [0] * 37})
-    df_ddos = pd.DataFrame({'f': range(53), 'Label': [0] * 53})
-    # Row counts match df_app/df_ddos: remove_correlated_features_both_
-    # datasets only drops columns, never rows, and load_campaign_data's
-    # caller now reports dataset_rows from X_app/X_ddos (Task 4's fix), so
-    # this mock must preserve row count the way the real function does for
-    # the manifest assertion below to mean anything.
-    X_app = np.zeros((37, 4))
-    X_ddos = np.zeros((53, 4))
 
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / 'results').mkdir()
+def test_max_workers_flag_actually_takes_effect(tmp_path):
+    import numpy as np
+    from src.training.campaign_runner import RunSummary
+    data = (np.zeros((3, 1)), np.zeros((3, 1)), np.zeros(3), np.zeros(3), ['f'])
+    with patch("src.main.load_campaign_data", return_value=data), \
+         patch("src.main.run_jobs", return_value=RunSummary([], {})) as mock_run:
+        m.run_compute_mode(_compute_args(tmp_path, "--max-workers", "4"))
+    assert mock_run.call_args.kwargs['max_workers'] == 4
 
-    with patch("src.main.compare_feature_selection_approaches_parallel",
-               return_value=frame), \
-         patch("src.main.read_app_dataset", return_value=df_app), \
-         patch("src.main.read_DDOS_dataset", return_value=df_ddos), \
-         patch("src.main.remove_correlated_features_both_datasets",
-               return_value=(X_app, X_ddos, ['Flow.IAT.Max'])), \
-         patch("pandas.DataFrame.to_csv",
-               side_effect=lambda p, **kw: open(p, 'w').close()):
-        m.compare_independent_joint_mapping(
-            M_values=[25, 40], n_splits=2, arms=m.PRIMARY_ARMS)
 
-    manifests_dir = tmp_path / 'results' / 'manifests'
-    assert manifests_dir.is_dir()
-    written = list(manifests_dir.glob('manifest_*.json'))
-    assert len(written) == 1
+# ---------------------------------------------------------------------------
+# The run manifest, exercised end to end through run_compute_mode
+# (tests/test_campaign_runner.py covers write_campaign_manifest directly):
+# the hook is wired to the grid actually passed in and lands at
+# <run>/run_manifest.json, beside rows/, never inside it.
+# ---------------------------------------------------------------------------
 
-    with open(written[0]) as f:
+def test_a_run_manifest_lands_in_the_run_dir_with_the_grid_actually_used(tmp_path):
+    import json
+    args = m.parse_args(["--mode", "compute", "--run", str(tmp_path / "run"),
+                         "--M", "25,inf", "--splits", "0"])
+    _run_compute(args, [], rows_app=37, rows_ddos=53)
+
+    with open(tmp_path / "run" / "run_manifest.json") as f:
         loaded = json.load(f)
-
-    assert loaded['M_values'] == [25, 40]
-    assert loaded['n_splits'] == 2
+    assert loaded['M_values'] == [25, 'inf']
+    assert loaded['splits'] == [0]
     assert loaded['dataset_rows'] == {'app': 37, 'ddos': 53}
     assert len(loaded['arms']) == 3
-
-    # And the protected assertion elsewhere in this file (the exact file
-    # listing of results/) is exactly why this lives one level down: the top
-    # of results/ itself carries only the two (arm, M) CSV files' worth of
-    # per-cell output plus the manifests/ subdirectory, never a bare
-    # manifest file competing with skip_existing's completion marker.
-    top_level = {p.name for p in (tmp_path / 'results').iterdir()}
-    assert 'manifests' in top_level
-    assert all(name == 'manifests' or name.endswith('.csv') for name in top_level)
+    assert len(loaded['batches']) == 1
+    # rows/ holds only split CSVs: the manifest never competes with them.
+    assert all(p.name.endswith('.csv') for p in (tmp_path / "run" / "rows").iterdir())
 
 
 # ---------------------------------------------------------------------------
@@ -787,13 +649,14 @@ def test_load_campaign_data_returns_aligned_columns_and_names():
 
 
 def test_arm_slugs_flag_parses_a_comma_separated_list():
-    args = m.parse_args(['--mode', 'compute', '--arm-slugs', 'joint-d000,joint-d020'])
+    args = m.parse_args(['--mode', 'compute', '--run', 'r',
+                         '--arm-slugs', 'joint-d000,joint-d020'])
 
     assert args.arm_slugs == ['joint-d000', 'joint-d020']
 
 
 def test_arm_slugs_defaults_to_none_so_arms_presets_still_apply():
-    args = m.parse_args(['--mode', 'compute'])
+    args = m.parse_args(['--mode', 'compute', '--run', 'r'])
 
     assert args.arm_slugs is None
     assert args.arms == 'primary'

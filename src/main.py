@@ -13,16 +13,18 @@ from src.p4gen.build_p4_script import (
     merge_tree_nodes,
     tree_nodes_for,
 )
-from src.training.feature_selection import compare_feature_selection_approaches_parallel
 from src.training.config import TrainConfig
+from src.training import campaign_run
+from src.training.campaign_runner import plan_jobs, run_jobs
 
 from src.reporting.campaign_data import load_campaign
 from src.reporting import claims
 from src.reporting import figures
-from src.reporting.manifest import write_run_manifest
+from src.reporting.manifest import git_provenance, write_campaign_manifest
 
 import argparse
 import os
+import sys
 import numpy as np
 
 
@@ -34,11 +36,12 @@ import numpy as np
 # add dead space at the degenerate-pruning end.
 CAMPAIGN_CCP_ALPHA_MAX = 0.05
 
-# §2.5: the ARCHIVE's grid, not the code's previous default
-# [25,40,50,60,75,90,100]. C3 and C4 are matched-(M,k) comparisons against the
-# archive; the old default shared only {25,50,100} with it and would leave
-# those criteria without matched cells at 150 and 250.
-DEFAULT_M_GRID = [25, 50, 100, 150, 250]
+# The compiler-verified campaign's grid (campaign_run.DEFAULT_M_GRID:
+# 15, 25, 35, 50, 75 and the unbudgeted inf cell), replacing the archive grid
+# [25, 50, 100, 150, 250]: the verified campaign re-runs every arm, so it no
+# longer needs cells matched to the archive.
+DEFAULT_M_GRID = list(campaign_run.DEFAULT_M_GRID)
+DEFAULT_SPLITS = '0-9'
 
 
 # `joint-off` is a genuine SKIP of the align_rf_thresholds call, so that arm is
@@ -75,7 +78,7 @@ def select_arm_slugs(slugs):
     hatch for naming a single cell, or an arm SET that crosses them. Track 5
     (spec 2026-09-15 §2.2) needed exactly {joint-d000, joint-d020, joint-dinf}
     -- neither preset -- run in a pre-registered ORDER that the M-outer /
-    arm-inner loop in compare_independent_joint_mapping cannot emit, so each
+    arm-inner loop in the job planner cannot emit, so each
     cell was launched as its own invocation and this is how one was named.
     Those three slugs no longer exist (Track 5 returned delta_helps = FALSE and
     the tolerance axis was deleted on 2026-09-15); the flag itself stays,
@@ -100,24 +103,13 @@ def select_arm_slugs(slugs):
     return chosen
 
 
-def arm_result_path(arm, cfg, max_blocks):
-    """One file per (arm, M): self-describing, globbable, and resumable.
-
-    Replaces feature_selection_comparison_results_by_k_{t}_{d}_{M}.csv, whose
-    -1_-1 sentinel recorded neither the effective n_trees nor max_depth (F10i).
-    """
-    encoding = 'joint' if arm == 'joint' else 'disjoint'
-    return os.path.join('results', 'rf_t{}_d{}_M{}_{}.csv'.format(
-        cfg.n_trees, cfg.max_depth, max_blocks, cfg.arm_slug(encoding)))
-
-
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Feature selection experiment runner")
     parser.add_argument(
         "--mode", choices=["compute", "plot"], default="plot",
         help="'compute' runs new feature-selection experiments via "
-             "compare_independent_joint_mapping (expensive, real Optuna searches); "
+             "run_compute_mode (expensive, real Optuna searches); "
              "'plot' loads and analyzes already-computed results (default, matches "
              "today's checked-in new_results=False behavior)")
     parser.add_argument(
@@ -136,24 +128,33 @@ def parse_args(argv=None):
              "the error message")
     parser.add_argument(
         "--redo", action="store_true",
-        help="recompute (arm, M) cells whose result file already exists. The "
-             "default skips them, so re-running the same command resumes a "
-             "partially finished campaign instead of redoing it")
+        help="recompute (arm, M, split) jobs whose split file already exists "
+             "under --run. The default skips them, so re-running the same "
+             "command resumes a partially finished campaign instead of "
+             "redoing it")
     parser.add_argument(
-        "--M", dest="M", type=_parse_M_grid, default=None,
+        "--run", dest="run", default=None,
+        help="run directory (required in compute mode): split CSVs land in "
+             "<run>/rows/, designs in <run>/designs/, and <run>/run_manifest"
+             ".json records the grid and every batch of splits run into it")
+    parser.add_argument(
+        "--splits", dest="splits", type=_parse_splits,
+        default=campaign_run.parse_splits(DEFAULT_SPLITS),
+        help="which CV splits to run, e.g. '0-9', '0,3,5' or '0-2,7'. "
+             "Defaults to 0-9. Each split's data seed is 42 + split")
+    parser.add_argument(
+        "--M", dest="M", type=_parse_M_grid, default=list(DEFAULT_M_GRID),
         help="comma-separated TCAM block budgets to sweep in compute mode, "
-             "e.g. '--M 25' for a single pilot cell or '--M 25,40,60' for a "
-             "partial sweep. Defaults to today's full grid "
-             "[25,50,100,150,250] when omitted, so a pilot run is a "
-             "command-line flag rather than an edit to this file")
+             "e.g. '--M 25' for a single pilot cell or '--M 15,inf'; 'inf' "
+             "is the unbudgeted cell. Defaults to the full grid "
+             "[15,25,35,50,75,inf] when omitted")
     parser.add_argument(
-        "--n-splits", dest="n_splits", type=_parse_n_splits, default=None,
-        help="number of CV splits per (arm, M) cell in compute mode. "
-             "Defaults to today's value (15) when omitted")
+        "--n-splits", action=_RemovedNSplits, default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS)
     parser.add_argument(
         "--max-workers", dest="max_workers", type=_parse_max_workers, default=None,
-        help="number of parallel worker processes per (arm, M) cell in compute "
-             "mode. Defaults to min(n_splits, cpu_count - 1) when omitted, which "
+        help="number of parallel worker processes in compute mode, shared by "
+             "all jobs. Defaults to min(n_jobs, cpu_count - 1) when omitted, which "
              "reserves one core for the orchestrator process; pass this to use "
              "every core on a small machine (e.g. --max-workers 4 on a 4-core "
              "Codespace) at the cost of the orchestrator competing with workers")
@@ -167,15 +168,40 @@ def parse_args(argv=None):
              "otherwise, so a partial campaign never silently applies a "
              "weaker multiplicity correction than the one pre-registered "
              "in spec C.3")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.mode == "compute" and args.run is None:
+        parser.error("--run <dir> is required in compute mode")
+    return args
+
+
+class _RemovedNSplits(argparse.Action):
+    """--n-splits is gone: a count could not say WHICH splits, so a run
+    could neither resume nor shard. Fail loudly, naming the replacement."""
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs['nargs'] = '?'
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error("--n-splits was removed; use --splits (e.g. --splits 0-9)")
 
 
 def _parse_M_grid(value):
     """--M's argparse type: comma-separated TCAM block budgets, e.g. '25' or
-    '25,40,60'. Comma-separated (rather than a repeated flag) keeps a single
-    pilot cell as short as --M 25 while a partial sweep stays one greppable
-    token."""
-    return [int(v) for v in value.split(',')]
+    '15,inf'. Every value is validated through campaign_run.m_token here, so a
+    budget that cannot be named in a row_id fails at parse time, not hours
+    into a run."""
+    try:
+        return campaign_run.parse_M_grid(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--M: {}".format(exc))
+
+
+def _parse_splits(value):
+    """--splits' argparse type: '0-9', '0,3,5' or a mix such as '0-2,7'."""
+    try:
+        return campaign_run.parse_splits(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
 
 
 def _parse_arm_slugs(value):
@@ -187,15 +213,6 @@ def _parse_arm_slugs(value):
         raise argparse.ArgumentTypeError(
             "--arm-slugs needs at least one slug, got {!r}".format(value))
     return slugs
-
-
-def _parse_n_splits(value):
-    """--n-splits's argparse type: positive integer number of CV splits.
-    Rejects zero or negative values with an error message that names the flag."""
-    n = int(value)
-    if n <= 0:
-        raise argparse.ArgumentTypeError("--n-splits must be positive, got {!r}".format(value))
-    return n
 
 
 def _parse_max_workers(value):
@@ -365,8 +382,7 @@ def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):
 
 
 def load_campaign_data():
-    """The campaign's dataset, exactly as compare_independent_joint_mapping
-    sees it: both CSVs read, clipped at INFINITE, then correlation-pruned to
+    """The campaign's dataset, exactly as run_compute_mode sees it: both CSVs read, clipped at INFINITE, then correlation-pruned to
     the shared feature set.
 
     Extracted so scripts/replay_alignment.py cannot drift from the pipeline it
@@ -396,110 +412,42 @@ def load_campaign_data():
             selected_features)
 
 
-def compare_independent_joint_mapping(M_values, n_splits, arms=None,
-                                      max_workers=None,
-                                      skip_existing=True):
-    """Run one (arm, M) cell per output file.
+def run_compute_mode(args):
+    """`--mode compute`'s entire body: one job per (arm, M, split).
 
-    arms : list of (arm, TrainConfig). Defaults to PRIMARY_ARMS.
-    skip_existing : skip any cell whose output file already exists. The
-        campaign is ~40 h at a +/-2x estimate and the five M values are
-        independent runs, so it is meant to be resumed and chunked; the default
-        makes re-invoking the same command continue rather than redo. Pass
-        False (CLI: --redo) to force recomputation.
+    Loads the data, records the grid in <run>/run_manifest.json (a later
+    invocation into the same run must use the same grid; it appends a batch),
+    plans every job whose split file does not yet exist (all of them with
+    --redo), runs them through one process pool and exits non-zero if any job
+    failed, so the campaign log shows it. A failed job writes no file, so the
+    next invocation retries it.
     """
-    if arms is None:
-        arms = PRIMARY_ARMS
+    arms = (select_arm_slugs(args.arm_slugs) if args.arm_slugs is not None
+            else select_arms(args.arms))
+    M_values = args.M
+    splits = args.splits
 
     X_app, X_ddos, y_app, y_ddos, selected_features = load_campaign_data()
-
-    print("Starting per-task objective campaign")
+    print("Starting compiler-verified campaign run in {}".format(args.run))
     print("=" * 70)
     print(f"Total number of features: {X_app.shape[1]}")
 
-    # Gap 6 (P5, spec C.2): one manifest per invocation, recording the arms,
-    # the grid ACTUALLY passed in (not run_main's defaults), dataset sizes,
-    # and git/library provenance. Row counts come from X_app/X_ddos -- the
-    # raw df_app/df_ddos are no longer in scope here (load_campaign_data
-    # returns only the matrices) -- which is safe because remove_correlated_
-    # features_both_datasets only drops columns, never rows.
-    manifest_path = write_run_manifest(
-        arms=arms, M_values=M_values, n_splits=n_splits,
-        n_rows_app=X_app.shape[0], n_rows_ddos=X_ddos.shape[0],
-    )
-    if manifest_path:
-        print(f"Wrote run manifest: {manifest_path}")
+    write_campaign_manifest(args.run, arms, M_values, splits,
+                            n_rows_app=X_app.shape[0], n_rows_ddos=X_ddos.shape[0])
 
-    for max_blocks in M_values:
-        for arm, cfg in arms:
-            encoding = 'joint' if arm == 'joint' else 'disjoint'
-            path = arm_result_path(arm, cfg, max_blocks)
+    jobs = plan_jobs(arms, M_values, splits, args.run,
+                     skip_existing=not args.redo)
+    print(f"{len(jobs)} job(s) to run")
+    summary = run_jobs(jobs, (X_app, X_ddos, y_app, y_ddos, selected_features),
+                       args.run, git_provenance()['sha'],
+                       max_workers=args.max_workers)
 
-            if skip_existing and os.path.exists(path):
-                # Resumability: one file per (arm, M) IS the unit of work, and a
-                # complete file means that cell is done. Cells are written
-                # atomically below, so a file's existence is a reliable
-                # completion marker rather than a maybe-partial artifact.
-                print(f"\n=== M={max_blocks}  arm={cfg.arm_slug(encoding)} -- already complete, skipping ===")
-                continue
-
-            print(f"\n=== M={max_blocks}  arm={cfg.arm_slug(encoding)} ===")
-
-            results_df = compare_feature_selection_approaches_parallel(
-                X_app, X_ddos, y_app, y_ddos,
-                max_blocks,
-                feature_names=selected_features,
-                n_splits=n_splits,
-                arm=arm,
-                cfg=cfg,
-                random_state=42,
-                max_workers=max_workers,
-            )
-
-            if len(results_df) == 0:
-                # Every split raised (compare_feature_selection_approaches_parallel
-                # swallows per-split exceptions into SplitResult.error), so there
-                # is nothing to write. Writing an empty "complete" file here would
-                # make skip_existing treat this cell as permanently done -- silent
-                # data loss for the life of the campaign. Leave no file behind so
-                # the next invocation retries the cell instead.
-                print(f"=== M={max_blocks}  arm={cfg.arm_slug(encoding)} -- "
-                      f"ALL SPLITS FAILED, not writing (cell will retry on next invocation) ===")
-                continue
-
-            # Identity columns, so an arm is recoverable from the row as well as
-            # from the filename. P5 extends this to the full C.1 schema.
-            # 'arm' itself is not stamped here: _run_elimination already sets it
-            # per row, and re-stamping it at the frame level would silently
-            # flatten any future heterogeneity in that column instead of
-            # surfacing it.
-            results_df['alignment_enabled'] = cfg.alignment_enabled and arm == 'joint'
-            results_df['delta_select'] = cfg.delta_select
-            results_df['M'] = max_blocks
-            results_df['n_trees'] = cfg.n_trees
-            results_df['max_depth'] = cfg.max_depth
-            # Two columns are no longer written: `overlap_threshold` (Task 7,
-            # design D4) and `delta_align` (2026-09-15, Track 5's
-            # delta_helps = FALSE verdict). Both tunables are gone from
-            # TrainConfig, so there is nothing left to stamp here.
-            # src/reporting/campaign_data.py still ACCEPTS either column on
-            # archived rows written before those changes; nothing WRITES them.
-
-            # Overwrite, NOT append -- and write atomically.
-            #
-            # The old code appended (mode='a', header=not file_exists). With one
-            # file per (arm, M) as the resumability unit and a cost estimate
-            # stated at +/-2x, re-running individual cells is expected, not
-            # exceptional -- and appending would silently DOUBLE a re-run cell's
-            # rows. Every claim in section C.3 is a paired test on (M, split, k);
-            # duplicated rows corrupt those with no error and no visible symptom.
-            #
-            # Temp-then-rename so an interrupted cell never leaves a partial CSV
-            # that the skip-if-exists guard above would read as complete.
-            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-            tmp_path = path + '.partial'
-            results_df.to_csv(tmp_path, index=False)
-            os.replace(tmp_path, path)
+    print(f"\n{len(summary.done)} job(s) done, {len(summary.failed)} failed")
+    for key, error in sorted(summary.failed.items()):
+        print(f"FAILED {key}: {error.splitlines()[0] if error else ''}")
+    if summary.failed:
+        sys.exit(1)
+    return summary
 
 
 def run_plot_mode(results_dir='results', output_dir=None,
@@ -587,28 +535,8 @@ def run_plot_mode(results_dir='results', output_dir=None,
 def run_main():
     args = parse_args()
 
-    #M = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
-    # --M / --n-splits (both default to None) let a pilot cell run as a
-    # command -- e.g. --M 25 --n-splits 2 -- instead of an edit to this file.
-    # Omitting both must reproduce today's grid exactly.
-    M = args.M if args.M is not None else DEFAULT_M_GRID
-
-    n_splits = args.n_splits if args.n_splits is not None else 15
-
-    # Parallelization settings. None = auto (min(n_splits, cpu_count - 1));
-    # --max-workers (both default to None) lets a small Codespace use every
-    # core instead of an edit to this file, same pattern as --M/--n-splits.
-    max_workers = args.max_workers
-
     if args.mode == "compute":
-        compare_independent_joint_mapping(
-            M_values=M,
-            n_splits=n_splits,
-            arms=(select_arm_slugs(args.arm_slugs) if args.arm_slugs is not None
-                  else select_arms(args.arms)),
-            max_workers=max_workers,
-            skip_existing=not args.redo,
-        )
+        run_compute_mode(args)
 
     else:
         run_plot_mode(allow_partial_family=args.allow_partial_family)

@@ -31,20 +31,24 @@ def test_delta_select_is_identical_across_every_arm():
 
 
 def test_result_paths_are_self_describing_and_unique_per_arm():
-    paths = {m.arm_result_path(arm, cfg, 25) for arm, cfg in m.PRIMARY_ARMS}
+    """One file per (arm, M, split) since the compiler-verified campaign
+    (arm_result_path's one-file-per-(arm, M) layout is gone)."""
+    from src.training.campaign_runner import Job
+    paths = {Job(arm, cfg, 25, 0).csv_path('run') for arm, cfg in m.PRIMARY_ARMS}
 
     assert len(paths) == 3
-    assert any(p.endswith('rf_t7_d14_M25_independent.csv') for p in paths)
-    assert any(p.endswith('rf_t7_d14_M25_joint-off.csv') for p in paths)
-    assert any(p.endswith('rf_t7_d14_M25_joint.csv') for p in paths)
+    assert any(p.endswith('rf_t7_d14_M025_independent_s00.csv') for p in paths)
+    assert any(p.endswith('rf_t7_d14_M025_joint-off_s00.csv') for p in paths)
+    assert any(p.endswith('rf_t7_d14_M025_joint_s00.csv') for p in paths)
 
 
 def test_result_paths_record_the_effective_search_bounds():
     """Replaces feature_selection_comparison_results_by_k_-1_-1_25.csv, whose
     sentinel recorded neither the effective n_trees nor max_depth (F10i)."""
-    path = m.arm_result_path('joint', TrainConfig(n_trees=5, max_depth=8), 40)
+    from src.training.campaign_runner import Job
+    path = Job('joint', TrainConfig(n_trees=5, max_depth=8), 40, 3).csv_path('run')
 
-    assert path.endswith('rf_t5_d8_M40_joint.csv')
+    assert path.endswith('rf_t5_d8_M040_joint_s03.csv')
     assert '-1' not in path
 
 
@@ -147,15 +151,12 @@ def test_the_arm_grid_lost_the_overlap_and_delta_axes():
     assert 'joint-off' in slugs
 
 
-def test_the_default_M_grid_is_the_archive_grid():
-    """Comparability: C3 and C4 are matched-(M,k) comparisons against the
-    archive, and main.py's old default shared only {25,50,100} with it."""
+def test_the_default_M_grid_is_the_campaign_grid():
+    """The compiler-verified campaign's grid, inf included; it replaced the
+    archive grid [25, 50, 100, 150, 250]."""
     from src.main import parse_args
-    import src.main as main_mod
 
-    args = parse_args([])
-    M = args.M if args.M is not None else main_mod.DEFAULT_M_GRID
-    assert M == [25, 50, 100, 150, 250]
+    assert parse_args([]).M == [15, 25, 35, 50, 75, float('inf')]
 
 
 def test_select_arm_slugs_returns_the_named_arms_in_the_order_asked():

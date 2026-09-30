@@ -64,3 +64,11 @@ def test_atomic_write_leaves_no_partial(tmp_path):
     cr.atomic_write_text(str(path), cr.canonical_json({"b": 1, "a": 2}))
     assert path.read_text() == '{\n "a": 2,\n "b": 1\n}\n'
     assert not os.path.exists(str(path) + ".partial")
+
+
+@pytest.mark.parametrize("text", ["15.5", "2000", "-inf", "INF", "25,15.5"])
+def test_parse_M_grid_rejects_what_m_token_cannot_name(text):
+    """Fail fast: a value m_token later rejects would otherwise crash inside
+    row_id hours into a run, and 'INF' used to raise a bare OverflowError."""
+    with pytest.raises(ValueError):
+        cr.parse_M_grid(text)

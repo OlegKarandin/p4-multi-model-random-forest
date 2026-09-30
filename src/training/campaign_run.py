@@ -87,7 +87,9 @@ def parse_splits(text):
 def parse_M_grid(text):
     """Parse M grid string: '15,25,inf' gives [15, 25, inf].
 
-    Raises ValueError on M <= 0.
+    Raises ValueError on M <= 0 and on any value m_token cannot name
+    (non-integers such as 15.5, values >= 1000, 'INF'), so a bad budget fails
+    at parse time instead of inside row_id hours into a run.
     """
     result = []
     try:
@@ -99,13 +101,12 @@ def parse_M_grid(text):
                 M = float(part)
                 if M <= 0:
                     raise ValueError('M must be > 0, got {}'.format(M))
-                # Try to keep as int if it's a whole number
-                if M == int(M):
-                    result.append(int(M))
-                else:
-                    result.append(M)
+                m_token(M)
+                result.append(int(M))
+    except OverflowError:
+        raise ValueError('--M: {!r} (only lowercase inf names the unbudgeted cell)'.format(text))
     except ValueError as e:
-        if 'must be > 0' in str(e):
+        if 'must be' in str(e):
             raise
         raise ValueError('--M-grid: {}'.format(text))
     return result
