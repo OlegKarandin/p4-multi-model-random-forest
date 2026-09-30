@@ -11,6 +11,8 @@ warnings.filterwarnings('ignore')
 from src.training.errors import NoFeasibleSolution
 from src.training.config import TrainConfig
 from src.training.splits import make_task_splits
+from src.training.campaign_run import optuna_seed, row_id
+from src.training.row_artifacts import write_row_artifacts
 from src.p4gen import p4_gen_config
 
 
@@ -356,7 +358,7 @@ _RESULT_ROW_KEYS = set(_build_result_row('joint', 'multi', 0, 0, [], []))
 
 def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
                      validate_on_hardware=False, hardware_output_dir=None,
-                     config=None, rows=None):
+                     config=None, rows=None, row_context=None):
     """Recursive feature elimination for ONE arm.
 
     Replaces two ~90-line near-duplicate loops that differed in exactly three
@@ -390,6 +392,11 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
         omitted, preserving the previous return-only-on-clean-exit behavior
         for callers that don't need mid-raise durability (this function
         still returns `rows` either way).
+    row_context : RowContext, optional
+        Campaign mode. When given, every row (feasible or not) is stamped
+        with `row_id`, every search is seeded with `optuna_seed(split, k)`,
+        and every feasible row's program/model.json/forests are written via
+        `write_row_artifacts`. When None: `row_id` is '', no seed, no writes.
     """
     from src.training.train_model import train_multi_RF_Optuna_multi_constrained
     from src.p4gen.evaluation import accuracy_metrics
@@ -427,6 +434,10 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
 
     while True:
         k = len(remaining_app)
+        rid = (row_id(row_context.arm_slug, row_context.M, split_idx, k)
+               if row_context is not None else '')
+        search_kwargs = ({'optuna_seed': optuna_seed(split_idx, k)}
+                         if row_context is not None else {})
 
         try:
             train_result = train_multi_RF_Optuna_multi_constrained(
@@ -438,7 +449,7 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
                 (ddos.X_val_select[:, remaining_ddos], ddos.y_val_select),
                 names_app, names_ddos,
                 max_blocks, encoding, cfg,
-                warm_start_params)
+                warm_start_params, **search_kwargs)
         except NoFeasibleSolution as exc:
             row = _build_result_row(
                 arm, method, split_idx, k, names_app, names_ddos,
@@ -453,6 +464,7 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             row['sram_real'] = None
             row['map_ram_real'] = None
             row['compile_errors'] = None
+            row['row_id'] = rid
             rows.append(row)
             if carried_app is None or k == 1:
                 break  # No ranking to continue from, or nothing left to drop.
@@ -502,6 +514,11 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             intervals_before=train_result.intervals_before,
             intervals_after=train_result.intervals_after,
         ))
+        rows[-1]['row_id'] = rid
+        if row_context is not None:
+            write_row_artifacts(
+                row_context, rid, model_app, model_ddos, names_app, names_ddos,
+                encoding, train_result.usage)
 
         pending_next = _kickoff_hardware_validation(
             validate_on_hardware, hardware_output_dir, split_idx, method, k,
@@ -584,6 +601,7 @@ def _process_single_split(
     validate_on_hardware: bool = False,
     hardware_output_dir: Optional[str] = None,
     config: Optional[p4_gen_config.P4GenConfig] = None,
+    row_context=None,
 ) -> SplitResult:
     """
     Process a single train/test split.
@@ -651,7 +669,7 @@ def _process_single_split(
             feature_names=feature_names, max_blocks=max_blocks, cfg=cfg,
             validate_on_hardware=validate_on_hardware,
             hardware_output_dir=hardware_output_dir, config=config,
-            rows=results)
+            rows=results, row_context=row_context)
 
         return SplitResult(split_idx=split_idx, results=results)
 

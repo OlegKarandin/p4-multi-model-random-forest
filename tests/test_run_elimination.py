@@ -433,3 +433,66 @@ def test_features_round_trip_through_the_semicolon_join(monkeypatch):
         # Confirms the join actually used ';' and not something that would
         # collide with a dot in a feature name.
         assert all('.' in n for n in names)
+
+
+def _campaign_trainer(raise_at_k=(), seeds=None):
+    """Real (tiny) forests per k plus a real ResourceUsage, so
+    write_row_artifacts has something genuine to generate a program from."""
+    from src.p4gen.build_p4_script import dt_thresholds_float_to_int
+    from src.p4gen.evaluation import multi_model_memory_evaluation
+
+    def trainer(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                val_select_A, val_select_B, features_A, features_B,
+                max_blocks, encoding, cfg, warm_start_params=None,
+                optuna_seed=None):
+        k = X_A.shape[1]
+        if seeds is not None:
+            seeds.append(optuna_seed)
+        if k in raise_at_k:
+            raise NoFeasibleSolution(k=k, max_blocks=max_blocks)
+        fa = dt_thresholds_float_to_int(RandomForestClassifier(
+            n_estimators=2, max_depth=3, random_state=0).fit(X_A, y_A))
+        fd = dt_thresholds_float_to_int(RandomForestClassifier(
+            n_estimators=2, max_depth=3, random_state=0).fit(X_B, y_B))
+        usage = multi_model_memory_evaluation(
+            fa, fd, list(features_A), list(features_B), encoding)
+        return _stub_train_result(fa, fd, usage=usage)
+    return trainer
+
+
+def _run_campaign(monkeypatch, tmp_path, raise_at_k=(), seeds=None):
+    from src.training.row_artifacts import RowContext
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained',
+        _campaign_trainer(raise_at_k, seeds))
+    app, ddos = _splits()
+    return fs._run_elimination(
+        arm='joint', split_idx=3, app=app, ddos=ddos,
+        feature_names=list(FEATURE_NAMES), max_blocks=35, cfg=TrainConfig(),
+        row_context=RowContext(str(tmp_path), 'joint', 35, 'abc123'))
+
+
+def test_row_context_stamps_row_ids_seeds_searches_and_writes_artifacts(
+        monkeypatch, tmp_path):
+    seeds = []
+    rows = _run_campaign(monkeypatch, tmp_path, seeds=seeds)
+
+    assert [r['row_id'] for r in rows] == [
+        'joint_M035_s03_k03', 'joint_M035_s03_k02', 'joint_M035_s03_k01']
+    assert seeds == [3003, 3002, 3001]
+    for k in (1, 2, 3):
+        assert (tmp_path / 'designs' / f'joint_M035_s03_k0{k}.model.json').is_file()
+
+
+def test_infeasible_row_gets_row_id_but_no_artifacts(monkeypatch, tmp_path):
+    rows = _run_campaign(monkeypatch, tmp_path, raise_at_k=(2,))
+
+    by_k = {r['k']: r for r in rows}
+    assert by_k[2]['row_id'] == 'joint_M035_s03_k02'
+    assert not list((tmp_path / 'designs').glob('joint_M035_s03_k02.*'))
+    assert (tmp_path / 'designs' / 'joint_M035_s03_k03.model.json').is_file()
+
+
+def test_no_row_context_means_no_row_id_no_seed_no_files(monkeypatch, tmp_path):
+    rows = _run(monkeypatch, 'joint')
+    assert {r['row_id'] for r in rows} == {''}

@@ -177,6 +177,8 @@ class TrainResult:
     ternary_entries: int
     register_depth: int
     register_count: int
+    # The refit's full ResourceUsage; None for hand-built results (tests).
+    usage: Any = None
 
 
 def rf_params_from_params(params, suffix):
@@ -515,4 +517,5 @@ def train_multi_RF_Optuna_multi_constrained(
         ternary_entries=int(usage.ternary_entries),
         register_depth=int(usage.register_depth),
         register_count=int(usage.register_count),
+        usage=usage,
     )
