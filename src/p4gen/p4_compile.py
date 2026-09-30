@@ -26,6 +26,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -362,10 +363,20 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     # output_dir's immediate parent must still already exist for that `cp`
     # to succeed.
     native = _native_p4c()
+    scratch = None
     if native:
+        # Compile a copy named prog.p4, exactly as the WSL route does: p4c derives the
+        # names of its compiler-generated tables (tbl_<program>l202...) and of the
+        # assembly (pipe/<program>.bfa) from the program's file name, so compiling
+        # designs/<row_id>.p4 directly made a native run differ from the archived WSL
+        # compiles in those names only (measured 2026-09-30: R1 matched 13/73 with
+        # 0 stage and 0 real-table differences before this copy).
+        scratch = tempfile.mkdtemp(prefix='p4c_native_')
+        program = os.path.join(scratch, 'prog.p4')
+        shutil.copyfile(p4_path, program)
         cmd = [native, '-b', target, '-a', architecture,
                '-I', _resolve_repo_relative(include_path),
-               '-g', '--verbose', '2', '-o', output_dir, p4_path]
+               '-g', '--verbose', '2', '-o', output_dir, program]
     else:
         cmd = _wsl_command(p4_path, output_dir, architecture, target,
                            include_path, p4c_path)
@@ -379,6 +390,9 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
         raise P4CompileTimeout(
             "p4c compilation timed out after %d seconds"
             % (timeout_seconds,)) from e
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
 
     return _finish_compile(proc, output_dir)
 
