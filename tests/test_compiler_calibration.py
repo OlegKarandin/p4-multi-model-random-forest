@@ -1149,7 +1149,8 @@ def test_waiting_for_every_range_table_reproduces_the_pre_c1_depth(
     # The counterfactual, computed rather than quoted: label every range table
     # SHARED_TASK -- every tree waits for the last range table of either task,
     # the pre-C1 rule -- and the old, one-stage-deeper prediction comes back.
-    import scripts.p4_artifact_replay as replay
+    # table_tasks lives in the library now; replay_plans looks it up there.
+    from src.p4gen import p4_replay as replay
     from src.p4model.program import SHARED_TASK
 
     real_table_tasks = replay.table_tasks
