@@ -2,15 +2,25 @@
 
 Replaces `load_and_combine_data` (`src/main.py:386-409`), which constructs
 literal `feature_selection_comparison_results_by_k_-1_-1_{M}.csv` filenames --
-a schema the current pipeline does not write. What the campaign actually
-writes, after phases P4/P5 (`src/main.py`'s `arm_result_path`,
-`src/training/feature_selection.py`'s `_run_elimination`, and
-`compare_independent_joint_mapping`'s per-frame column stamping):
+a schema the current pipeline does not write. Two layouts are read:
 
-    results/rf_t{n_trees}_d{max_depth}_M{M}_{arm_slug}.csv
+* A compiler-verified RUN (`src/training/campaign_run.py`'s layout), detected
+  by a `<results_dir>/rows/` directory. One CSV per (arm, M, split), named by
+  `campaign_run.split_csv_name`:
 
-one file per (arm, M) cell, `arm_slug` from `TrainConfig.arm_slug` (e.g.
-`independent`, `joint-off`, `joint-d005`, `joint-dinf`). Run manifests are
+      <run>/rows/rf_t{n_trees}_d{max_depth}_M{token}_{arm_slug}_s{NN}.csv
+
+  `token` is the zero-padded budget (`035`) or `inf` for the unbudgeted cell,
+  whose rows carry an EMPTY `M` column and `budgeted == False`. The run's
+  `verification.csv` (written by `src/verify/runner.py`) is joined on
+  `row_id`: p4c's numbers replace the model's in `stage_depth`/`blocks`,
+  p4c-infeasible designs are dropped, and an unverified row is flagged.
+* The LEGACY flat layout, one file per (arm, M) cell and no verification:
+
+      results/rf_t{n_trees}_d{max_depth}_M{M}_{arm_slug}.csv
+
+`arm_slug` is `TrainConfig.arm_slug` (e.g. `independent`, `joint`,
+`joint-off`, archived `joint-d005`/`joint-dinf`). Legacy run manifests are
 separate JSON files under `results/manifests/`, so a non-recursive
 `results/*.csv` glob does not need to exclude them by name -- confirmed by
 extension alone (manifests carry a `.json` suffix, never `.csv`).
@@ -77,11 +87,15 @@ Identity / provenance
     source_file    str   basename of the CSV this row came from.
     split          int64
     k              int64
-    M              int64 TCAM block budget for this cell. Part of the join
-                          key -- pair_arms requires it explicitly because the
-                          legacy perform_statistical_analysis silently
+    M              float64 TCAM block budget for this cell, `inf` for the
+                          unbudgeted cell (a run's `Minf` files). Part of the
+                          join key -- pair_arms requires it explicitly because
+                          the legacy perform_statistical_analysis silently
                           collapsed all seven M files by keying on
                           (split, k) alone.
+    budgeted       bool  False iff M is inf. Legacy files: always True.
+    row_id         str   a run's `{arm_slug}_M{token}_s{NN}_k{NN}`; absent or
+                          '' on legacy files.
     n_trees        int64
     max_depth      int64
 
@@ -151,6 +165,24 @@ load_campaign returns:
                   loaded by older code), and an unrecognised extra column
                   needs no special handling at all.
 
+Compiler verification (a run; legacy loads carry NaN / '' / False here)
+    stage_depth, blocks   are p4c's numbers on a verified row (see above for
+                          what each quantity means); the model's on a
+                          flagged row.
+    model_stage_depth, model_blocks   float64, the model's numbers (the
+                          CSV's own stage_depth/blocks before substitution).
+    p4c_sram, p4c_map_ram, p4c_phv_containers   float64, NaN when unverified.
+    verdict        str   verification.csv's verdict ('' on legacy loads).
+                          Never FALSE_FEASIBLE: p4c-infeasible designs
+                          (FALSE_FEASIBLE, p4c_over_stages, p4c_over_budget)
+                          are dropped, exactly as model-infeasible rows are;
+                          they remain visible through load_verification.
+    p4c_over_budget, p4c_over_stages, unverified, model_paths_differ   bool
+    flagged        bool  True iff the row is unverified (compile error,
+                          timeout, or -- with require_verified=False -- no
+                          verification line): its stage_depth/blocks are the
+                          MODEL's. False on every legacy row.
+
 Feasibility
     infeasible     str   always '' after load_campaign's filter. Kept
                           (rather than dropped) so a caller can assert on it
@@ -186,6 +218,7 @@ Other
                                           validation was not run.
 """
 import glob
+import json
 import os
 import re
 
@@ -206,13 +239,46 @@ class MislabelledArtifactError(ValueError):
     Raised instead of silently trusting either source."""
 
 
+class UnverifiedRowsError(RuntimeError):
+    """A run has design rows (feasible under the model) with no line in its
+    verification.csv, and the caller required every one to be verified.
+    `.row_ids` lists them, sorted."""
+
+    def __init__(self, row_ids):
+        self.row_ids = sorted(row_ids)
+        super().__init__(
+            '{} design row(s) have no verification line: {}'.format(
+                len(self.row_ids), ', '.join(self.row_ids[:10])
+                + (' ...' if len(self.row_ids) > 10 else '')))
+
+
+class EnvironmentDriftError(RuntimeError):
+    """verification.csv records a p4c image or open-p4studio commit that
+    differs from the one run_manifest.json pinned for the run."""
+
+
 _FILENAME_RE = re.compile(
-    r'^rf_t(?P<n_trees>\d+)_d(?P<max_depth>\d+)_M(?P<M>\d+)_(?P<arm_slug>.+)\.csv$')
+    r'^rf_t(?P<n_trees>\d+)_d(?P<max_depth>\d+)_M(?P<M>\d+|inf)_(?P<arm_slug>.+?)(?:_s(?P<split>\d{2}))?\.csv$')
+
+# A run's row identity, `campaign_run.row_id`: {arm_slug}_M{token}_s{NN}_k{NN}.
+_ROW_ID_RE = re.compile(
+    r'^(?P<arm_slug>.+)_M(?P<M>\d+|inf)_s(?P<split>\d+)_k(?P<k>\d+)$')
 
 # Identity / join-key columns: always fully populated with true integers
 # (stamped uniformly per file, or set per row regardless of feasibility), so
 # these are forced to int64 -- a clean, unsurprising dtype for join keys.
-_INTEGER_KEY_COLUMNS = ['M', 'n_trees', 'max_depth', 'split', 'k']
+# `M` is deliberately NOT here: the unbudgeted cell is inf, so it is coerced
+# separately to float64 (see _coerce_M).
+_INTEGER_KEY_COLUMNS = ['n_trees', 'max_depth', 'split', 'k']
+
+# verification.csv columns carried into load_campaign's frame (besides the
+# p4c numbers substituted into stage_depth/blocks).
+_VERIFICATION_BOOL_COLUMNS = ('p4c_over_budget', 'p4c_over_stages', 'unverified',
+                              'model_paths_differ')
+_VERIFICATION_NUMERIC_COLUMNS = ('p4c_stage_depth', 'p4c_blocks', 'p4c_sram',
+                                 'p4c_map_ram', 'p4c_phv_containers')
+# Provenance fields that must match run_manifest.json's pin.
+_ENVIRONMENT_FIELDS = ('p4c_image', 'open_p4studio_commit')
 
 # Outcome/diagnostic columns coerced to numeric (float64, NaN for "not
 # applicable") AFTER infeasible rows have been dropped. Forced to float64
@@ -232,6 +298,8 @@ _FLOAT_COLUMNS = [
     'align_attempted', 'align_accepted', 'intervals_before', 'intervals_after',
     'stages_real', 'tcam_real', 'sram_real', 'map_ram_real',
     'delta_select',
+    'model_stage_depth', 'model_blocks', 'p4c_sram', 'p4c_map_ram',
+    'p4c_phv_containers',
 ]
 
 # The archive boundary (Task 9): overlap_threshold is written by every
@@ -259,22 +327,39 @@ ARCHIVED_DELTA_ALIGN_COLUMN = 'delta_align'
 
 
 def _parse_filename(path):
-    """Parse (n_trees, max_depth, M, arm_slug) out of a
-    `rf_t{n}_d{n}_M{n}_{slug}.csv` basename. Raises ValueError -- loudly,
-    not a warning -- if the filename does not match, since the whole point
-    of the glob is that the filename is self-describing."""
+    """Parse (n_trees, max_depth, M, arm_slug, split) out of a
+    `rf_t{n}_d{n}_M{n|inf}_{slug}[_s{NN}].csv` basename. `M` is an int, or
+    `float('inf')` for a run's unbudgeted `Minf` file; `split` is an int for a
+    run's per-split file and None for a legacy per-cell file. Raises
+    ValueError -- loudly, not a warning -- if the filename does not match,
+    since the whole point of the glob is that the filename is
+    self-describing."""
     basename = os.path.basename(path)
     m = _FILENAME_RE.match(basename)
     if not m:
         raise ValueError(
-            "Filename does not match rf_t<n_trees>_d<max_depth>_M<M>_<arm_slug>.csv: "
+            "Filename does not match "
+            "rf_t<n_trees>_d<max_depth>_M<M>_<arm_slug>[_s<NN>].csv: "
             "{!r}".format(basename))
+    split = m.group('split')
     return {
         'n_trees': int(m.group('n_trees')),
         'max_depth': int(m.group('max_depth')),
-        'M': int(m.group('M')),
+        'M': float('inf') if m.group('M') == 'inf' else int(m.group('M')),
         'arm_slug': m.group('arm_slug'),
+        'split': None if split is None else int(split),
     }
+
+
+def _parse_bool_column(series, column, where):
+    """'True'/'False' text -> bool. Never `bool(text)`: bool('False') is True.
+    Anything else raises, naming the column and file."""
+    mapping = {'True': True, 'False': False}
+    bad = sorted(set(series) - set(mapping))
+    if bad:
+        raise ValueError('{}: column {!r} must be True/False, got {}'.format(
+            where, column, bad))
+    return series.map(mapping).astype(bool)
 
 
 def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
@@ -348,8 +433,12 @@ def _cross_check_identity(path, parsed, file_df):
     identity disagrees with the identity recorded in its own columns.
 
     What is checked, and why: n_trees/max_depth/M are stamped onto every row
-    of a file uniformly by compare_independent_joint_mapping, so they must
-    match the filename exactly and be constant within the file. arm_slug is
+    of a file uniformly by the writer (`campaign_runner._stamp` for a run),
+    so they must match the filename exactly and be constant within the file.
+    An unbudgeted (`Minf`) file must carry an EMPTY `M` on every row and
+    `budgeted == 'False'`; a budgeted file an integer `M` and (when the
+    column exists -- legacy files predate it) `budgeted == 'True'`. A run's
+    per-split file must carry its filename's split on every row. arm_slug is
     not stored directly -- it is recomputed from the four columns that
     together determine it (arm, alignment_enabled, delta_align,
     overlap_threshold), which are exactly the columns TrainConfig.arm_slug and
@@ -359,12 +448,39 @@ def _cross_check_identity(path, parsed, file_df):
     are archive boundaries, stood in for by '' when a fresh file omits them
     entirely; see _expected_arm_slug.
     """
-    for field, col in (('n_trees', 'n_trees'), ('max_depth', 'max_depth'), ('M', 'M')):
+    def _mismatch(field, col, expected):
+        return MislabelledArtifactError(
+            "{}: filename says {}={} but in-file column {!r} has {}".format(
+                path, field, expected, col, sorted(set(file_df[col].tolist()))))
+
+    def _constant_int(col, expected):
         values = pd.unique(file_df[col])
-        if len(values) != 1 or int(values[0]) != parsed[field]:
-            raise MislabelledArtifactError(
-                "{}: filename says {}={} but in-file column {!r} has {}".format(
-                    path, field, parsed[field], col, sorted(set(values.tolist()))))
+        try:
+            return len(values) == 1 and int(values[0]) == expected
+        except ValueError:
+            return False
+
+    for field in ('n_trees', 'max_depth'):
+        if not _constant_int(field, parsed[field]):
+            raise _mismatch(field, field, parsed[field])
+
+    unbudgeted = parsed['M'] == float('inf')
+    if unbudgeted:
+        if not (file_df['M'] == '').all():
+            raise _mismatch('M', 'M', 'inf (empty M column)')
+    elif not _constant_int('M', parsed['M']):
+        raise _mismatch('M', 'M', parsed['M'])
+    if 'budgeted' in file_df.columns:
+        expected_budgeted = 'False' if unbudgeted else 'True'
+        if not (file_df['budgeted'] == expected_budgeted).all():
+            raise _mismatch('M', 'budgeted', '{} (budgeted={})'.format(
+                'inf' if unbudgeted else parsed['M'], expected_budgeted))
+    elif unbudgeted:
+        raise MislabelledArtifactError(
+            "{}: an Minf file must carry a 'budgeted' column".format(path))
+
+    if parsed.get('split') is not None and not _constant_int('split', parsed['split']):
+        raise _mismatch('split', 'split', parsed['split'])
 
     arm_values = pd.unique(file_df['arm'])
     align_values = pd.unique(file_df['alignment_enabled'])
@@ -399,17 +515,159 @@ def _cross_check_identity(path, parsed, file_df):
                 delta_values[0], overlap_values[0], expected_slug))
 
 
-def load_campaign(results_dir='results'):
-    """Glob `results_dir` for `rf_t*_d*_M*_*.csv` campaign result files,
-    parse each filename's identity, cross-check it against the file's own
-    columns (raising MislabelledArtifactError loudly on disagreement),
-    filter infeasible rows, and parse delta_align. See the module docstring
-    for the full column contract of the returned frame.
+def _is_run(results_dir):
+    return os.path.isdir(os.path.join(results_dir, 'rows'))
+
+
+def _read_verification(results_dir):
+    """verification.csv as literal strings ('' for None), or None if absent."""
+    path = os.path.join(results_dir, 'verification.csv')
+    if not os.path.isfile(path):
+        return None
+    return pd.read_csv(path, keep_default_na=False, na_values=[], dtype=str)
+
+
+def _check_environment(results_dir, verification):
+    """Raise EnvironmentDriftError if verification.csv's p4c image or
+    open-p4studio commit differs from run_manifest.json's pin. A manifest
+    value of None (a locally trained run, no pinned image) skips that field;
+    so does a missing manifest."""
+    path = os.path.join(results_dir, 'run_manifest.json')
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding='utf-8') as handle:
+        manifest = json.load(handle)
+    for field in _ENVIRONMENT_FIELDS:
+        pinned = manifest.get(field)
+        if pinned is None or field not in verification.columns:
+            continue
+        seen = sorted(set(verification[field]) - {pinned})
+        if seen:
+            raise EnvironmentDriftError(
+                '{}: run_manifest.json pins {}={!r} but verification.csv also '
+                'records {}'.format(results_dir, field, pinned, seen))
+
+
+def _join_verification(df, results_dir, require_verified):
+    """Join a run's verification.csv onto its (already model-feasible) rows,
+    substitute p4c's numbers, drop p4c-infeasible designs (O1) and flag
+    unverified rows. `df` holds string cells; numeric coercion follows."""
+    verification = _read_verification(results_dir)
+    if verification is None:
+        verification = pd.DataFrame(columns=['row_id', 'verdict']
+                                    + list(_VERIFICATION_BOOL_COLUMNS)
+                                    + list(_VERIFICATION_NUMERIC_COLUMNS))
+    else:
+        _check_environment(results_dir, verification)
+
+    missing = sorted(set(df['row_id']) - set(verification['row_id']))
+    if missing and require_verified:
+        raise UnverifiedRowsError(missing)
+
+    carried = (['row_id', 'verdict'] + list(_VERIFICATION_BOOL_COLUMNS)
+               + list(_VERIFICATION_NUMERIC_COLUMNS))
+    right = verification[carried].copy()
+    for col in _VERIFICATION_BOOL_COLUMNS:
+        # model_paths_differ may be '' (training path absent); read as False.
+        text = right[col].replace('', 'False') if col == 'model_paths_differ' \
+            else right[col]
+        right[col] = _parse_bool_column(text, col, 'verification.csv')
+    df = df.drop(columns=[c for c in carried if c != 'row_id' and c in df.columns])
+    df = df.merge(right, on='row_id', how='left', indicator='_verified')
+    has_line = df.pop('_verified') == 'both'
+
+    # Rows with no line (only reachable with require_verified=False) are
+    # unverified: model numbers kept, verdict '', flags False, flagged True.
+    df['verdict'] = df['verdict'].where(has_line, '')
+    for col in _VERIFICATION_BOOL_COLUMNS:
+        df[col] = df[col].where(has_line, False).astype(bool)
+    for col in _VERIFICATION_NUMERIC_COLUMNS:
+        df[col] = df[col].where(has_line, '')
+
+    # O1: a design p4c finds infeasible leaves the frame, exactly as a
+    # model-infeasible row does. load_verification still reports it.
+    excluded = has_line & ((df['verdict'] == 'FALSE_FEASIBLE')
+                           | df['p4c_over_stages'] | df['p4c_over_budget'])
+    df, has_line = df[~excluded], has_line[~excluded]
+
+    flagged = df['unverified'] | ~has_line
+    df['model_stage_depth'] = df['stage_depth']
+    df['model_blocks'] = df['blocks']
+    df['stage_depth'] = df['p4c_stage_depth'].where(~flagged, df['model_stage_depth'])
+    df['blocks'] = df['p4c_blocks'].where(~flagged, df['model_blocks'])
+    df['flagged'] = flagged.astype(bool)
+    return df.drop(columns=['p4c_stage_depth', 'p4c_blocks']).reset_index(drop=True)
+
+
+def _coerce_M(series):
+    """M text -> float64: '' (an unbudgeted run row) and 'inf' -> inf."""
+    return pd.to_numeric(series.replace({'': 'inf'}), errors='raise').astype('float64')
+
+
+def load_verification(results_dir):
+    """The raw verification.csv of a run, every line -- including designs
+    load_campaign drops as p4c-infeasible (O1) -- with each row's
+    `arm_slug`, `M` (float64, inf when unbudgeted), `split` and `k` parsed
+    from its `row_id` ({arm_slug}_M{token}_s{NN}_k{NN}). Every other column
+    stays the literal CSV text ('True'/'False', '' for None). The agreement
+    table reads this.
+
+    Raises FileNotFoundError if the run has no verification.csv.
+    """
+    verification = _read_verification(results_dir)
+    if verification is None:
+        raise FileNotFoundError(
+            'No verification.csv in {!r}'.format(results_dir))
+    parts = verification['row_id'].str.extract(_ROW_ID_RE)
+    bad = verification['row_id'][parts['arm_slug'].isna()].tolist()
+    if bad:
+        raise ValueError('verification.csv row_id(s) not of the form '
+                         '{{arm_slug}}_M{{token}}_s{{NN}}_k{{NN}}: {}'.format(bad))
+    verification = verification.drop(columns=['M']).copy() \
+        if 'M' in verification.columns else verification.copy()
+    verification['arm_slug'] = parts['arm_slug']
+    verification['M'] = _coerce_M(parts['M'])
+    verification['split'] = parts['split'].astype('int64')
+    verification['k'] = parts['k'].astype('int64')
+    return verification
+
+
+def load_campaign(results_dir='results', require_verified=None):
+    """Load a campaign as one frame. See the module docstring for the full
+    column contract of the returned frame.
+
+    Layout: if `<results_dir>/rows/` exists this is a compiler-verified run --
+    glob `rows/*.csv`, and `require_verified` defaults to True. Otherwise glob
+    `results_dir` for legacy `rf_t*_d*_M*_*.csv` files, with
+    `require_verified` defaulting to False (legacy loads never read a
+    verification file).
+
+    Each file's filename identity is cross-checked against its own columns
+    (MislabelledArtifactError on disagreement), infeasible rows are filtered
+    and delta_align is parsed. For a run, verification.csv is then joined on
+    `row_id` for every design row (`infeasible == ''`):
+
+    * a design row with no verification line raises UnverifiedRowsError when
+      `require_verified` (else it is kept, model numbers, `flagged=True`);
+    * a p4c image / open-p4studio commit differing from run_manifest.json
+      raises EnvironmentDriftError (skipped where the manifest has None);
+    * `stage_depth`/`blocks` move to `model_stage_depth`/`model_blocks` and
+      take p4c's numbers;
+    * designs p4c finds infeasible (FALSE_FEASIBLE, p4c_over_stages or
+      p4c_over_budget) are dropped (O1);
+    * unverified rows (compile error / timeout) keep the model's numbers and
+      get `flagged=True`; all others `flagged=False`.
 
     Raises FileNotFoundError if no files match -- an empty campaign frame is
     never a useful silent result for downstream analysis.
     """
-    pattern = os.path.join(results_dir, 'rf_t*_d*_M*_*.csv')
+    is_run = _is_run(results_dir)
+    if require_verified is None:
+        require_verified = is_run
+    if is_run:
+        pattern = os.path.join(results_dir, 'rows', '*.csv')
+    else:
+        pattern = os.path.join(results_dir, 'rf_t*_d*_M*_*.csv')
     paths = sorted(glob.glob(pattern))
     if not paths:
         raise FileNotFoundError(
@@ -440,6 +698,11 @@ def load_campaign(results_dir='results'):
             path, keep_default_na=False, na_values=[], dtype=str)
         file_df['alignment_enabled'] = file_df['alignment_enabled'] == 'True'
         _cross_check_identity(path, parsed, file_df)
+        if 'budgeted' in file_df.columns:
+            file_df['budgeted'] = _parse_bool_column(
+                file_df['budgeted'], 'budgeted', path)
+        else:
+            file_df['budgeted'] = True
         file_df['arm_slug'] = parsed['arm_slug']
         file_df['source_file'] = os.path.basename(path)
         frames.append(file_df)
@@ -456,9 +719,19 @@ def load_campaign(results_dir='results'):
     # rows disappear entirely.
     df = df[df['infeasible'] == ''].reset_index(drop=True)
 
+    if is_run:
+        df = _join_verification(df, results_dir, require_verified)
+    else:
+        # Legacy loads carry no verification: nothing is flagged.
+        df['verdict'] = ''
+        df['flagged'] = False
+        for col in _VERIFICATION_BOOL_COLUMNS:
+            df[col] = False
+
     for col in _INTEGER_KEY_COLUMNS:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='raise').astype('int64')
+    df['M'] = _coerce_M(df['M'])
 
     for col in _FLOAT_COLUMNS + list(OPTIONAL_COLUMNS):
         if col in df.columns:

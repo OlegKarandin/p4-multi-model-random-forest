@@ -525,3 +525,235 @@ def test_pair_arms_returns_empty_frame_for_an_arm_slug_present_in_neither_arm(tm
     paired = pair_arms(df, treatment='joint-dinf', baseline='independent')
 
     assert len(paired) == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 12: a compiler-verified RUN (rows/, verification.csv, run_manifest.json)
+# ---------------------------------------------------------------------------
+
+from src.reporting.campaign_data import (  # noqa: E402
+    EnvironmentDriftError,
+    UnverifiedRowsError,
+    _parse_filename,
+    load_verification,
+)
+from src.verify.runner import VERIFICATION_COLUMNS  # noqa: E402
+
+_RUN_IMAGE = 'ghcr.io/example/p4c:1'
+_RUN_P4STUDIO = 'abc123'
+
+
+def _run_row(split=0, k=5, M=35, stage_depth=9, blocks=30, infeasible=''):
+    """One row of a fresh per-split CSV (Task 9 schema): no delta_align or
+    overlap_threshold column, a row_id on every row, M '' when unbudgeted."""
+    budgeted = M != 'inf'
+    token = '{:03d}'.format(M) if budgeted else 'inf'
+    row = _feasible_row(arm='joint', split=split, k=k, M=M if budgeted else '',
+                        blocks=blocks, alignment_enabled=True)
+    del row['delta_align'], row['overlap_threshold']
+    row.update({
+        'budgeted': budgeted, 'stage_depth': stage_depth,
+        'n_trees': 7, 'max_depth': 14,
+        'row_id': 'joint_M{}_s{:02d}_k{:02d}'.format(token, split, k),
+    })
+    if infeasible:
+        row.update({'infeasible': infeasible, 'acc_app': '', 'blocks': '',
+                    'stage_depth': ''})
+    return row
+
+
+def _ver(row_id, verdict='EXACT', p4c_stage_depth=10, p4c_blocks=32,
+         over_budget=False, over_stages=False, unverified=False, M=35, **extra):
+    """One verification.csv line, every column of the verifier's real list."""
+    line = {col: '' for col in VERIFICATION_COLUMNS}
+    line.update({
+        'row_id': row_id, 'M': M, 'verdict': verdict,
+        'model_stage_depth': 9, 'model_blocks': 30,
+        'model_paths_differ': False,
+        'p4c_stage_depth': '' if unverified else p4c_stage_depth,
+        'p4c_blocks': '' if unverified else p4c_blocks,
+        'p4c_sram': '' if unverified else 12,
+        'p4c_map_ram': '' if unverified else 4,
+        'p4c_phv_containers': '' if unverified else 100,
+        'p4c_over_budget': over_budget, 'p4c_over_stages': over_stages,
+        'unverified': unverified, 'tables_differing': '[]',
+        'p4c_image': _RUN_IMAGE, 'open_p4studio_commit': _RUN_P4STUDIO,
+    })
+    line.update(extra)
+    return line
+
+
+def _write_run(tmp_path, rows, verification, manifest=None, name='run'):
+    """Write a run directory: rows/ per-split CSVs grouped by (M, split),
+    named as split_csv_name names them (rf_t7_d14_M035_joint_s00.csv, and an
+    Minf file for unbudgeted rows), plus verification.csv in the verifier's
+    own column order and run_manifest.json."""
+    run = tmp_path / name
+    (run / 'rows').mkdir(parents=True)
+    groups = {}
+    for row in rows:
+        token = 'inf' if row['M'] == '' else '{:03d}'.format(int(row['M']))
+        groups.setdefault((token, row['split']), []).append(row)
+    for (token, split), group in groups.items():
+        pd.DataFrame(group).to_csv(
+            run / 'rows' / 'rf_t7_d14_M{}_joint_s{:02d}.csv'.format(token, split),
+            index=False)
+    pd.DataFrame(verification, columns=list(VERIFICATION_COLUMNS)).to_csv(
+        run / 'verification.csv', index=False)
+    if manifest is None:
+        manifest = {'M_values': [35, 'inf'], 'p4c_image': _RUN_IMAGE,
+                    'open_p4studio_commit': _RUN_P4STUDIO}
+    (run / 'run_manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+    return str(run)
+
+
+def test_parse_filename_round_trips_per_split_minf_and_legacy_names():
+    assert _parse_filename('rf_t7_d14_M035_joint_s00.csv') == {
+        'n_trees': 7, 'max_depth': 14, 'M': 35, 'arm_slug': 'joint', 'split': 0}
+    inf = _parse_filename('rf_t7_d14_Minf_joint-off_s13.csv')
+    assert inf['M'] == float('inf') and inf['split'] == 13
+    assert inf['arm_slug'] == 'joint-off'
+    assert _parse_filename('rf_t11_d14_M25_joint-d005.csv') == {
+        'n_trees': 11, 'max_depth': 14, 'M': 25, 'arm_slug': 'joint-d005',
+        'split': None}
+
+
+def test_a_split_file_whose_rows_name_another_split_is_mislabelled(tmp_path):
+    run = _write_run(tmp_path, [_run_row(split=0)],
+                     [_ver('joint_M035_s00_k05')])
+    path = os.path.join(run, 'rows', 'rf_t7_d14_M035_joint_s00.csv')
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame['split'] = '1'
+    frame.to_csv(path, index=False)
+    with pytest.raises(MislabelledArtifactError):
+        load_campaign(run)
+
+
+def test_a_run_reports_p4c_numbers_and_keeps_the_model_numbers_beside_them(tmp_path):
+    run = _write_run(tmp_path, [_run_row(stage_depth=9, blocks=30)],
+                     [_ver('joint_M035_s00_k05', verdict='OVER',
+                           p4c_stage_depth=10, p4c_blocks=32)])
+    df = load_campaign(run)
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row['stage_depth'] == 10 and row['blocks'] == 32
+    assert row['model_stage_depth'] == 9 and row['model_blocks'] == 30
+    assert row['p4c_sram'] == 12 and row['p4c_phv_containers'] == 100
+    assert row['verdict'] == 'OVER'
+    assert not row['flagged']
+    assert not row['p4c_over_budget'] and not row['unverified']
+    assert pd.api.types.is_float_dtype(df['blocks'])
+    assert pd.api.types.is_float_dtype(df['model_blocks'])
+    for col in ('flagged', 'unverified', 'p4c_over_budget', 'p4c_over_stages'):
+        assert pd.api.types.is_bool_dtype(df[col]), col
+
+
+def test_p4c_infeasible_designs_leave_the_frame_but_stay_in_load_verification(tmp_path):
+    rows = [_run_row(k=5), _run_row(k=6), _run_row(k=7)]
+    ver = [_ver('joint_M035_s00_k05'),
+           _ver('joint_M035_s00_k06', verdict='FALSE_FEASIBLE', over_budget=True),
+           _ver('joint_M035_s00_k07', verdict='UNDER', over_budget=True)]
+    run = _write_run(tmp_path, rows, ver)
+    df = load_campaign(run)
+    assert df['row_id'].tolist() == ['joint_M035_s00_k05']
+    verification = load_verification(run)
+    assert set(verification['row_id']) == {
+        'joint_M035_s00_k05', 'joint_M035_s00_k06', 'joint_M035_s00_k07'}
+    k7 = verification[verification['row_id'] == 'joint_M035_s00_k07'].iloc[0]
+    assert k7['arm_slug'] == 'joint' and k7['M'] == 35
+    assert k7['split'] == 0 and k7['k'] == 7
+
+
+def test_an_over_stages_design_is_excluded_too(tmp_path):
+    run = _write_run(tmp_path, [_run_row(k=5), _run_row(k=6)],
+                     [_ver('joint_M035_s00_k05'),
+                      _ver('joint_M035_s00_k06', verdict='UNDER', over_stages=True)])
+    assert load_campaign(run)['row_id'].tolist() == ['joint_M035_s00_k05']
+
+
+def test_a_compile_error_row_keeps_the_model_numbers_and_is_flagged(tmp_path):
+    run = _write_run(tmp_path, [_run_row(k=5, stage_depth=9, blocks=30),
+                                _run_row(k=6)],
+                     [_ver('joint_M035_s00_k05', verdict='COMPILE_ERROR',
+                           unverified=True, failure='p4c_errors'),
+                      _ver('joint_M035_s00_k06')])
+    df = load_campaign(run).set_index('row_id')
+    bad = df.loc['joint_M035_s00_k05']
+    assert bad['flagged']
+    assert bad['stage_depth'] == 9 and bad['blocks'] == 30
+    assert bad['model_stage_depth'] == 9 and bad['model_blocks'] == 30
+    assert bad['verdict'] == 'COMPILE_ERROR'
+    assert not df.loc['joint_M035_s00_k06', 'flagged']
+
+
+def test_a_design_row_without_a_verification_line_raises_naming_it(tmp_path):
+    run = _write_run(tmp_path, [_run_row(k=5), _run_row(k=6),
+                                _run_row(k=1, infeasible='NoFeasibleSolution: x')],
+                     [_ver('joint_M035_s00_k05')])
+    with pytest.raises(UnverifiedRowsError) as excinfo:
+        load_campaign(run)
+    assert excinfo.value.row_ids == ['joint_M035_s00_k06']
+
+
+def test_require_verified_false_loads_a_partly_verified_run(tmp_path):
+    run = _write_run(tmp_path, [_run_row(k=5), _run_row(k=6)],
+                     [_ver('joint_M035_s00_k05')])
+    df = load_campaign(run, require_verified=False).set_index('row_id')
+    assert df.loc['joint_M035_s00_k06', 'flagged']
+    assert df.loc['joint_M035_s00_k06', 'blocks'] == 30
+    assert df.loc['joint_M035_s00_k05', 'blocks'] == 32
+
+
+def test_an_image_tag_mismatch_raises_environment_drift(tmp_path):
+    run = _write_run(tmp_path, [_run_row()],
+                     [_ver('joint_M035_s00_k05', p4c_image='ghcr.io/example/p4c:2')])
+    with pytest.raises(EnvironmentDriftError):
+        load_campaign(run)
+
+
+def test_a_manifest_without_an_image_skips_the_drift_check(tmp_path):
+    run = _write_run(tmp_path, [_run_row()],
+                     [_ver('joint_M035_s00_k05', p4c_image='anything')],
+                     manifest={'M_values': [35], 'p4c_image': None,
+                               'open_p4studio_commit': None})
+    assert len(load_campaign(run)) == 1
+
+
+def test_an_minf_file_loads_inf_and_unbudgeted(tmp_path):
+    run = _write_run(tmp_path, [_run_row(M='inf'), _run_row(M=35)],
+                     [_ver('joint_Minf_s00_k05', M='inf'),
+                      _ver('joint_M035_s00_k05')])
+    df = load_campaign(run).set_index('row_id')
+    assert df['M'].dtype == np.float64
+    assert df['budgeted'].dtype == bool
+    assert df.loc['joint_Minf_s00_k05', 'M'] == float('inf')
+    assert not df.loc['joint_Minf_s00_k05', 'budgeted']
+    assert df.loc['joint_M035_s00_k05', 'M'] == 35.0
+    assert df.loc['joint_M035_s00_k05', 'budgeted']
+    ver = load_verification(run).set_index('row_id')
+    assert ver.loc['joint_Minf_s00_k05', 'M'] == float('inf')
+
+
+def test_an_minf_file_whose_rows_say_budgeted_is_mislabelled(tmp_path):
+    run = _write_run(tmp_path, [_run_row(M='inf')],
+                     [_ver('joint_Minf_s00_k05', M='inf')])
+    path = os.path.join(run, 'rows', 'rf_t7_d14_Minf_joint_s00.csv')
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame['budgeted'] = 'True'
+    frame.to_csv(path, index=False)
+    with pytest.raises(MislabelledArtifactError):
+        load_campaign(run)
+
+
+def test_a_legacy_load_is_unflagged_with_a_float_M(tmp_path):
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    fixture_path = os.path.join(
+        repo_root, 'tests', 'fixtures', 'rf_t11_d14_M25_historical.csv')
+    out_dir = tmp_path / 'results'
+    out_dir.mkdir()
+    shutil.copy(fixture_path, out_dir / 'rf_t11_d14_M25_independent.csv')
+    df = load_campaign(results_dir=str(out_dir))
+    assert (~df['flagged']).all()
+    assert (df['verdict'] == '').all()
+    assert df['M'].dtype == np.float64 and (df['M'] == 25.0).all()
+    assert df['budgeted'].all()
