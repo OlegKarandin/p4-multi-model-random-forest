@@ -334,10 +334,12 @@ def tail_is_isolatable(field_bits):
 
 
 def codeword_to_blocks(field_bit_widths):
-  """TCAM blocks ONE table word of this key spans, version field included.
-  Sec 2.2/13.1's ledger, the production price -- headline ladder
-  (codeword_to_blocks_headline) plus the Sec 2.3 isolation credit, capped at
-  one nibble-clean field per Sec 6.1 amendment 2.
+  """TCAM blocks ONE table word of this key spans, version field included --
+  THE LADDER: a byte-count estimate (Sec 2.2/13.1's ledger, headline ladder
+  codeword_to_blocks_headline plus the Sec 2.3 isolation credit, capped at one
+  nibble-clean field per Sec 6.1 amendment 2). Used by threshold alignment
+  (align_budget) and as lanes.key_layout's reference. The production per-table
+  price is lanes.table_blocks (2026-10-04).
 
   (This replaces the retired offset-taking `codeword_to_blocks` of
   2026-09-14: reading p4c's own assembly (2026-09-20 rewrite design Sec 2)
@@ -510,12 +512,11 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
         "compiler rejects this table rather than splitting it across stages"
         % (table_bytes, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), table_bytes)
 
-  # The per-tree block width: codeword_to_blocks prices the table's crossbar
-  # key (one meta.code_<feature> field per selected feature) via the Sec 2.2/
-  # 13.1 ledger -- see its own docstring for the formula and evidence.
-  # codeword_bits_to_blocks (the bit-width band) no longer feeds this at all;
-  # it survives only as the empty-key value codeword_to_blocks special-cases.
-  factor = codeword_to_blocks(ternary_key_field_bits(feature_intervals))
+  # The per-tree block width: lanes.table_blocks, the lane-model price of the
+  # table's pinned crossbar key (2026-10-04). Imported here, not at module
+  # level: lanes imports this module at load time.
+  from src.p4model.lanes import table_blocks
+  factor = table_blocks(ternary_key_field_bits(feature_intervals))
   for index, tree in enumerate(codewords):
     tree_entry_count = len(codewords[tree])
     if dropped_per_tree is not None:

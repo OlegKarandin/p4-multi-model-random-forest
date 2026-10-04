@@ -4,9 +4,17 @@ The joint block cost is
 
     blocks = sum over features of range_blocks(intervals_f)
            + factor(widths) * sum over trees of ceil(entries_t / 512)
-    factor = tables.codeword_to_blocks(sorted per-feature field widths)
+    factor = tables.codeword_to_blocks(sorted per-feature field widths)   # the LADDER, not the production price
 
 -- see total_blocks, which is the whole objective.
+
+PRICES WITH THE LADDER (2026-10-04, spec Sec I.3.4 option b). The production
+per-table price is lanes.table_blocks (the lane model); alignment keeps the
+byte-count ladder tables.codeword_to_blocks. Measured on 2,330 joint programs:
+a lane-priced alignment ends with different thresholds on 48 (2.1%), summed
+total blocks 1,708 vs 1,706, accuracy differences +-0.001 that cancel, at
+x1.42 the alignment time. align_stats' factor_* / total_blocks_* fields are
+therefore LADDER quantities.
 
 SUPERSEDED, 2026-09-14. This module used to claim range blocks were
 alignment-invariant, on the grounds that a range table holds 206 intervals per
@@ -135,7 +143,8 @@ def _factor(widths):
     reason the objective collapses to one integer (design §3): under 'joint'
     encoding every classification table keys the same field set, so every table
     shares this factor, while alignment changes neither a tree's entry count
-    nor the tree count. Minimising this IS minimising blocks.
+    nor the tree count. Minimising this minimises the LADDER's blocks; the shipped price (lanes.table_blocks) agrees except on 13 of
+    2,330 post-alignment joint campaign keys (always lane lower) and 2 of 2,330 pre-alignment keys (lane higher).
 
     Delegates to p4model rather than restating the rule, which is the point of
     the repair -- the superseded `blocks = range_blocks + n_trees *
@@ -205,10 +214,11 @@ def total_blocks(widths, multiplier):
 
     A feature's width is its interval count minus one, hence the `+ 1`.
 
-    Equals ResourceUsage.blocks exactly on every joint row of
-    tests/fixtures/resource_model_golden.json (design §7.4). Without that
-    invariant this prices a table the switch does not build -- the exact
-    failure mode the superseded band_factor identity had.
+    Equals ResourceUsage.blocks on every joint row of
+    tests/fixtures/resource_model_golden.json (design §7.4) -- on the fixture,
+    not in general: ResourceUsage prices with lanes.table_blocks and this with
+    the ladder; they differ on 13 of 2,330 post-alignment joint campaign keys
+    (lane lower) and 2 of 2,330 pre-alignment keys (lane higher).
 
     What this REPLACES is `_factor` alone, which was blind to range blocks
     entirely: a feature four intervals from a free range block could not open

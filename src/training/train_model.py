@@ -216,6 +216,14 @@ def rf_params_from_params(params, suffix):
     }
 
 
+def _crossbar_violation(byte_width):
+    """crossbar_violation for a CrossbarKeyTooWide trial: the byte overflow,
+    floored at 1. lanes.table_blocks also raises for a key of <= 64 bytes
+    with no lane-legal layout, whose overflow would read <= 0 -- i.e.
+    feasible -- to early_stopping.constraint_values."""
+    return max(1, byte_width - TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+
+
 def train_multi_RF_Optuna_multi_constrained(
         X_A, y_A, X_B, y_B,
         val_align_A, val_align_B,
@@ -328,7 +336,7 @@ def train_multi_RF_Optuna_multi_constrained(
             return -1.0, -1.0, float('inf')
         except CrossbarKeyTooWide as e:
             trial.set_user_attr('crossbar_violation',
-                                e.args[1] - TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+                                _crossbar_violation(e.args[1]))
             trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)

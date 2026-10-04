@@ -6,7 +6,9 @@ stage's whole ternary crossbar to itself. That is exact for the first key p4c
 places in a stage (it agrees with standalone() below on 74/74 real design
 keys), but a LATER key in the same stage gets only what the earlier keys left,
 and whether those leftovers can hold it depends on WHICH slots are free, not how
-many. This module models that, in three layers:
+many. This module models that, in three layers. `table_blocks` (below) is the
+production per-table price since 2026-10-04; the ladder is kept for alignment
+and key_layout.
 
   1. Layout (`layout`, `relaxed_layout`, `key_layout`, `key_bytes`, `container_sizes`): each `code_*` field's
      PHV container layout, predicted from its bit width alone -- the model runs

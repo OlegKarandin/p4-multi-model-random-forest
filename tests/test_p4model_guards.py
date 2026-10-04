@@ -392,26 +392,28 @@ def test_a_deep_table_pays_a_later_keys_price_once_per_row_word():
 # restored: reading p4c's own assembly showed that premise false (rewrite
 # design Sec 2).
 # --------------------------------------------------------------------------
-def test_the_packer_charges_sd5s_stage_the_twelve_blocks_p4c_charged():
+def test_the_packer_charges_sd5s_stage_nine_blocks_an_accepted_under_of_three():
     # Modelled on independent_low_sd5's stage 6, where p4c charged its app and
-    # ddos trees 3 TCAM blocks each (resources.json): one app table plus three
-    # ddos tables is 12. Both keys price at 3 blocks in
-    # tables.codeword_to_blocks -- the ddos key's 11 bytes saturate two blocks
-    # and the version bits push it to three, which is a per-TABLE fact, not a
-    # placement one. The ddos key is placed first and the app key, behind it,
-    # still finds lanes for its own 3 blocks: 25 of 64 bytes leave plenty.
+    # ddos trees 3 TCAM blocks each (resources.json): 12 in all. Under the lane
+    # price (2026-10-04) the ddos key (27, 52) costs 2 per tree, so the model
+    # charges 3 + 3 * 2 = 9 -- an UNDER of 3, the accepted greedy-miss class
+    # (golden fixture known_findings 'lane_price_2026_10'). The ladder's 3 was
+    # right by luck.
+    from src.p4model.lanes import table_blocks
     from src.p4model.packing import crossbar_stages_needed
     from src.p4model.tables import codeword_to_blocks
 
     app = frozenset({(("code", "app_flm"), 7), (("code", "app_plm"), 7)})
     ddos = frozenset({(("code", "ddos_bplm"), 4), (("code", "ddos_plm"), 7)})
     assert codeword_to_blocks((27, 52)) == 3
+    assert table_blocks((27, 52)) == 2
+    assert table_blocks((54, 56)) == 3
     plan = crossbar_stages_needed(
-        [(3, 14), (3, 11), (3, 11), (3, 11)],
+        [(3, 14), (2, 11), (2, 11), (2, 11)],
         key_fields=[app, ddos, ddos, ddos],
         key_field_bits=[(54, 56), (27, 52), (27, 52), (27, 52)],
         placement_priority=[1, 2, 2, 2])
-    assert plan.blocks == 12
+    assert plan.blocks == 9
 
 
 def test_a_stage_of_one_shared_key_is_charged_exactly_its_declared_blocks():
@@ -421,11 +423,13 @@ def test_a_stage_of_one_shared_key_is_charged_exactly_its_declared_blocks():
     # designs identical to threshold alignment's total_blocks). The key below
     # is 60 bytes, specifically so this test cannot pass merely because the
     # key happened to be small: one key may use the whole crossbar.
+    from src.p4model.lanes import table_blocks
     from src.p4model.packing import crossbar_stages_needed
     from src.p4model.tables import codeword_to_blocks
 
     key = frozenset({(("code", "f"), 60)})
     assert codeword_to_blocks((480,)) == 11
+    assert table_blocks((480,)) == 11
     plan = crossbar_stages_needed(
         [(11, 60)] * 3, key_fields=[key] * 3,
         key_field_bits=[(480,)] * 3)
@@ -530,7 +534,8 @@ _PROBE = frozenset({(("code", "probe_a"), 11), (("code", "probe_b"), 11)})
 
 def test_the_lane_price_alone_keeps_two_probes_off_a_crowded_spacer():
     # results/tcam_discount_scan.csv dsp41: a (84, 84) probe key (22 crossbar
-    # bytes, 5 blocks alone) behind a 41-byte spacer costs p4c 7 blocks, not 5,
+    # bytes, 4 blocks alone under the pinned fill-low layout (the unpinned
+    # dsp41 compile charged 5)) behind a 41-byte spacer costs p4c 7 blocks, not 5,
     # and p4c kept both in ONE stage. The lane simulation charges exactly that
     # 7 (spacer placed first by priority). With two probes it is 8 | 7+7,
     # which a 12-row column cannot hold, so the second probe moves on -- the
@@ -539,17 +544,17 @@ def test_the_lane_price_alone_keeps_two_probes_off_a_crowded_spacer():
     from src.p4model.packing import crossbar_stages_needed
 
     one = crossbar_stages_needed(
-        [(8, 41), (5, 22)], readiness_levels=[0] * 2,
+        [(8, 41), (4, 22)], readiness_levels=[0] * 2,
         key_fields=[_SPACER, _PROBE], key_field_bits=[(328,), (84, 84)],
         placement_priority=[2, 1])
     assert (one.occupied, one.blocks, one.table_stages) == (1, 15, (0, 0))
 
     two = crossbar_stages_needed(
-        [(8, 41), (5, 22), (5, 22)], readiness_levels=[0] * 3,
+        [(8, 41), (4, 22), (4, 22)], readiness_levels=[0] * 3,
         key_fields=[_SPACER, _PROBE, _PROBE],
         key_field_bits=[(328,), (84, 84), (84, 84)],
         placement_priority=[2, 1, 1])
-    assert (two.occupied, two.blocks, two.table_stages) == (2, 20, (0, 1, 0))
+    assert (two.occupied, two.blocks, two.table_stages) == (2, 19, (0, 1, 0))
 
 
 def test_a_41_plus_22_byte_mixed_stage_now_shares_one_stage():
@@ -557,14 +562,14 @@ def test_a_41_plus_22_byte_mixed_stage_now_shares_one_stage():
     # two different keys, refused by the old 62-byte
     # net; with the generator's layout pins p4c places both in one stage
     # (spec 2026-09-29 Sec 5.2), and so does the packer. Probe listed last,
-    # so placed first at its own 5; the spacer behind it pays its lane
+    # so placed first at its own 4; the spacer behind it pays its lane
     # leftover 8.
     from src.p4model.packing import crossbar_stages_needed
 
     plan = crossbar_stages_needed(
-        [(8, 41), (5, 22)], readiness_levels=[0] * 2,
+        [(8, 41), (4, 22)], readiness_levels=[0] * 2,
         key_fields=[_SPACER, _PROBE], key_field_bits=[(328,), (84, 84)])
-    assert (plan.occupied, plan.blocks, plan.table_stages) == (1, 13, (0, 0))
+    assert (plan.occupied, plan.blocks, plan.table_stages) == (1, 12, (0, 0))
 
 
 def test_a_later_key_pays_its_lane_leftover_price():
@@ -972,7 +977,8 @@ def test_a_classification_table_wider_than_a_column_stays_in_one_stage():
 # column-sized shards, placed eagerly in (level, largest-load-first) order at
 # the earliest legal stage (first-fit-decreasing without levels), a stage
 # taking a shard while it keeps <= 8 shards, <= 64 bytes of distinct fields
-# and a 12x2 column packing, every shard charged its declared blocks.
+# and a 12x2 column packing, every shard charged its declared blocks
+# (declared = lanes.table_blocks x words since 2026-10-04).
 
 def _pre_c5_single_key_reference(specs, levels, unavailable):
     from src.p4model.packing import fits_two_columns
@@ -1016,7 +1022,8 @@ def _pre_c5_single_key_reference(specs, levels, unavailable):
 
 
 def _single_key_config(rng, dist):
-    from src.p4model.tables import codeword_to_blocks
+    from src.p4model.errors import CrossbarKeyTooWide
+    from src.p4model.lanes import table_blocks
 
     while True:
         if dist == "small":
@@ -1024,9 +1031,13 @@ def _single_key_config(rng, dist):
         else:
             bits = tuple(rng.randint(1, 60) for _ in range(rng.randint(1, 16)))
         width = sum(-(-b // 8) for b in bits)
-        if width <= 64:
-            break
-    per_row = codeword_to_blocks(bits)
+        if width > 64:
+            continue
+        try:
+            per_row = table_blocks(bits)
+        except CrossbarKeyTooWide:
+            continue
+        break
     trees = rng.randint(1, 40 if dist == "extreme" else 30)
 
     def rows():

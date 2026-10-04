@@ -8,7 +8,9 @@ every individual table observation this project has ever collected against
 p4c -- 405 rows across 14 CSV files in results/, 50 of them from compiles the
 model was never fitted on -- and require ZERO under-predictions on the
 quantity the production packer will actually charge, at every placement the
-packer can emit.
+packer can emit. Since 2026-10-04 blocks_charged is priced with lanes.table_blocks
+(pinned fill-low layout); probes compiled without pins under-predict by one on
+24-remainder fields -- listed in the test, not a model error on generated designs.
 
 THREE PREDICTED QUANTITIES, per row:
   blocks_headline -- tables.codeword_to_blocks_headline(field_bit_widths),

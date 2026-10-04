@@ -78,6 +78,7 @@ from src.p4model.ranges import (
     nibble_widths_for,
     range_entry_count,
 )
+from src.p4model.lanes import table_blocks
 from src.p4model.tables import (
     codeword_bits_to_blocks,
     codeword_bytes_to_blocks,

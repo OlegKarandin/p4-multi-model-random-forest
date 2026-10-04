@@ -13,7 +13,8 @@ from src.p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK, TASKS,
                                  VOTE_EPILOGUE_STAGES)
 from src.p4model.ranges import compiler_range_rows
 from src.p4model.registers import gated_block_interior_stages, readiness_levels_for
-from src.p4model.tables import codeword_to_blocks, tree_entries_to_blocks
+from src.p4model import lanes
+from src.p4model.tables import tree_entries_to_blocks
 from src.p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 from src.p4model.usage import tree_readiness_levels
 
@@ -43,8 +44,8 @@ def _parse_keys(text):
     widths come back too because a field that is not a whole number of bytes
     hands the crossbar a part-used byte, which is what decides whether a
     midbyte nibble survives for the version field
-    (tables.tail_is_isolatable, consumed by tables.codeword_to_blocks's Sec
-    2.3 isolation credit)."""
+    (tables.tail_is_isolatable, consumed by the ladder tables.codeword_to_blocks; the production price
+    is lanes.table_blocks)."""
     widths, bits = {}, {}
     for pattern in (r"bit<(\d+)>\s+(code_\w+)\s*;", r"bit<(\d+)>\s+(\w+_val)\s*;"):
         for match in re.finditer(pattern, text):
@@ -132,7 +133,7 @@ def declared_prices(program):
             continue
         if name.startswith('get_classification_tree'):
             key_bits = tuple(sorted(bits[key] for key in keys))
-            blocks[name] = (codeword_to_blocks(key_bits)
+            blocks[name] = (lanes.table_blocks(key_bits)
                             * tree_entries_to_blocks(sizes[name]))
         elif name.startswith('table_'):
             blocks[name] = -(-compiler_range_rows(sizes[name])

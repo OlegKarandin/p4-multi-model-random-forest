@@ -88,7 +88,11 @@ def test_pinned_pairs_are_informational_since_the_code_pins():
     assert set(misses) == set(vt.KNOWN_PINNED_MISSES)
     blocks = vt.aggregate(blocks_pairs)
     assert (blocks["n_compared"], blocks["exact"], blocks["under"],
-            blocks["over"]) == (38, 38, 0, 0)
+            blocks["over"]) == (38, 37, 1, 0)
+    block_misses = {p["row_id"]: p["predicted"] - p["real"] for p in blocks_pairs
+                    if p["real"] is not None and p["predicted"] != p["real"]}
+    assert block_misses == {"independent_low_sd5": -3}
+    assert set(block_misses) == set(vt.KNOWN_BLOCK_MISSES)
 
 
 def test_pragmas_pairs_are_the_primary_gate():
@@ -96,7 +100,7 @@ def test_pragmas_pairs_are_the_primary_gate():
     # the 43 pinned + 30 held-out designs recompiled with the generator's
     # code_* pins. Every FEASIBLE design (<= 12 stages, 60 of 73) is exact on
     # stage_depth; the three misses are all infeasible under both model and
-    # p4c. Blocks 60/60 (13 designs never got a TCAM allocation).
+    # p4c. Blocks 59/60 (13 designs never got a TCAM allocation).
     import os
     if not (os.path.isfile(vt.PRAGMAS_CSV)
             and os.path.isdir(os.path.join(vt.PRAGMAS_ROOT, "compiles"))):
@@ -115,4 +119,8 @@ def test_pragmas_pairs_are_the_primary_gate():
     assert len(feasible) == 60
     assert all(p["predicted"] == p["real"] for p in feasible)
     assert (blocks["n_compared"], blocks["exact"], blocks["under"],
-            blocks["over"]) == (60, 60, 0, 0)
+            blocks["over"]) == (60, 59, 1, 0)
+    block_misses = {p["row_id"]: p["predicted"] - p["real"] for p in blocks_pairs
+                    if p["real"] is not None and p["predicted"] != p["real"]}
+    assert block_misses == {"independent_low_sd5": -3}
+    assert set(block_misses) == set(vt.KNOWN_BLOCK_MISSES)

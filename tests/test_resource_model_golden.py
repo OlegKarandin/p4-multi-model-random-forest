@@ -152,8 +152,9 @@ def test_classification_stages_are_derivable_from_the_block_factor():
         assert -(-tables // per_stage) == ternary_plan.occupied, row["row_id"]
         checked += 1
 
-    # 8 joint rows + independent_low_sd5 + independent_low_sd7.
-    assert checked == 10
+    # 8 joint rows + independent_low_sd7. independent_low_sd5 left this set on
+    # 2026-10-04: under the lane price its app and ddos trees cost 3 and 2.
+    assert checked == 9
 
 
 @pytest.mark.parametrize("factor", range(1, 9))

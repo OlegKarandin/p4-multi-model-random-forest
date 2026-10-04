@@ -66,3 +66,13 @@ def test_parse_program_text_reads_keys_widths_and_sizes():
     assert program.bits == {"code_a": 12, "a_val": 16}
     assert program.widths == {"code_a": 2, "a_val": 2}
     assert program.sizes == {"table_0_a": 9, "get_classification_tree_app_0": 40}
+
+
+def test_declared_prices_charge_classification_tables_with_table_blocks():
+    from src.p4gen.p4_replay import Program, declared_prices
+    program = Program(
+        tables={'get_classification_tree_ddos_0': ['code_a', 'code_b']},
+        widths={'code_a': 4, 'code_b': 7},
+        bits={'code_a': 27, 'code_b': 52},
+        sizes={'get_classification_tree_ddos_0': 600})       # 2 words
+    assert declared_prices(program) == {'get_classification_tree_ddos_0': 4}

@@ -64,6 +64,16 @@
      "independent_low_sd12"
     ],
     "summary": "RE-PINNED, and the delta is an IMPROVEMENT (audit C5, reviews/model_audit_2026-09-27.md sections 7 and 10). The fitted crowded-stage margin (+1 to every non-first key when two different keys filled more than 58 of a stage's 64 crossbar bytes) and its any-key-order fit search are replaced by an ORDERED stage simulation in src/p4model/packing.py: classification trees are placed in the order the generator's @placement_priority pins (ddos 2 before app 1, ties to the tree listed last), the first key in a stage pays codeword_to_blocks, and every later key pays its lane leftover price (src/p4model/lanes.py). Two different keys above 62 combined bytes are still refused (the greedy-give-up safety net). independent_low_sd12's real stage shares a 40-byte app key and a 20-byte ddos key at 60 bytes and p4c charged nothing; the simulation agrees, so blocks 79 -> 78 against tcam_real 78 (EXACT; ternary_plan.blocks 69 -> 68), stage_depth unchanged at 12. Every other row is byte-identical, all 8 joint rows included (a joint stage holds one key, charged exactly as before). Supersedes and retires 'crowded_stage_rule_2026_09_25' and 'any_order_fit_rule_2026_09_27', whose mechanisms no longer exist."
+   },
+   {
+    "id": "lane_price_2026_10",
+    "row_deltas": {
+     "independent_low_sd5": -3
+    },
+    "rows": [
+     "independent_low_sd5"
+    ],
+    "summary": "RE-PINNED to the lane-model per-table price (lanes.table_blocks, spec docs/superpowers/specs/2026-10-04-lane-price-and-tie-aware-selection-design.md). The delta is an UNDER-prediction against tcam_real, ACCEPTED: the three ddos trees key (27, 52), which the lane model prices at 2 blocks per tree and p4c charged 3 (resources.json). p4c's greedy crossbar allocator parks a whole byte on the midbyte and leaves no nibble for the version bits -- the 'greedy miss' class of reviews/campaign_2026_10_lane_findings.md Sec 5. The previous pin of 3 per tree (the ladder, tables.codeword_to_blocks) was right by luck. Every other row is unchanged: no other fixture key changes price."
    }
   ],
   "note": "Inputs captured at evaluation._pool_inputs; outputs from usage.assemble_usage.",
@@ -149,15 +159,15 @@
       14
      ],
      [
-      3,
+      2,
       11
      ],
      [
-      3,
+      2,
       11
      ],
      [
-      3,
+      2,
       11
      ]
     ],
@@ -219,7 +229,7 @@
      "occupied": 2
     },
     "ternary_plan": {
-     "blocks": 12,
+     "blocks": 9,
      "depth": 7,
      "indices": [
       6
@@ -227,7 +237,7 @@
      "occupied": 1
     },
     "usage": {
-     "blocks": 16,
+     "blocks": 13,
      "codeword_length": 110,
      "range_depth": 6,
      "range_entries": 404,

@@ -152,6 +152,10 @@ def test_total_blocks_equals_the_assembled_usage_on_every_joint_fixture_row():
     joint_low_sd12 is the live witness that range blocks are NOT
     alignment-invariant: ONE feature and TWO range blocks, so its interval
     count exceeds the 206-per-block ladder. That is Gap 1, in the fixture.
+
+    Holds on the fixture (no joint fixture key has lane price != ladder,
+    checked 2026-10-04); the general relation is ladder >= lane on compiled
+    keys, see align_budget's module docstring.
     """
     from tests.test_resource_model_golden import load_fixture, rebuild_pool
     from src.p4model.usage import assemble_usage

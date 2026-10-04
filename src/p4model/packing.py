@@ -21,7 +21,6 @@ from dataclasses import dataclass
 
 from src.p4model import lanes
 from src.p4model.errors import CrossbarKeyTooWide
-from src.p4model.tables import codeword_to_blocks
 from src.p4model.target import (
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
@@ -223,18 +222,15 @@ def _lane_key_bytes(field_bit_widths):
 @functools.lru_cache(maxsize=4096)
 def _first_key_groups(field_bit_widths):
   """How many groups the FIRST key of a stage occupies in the lane
-  simulation: its production price codeword_to_blocks -- the price it is
-  CHARGED (plan invariant 1) -- or its own lane price when that is higher, so
-  a later key is never priced into slots the first key's bytes really need.
-  On 74/74 real design keys the two agree (lanes.py); where they differ the
-  larger is the conservative occupancy for every key after it. A key with no
-  lane fit at all occupies every group."""
+  simulation: its production price lanes.table_blocks -- the price it is
+  CHARGED (plan invariant 1) -- or its own lane price when that is higher
+  (they are the same quantity since 2026-10-04; the max stays as a guard).
+  A key with no lane fit at all occupies every group."""
   lane = lanes.standalone(_lane_key_bytes(field_bit_widths))
-  groups = codeword_to_blocks(field_bit_widths)
   if lane is None:
     groups = TERNARY_CROSSBAR_GROUPS_PER_STAGE
   else:
-    groups = max(groups, lane)
+    groups = max(lanes.table_blocks(field_bit_widths), lane)
   return min(groups, TERNARY_CROSSBAR_GROUPS_PER_STAGE)
 
 
@@ -251,15 +247,15 @@ def _stage_key_prices(seed_keys, keys):
   keys      : field-bit tuples of this pool's distinct keys, in placement
               order.
 
-  The first key placed in the stage pays codeword_to_blocks (plan invariant 1:
-  a stage holding one key is priced exactly as tables.codeword_to_blocks
+  The first key placed in the stage pays lanes.table_blocks (plan invariant 1:
+  a stage holding one key is priced exactly as lanes.table_blocks
   prices it, which is what keeps every 'joint' design identical to
   threshold alignment's total_blocks) and occupies _first_key_groups groups
   with lanes.first_key_occupancy. Every later key pays
   lanes.price_with_supply, its LEFTOVER price in what the keys before it
   left, and then occupies lanes.later_key_occupancy. The first of this
   pool's keys behind a seed is a later key of the stage, but is never
-  charged below codeword_to_blocks either.
+  charged below lanes.table_blocks either.
 
   Returns one price per entry of `keys`, or None when some key (seed or
   not) has no lane-legal fit -- the stage does not fit."""
@@ -280,14 +276,14 @@ def _stage_key_prices(seed_keys, keys):
   for position, bits in enumerate(keys):
     key = list(_lane_key_bytes(bits))
     if free is None:
-      prices.append(codeword_to_blocks(bits))
+      prices.append(lanes.table_blocks(bits))
       free, mids = lanes.first_key_occupancy(key, _first_key_groups(bits))
       continue
     price = lanes.price_with_supply(key, free, mids)
     if price is None:
       return None
     if position == 0:
-      price = max(price, codeword_to_blocks(bits))
+      price = max(price, lanes.table_blocks(bits))
     prices.append(price)
     free, mids = lanes.later_key_occupancy(free, mids, price)
   return tuple(prices)
@@ -312,8 +308,8 @@ class _Unit:
 def _classification_units(table_specs, key_fields, key_field_bits, levels,
                           priorities):
   """table_specs -> _Units. A table's rows are its blocks / its key's
-  codeword_to_blocks, rounded up (exact for every spec the model builds,
-  which is codeword_to_blocks x tree_entries_to_blocks). A table charged more
+  lanes.table_blocks, rounded up (exact for every spec the model builds,
+  which is lanes.table_blocks x tree_entries_to_blocks). A table charged more
   than one stage's TCAM_BLOCKS_PER_STAGE cannot sit in one stage and is split
   into chunks of whole rows that each can; every chunk keeps the full key."""
   units = []
@@ -322,7 +318,7 @@ def _classification_units(table_specs, key_fields, key_field_bits, levels,
     fields = (key_fields[idx] if key_fields is not None
               else frozenset({(("<private>", idx), byte_width)}))
     bits = tuple(key_field_bits[idx])
-    per_row = max(1, codeword_to_blocks(bits))
+    per_row = max(1, lanes.table_blocks(bits))
     rows = max(1, math.ceil(block_count / per_row))
     rows_per_chunk = max(1, TCAM_BLOCKS_PER_STAGE // per_row)
     remaining_blocks, remaining_rows, chunk = block_count, rows, 0
@@ -512,12 +508,12 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       without placement_priority every table has priority 0.
     * Price -- each stage's distinct keys are priced in the order their
       first table was placed (_stage_key_prices): the first key pays its
-      declared blocks, i.e. codeword_to_blocks x rows (plan invariant 1: a
+      declared blocks, i.e. lanes.table_blocks x rows (plan invariant 1: a
       one-key stage, as every 'joint' stage is, is priced exactly as
       before); every later key pays its lanes.price_with_supply LEFTOVER
       price per 512-row word. A seeded stage's range keys come first, so
       every tree key there is a later key -- never charged below
-      codeword_to_blocks.
+      lanes.table_blocks.
     * Fit -- at most 8 tables, at most 64 bytes of distinct key fields,
       every key priced, and the charged blocks pack 12x2. There is no
       mixed-key byte threshold below 64: the 62-byte refusal was retired

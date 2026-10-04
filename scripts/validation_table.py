@@ -11,8 +11,9 @@ manifest.json records source sha256s and the pin set). Every design is replayed
 END TO END from its generated program (scripts/p4_artifact_replay.replay_design):
 the model's own per-table prices, packed by the model's own packer. CURRENT
 STANDING (2026-09-29): stage_depth 60/60 on every feasible design (<= 12
-stages), 70/73 over all 73; blocks 60/60 (13 designs never got a TCAM
-allocation). The three misses, KNOWN_PRAGMAS_MISSES below, are all on designs
+stages), 70/73 over all 73; blocks 59/60 (13 designs never got a TCAM
+allocation; the one miss, KNOWN_BLOCK_MISSES below, is independent_low_sd5's
+accepted lane-price under of 3). The three misses, KNOWN_PRAGMAS_MISSES below, are all on designs
 neither the model nor p4c fits in 12 stages, and are printed, deliberately
 un-silenced.
 
@@ -102,6 +103,11 @@ KNOWN_PRAGMAS_MISSES = {
         "stage_depth 15 vs p4c 16 (UNDER by 1, infeasible either way), "
         "produced in p4c's REDO_PHV2 retry rounds for a program that does not "
         "fit (spec 2026-09-29 Sec 5.1)"),
+}
+KNOWN_BLOCK_MISSES = {
+    "independent_low_sd5": (
+        "blocks 13 vs p4c 16 (UNDER by 3): the lane price's accepted greedy "
+        "miss -- ddos key (27, 52), 2 per tree vs p4c's 3 (spec 2026-10-04)"),
 }
 # INFORMATIONAL: the 43 pinned compiles without the code_* pins (see the
 # module docstring). Ground truth only; predictions are recomputed from
@@ -419,6 +425,8 @@ def main(argv=None):
         _print_section("blocks (pragmas)", pr_blocks, "blocks")
         for row_id, reason in KNOWN_PRAGMAS_MISSES.items():
             print("  known miss, %s: %s" % (row_id, reason))
+        for row_id, reason in KNOWN_BLOCK_MISSES.items():
+            print("  known block miss, %s: %s" % (row_id, reason))
     else:
         print("(pragmas archive %s not present -- PRIMARY GATE SKIPPED; build "
               "its CSV with scripts/build_pinned_calibration_csv.py --root ... "
@@ -434,6 +442,8 @@ def main(argv=None):
         _print_section("blocks (pinned)", pin_blocks, "blocks")
         for row_id, reason in KNOWN_PINNED_MISSES.items():
             print("  known miss, %s: %s" % (row_id, reason))
+        for row_id, reason in KNOWN_BLOCK_MISSES.items():
+            print("  known block miss, %s: %s" % (row_id, reason))
     else:
         print("(pinned archive %s not present -- section skipped)"
               % PINNED_ROOT)

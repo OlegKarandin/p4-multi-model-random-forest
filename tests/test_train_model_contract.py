@@ -695,3 +695,37 @@ def test_default_config_still_declares_no_ccp_alpha_dimension():
 
     assert 'ccp_alpha_A' not in names
     assert 'ccp_alpha_B' not in names
+
+
+def test_a_key_with_no_lane_fit_inside_64_bytes_is_still_a_violation(monkeypatch):
+    """Review focus 1: table_blocks raises CrossbarKeyTooWide with a byte width
+    <= 64 when no lane layout fits. byte_width - 64 would be <= 0, which
+    early_stopping.is_feasible reads as FEASIBLE. The violation is floored at 1."""
+    import optuna
+    import src.training.train_model as tm
+    from src.training import early_stopping
+    from src.training.errors import NoFeasibleSolution
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        captured['study'] = real_create(*args, **kwargs)
+        return captured['study']
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    monkeypatch.setattr(
+        tm, 'multi_model_memory_evaluation',
+        lambda *a, **k: (_ for _ in ()).throw(tm.CrossbarKeyTooWide('no lane fit', 40)))
+    with pytest.raises(NoFeasibleSolution):
+        _call(cfg=TrainConfig(n_trials=3, min_feasible_before_stop=2, lookback=2))
+    for trial in captured['study'].trials:
+        assert trial.user_attrs['crossbar_violation'] == 1
+        assert not early_stopping.is_feasible(trial)
+
+
+def test_crossbar_violation_is_the_overflow_floored_at_one():
+    import src.training.train_model as tm
+    assert tm._crossbar_violation(100) == 100 - tm.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+    assert tm._crossbar_violation(64) == 1
+    assert tm._crossbar_violation(11) == 1
