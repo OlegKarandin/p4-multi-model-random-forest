@@ -1,7 +1,7 @@
 """Crossbar LANES: where a ternary key's bytes can physically sit, and what a key
 costs when it shares a stage with a key placed before it.
 
-tables.codeword_to_blocks prices a key by its byte COUNT alone, as if it had the
+tables.codeword_to_blocks (the LADDER) prices a key by its byte COUNT alone, as if it had the
 stage's whole ternary crossbar to itself. That is exact for the first key p4c
 places in a stage (it agrees with standalone() below on 74/74 real design
 keys), but a LATER key in the same stage gets only what the earlier keys left,
@@ -52,10 +52,16 @@ import functools
 import itertools
 import math
 
-from src.p4model.tables import codeword_to_blocks
+from src.p4model.errors import CrossbarKeyTooWide
+from src.p4model.tables import (
+    codeword_bits_to_blocks,
+    codeword_fields_to_bytes_from_bits,
+    codeword_to_blocks,
+)
 from src.p4model.target import (
     TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE,
     TERNARY_CROSSBAR_GROUPS_PER_STAGE,
+    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
 )
 
 _GROUPS = TERNARY_CROSSBAR_GROUPS_PER_STAGE       # 12
@@ -165,7 +171,9 @@ def key_layout(field_bit_widths):
   a key with: THE LAYOUT FALLBACK RULE of audit Sec 7.4.
 
   Use the width-rule layout (`layout`), unless its standalone lane price is
-  ABOVE the production width-only price `tables.codeword_to_blocks` -- then
+  ABOVE the LADDER `tables.codeword_to_blocks` (deliberately not `table_blocks`:
+  comparing against the ladder keeps the pins identical to campaign_2026_10's
+  and avoids recursion) -- then
   p4c's PHV allocator is known to relax the layout (H containers instead of
   whole W ones), so use the relaxed layout (`relaxed_layout`) if it prices no
   worse than the width-rule one. With this rule the lane price from widths
@@ -192,6 +200,50 @@ def key_bytes(field_bit_widths):
   `key_layout`'s choice."""
   field_bit_widths = list(field_bit_widths)
   return bytes_from_layout(field_bit_widths, key_layout(field_bit_widths))
+
+
+def table_blocks(field_bit_widths):
+  """THE production per-table price (2026-10-04): TCAM blocks one 512-row
+  word of a classification table with this key costs, as the lane model
+  prices the key's pinned PHV layout alone in a stage --
+  `standalone(key_bytes(w))`.
+
+  Replaces the byte-count ladder `tables.codeword_to_blocks` as the price
+  every table is CHARGED (packing, p4_replay, ternary_matching_resource_usage).
+  The ladder is kept for threshold alignment (align_budget) and as
+  key_layout's reference, which keeps the pins identical and avoids recursion
+  (table_blocks -> key_layout -> table_blocks).
+
+  Evidence (reviews/campaign_2026_10_lane_findings.md Sec 3-5): on
+  campaign_2026_10 the lane price is below the ladder on 133 tables and p4c
+  agrees on all 133. One accepted miss: independent_low_sd5's (27, 52) key,
+  lane 2 vs p4c 3 (p4c's greedy midbyte choice leaves no nibble for the
+  version bits).
+
+  Order-insensitive. The empty key returns the ladder's floor. Raises
+  CrossbarKeyTooWide(message, byte_width) when the key exceeds the stage's
+  TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes (checked before enumerating --
+  66-72-byte keys would otherwise pay the full 1..12-block search) or when no
+  lane-legal fit exists within the crossbar."""
+  return _table_blocks(tuple(sorted(int(w) for w in field_bit_widths)))
+
+
+@functools.lru_cache(maxsize=65536)
+def _table_blocks(widths):
+  byte_width = codeword_fields_to_bytes_from_bits(widths)
+  if byte_width == 0:
+    return codeword_bits_to_blocks(0)
+  if byte_width > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
+    raise CrossbarKeyTooWide(
+        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
+        "compiler rejects this table rather than splitting it across stages"
+        % (byte_width, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), byte_width)
+  price = standalone(key_bytes(widths))
+  if price is None:
+    raise CrossbarKeyTooWide(
+        "table key of %d crossbar bytes has no lane-legal layout in one stage's "
+        "crossbar" % byte_width, byte_width)
+  return price
 
 
 # The PHV container size each slice kind names, in the unit

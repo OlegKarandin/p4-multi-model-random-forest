@@ -396,3 +396,89 @@ def test_later_key_occupancy_consumes_whole_groups_and_low_midbytes_only():
   assert [g for g in range(12) if new_free[g]] == [6, 7, 8, 9, 10, 11]
   assert new_mids == {4, 5}
   assert free[1] == set(range(5)) and mids == {1, 2, 4, 5}
+
+
+# ------------------------------------------------ table_blocks (spec 2026-10-04)
+
+from src.p4model.errors import CrossbarKeyTooWide
+from src.p4model.tables import codeword_bits_to_blocks
+
+
+@pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
+def test_table_blocks_is_the_lane_price_of_the_pinned_layout(widths):
+  assert lanes.table_blocks(widths) == _price(widths)
+
+
+@pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
+def test_table_blocks_equals_the_ladder_on_real_keys_except_greedy_misses(widths):
+  if widths in LANE_BELOW_P4C_REAL_KEYS:
+    assert lanes.table_blocks(widths) == LANE_BELOW_P4C_REAL_KEYS[widths][0]
+  else:
+    assert lanes.table_blocks(widths) == codeword_to_blocks(widths)
+
+
+def test_table_blocks_pins_the_two_known_ladder_disagreements_off_the_compiled_set():
+  # Lane-higher: three 49-56-bit fields (spec Sec I.2, review decision 6).
+  assert codeword_to_blocks((54, 55, 56)) == 4
+  assert lanes.table_blocks((54, 55, 56)) == 5
+  # Lane-lower: the dsp41 probe key.
+  assert lanes.table_blocks((84, 84)) == 4
+
+
+def test_table_blocks_ignores_field_order():
+  assert lanes.table_blocks((52, 27)) == lanes.table_blocks((27, 52)) == 2
+
+
+def test_table_blocks_of_the_empty_key_is_the_ladders_floor():
+  assert lanes.table_blocks(()) == codeword_bits_to_blocks(0)
+  assert lanes.table_blocks((0, 0)) == codeword_bits_to_blocks(0)
+
+
+def test_table_blocks_rejects_a_key_over_the_crossbar_before_enumerating(monkeypatch):
+  def boom(*_):
+    raise AssertionError('standalone must not run for a 65-byte key')
+  monkeypatch.setattr(lanes, 'standalone', boom)
+  lanes._table_blocks.cache_clear()
+  with pytest.raises(CrossbarKeyTooWide) as info:
+    lanes.table_blocks((8,) * 65)
+  assert info.value.args[1] == 65
+
+
+def test_table_blocks_raises_when_no_lane_layout_fits(monkeypatch):
+  monkeypatch.setattr(lanes, 'standalone', lambda _bytes: None)
+  lanes._table_blocks.cache_clear()
+  with pytest.raises(CrossbarKeyTooWide) as info:
+    lanes.table_blocks((27, 52))
+  assert info.value.args[1] == 11
+  lanes._table_blocks.cache_clear()
+
+
+def test_table_blocks_memo_returns_identical_results():
+  lanes._table_blocks.cache_clear()
+  first = [lanes.table_blocks(w) for w in REAL_DESIGN_KEYS]
+  second = [lanes.table_blocks(w) for w in REAL_DESIGN_KEYS]
+  assert first == second
+  info = lanes._table_blocks.cache_info()
+  assert info.hits >= len(REAL_DESIGN_KEYS) and info.maxsize == 65536
+
+
+def test_table_blocks_never_rises_when_one_field_loses_a_bit():
+  """Monotonicity guard (the B3 measurement: 0 increases in ~503k steps)."""
+  import random
+  rng = random.Random('table-blocks-monotone')
+  pool = [w for key in REAL_DESIGN_KEYS for w in key] + list(range(49, 57)) * 4
+  checked = 0
+  while checked < 3000:
+    key = tuple(sorted(rng.choice(pool) for _ in range(rng.randint(1, 8))))
+    if sum(-(-w // 8) for w in key) > 64:
+      continue
+    try:
+      base = lanes.table_blocks(key)
+    except CrossbarKeyTooWide:
+      continue
+    for i, w in enumerate(key):
+      if w <= 1:
+        continue
+      smaller = key[:i] + (w - 1,) + key[i + 1:]
+      assert lanes.table_blocks(smaller) <= base, (key, smaller)
+      checked += 1
