@@ -10,7 +10,8 @@ Every number pinned here was OBSERVED in a real p4c compile, not derived:
   * dsp41 -- results/tcam_discount_scan.csv / crowded_stages.csv: a 41-byte
     spacer key (328,) placed first (crossbar groups 0-7, 8 blocks) and the
     (84, 84) key second in the same stage, which p4c charged 7 blocks although
-    it costs 5 alone (4 groups + 3 whole midbytes -> max(4, 2*3 + 1) = 7).
+    the ladder prices it at 5 alone (the lane model: 4 under the pinned fill-low layout; the dsp probes
+    were compiled WITHOUT pins, where p4c splits each 84-bit field W24-low and charges 5).
   * REAL_DESIGN_KEYS -- every distinct classification-tree key (field bit
     widths) in the real design compiles results/compiler_calibration_v6,
     results/compiler_calibration_extra, results/tcam_margin_screen and the
@@ -108,6 +109,15 @@ REAL_DESIGN_KEYS = (
     (477,),
 )
 
+# Real design keys where the lane price is BELOW what p4c charged -- the
+# accepted "greedy crossbar miss" class (reviews/campaign_2026_10_lane_findings.md
+# Sec 5): p4c parks a whole byte on the midbyte and leaves no nibble for the
+# version bits. (key widths) -> (lane price, p4c observed). The ladder priced
+# (27, 52) right by luck.
+LANE_BELOW_P4C_REAL_KEYS = {
+    (27, 52): (2, 3),   # independent_low_sd5's ddos trees
+}
+
 
 def _price(widths):
   return lanes.standalone(lanes.key_bytes(widths))
@@ -124,8 +134,14 @@ def test_w027_costs_three_blocks():
 
 
 def test_dsp41_second_key_pays_seven_beside_a_41_byte_spacer():
+  """The (84, 84) key costs 4 alone in the lane model under the fill-low
+  layout (ladder: 5). The only compiles of it, dsp01-dsp10 in
+  results/tcam_discount_scan.csv, are PRE-PIN and show 5, so the standalone
+  value is unverified on a pinned program (spec 2026-10-04 decision 6). The
+  crowded-stage price p4c charged, 7, is unchanged."""
   spacer, key = lanes.key_bytes((328,)), lanes.key_bytes((84, 84))
-  assert lanes.standalone(key) == 5 == codeword_to_blocks((84, 84))
+  assert lanes.standalone(key) == 4
+  assert codeword_to_blocks((84, 84)) == 5
   assert lanes.stage_prices([spacer, key], (0, 1)) == {0: 8, 1: 7}
 
 
@@ -137,16 +153,23 @@ def test_real_design_key_set_is_the_audited_74():
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
 def test_lane_standalone_is_never_below_the_headline_ladder(widths):
-  """The lane model must never price a real key CHEAPER than production."""
+  """The lane model never prices a real key cheaper than the ladder, except
+  the listed greedy-miss keys, where p4c itself charged the ladder's price."""
   price = _price(widths)
   assert price is not None
+  if widths in LANE_BELOW_P4C_REAL_KEYS:
+    lane, observed = LANE_BELOW_P4C_REAL_KEYS[widths]
+    assert price == lane < observed == codeword_to_blocks(widths)
+    return
   assert price >= codeword_to_blocks(widths)
 
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
 def test_lane_standalone_equals_production_on_real_keys(widths):
-  """Audit invariant 1: the first key in a stage keeps codeword_to_blocks,
-  which is safe because the two agree on all 74 real design keys."""
+  """On every real design key but the listed greedy misses the lane price and
+  the ladder agree."""
+  if widths in LANE_BELOW_P4C_REAL_KEYS:
+    pytest.skip('listed greedy miss, asserted above')
   assert _price(widths) == codeword_to_blocks(widths)
 
 
@@ -193,6 +216,60 @@ def test_lane_below_production_only_where_p4c_agrees(source, ident, widths, obse
 ])
 def test_width_layout(w, expected):
   assert lanes.layout(w) == expected
+  assert sum(bits for _, bits in lanes.layout(w)) == max(w, 0)
+
+
+# The layout rule BEFORE 2026-10-04's fill-low fix, kept verbatim so the pin
+# identity below compares against what campaign_2026_10 emitted.
+def _pre_fill_low_layout(w):
+  if w <= 0:
+    return []
+  if w <= 8:
+    return [('B', w)]
+  if w <= 16:
+    return [('H', w)]
+  if w <= 32:
+    return [('W', w)]
+  top = 24 + ((w - 1) % 8) + 1
+  low = w - top
+  out = []
+  rem = low % 32
+  if rem == 8:
+    out.append(('B', 8))
+  elif rem == 16:
+    out.append(('H', 16))
+  elif rem == 24:
+    out.append(('W', 24))
+  out += [('W', 32)] * (low // 32)
+  out.append(('W', top))
+  return out
+
+
+@pytest.mark.parametrize('w,expected', [
+    (49, [('W', 32), ('W', 17)]),
+    (51, [('W', 32), ('W', 19)]),
+    (56, [('W', 32), ('W', 24)]),
+    (81, [('W', 32), ('W', 32), ('W', 17)]),
+    (88, [('W', 32), ('W', 32), ('W', 24)]),
+    (113, [('W', 32), ('W', 32), ('W', 32), ('W', 17)]),
+    (120, [('W', 32), ('W', 32), ('W', 32), ('W', 24)]),
+])
+def test_pinned_24_remainder_fields_fill_the_low_container_first(w, expected):
+  """Pins fix container SIZES; p4c fills the LOW container first (measured
+  7,479/7,479 fields over 32 bits, reviews/campaign_2026_10_lane_findings.md
+  Sec 4). A 51-bit field is 32|19, not 24|27."""
+  assert lanes.layout(w) == expected
+  assert lanes.relaxed_layout(w) == expected
+
+
+@pytest.mark.parametrize('w', range(0, 330))
+def test_fill_low_fix_leaves_every_pin_unchanged(w):
+  """The pins (container sizes, low slice first) must not move: the generated
+  .p4 stays byte-identical for the same forests."""
+  assert lanes.container_sizes(w) == [
+      lanes.CONTAINER_BITS[k] for k, _ in _pre_fill_low_layout(w)]
+  assert sorted(lanes.container_sizes(w)) == sorted(
+      lanes.CONTAINER_BITS[k] for k, _ in lanes.layout(w))
   assert sum(bits for _, bits in lanes.layout(w)) == max(w, 0)
 
 
@@ -291,7 +368,8 @@ def test_first_key_price_is_its_standalone_price():
 def test_order_decides_who_pays():
   spacer, key = lanes.key_bytes((328,)), lanes.key_bytes((84, 84))
   prices = lanes.stage_prices([spacer, key], (1, 0))
-  assert prices[1] == 5          # (84, 84) first: its standalone price
+  assert prices[1] == 4          # (84, 84) first: its standalone price (fill-low layout)
+  assert prices[0] == 8          # the spacer behind it still pays 8
 
 
 def test_first_key_occupancy_uses_fullest_lane_midbytes():

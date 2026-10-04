@@ -88,6 +88,12 @@ def layout(w):
     (top = 24 + ((w - 1) % 8) + 1), and the low `w - top` bits (a multiple of
     8) as W32 slices plus one B8 / H16 / W24 for the remainder.
 
+  PINS FIX SIZES, p4c FILLS LOW FIRST (2026-10-04, measured 7,479/7,479 real
+  fields over 32 bits): when the remainder is 24 bits the low slice is NOT a
+  W24 -- the pinned containers are all W32, p4c fills them from the low one,
+  and only the top container is partly used (51 -> W32 | W19). Container
+  sizes, and so @pa_container_size, are the same either way.
+
   Every slice starts at container bit 0. A non-positive width has no slices."""
   if w <= 0:
     return []
@@ -99,14 +105,19 @@ def layout(w):
     return [('W', w)]
   top = 24 + ((w - 1) % 8) + 1
   low = w - top
-  out = []
   rem = low % 32
+  if rem == 24:
+    # The 24-remainder class (49-56, 81-88, 113-120 bits): its containers are
+    # all W32 and pinned by @pa_container_size, and p4c fills the LOW
+    # container first, so every slice is a full 32 bits except the top one,
+    # which takes the remainder (51 bits -> W32 | W19, not W24 | W27).
+    n = low // 32 + 2
+    return [('W', 32)] * (n - 1) + [('W', w - 32 * (n - 1))]
+  out = []
   if rem == 8:
     out.append(('B', 8))
   elif rem == 16:
     out.append(('H', 16))
-  elif rem == 24:
-    out.append(('W', 24))
   out += [('W', 32)] * (low // 32)
   out.append(('W', top))
   return out
