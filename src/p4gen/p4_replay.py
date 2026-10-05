@@ -190,7 +190,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             range_names.append(name)
         elif name.startswith('get_classification_tree'):
             # blocks[name] is either the model's own standalone price
-            # (codeword_to_blocks x rows, replay_design) or the count p4c
+            # (lanes.table_blocks x rows, replay_design) or the count p4c
             # committed (replay_stage_depth). Either way it is what the table
             # is charged as its stage's FIRST key; the packer's ordered stage
             # simulation charges a table placed behind a different key its

@@ -264,13 +264,53 @@ def test_pinned_24_remainder_fields_fill_the_low_container_first(w, expected):
 
 @pytest.mark.parametrize('w', range(0, 330))
 def test_fill_low_fix_leaves_every_pin_unchanged(w):
-  """The pins (container sizes, low slice first) must not move: the generated
-  .p4 stays byte-identical for the same forests."""
+  """Per FIELD, the pins (container sizes, low slice first) do not move. This
+  does NOT make the pins of a whole KEY unchanged: see
+  test_fill_low_fix_can_flip_a_keys_plain_vs_relaxed_pin."""
   assert lanes.container_sizes(w) == [
       lanes.CONTAINER_BITS[k] for k, _ in _pre_fill_low_layout(w)]
   assert sorted(lanes.container_sizes(w)) == sorted(
       lanes.CONTAINER_BITS[k] for k, _ in lanes.layout(w))
   assert sum(bits for _, bits in lanes.layout(w)) == max(w, 0)
+
+
+def _key_choice(widths, monkeypatch, old):
+  """('relaxed'|'plain', container_sizes of each field) of key_layout(widths),
+  under the pre-fill-low layout when `old`, else the current one."""
+  with monkeypatch.context() as m:
+    if old:
+      m.setattr(lanes, 'layout', _pre_fill_low_layout)
+    lanes._table_blocks.cache_clear()
+    lay = lanes.key_layout(widths)
+    name = 'relaxed' if lay is lanes.relaxed_layout else 'plain'
+    sizes = [lanes.container_sizes(w, lay) for w in widths]
+  lanes._table_blocks.cache_clear()
+  return name, sizes
+
+
+def test_fill_low_fix_can_flip_a_keys_plain_vs_relaxed_pin(monkeypatch):
+  """Per-key pin identity is NOT structural. container_sizes(w) is identical
+  per field (test above), but key_layout compares the plain lane price with
+  the ladder, and the fill-low fix lowers the plain price of keys holding a
+  24-remainder field, so a key mixing one with 17-32-bit fields can now pin
+  plain W32 where the old code pinned relaxed H16 + B8. It held on all 7,681
+  campaign_2026_10 keys (tests/test_campaign_pins.py); a new campaign can pin
+  plain W32 where the old code pinned relaxed H16 on such keys, which no
+  compile has tested."""
+  key = (3, 21, 49)
+  old, old_sizes = _key_choice(key, monkeypatch, old=True)
+  new, new_sizes = _key_choice(key, monkeypatch, old=False)
+  assert (old, new) == ('relaxed', 'plain')
+  assert old_sizes[1] == [16, 8]
+  assert new_sizes[1] == [32]
+  assert old_sizes[0] == new_sizes[0] and old_sizes[2] == new_sizes[2]
+  key2 = (22, 30, 50, 54)
+  assert _key_choice(key2, monkeypatch, old=True)[0] == 'relaxed'
+  assert _key_choice(key2, monkeypatch, old=False)[0] == 'plain'
+  # A campaign-style key without a flip is unchanged.
+  stable = (19, 64)
+  assert (_key_choice(stable, monkeypatch, old=True)
+          == _key_choice(stable, monkeypatch, old=False))
 
 
 def test_relaxed_layout_splits_17_to_32_bit_fields_into_halves():

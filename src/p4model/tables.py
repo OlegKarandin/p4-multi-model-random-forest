@@ -408,8 +408,8 @@ def codeword_bytes_to_blocks(key_bytes):
   under the pre-2026-09-21 model: ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH).
 
   SUPERSEDED for classification tables, which key several per-feature fields
-  at once and are priced by codeword_to_blocks's crossbar-byte ledger
-  instead: doc §4.1's measured ladder disagrees with this function from 11
+  at once and are priced by lanes.table_blocks (ladder: codeword_to_blocks's
+  crossbar-byte ledger) instead: doc §4.1's measured ladder disagrees with this function from 11
   bytes up (11 -> 3 blocks there, 2 here; 33 needs the Sec 2.3 isolation
   credit to reach 6, which this function reaches only because its own
   rounding is cruder). No production code calls it since audit C5
@@ -438,7 +438,7 @@ def tree_entries_to_blocks(entries):
   """Block-rows ONE tree's classification table needs for its own leaves.
 
   A block is TERNARY_MATCHING_ENTRIES_PER_BLOCK rows deep, and each leaf is one
-  row. Multiply by the key's own block width (codeword_to_blocks) for the
+  row. Multiply by the key's own block width (lanes.table_blocks) for the
   table's real block count: depth and width are independent and both cost.
   """
   return math.ceil(entries / TERNARY_MATCHING_ENTRIES_PER_BLOCK)

@@ -243,7 +243,7 @@ def assemble_usage(pool):
   # by index) -- and a key placed after a different key in its stage pays its
   # lane leftover price. This runs once per call, i.e. once per trial; it is
   # never inside threshold alignment's loop, which prices keys with
-  # codeword_to_blocks alone. A range table keys one meta.<feature>_val field
+  # the ladder codeword_to_blocks alone. A range table keys one meta.<feature>_val field
   # of FEATURE_VALUE_BIT_WIDTH bits -- 2 bytes -- so the range pool needs none
   # of this.
   ternary_plan = crossbar_stages_needed(

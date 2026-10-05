@@ -17,7 +17,8 @@ THREE PREDICTED QUANTITIES, per row:
                       the Sec 13.1 "S = 0" ladder, the one sentence the paper
                       states.
   blocks_refined  -- tables.codeword_to_blocks(field_bit_widths), the
-                      production per-table price (headline plus the Sec 2.3
+                      LADDER per-table price (the production price is now
+                      lanes.table_blocks; headline plus the Sec 2.3
                       isolation credit, capped at one field per Sec 6.1).
   blocks_charged  -- what src/p4model/packing.py's ordered stage simulation
                       charges the table (audit C5): blocks_refined when its

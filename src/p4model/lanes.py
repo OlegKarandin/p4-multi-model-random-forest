@@ -94,13 +94,17 @@ def layout(w):
     w <= 8 -> B, 9..16 -> H, 17..32 -> W (the whole field, from container
     bit 0); w > 32 -> a top W slice of 25..32 bits
     (top = 24 + ((w - 1) % 8) + 1), and the low `w - top` bits (a multiple of
-    8) as W32 slices plus one B8 / H16 / W24 for the remainder.
+    8) as W32 slices plus one B8 / H16 for the remainder (a 24-bit remainder
+    is the fill-low case below).
 
   PINS FIX SIZES, p4c FILLS LOW FIRST (2026-10-04, measured 7,479/7,479 real
   fields over 32 bits): when the remainder is 24 bits the low slice is NOT a
   W24 -- the pinned containers are all W32, p4c fills them from the low one,
   and only the top container is partly used (51 -> W32 | W19). Container
-  sizes, and so @pa_container_size, are the same either way.
+  sizes, and so @pa_container_size, are the same either way PER FIELD. Per
+  KEY they can differ: `key_layout`'s plain-vs-relaxed choice may flip on a
+  key mixing a 24-remainder field with 17-32-bit fields (its plain price
+  drops), changing those keys' pins.
 
   Every slice starts at container bit 0. A non-positive width has no slices."""
   if w <= 0:
@@ -181,6 +185,11 @@ def key_layout(field_bit_widths):
   worse than the width-rule one. With this rule the lane price from widths
   equals the lane price from the REAL PHV layout on 148/148 real keys
   (audit `layout_rule_check.py`).
+
+  The fill-low fix in `layout` leaves container sizes unchanged per field,
+  but lowers the plain price of keys with a 24-remainder field, so on keys
+  mixing one with 17-32-bit fields this choice can flip relaxed -> plain and
+  the pins change (e.g. (3, 21, 49); 0 of 7,681 campaign_2026_10 keys).
 
   Returned as a function, not a byte list, because the generator needs it
   too: it pins every tree-key code_* field to exactly this layout with
