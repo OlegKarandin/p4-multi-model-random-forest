@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
+SELECTION_RULES = ('balanced', 'tied_cheapest')
+
 
 def _validate_encoding(encoding):
     """Shared guard for `TrainConfig.arm_slug`, which branches on
@@ -101,6 +103,15 @@ class TrainConfig:
     ccp_alpha_max : inclusive upper bound on the cost-complexity pruning
         parameter sweep. Defaults to 0.0, meaning the ccp_alpha dimension is
         absent (today's unmodified behaviour).
+    selection_rule : 'tied_cheapest' (default, spec 2026-10-04 Part II) ships
+        the cheapest feasible trial NOT significantly worse than the
+        'balanced' pick on either task (one-sided McNemar exact test on
+        val_select at select_alpha); 'balanced' ships that pick itself
+        (trial_selection.select_best_trial), the rule before 2026-10-04. The
+        same for every arm; recorded in the manifest, not in arm_slug.
+    select_alpha : the McNemar significance level, in [0, 1], no
+        multiplicity correction. 0 ties every trial (ships the globally
+        cheapest feasible one); 1 ties only trials with b = 0 on both tasks.
     """
 
     alignment_enabled: bool = True
@@ -113,6 +124,8 @@ class TrainConfig:
     lookback: int = 20
     n_trees_min: int = 1
     ccp_alpha_max: float = 0.0
+    selection_rule: str = 'tied_cheapest'
+    select_alpha: float = 0.05
 
     def __post_init__(self):
         if self.delta_select < 0:
@@ -128,6 +141,12 @@ class TrainConfig:
         if self.ccp_alpha_max < 0.0:
             raise ValueError(
                 'ccp_alpha_max must be >= 0.0, got {!r}'.format(self.ccp_alpha_max))
+        if self.selection_rule not in SELECTION_RULES:
+            raise ValueError('selection_rule must be one of {}, got {!r}'.format(
+                SELECTION_RULES, self.selection_rule))
+        if not 0.0 <= self.select_alpha <= 1.0:
+            raise ValueError(
+                'select_alpha must be in [0, 1], got {!r}'.format(self.select_alpha))
 
     def arm_slug(self, encoding):
         """Filename-safe arm identity, per spec C.2.

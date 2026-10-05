@@ -150,3 +150,23 @@ def test_the_overlap_threshold_and_delta_align_tunables_are_gone():
 
     for fn in (ta.align_rf_thresholds, ta.align_with_policy):
         assert 'overlap_threshold' not in inspect.signature(fn).parameters, fn
+
+
+def test_selection_defaults_are_the_tie_aware_rule_at_alpha_005():
+    cfg = TrainConfig()
+    assert cfg.selection_rule == 'tied_cheapest'
+    assert cfg.select_alpha == 0.05
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'selection_rule': 'cheapest'}, {'select_alpha': -0.01}, {'select_alpha': 1.5}])
+def test_selection_fields_are_validated(kwargs):
+    with pytest.raises(ValueError):
+        TrainConfig(**kwargs)
+
+
+def test_selection_fields_never_reach_the_arm_slug():
+    a = TrainConfig(selection_rule='balanced', select_alpha=0.2)
+    b = TrainConfig()
+    for encoding in ('joint', 'disjoint'):
+        assert a.arm_slug(encoding) == b.arm_slug(encoding)
