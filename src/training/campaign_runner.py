@@ -83,6 +83,8 @@ def _stamp(frame, job):
     budgeted = job.M != INF
     frame['alignment_enabled'] = bool(job.cfg.alignment_enabled and job.arm == 'joint')
     frame['delta_select'] = job.cfg.delta_select
+    frame['selection_rule'] = job.cfg.selection_rule
+    frame['select_alpha'] = job.cfg.select_alpha
     frame['M'] = int(job.M) if budgeted else ''
     frame['budgeted'] = budgeted
     frame['n_trees'] = job.cfg.n_trees

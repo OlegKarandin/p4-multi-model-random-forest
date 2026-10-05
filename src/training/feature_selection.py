@@ -12,7 +12,7 @@ from src.training.errors import NoFeasibleSolution
 from src.training.config import TrainConfig
 from src.training.splits import make_task_splits
 from src.training.campaign_run import optuna_seed, row_id
-from src.training.row_artifacts import write_row_artifacts
+from src.training.row_artifacts import write_row_artifacts, write_trial_table
 from src.p4gen import p4_gen_config
 
 
@@ -288,8 +288,13 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
                        best_params=None, rel_shortfall=None,
                        n_trials_run=None, n_feasible=None,
                        align_attempted=None, align_accepted=None,
-                       intervals_before=None, intervals_after=None):
-    """Builds one elimination-loop result row (28 keys). Shared by both the
+                       intervals_before=None, intervals_after=None,
+                       chosen_trial=None, ref_trial=None, n_tied=None,
+                       ref_blocks=None, ref_stage_depth=None,
+                       ref_acc_sel_app=None, ref_acc_sel_ddos=None,
+                       ref_acc_app=None, ref_acc_ddos=None,
+                       ref_f1_app=None, ref_f1_ddos=None):
+    """Builds one elimination-loop result row (39 keys). Shared by both the
     infeasible branch (`NoFeasibleSolution`) and the feasible branch of
     `_run_elimination`'s loop, which used to write this dict as two
     hand-duplicated literals that had drifted to use different "not
@@ -298,7 +303,7 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
     so any new column belongs in exactly ONE place: this signature and the
     dict below.
 
-    The 28 keys split into three groups:
+    The 39 keys split into four groups:
     - `arm`/`method`/`split`/`k`/`features_app`/`features_ddos`: always
       present with a real value, never a sentinel.
     - 13 metrics (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `acc_sel_app`,
@@ -323,6 +328,10 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
       branch (nothing ran) and the feasible branch's alignment fields
       (`TrainResult.align_*`/`intervals_*` are None when alignment itself
       never ran for this arm/config).
+    - 11 tie-aware selection fields (spec 2026-10-04 Part II):
+      `chosen_trial`, `ref_trial`, `n_tied`, and the reference R's
+      `ref_blocks`, `ref_stage_depth`, `ref_acc_sel_*`, `ref_acc_*`,
+      `ref_f1_*` (test metrics of R's own refit). '' when not computed.
 
     `stages_real`/`tcam_real`/`sram_real`/`map_ram_real`/`compile_errors`
     are deliberately NOT part of this row: they're always attached
@@ -350,6 +359,17 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
         'align_accepted': _empty_if_none(align_accepted),
         'intervals_before': _empty_if_none(intervals_before),
         'intervals_after': _empty_if_none(intervals_after),
+        'chosen_trial': _empty_if_none(chosen_trial),
+        'ref_trial': _empty_if_none(ref_trial),
+        'n_tied': _empty_if_none(n_tied),
+        'ref_blocks': _empty_if_none(ref_blocks),
+        'ref_stage_depth': _empty_if_none(ref_stage_depth),
+        'ref_acc_sel_app': _empty_if_none(ref_acc_sel_app),
+        'ref_acc_sel_ddos': _empty_if_none(ref_acc_sel_ddos),
+        'ref_acc_app': _empty_if_none(ref_acc_app),
+        'ref_acc_ddos': _empty_if_none(ref_acc_ddos),
+        'ref_f1_app': _empty_if_none(ref_f1_app),
+        'ref_f1_ddos': _empty_if_none(ref_f1_ddos),
     }
 
 
@@ -491,6 +511,19 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             acc_ddos, f1_ddos = accuracy_metrics(
                 ddos.y_test, switch_predict(model_ddos, ddos.X_test[:, remaining_ddos]), task="ddos")
 
+        if train_result.ref_model_A is None:
+            # R is the shipped trial: no second refit, same numbers.
+            ref_metrics = (acc_app, f1_app, acc_ddos, f1_ddos)
+        else:
+            with sklearn.config_context(assume_finite=True):
+                ref_acc_app, ref_f1_app = accuracy_metrics(
+                    app.y_test, switch_predict(train_result.ref_model_A,
+                                               app.X_test[:, remaining_app]), task="app")
+                ref_acc_ddos, ref_f1_ddos = accuracy_metrics(
+                    ddos.y_test, switch_predict(train_result.ref_model_B,
+                                                ddos.X_test[:, remaining_ddos]), task="ddos")
+            ref_metrics = (ref_acc_app, ref_f1_app, ref_acc_ddos, ref_f1_ddos)
+
         # None (not 0) means alignment never ran for this arm/config --
         # _build_result_row preserves that distinction as '' rather than
         # erasing it with a falsy test (a real align_accepted of 0 must
@@ -513,12 +546,23 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             align_accepted=train_result.align_accepted,
             intervals_before=train_result.intervals_before,
             intervals_after=train_result.intervals_after,
+            chosen_trial=train_result.chosen_trial,
+            ref_trial=train_result.ref_trial,
+            n_tied=train_result.n_tied,
+            ref_blocks=train_result.ref_blocks,
+            ref_stage_depth=train_result.ref_stage_depth,
+            ref_acc_sel_app=train_result.ref_acc_sel_A,
+            ref_acc_sel_ddos=train_result.ref_acc_sel_B,
+            ref_acc_app=ref_metrics[0], ref_f1_app=ref_metrics[1],
+            ref_acc_ddos=ref_metrics[2], ref_f1_ddos=ref_metrics[3],
         ))
         rows[-1]['row_id'] = rid
         if row_context is not None:
             write_row_artifacts(
                 row_context, rid, model_app, model_ddos, names_app, names_ddos,
                 encoding, train_result.usage)
+            if train_result.trial_table is not None:
+                write_trial_table(row_context, rid, train_result.trial_table)
 
         pending_next = _kickoff_hardware_validation(
             validate_on_hardware, hardware_output_dir, split_idx, method, k,

@@ -211,11 +211,16 @@ def write_run_manifest(arms, M_values, n_splits, n_rows_app, n_rows_ddos,
 # splits to that run rather than one file per invocation.
 # ---------------------------------------------------------------------------
 
+# The per-table TCAM price the run was TRAINED with (spec 2026-10-04 Sec II.4):
+# 'lane' = lanes.table_blocks. results/campaign_2026_10 was trained with the
+# 'ladder' (tables.codeword_to_blocks) and carries that value by hand.
+BLOCK_PRICE = 'lane'
+
 SEED_RULES = {'data': '42 + split', 'optuna': '1000 * split + k'}
 
 # Fields that define the run's grid. A later invocation into the same run
 # directory must agree on all of them, or the run would silently mix grids.
-_GRID_FIELDS = ('arms', 'M_values', 'dataset_rows', 'seed_rules')
+_GRID_FIELDS = ('arms', 'M_values', 'dataset_rows', 'seed_rules', 'block_price')
 
 
 def env_hash():
@@ -260,6 +265,7 @@ def write_campaign_manifest(run_dir, arms, M_values, splits, n_rows_app, n_rows_
     fresh = build_manifest(arms, [_json_M(M) for M in M_values], len(splits),
                            n_rows_app, n_rows_ddos, cwd=cwd)
     fresh['seed_rules'] = dict(SEED_RULES)
+    fresh['block_price'] = BLOCK_PRICE
     # Round-trip through JSON so tuples compare equal to the lists on disk.
     fresh = json.loads(json.dumps(fresh))
     batch = {'splits': splits, 'started_utc': fresh['timestamp_utc'],

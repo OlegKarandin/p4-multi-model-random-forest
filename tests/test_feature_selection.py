@@ -624,7 +624,7 @@ def test_the_result_row_has_exactly_the_documented_key_set():
     column would have reached every campaign CSV silently."""
     row = fs._build_result_row('joint', 'multi', 0, 5, [], [])
     assert set(row) == set(fs._RESULT_ROW_KEYS)
-    assert len(row) == 28
+    assert len(row) == 39
 
 
 def test_the_new_derived_columns_default_to_literal_None_not_empty_string():
@@ -634,3 +634,73 @@ def test_the_new_derived_columns_default_to_literal_None_not_empty_string():
     for column in ('range_entries', 'ternary_entries', 'register_depth',
                    'register_count'):
         assert row[column] is None
+
+
+def test_the_tie_aware_columns_are_blank_on_an_infeasible_row():
+    row = fs._build_result_row('joint', 'multi', 0, 5, [], [], infeasible_reason='x')
+    for key in ('chosen_trial', 'ref_trial', 'n_tied', 'ref_blocks', 'ref_stage_depth',
+                'ref_acc_sel_app', 'ref_acc_sel_ddos', 'ref_acc_app', 'ref_acc_ddos',
+                'ref_f1_app', 'ref_f1_ddos'):
+        assert row[key] == '', key
+
+
+def test_a_feasible_row_reports_the_reference_beside_the_shipped_design(monkeypatch):
+    """Review focus 5: when R is the shipped trial (ref models None) the ref_*
+    test metrics equal the shipped ones; when it differs they are measured on
+    R's own refit models."""
+    X_app, X_ddos, y_app, y_ddos = _tiny_dataset()
+    marker = {}
+    calls = []
+
+    def _model(X, y, value, **kw):
+        model = _fit_tiny_rf(X, y, **kw)
+        marker[id(model)] = value
+        return model
+
+    def _fake_train(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
+                    val_select_A, val_select_B, features_A, features_B,
+                    max_blocks, encoding, cfg, warm_start_params=None):
+        calls.append(1)
+        shipped_A = _model(X_A, y_A, 0.25, seed=0)
+        shipped_B = _model(X_B, y_B, 0.5, seed=1)
+        if len(calls) == 1:
+            return _stub_train_result(
+                shipped_A, shipped_B, chosen_trial=3, ref_trial=3, n_tied=2,
+                ref_blocks=1, ref_stage_depth=1, ref_acc_sel_A=0.7,
+                ref_acc_sel_B=0.9, trial_table=[])
+        ref_A = _model(X_A, y_A, 0.75, max_depth=3, seed=5)
+        ref_B = _model(X_B, y_B, 0.125, max_depth=3, seed=6)
+        return _stub_train_result(
+            shipped_A, shipped_B, chosen_trial=4, ref_trial=1, n_tied=1,
+            ref_model_A=ref_A, ref_model_B=ref_B, ref_blocks=2, ref_stage_depth=2,
+            ref_acc_sel_A=0.6, ref_acc_sel_B=0.8, trial_table=[])
+
+    from src.p4gen.switch_semantics import switch_predict as real_predict
+    last = {}
+
+    def _spy_predict(model, X):
+        last['model'] = model
+        return real_predict(model, X)
+
+    def _spy_metrics(y_true, y_pred, task):
+        value = marker[id(last['model'])]
+        return value, value / 10
+
+    monkeypatch.setattr(
+        'src.training.train_model.train_multi_RF_Optuna_multi_constrained', _fake_train)
+    monkeypatch.setattr('src.p4gen.switch_semantics.switch_predict', _spy_predict)
+    monkeypatch.setattr('src.p4gen.evaluation.accuracy_metrics', _spy_metrics)
+
+    result = fs._process_single_split(
+        split_idx=0, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
+        max_blocks=50, feature_names=["f0", "f1", "f2"], random_state=42)
+    assert result.error is None, result.error
+    rows = result.results
+    assert rows[0]['ref_acc_app'] == rows[0]['acc_app'] == 0.25
+    assert rows[0]['ref_acc_ddos'] == rows[0]['acc_ddos'] == 0.5
+    assert rows[0]['ref_f1_app'] == rows[0]['f1_app']
+    assert rows[0]['n_tied'] == 2 and rows[0]['chosen_trial'] == 3
+    assert rows[1]['ref_trial'] == 1 and rows[1]['chosen_trial'] == 4
+    assert rows[1]['acc_app'] == 0.25
+    assert rows[1]['ref_acc_app'] == 0.75 and rows[1]['ref_acc_ddos'] == 0.125
+    assert rows[1]['ref_blocks'] == 2 and rows[1]['ref_acc_sel_app'] == 0.6

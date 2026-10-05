@@ -243,3 +243,13 @@ def test_one_split_twice_is_byte_identical(tmp_path):
         assert first[kind].keys() == second[kind].keys(), kind
         for name in first[kind]:
             assert first[kind][name] == second[kind][name], (kind, name)
+
+
+def test_stamp_records_the_selection_rule_and_alpha():
+    import pandas as pd
+    from src.training.campaign_runner import Job, _stamp
+    from src.training.config import TrainConfig
+    job = Job(arm='joint', cfg=TrainConfig(select_alpha=0.1), M=35, split=0)
+    frame = _stamp(pd.DataFrame([{'k': 5}]), job)
+    assert frame.loc[0, 'selection_rule'] == 'tied_cheapest'
+    assert frame.loc[0, 'select_alpha'] == 0.1

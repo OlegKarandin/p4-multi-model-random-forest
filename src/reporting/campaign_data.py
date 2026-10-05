@@ -302,13 +302,19 @@ _FLOAT_COLUMNS = [
     'p4c_phv_containers',
 ]
 
-# The archive boundary (Task 9): overlap_threshold is written by every
+# The archive boundary (Task 9): the tuple also holds the 2026-10-04
+# columns, which older runs lack. overlap_threshold is written by every
 # archived campaign CSV but by none written after 2026-09-14 -- TrainConfig
 # no longer has the tunable (design D4, Task 7). Kept out of _FLOAT_COLUMNS'
 # required set and coerced separately below so a fresh file's missing column
 # degrades the same way an old file's missing `stage_depth`/etc. does: an
 # all-NaN float64 column, never a KeyError.
-OPTIONAL_COLUMNS = ('overlap_threshold',)
+OPTIONAL_COLUMNS = ('overlap_threshold',
+                    # spec 2026-10-04 Part II; absent from runs before it
+                    'select_alpha', 'chosen_trial', 'ref_trial', 'n_tied',
+                    'ref_blocks', 'ref_stage_depth', 'ref_acc_sel_app',
+                    'ref_acc_sel_ddos', 'ref_acc_app', 'ref_acc_ddos',
+                    'ref_f1_app', 'ref_f1_ddos')
 
 # The SECOND archive boundary, 2026-09-15: delta_align, on Track 5's
 # pre-registered verdict delta_helps = FALSE (mean_d000 0.7956173344395895 vs

@@ -130,6 +130,7 @@ class RunPaths:
         rows: Directory for per-split CSV files
         designs: Directory for .p4 and .model.json files
         forests: Directory for joblib forest files
+        trials: Directory for per-row trial tables
         verify: Directory for .tar.gz verification outputs
         verification_csv: Path to verification.csv
         manifest: Path to run_manifest.json
@@ -138,13 +139,14 @@ class RunPaths:
     rows: str
     designs: str
     forests: str
+    trials: str
     verify: str
     verification_csv: str
     manifest: str
 
     def ensure(self):
         """Create all directories. Returns self."""
-        for attr in ('rows', 'designs', 'forests', 'verify'):
+        for attr in ('rows', 'designs', 'forests', 'trials', 'verify'):
             Path(getattr(self, attr)).mkdir(parents=True, exist_ok=True)
         return self
 
@@ -157,6 +159,7 @@ def run_paths(run_dir):
         rows=os.path.join(root, 'rows'),
         designs=os.path.join(root, 'designs'),
         forests=os.path.join(root, 'forests'),
+        trials=os.path.join(root, 'trials'),
         verify=os.path.join(root, 'verify'),
         verification_csv=os.path.join(root, 'verification.csv'),
         manifest=os.path.join(root, 'run_manifest.json'),

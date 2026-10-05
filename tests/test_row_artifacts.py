@@ -70,3 +70,17 @@ def test_load_forests_refuses_another_sklearn(tmp_path):
     joblib.dump({"sklearn": "0.0.1"}, path)
     with pytest.raises(RuntimeError, match="0.0.1"):
         ra.load_forests(str(path))
+
+
+def test_write_trial_table_writes_one_atomic_csv_per_row(tmp_path):
+    import pandas as pd
+    from src.training.row_artifacts import RowContext, write_trial_table
+    ctx = RowContext(str(tmp_path), 'joint', 35.0, 'deadbeef')
+    rows = [{'number': 0, 'params': '{}', 'feasible': True, 'acc_sel_app': 0.9,
+             'acc_sel_ddos': 0.95, 'blocks': 20, 'stage_depth': 6, 'b_app': 0,
+             'c_app': 0, 'b_ddos': 0, 'c_ddos': 0, 'tied': True}]
+    path = write_trial_table(ctx, 'joint_M035_s00_k05', rows)
+    assert path == str(tmp_path / 'trials' / 'joint_M035_s00_k05.csv')
+    frame = pd.read_csv(path)
+    assert list(frame.columns) == list(rows[0])
+    assert not (tmp_path / 'trials' / 'joint_M035_s00_k05.csv.partial').exists()

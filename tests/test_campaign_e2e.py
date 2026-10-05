@@ -113,6 +113,16 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
     design_ids = sorted(feasible["row_id"])
     for row_id in design_ids:
         assert os.path.isfile(os.path.join(run_dir, "designs", row_id + ".model.json"))
+    for row_id in design_ids:
+        trials = pd.read_csv(os.path.join(run_dir, "trials", row_id + ".csv"))
+        assert {"number", "params", "feasible", "b_app", "c_app", "b_ddos",
+                "c_ddos", "tied"} <= set(trials.columns)
+        assert trials["tied"].astype(str).str.lower().eq("true").any()
+    rows = pd.concat(pd.read_csv(os.path.join(run_dir, "rows", f))
+                     for f in os.listdir(os.path.join(run_dir, "rows")))
+    feasible_rows = rows[rows["row_id"].isin(design_ids)]
+    assert (feasible_rows["blocks"] <= feasible_rows["ref_blocks"]).all()
+    assert set(rows["selection_rule"]) == {"tied_cheapest"}
 
     # Stage 2: verify, one row made FALSE_FEASIBLE.
     false_feasible = design_ids[0]

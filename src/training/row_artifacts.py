@@ -121,3 +121,20 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
     atomic_write_text(os.path.join(paths.designs, row_id + '.model.json'),
                       canonical_json(model))
     return model
+
+
+def write_trial_table(ctx, row_id, rows):
+    """trials/<row_id>.csv: every trial of the row's search with b/c against
+    the reference (trial_selection.trial_rows), so the selection rule can be
+    re-run offline at any select_alpha. Written atomically."""
+    import csv
+    import io
+    paths = run_paths(ctx.run_dir).ensure()
+    buffer = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(buffer, fieldnames=list(rows[0]), lineterminator='\n')
+        writer.writeheader()
+        writer.writerows(rows)
+    path = os.path.join(paths.trials, row_id + '.csv')
+    atomic_write_text(path, buffer.getvalue())
+    return path

@@ -287,3 +287,25 @@ def test_two_manifests_written_back_to_back_land_in_different_files(tmp_path):
     import os
     assert os.path.isfile(path1)
     assert os.path.isfile(path2)
+
+
+def test_campaign_manifest_records_the_lane_block_price(tmp_path):
+    from src.reporting.manifest import write_campaign_manifest
+    from src.training.config import TrainConfig
+    manifest = write_campaign_manifest(str(tmp_path), [('joint', TrainConfig())],
+                                       [35], [0], 10, 10)
+    assert manifest['block_price'] == 'lane'
+
+
+def test_a_run_trained_with_another_block_price_cannot_be_extended(tmp_path):
+    import json
+    import pytest
+    from src.reporting.manifest import write_campaign_manifest
+    from src.training.config import TrainConfig
+    write_campaign_manifest(str(tmp_path), [('joint', TrainConfig())], [35], [0], 10, 10)
+    path = tmp_path / 'run_manifest.json'
+    data = json.loads(path.read_text())
+    data['block_price'] = 'ladder'
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match='block_price'):
+        write_campaign_manifest(str(tmp_path), [('joint', TrainConfig())], [35], [1], 10, 10)
