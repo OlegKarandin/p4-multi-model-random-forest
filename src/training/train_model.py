@@ -153,6 +153,16 @@ class TrainResult:
         docstring for the capacity caveat: these report depth/count, not
         whether the registers fit.
 
+    chosen_trial, ref_trial, n_tied : spec 2026-10-04 Part II. ref_trial is
+        the 'balanced' pick R (select_best_trial); chosen_trial the trial
+        shipped under cfg.selection_rule; n_tied the size of R's tie set.
+    ref_model_A/B, ref_blocks, ref_stage_depth, ref_acc_sel_A/B : R refit and
+        re-measured, so a row can report R's test accuracy beside the shipped
+        one's. ref_model_A/B are None exactly when R IS the shipped trial
+        (no second refit; the ref_* numbers then equal the shipped ones).
+    trial_table : trial_selection.trial_rows -- every trial of the search
+        with b/c against R, for trials/<row_id>.csv and offline re-selection.
+
     Frozen so a ProcessPoolExecutor worker cannot mutate a result after it
     crosses the pickle boundary. Every field is plain data (numbers, a dict,
     or the two fitted models already returned pre-P5) so the whole thing
@@ -179,6 +189,16 @@ class TrainResult:
     register_count: int
     # The refit's full ResourceUsage; None for hand-built results (tests).
     usage: Any = None
+    chosen_trial: Optional[int] = None
+    ref_trial: Optional[int] = None
+    n_tied: Optional[int] = None
+    ref_model_A: Any = None
+    ref_model_B: Any = None
+    ref_blocks: Optional[int] = None
+    ref_stage_depth: Optional[int] = None
+    ref_acc_sel_A: Optional[float] = None
+    ref_acc_sel_B: Optional[float] = None
+    trial_table: Optional[list] = None
 
 
 def rf_params_from_params(params, suffix):
@@ -248,7 +268,9 @@ def train_multi_RF_Optuna_multi_constrained(
         deterministic function of (data, seed) in one environment. None keeps
         the unseeded behaviour.
 
-    Returns a TrainResult (see its docstring for the full field list).
+    Returns a TrainResult (see its docstring for the full field list): the
+    trial shipped under cfg.selection_rule; see TrainResult for the reference
+    fields.
 
     Raises NoFeasibleSolution when no trial satisfies both the block budget and
     the codeword limit -- an expected outcome at tight max_blocks, handled per-k
@@ -318,6 +340,9 @@ def train_multi_RF_Optuna_multi_constrained(
 
         return model_A, model_B
 
+    # trial number -> (packed app marks, packed ddos marks): ~1 KB per feasible trial, dropped after selection.
+    correctness = {}
+
     def objective(trial):
         # (a) The single fit.
         align_stats = {}
@@ -382,8 +407,15 @@ def train_multi_RF_Optuna_multi_constrained(
         # search toward exactly the configurations where its own number is least
         # honest. See P1 Task 7.
         with sklearn.config_context(assume_finite=True):
-            acc_A = accuracy_score(val_select_A[1], switch_predict(model_A, val_select_A[0]))
-            acc_B = accuracy_score(val_select_B[1], switch_predict(model_B, val_select_B[0]))
+            pred_A = switch_predict(model_A, val_select_A[0])
+            pred_B = switch_predict(model_B, val_select_B[0])
+            acc_A = accuracy_score(val_select_A[1], pred_A)
+            acc_B = accuracy_score(val_select_B[1], pred_B)
+        # Per-flow right/wrong marks for the tie test (trial_selection.
+        # select_tied_cheapest), from the SAME predictions the accuracies use.
+        correctness[trial.number] = (
+            np.packbits(np.asarray(pred_A) == np.asarray(val_select_A[1])),
+            np.packbits(np.asarray(pred_B) == np.asarray(val_select_B[1])))
 
         trial.set_user_attr('acc_app', acc_A)
         trial.set_user_attr('acc_ddos', acc_B)
@@ -451,8 +483,18 @@ def train_multi_RF_Optuna_multi_constrained(
 
     feasible_trials = [t for t in study.trials if early_stopping.is_feasible(t)]
 
-    best_trial, shortfall = trial_selection.select_best_trial(
-        feasible_trials, cfg.delta_select, k=len(features_A), max_blocks=max_blocks)
+    sizes = (len(val_select_A[1]), len(val_select_B[1]))
+    marks = {number: tuple(np.unpackbits(packed, count=size).astype(bool)
+                           for packed, size in zip(pair, sizes))
+             for number, pair in correctness.items()}
+    chosen, reference, table = trial_selection.select_tied_cheapest(
+        feasible_trials, marks, cfg.select_alpha, k=len(features_A),
+        max_blocks=max_blocks, delta_select=cfg.delta_select)
+    if cfg.selection_rule == 'balanced':
+        chosen = reference
+    best_trial = chosen
+    shortfall = next(r['rel_shortfall'] for r in table if r['number'] == chosen.number)
+    correctness.clear()
 
     # Refit the winner rather than caching every feasible trial's model pair
     # (F8: a measured 401 KB per pair, ~100 pairs per search, 11 workers). One
@@ -505,6 +547,23 @@ def train_multi_RF_Optuna_multi_constrained(
             'ceiling -- the pipeline is not deterministic'.format(
                 best_trial.number, usage.stage_depth, TOFINO_PIPELINE_STAGES))
 
+    # Reference refit (spec II.6): R is re-fit with a fresh align_stats (the
+    # shipped refit's describes the shipped artifact) and held to the same
+    # determinism assert.
+    ref_model_A = ref_model_B = None
+    ref_usage = usage
+    if reference.number != best_trial.number:
+        ref_model_A, ref_model_B = fit_pair(rf_params(reference.params, 'A'),
+                                            rf_params(reference.params, 'B'),
+                                            align_stats={})
+        ref_usage = multi_model_memory_evaluation(
+            ref_model_A, ref_model_B, features_A, features_B, encoding)
+        if ref_usage.blocks != reference.user_attrs['blocks']:
+            raise AssertionError(
+                'refit of reference trial {} gave {} blocks, the search recorded {} '
+                '-- the pipeline is not deterministic'.format(
+                    reference.number, ref_usage.blocks, reference.user_attrs['blocks']))
+
     return TrainResult(
         model_A=model_A,
         model_B=model_B,
@@ -526,4 +585,14 @@ def train_multi_RF_Optuna_multi_constrained(
         register_depth=int(usage.register_depth),
         register_count=int(usage.register_count),
         usage=usage,
+        chosen_trial=best_trial.number,
+        ref_trial=reference.number,
+        n_tied=sum(1 for r in table if r['tied']),
+        ref_model_A=ref_model_A,
+        ref_model_B=ref_model_B,
+        ref_blocks=int(ref_usage.blocks),
+        ref_stage_depth=int(ref_usage.stage_depth),
+        ref_acc_sel_A=reference.user_attrs['acc_app'],
+        ref_acc_sel_B=reference.user_attrs['acc_ddos'],
+        trial_table=trial_selection.trial_rows(study.trials, table),
     )

@@ -33,11 +33,11 @@ def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300):
         max_blocks, encoding, cfg)
 
 
-def test_the_contract_returns_a_frozen_train_result_with_all_twenty_fields():
+def test_the_contract_returns_a_frozen_train_result_with_all_thirty_fields():
     out = _call()
 
     assert isinstance(out, TrainResult)
-    assert len(dataclasses.fields(out)) == 20
+    assert len(dataclasses.fields(out)) == 30
     assert hasattr(out.model_A, 'predict') and hasattr(out.model_B, 'predict')
     assert isinstance(out.stages, (int, np.integer))
     assert isinstance(out.blocks, (int, np.integer))
@@ -282,7 +282,11 @@ def test_the_winner_is_refit_deterministically_not_cached(monkeypatch):
         return study
 
     monkeypatch.setattr(tm.optuna, 'create_study', capture)
-    out = _call()
+    # selection_rule='balanced': this test compares the shipped trial with
+    # select_best_trial's pick, which coincide only under the balanced rule
+    # (the tied_cheapest default may ship a different, cheaper trial).
+    out = _call(cfg=TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3,
+                                selection_rule='balanced'))
 
     feasible = [t for t in captured['study'].trials if early_stopping.is_feasible(t)]
     winner, winner_shortfall = trial_selection.select_best_trial(
@@ -354,8 +358,12 @@ def test_align_stats_on_the_result_describe_the_refit_not_an_earlier_trial(monke
 
     monkeypatch.setattr(tm, 'align_with_policy', spy)
 
+    # selection_rule='balanced': the tied_cheapest default may add a SECOND
+    # (reference) refit after the shipped one, which would make the last
+    # counter value belong to the reference, not the shipped artifact.
     out = _call(encoding='joint',
-                cfg=TrainConfig(n_trials=6, min_feasible_before_stop=2, lookback=2))
+                cfg=TrainConfig(n_trials=6, min_feasible_before_stop=2, lookback=2,
+                                selection_rule='balanced'))
 
     assert calls['n'] >= 2, 'expected at least one trial call plus the refit call'
     assert out.align_attempted == calls['n']
@@ -729,3 +737,67 @@ def test_crossbar_violation_is_the_overflow_floored_at_one():
     assert tm._crossbar_violation(100) == 100 - tm.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
     assert tm._crossbar_violation(64) == 1
     assert tm._crossbar_violation(11) == 1
+
+
+def test_the_result_carries_the_reference_and_the_trial_table():
+    out = _call()
+    assert isinstance(out.chosen_trial, int) and isinstance(out.ref_trial, int)
+    assert isinstance(out.n_tied, int) and out.n_tied >= 1
+    assert out.blocks <= out.ref_blocks
+    numbers = [row['number'] for row in out.trial_table]
+    assert numbers == sorted(numbers) and len(numbers) == out.n_trials_run
+    shipped = next(r for r in out.trial_table if r['number'] == out.chosen_trial)
+    assert shipped['tied'] is True and shipped['blocks'] == out.blocks
+    if out.ref_trial == out.chosen_trial:
+        assert out.ref_model_A is None and out.ref_model_B is None
+        assert (out.ref_blocks, out.ref_acc_sel_A) == (out.blocks, out.acc_sel_A)
+    else:
+        assert hasattr(out.ref_model_A, 'predict')
+
+
+def test_balanced_rule_ships_the_reference():
+    out = _call(cfg=TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3,
+                                selection_rule='balanced'))
+    assert out.chosen_trial == out.ref_trial
+    assert out.ref_model_A is None
+
+
+def test_alpha_zero_ships_the_cheapest_feasible_trial():
+    out = _call(cfg=TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3,
+                                select_alpha=0.0))
+    feasible = [r for r in out.trial_table if r['feasible']]
+    assert out.blocks == min(r['blocks'] for r in feasible)
+
+
+def test_correctness_capture_does_not_change_the_selection_accuracies(monkeypatch):
+    """Review focus 4: the objective's acc_app/acc_ddos must be the same floats
+    accuracy_score gives on the same predictions -- balanced must reproduce the
+    pre-2026-10-04 search exactly."""
+    from sklearn.metrics import accuracy_score
+    from src.p4gen.switch_semantics import switch_predict
+    out = _call(cfg=TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3,
+                                selection_rule='balanced'))
+    X_app, y_app, X_ddos, y_ddos = _tiny_problem()
+    assert out.acc_sel_A == accuracy_score(y_app, switch_predict(out.model_A, X_app))
+    assert out.acc_sel_B == accuracy_score(y_ddos, switch_predict(out.model_B, X_ddos))
+
+
+def test_the_reference_refit_adds_exactly_one_evaluation(monkeypatch):
+    """Spec II.6: the reference refit is held to the same determinism assert as
+    the shipped one, so it costs one extra evaluation when it differs."""
+    import src.training.train_model as tm
+    real = tm.multi_model_memory_evaluation
+    calls = {'n': 0}
+
+    def counting(*a, **k):
+        usage = real(*a, **k)
+        calls['n'] += 1
+        return usage
+
+    monkeypatch.setattr(tm, 'multi_model_memory_evaluation', counting)
+    out = _call(cfg=TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3,
+                                select_alpha=0.0))
+    # one evaluation per COMPLETED trial plus one refit, plus one more when the
+    # reference differs from the shipped trial
+    extra = 2 if out.ref_trial != out.chosen_trial else 1
+    assert calls['n'] == out.n_trials_run + extra
