@@ -474,3 +474,33 @@ def test_a_compiled_record_has_an_empty_copied_from(tmp_path, monkeypatch):
     with open(os.path.join(run_dir, "verification.csv"), newline="") as handle:
         csv_header = next(csv.reader(handle))
     assert 'copied_from' in csv_header
+
+
+def test_rescore_keeps_a_copied_twin_copied_and_scores_it_from_its_sources_tarball(
+        tmp_path, monkeypatch):
+    """A copied twin has no tarball of its own: rescore must read the SOURCE's,
+    keep `copied_from`, and not turn the twin into a COMPILE_ERROR. A compiled
+    twin is rescored from its own tarball, as before."""
+    src, twin, other = "joint-off_M035_s00_k03", "joint-off-al_M035_s00_k03", "joint-off-al_M035_s00_k04"
+    run_dir = _run_dir(tmp_path, rows=(src, twin, other))
+    program = "// same program\n"
+    for row_id in (src, twin):
+        with open(os.path.join(run_dir, "designs", row_id + ".p4"), "w") as handle:
+            handle.write(program)
+    runner.verify_row(run_dir, src, compile_fn=FakeCompiler())
+    runner.copy_record(run_dir, twin, src)
+    runner.verify_row(run_dir, other, compile_fn=FakeCompiler())
+    assert not os.path.exists(os.path.join(run_dir, "verify", twin + ".tar.gz"))
+    monkeypatch.setattr(runner, "model_breakdown",
+                        lambda program, row_id: {"stage_depth": 12, "blocks": 6,
+                                                 "tables": _TABLES})
+
+    runner.rescore(run_dir)
+
+    copied = _verify_json(run_dir, twin)
+    assert copied["copied_from"] == src
+    assert copied["row_id"] == twin and copied["verdict"] == "EXACT"
+    assert copied["p4c_stage_depth"] == 12 and copied["p4c_blocks"] == 6
+    compiled = _verify_json(run_dir, other)
+    assert compiled["copied_from"] is None and compiled["verdict"] == "EXACT"
+    assert _verify_json(run_dir, src)["copied_from"] is None

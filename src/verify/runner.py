@@ -424,8 +424,12 @@ def rescore(run_dir):
         row_id = old['row_id']
         model = _rescored_model(paths, row_id, _load_model(paths, row_id))
         failure = old.get('failure')
+        # A copied twin has no tarball: its program is byte-identical to its
+        # source's, so the source's logs are its logs.
+        copied_from = old.get('copied_from') or None
         if failure == 'p4c_errors' or failure not in _FAILURE_VERDICT:
-            p4c = _p4c_from_tarball(os.path.join(paths.verify, row_id + '.tar.gz'))
+            p4c = _p4c_from_tarball(os.path.join(
+                paths.verify, (copied_from or row_id) + '.tar.gz'))
         else:
             p4c = None
         verdict = classify(model, p4c, _M_value(model), _FAILURE_VERDICT.get(failure))
@@ -434,6 +438,7 @@ def rescore(run_dir):
                          provenance={k: old.get(k) for k in (
                              'p4c_errors', 'p4c_warnings', 'p4c_image',
                              'open_p4studio_commit', 'verified_utc')})
+        record['copied_from'] = copied_from
         atomic_write_text(os.path.join(paths.verify, name), canonical_json(record))
     return merge_verification(run_dir)
 
