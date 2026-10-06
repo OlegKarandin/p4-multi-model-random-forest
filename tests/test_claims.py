@@ -1432,3 +1432,81 @@ def test_ablation_decomposition_alignment_contrast_is_twins_minus_joint_off():
     assert 'joint-off - independent' in contrasts
     assert 'joint-off-al - joint-off' in contrasts
     assert not any(c.startswith('joint -') for c in contrasts)
+
+
+def _twin_frame():
+    """independent/joint-off/joint-off-al on 2 M x 3 splits x k in (3, 8, 14).
+    Twins save 2 blocks on k=8 cells only, cost nothing, and leave F1 alone."""
+    rows = []
+    for arm in ('independent', 'joint-off', 'joint-off-al'):
+        for M in (25, 50):
+            for split in range(3):
+                for k in (3, 8, 14):
+                    blocks = M - k
+                    if arm != 'independent':
+                        blocks -= 1
+                    if arm == 'joint-off-al' and k == 8:
+                        blocks -= 2
+                    rows.append({'arm_slug': arm, 'M': float(M), 'split': split, 'k': k,
+                                 'blocks': float(blocks), 'stage_depth': 10.0,
+                                 'acc_app': 0.8, 'f1_app': 0.75, 'acc_ddos': 0.9, 'f1_ddos': 0.88})
+    return pd.DataFrame(rows)
+
+
+def test_twin_effect_reports_the_injected_saving_per_group():
+    table = claims.twin_effect(_twin_frame())
+    blocks_all = table[(table.group_kind == 'all') & (table.metric == 'blocks')].iloc[0]
+    assert blocks_all['n_pairs'] == 18 and blocks_all['mean_diff_pairwise'] == pytest.approx(-2 / 3)
+    assert blocks_all['p_saves'] == pytest.approx(1 / 3) and blocks_all['p_costs'] == 0.0
+    mid = table[(table.group_kind == 'k_group') & (table.group == 'mid 6-11') & (table.metric == 'blocks')].iloc[0]
+    assert mid['mean_diff_pairwise'] == -2.0 and mid['p_saves'] == 1.0
+    f1 = table[(table.group_kind == 'all') & (table.metric == 'f1_app')].iloc[0]
+    assert f1['mean_diff_pairwise'] == 0.0 and f1['p_saves'] == 0.0 and f1['p_costs'] == 0.0
+
+
+def test_twin_ladder_adds_up():
+    ladder = claims.twin_ladder(_twin_frame())
+    row = ladder[ladder.M == 'all'].iloc[0]
+    assert row['step_sharing_blocks'] == pytest.approx(-1.0)
+    assert row['step_alignment_blocks'] == pytest.approx(-2 / 3)
+    assert row['mean_joint-off-al_blocks'] == pytest.approx(
+        row['mean_independent_blocks'] + row['step_sharing_blocks'] + row['step_alignment_blocks'])
+
+
+def _rescued_verification(blank):
+    return pd.DataFrame([
+        {'row_id': 'joint-off_M025_s00_k03', 'arm_slug': 'joint-off', 'verdict': 'FALSE_FEASIBLE',
+         'p4c_over_stages': True, 'p4c_over_budget': False, 'copied_from': blank, 'unverified': False},
+        {'row_id': 'joint-off-al_M025_s00_k03', 'arm_slug': 'joint-off-al', 'verdict': 'EXACT',
+         'p4c_over_stages': False, 'p4c_over_budget': False, 'copied_from': blank, 'unverified': False},
+        {'row_id': 'joint-off_M025_s00_k08', 'arm_slug': 'joint-off', 'verdict': 'EXACT',
+         'p4c_over_stages': False, 'p4c_over_budget': False, 'copied_from': blank, 'unverified': False},
+        {'row_id': 'joint-off-al_M025_s00_k08', 'arm_slug': 'joint-off-al', 'verdict': 'EXACT',
+         'p4c_over_stages': False, 'p4c_over_budget': False,
+         'copied_from': 'joint-off_M025_s00_k08', 'unverified': False},
+        {'row_id': 'joint-off-al_M025_s00_k14', 'arm_slug': 'joint-off-al', 'verdict': 'UNDER',
+         'p4c_over_stages': False, 'p4c_over_budget': True, 'copied_from': blank, 'unverified': False},
+    ])
+
+
+@pytest.mark.parametrize('blank', ['', None, float('nan')])
+def test_twin_pairs_excludes_a_rescued_twin_and_counts_it(blank):
+    # Review focus 4: the source was dropped as p4c-infeasible, so the twin has no partner.
+    df = _twin_frame()
+    df = df[~((df.arm_slug == 'joint-off') & (df.M == 25.0) & (df.split == 0) & (df.k == 3))]
+    pairs = claims.twin_pairs(df)
+    assert len(pairs) == 17
+    assert not ((pairs.M == 25.0) & (pairs.split == 0) & (pairs.k == 3)).any()
+    # Neither the effect table nor the ladder sees the rescued cell.
+    effect = claims.twin_effect(df)
+    assert effect[(effect.group_kind == 'all') & (effect.metric == 'blocks')].iloc[0]['n_pairs'] == 17
+    low = effect[(effect.group_kind == 'k_group') & (effect.group == 'low 1-5')
+                 & (effect.metric == 'blocks')].iloc[0]
+    assert low['n_pairs'] == 5
+    ladder = claims.twin_ladder(df)
+    assert ladder[ladder.M == 25.0].iloc[0]['n_cells'] == 8
+    assert ladder[ladder.M == 'all'].iloc[0]['n_cells'] == 17
+    counts = claims.twin_counts(_rescued_verification(blank))
+    assert counts == {'n_twins': 3, 'n_identical': 1, 'n_compiled': 2, 'n_rescued': 1,
+                      'n_twin_infeasible': 1, 'n_compiled_exact': 1,
+                      'exact_rate_compiled': pytest.approx(0.5)}

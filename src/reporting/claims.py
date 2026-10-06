@@ -1602,3 +1602,116 @@ def noninferiority_tests(df, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05,
     table['alpha'] = alpha
     table['significant_holm'] = table['p_holm'] < alpha
     return table
+
+
+# ---------------------------------------------------------------------------
+# Alignment twins (spec 2026-10-06 section 6)
+# ---------------------------------------------------------------------------
+
+K_GROUPS = (('low 1-5', 1, 5), ('mid 6-11', 6, 11), ('high 12-17', 12, 17))
+TWIN_METRICS = ('blocks', 'stage_depth', 'f1_app', 'f1_ddos')
+# For blocks/stage_depth a negative delta is a saving; for F1 a positive one is.
+_SAVING_SIGN = {'blocks': -1, 'stage_depth': -1, 'f1_app': 1, 'f1_ddos': 1}
+_LADDER_ARMS = (INDEPENDENT_ARM_SLUG, 'joint-off', TWIN_ARM_SLUG)
+
+
+def k_group(k):
+    for label, lo, hi in K_GROUPS:
+        if lo <= k <= hi:
+            return label
+    return 'other'
+
+
+def twin_pairs(df):
+    """Every (M, split, k) cell with BOTH a twin and its joint-off source, as
+    `pair_arms` builds it, plus `d_<metric>` = twin - source and the k group.
+    A twin whose source was dropped (rescued) has no partner and is absent by
+    construction."""
+    pairs = pair_arms(df, TWIN_ARM_SLUG, 'joint-off')
+    for metric in TWIN_METRICS:
+        pairs['d_' + metric] = pairs[metric + '_treatment'] - pairs[metric + '_baseline']
+    pairs['k_group'] = pairs['k'].map(k_group)
+    return pairs
+
+
+def _effect_rows(pairs, group_kind, group, confidence):
+    rows = []
+    for metric in TWIN_METRICS:
+        d = pairs['d_' + metric]
+        split_means = (pairs.groupby('split')['d_' + metric].mean().to_numpy()
+                       if len(pairs) else np.array([]))
+        mean, _, _, low, high = _t_interval(split_means, confidence)
+        sign = _SAVING_SIGN[metric]
+        rows.append({'group_kind': group_kind, 'group': group, 'metric': metric,
+                     'n_pairs': int(len(pairs)), 'n_splits': int(len(split_means)),
+                     'mean_diff_split_level': mean, 'ci_low': low, 'ci_high': high,
+                     'mean_diff_pairwise': float(d.mean()) if len(d) else float('nan'),
+                     'p_saves': float((sign * d > 0).mean()) if len(d) else float('nan'),
+                     'p_costs': float((sign * d < 0).mean()) if len(d) else float('nan')})
+    return rows
+
+
+def twin_effect(df, confidence=0.95):
+    """Twin minus source, overall, per M and per k group (split-level t CI)."""
+    pairs = twin_pairs(df)
+    rows = _effect_rows(pairs, 'all', 'all', confidence)
+    for M in sorted(pairs['M'].unique()):
+        rows += _effect_rows(pairs[pairs['M'] == M], 'M', M, confidence)
+    for label, _, _ in K_GROUPS:
+        rows += _effect_rows(pairs[pairs['k_group'] == label], 'k_group', label, confidence)
+    return pd.DataFrame(rows)
+
+
+def twin_ladder(df, confidence=0.95):
+    """independent -> joint-off -> joint-off-al on the cells where all three
+    exist: per-arm means and the two step deltas with split-level t CIs."""
+    key = ['M', 'split', 'k']
+    wide = None
+    for arm in _LADDER_ARMS:
+        part = df[df['arm_slug'] == arm].set_index(key)[list(TWIN_METRICS)]
+        part.columns = [f'{m}__{arm}' for m in TWIN_METRICS]
+        wide = part if wide is None else wide.join(part, how='inner')
+    wide = wide.reset_index()
+    rows = []
+    for M in list(sorted(wide['M'].unique())) + ['all']:
+        cells = wide if M == 'all' else wide[wide['M'] == M]
+        row = {'M': M, 'n_cells': int(len(cells))}
+        for metric in TWIN_METRICS:
+            for arm in _LADDER_ARMS:
+                row[f'mean_{arm}_{metric}'] = float(cells[f'{metric}__{arm}'].mean())
+            for step, (a, b) in (('sharing', ('joint-off', INDEPENDENT_ARM_SLUG)),
+                                 ('alignment', (TWIN_ARM_SLUG, 'joint-off'))):
+                d = cells[f'{metric}__{a}'] - cells[f'{metric}__{b}']
+                _, _, _, low, high = _t_interval(
+                    d.groupby(cells['split']).mean().to_numpy(), confidence)
+                row[f'step_{step}_{metric}'] = float(d.mean())
+                row[f'step_{step}_{metric}_ci_low'] = low
+                row[f'step_{step}_{metric}_ci_high'] = high
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _p4c_feasible(verification):
+    return ~((verification['verdict'] == 'FALSE_FEASIBLE')
+             | verification['p4c_over_stages'].fillna(False).astype(bool)
+             | verification['p4c_over_budget'].fillna(False).astype(bool))
+
+
+def twin_counts(verification):
+    """Counts deliverable 11 reports from `load_verification`'s frame.
+    Rescued = twin p4c-feasible while its joint-off source is not; a source
+    absent from the frame counts as feasible."""
+    feasible = dict(zip(verification['row_id'], _p4c_feasible(verification)))
+    twins = verification[verification['arm_slug'] == TWIN_ARM_SLUG]
+    copied = twins['copied_from'].fillna('').astype(str) != ''
+    compiled = twins[~copied]
+    source_ids = twins['row_id'].str.replace(f'^{TWIN_ARM_SLUG}_', 'joint-off_', regex=True)
+    twin_ok = twins['row_id'].map(feasible).astype(bool)
+    source_ok = source_ids.map(lambda rid: feasible.get(rid, True)).astype(bool)
+    return {'n_twins': int(len(twins)), 'n_identical': int(copied.sum()),
+            'n_compiled': int(len(compiled)),
+            'n_rescued': int((twin_ok & ~source_ok).sum()),
+            'n_twin_infeasible': int((~twin_ok).sum()),
+            'n_compiled_exact': int((compiled['verdict'] == 'EXACT').sum()),
+            'exact_rate_compiled': (float((compiled['verdict'] == 'EXACT').mean())
+                                    if len(compiled) else float('nan'))}
