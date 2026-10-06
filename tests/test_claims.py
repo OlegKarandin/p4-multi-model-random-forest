@@ -1510,3 +1510,32 @@ def test_twin_pairs_excludes_a_rescued_twin_and_counts_it(blank):
     assert counts == {'n_twins': 3, 'n_identical': 1, 'n_compiled': 2, 'n_rescued': 1,
                       'n_twin_infeasible': 1, 'n_compiled_exact': 1,
                       'exact_rate_compiled': pytest.approx(0.5)}
+
+
+def _text_flag_verification(over_stages='False', over_budget='False', verdict='EXACT'):
+    """verification.csv as `load_verification` really returns it: flags are the
+    literal text 'True'/'False' (dtype=str), copied_from '' for None."""
+    rows = []
+    for k in (3, 8):
+        rows.append({'row_id': f'joint-off_M025_s00_k{k:02d}', 'arm_slug': 'joint-off',
+                     'verdict': 'EXACT', 'p4c_over_stages': over_stages,
+                     'p4c_over_budget': over_budget, 'copied_from': '', 'unverified': 'False'})
+        rows.append({'row_id': f'joint-off-al_M025_s00_k{k:02d}', 'arm_slug': 'joint-off-al',
+                     'verdict': verdict, 'p4c_over_stages': over_stages,
+                     'p4c_over_budget': over_budget, 'copied_from': '', 'unverified': 'False'})
+    return pd.DataFrame(rows)
+
+
+def test_twin_counts_reads_literal_text_flags_from_the_csv():
+    # Regression: 'False'.astype(bool) is True, so every twin looked p4c-infeasible.
+    counts = claims.twin_counts(_text_flag_verification())
+    assert counts['n_twins'] == 2
+    assert counts['n_twin_infeasible'] == 0 and counts['n_rescued'] == 0
+
+
+@pytest.mark.parametrize('over_stages, over_budget, infeasible', [
+    ('True', 'False', 2), ('False', 'True', 2), (True, False, 2), (False, False, 0),
+    ('False', False, 0), (False, 'True', 2)])
+def test_twin_counts_text_and_bool_flags_agree(over_stages, over_budget, infeasible):
+    counts = claims.twin_counts(_text_flag_verification(over_stages, over_budget))
+    assert counts['n_twin_infeasible'] == infeasible

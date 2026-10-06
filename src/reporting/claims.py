@@ -1693,8 +1693,8 @@ def twin_ladder(df, confidence=0.95):
 
 def _p4c_feasible(verification):
     return ~((verification['verdict'] == 'FALSE_FEASIBLE')
-             | verification['p4c_over_stages'].fillna(False).astype(bool)
-             | verification['p4c_over_budget'].fillna(False).astype(bool))
+             | _as_bool(verification['p4c_over_stages'])
+             | _as_bool(verification['p4c_over_budget']))
 
 
 def twin_counts(verification):

@@ -197,6 +197,20 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
     by_number = {d.number: d for d in deliverables}
     assert {9, 10, 11} <= set(by_number)
     assert by_number[11].data["n_pairs"].max() >= 1
+    counts = dict(by_number[11].extra_data)["counts"].iloc[0]
+    n_twins = len(twins)
+    assert counts["n_twins"] == n_twins
+    assert counts["n_identical"] + counts["n_compiled"] == n_twins
+    assert counts["n_identical"] == (twins["twin_identical"] == "True").sum()
+    # Feasibility comes from the verification.csv TEXT flags: only the twins p4c
+    # rejects are infeasible (here the FALSE_FEASIBLE one, copied from its source).
+    twin_flags = verification.set_index("row_id").loc[list(twins["row_id"])]
+    infeasible = ((twin_flags["verdict"] == "FALSE_FEASIBLE")
+                  | (twin_flags["p4c_over_stages"] == "True")
+                  | (twin_flags["p4c_over_budget"] == "True"))
+    assert counts["n_twin_infeasible"] == infeasible.sum() >= 1
+    # The FALSE_FEASIBLE twin's source is infeasible too, so nothing is rescued.
+    assert counts["n_rescued"] == 0
     misses_csv = [p for p in by_number[9].paths if p.endswith("_misses.csv")]
     assert len(misses_csv) == 1 and os.path.dirname(misses_csv[0]) == out_dir
     misses = pd.read_csv(misses_csv[0], keep_default_na=False, dtype=str)
