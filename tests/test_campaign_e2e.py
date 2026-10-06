@@ -25,6 +25,7 @@ from src.verify import runner as verify_runner
 from tests.test_campaign_runner import _synthetic_data
 
 _M = 35
+_SPLITS = (0,)
 _CFG = dict(n_trials=12, min_feasible_before_stop=5, lookback=4)
 
 _SUMMARY = """Table allocation done 1 time(s), state = INITIAL
@@ -102,7 +103,7 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
 
     # Stage 1: train.
     arms = [("joint", TrainConfig(alignment_enabled=False, **_CFG)), ("independent", TrainConfig(**_CFG))]
-    jobs = campaign_runner.plan_jobs(arms, [_M], [0], run_dir)
+    jobs = campaign_runner.plan_jobs(arms, [_M], list(_SPLITS), run_dir)
     summary = campaign_runner.run_jobs(jobs, _synthetic_data(), run_dir, "deadbeef", 1,
                                        executor_factory=_serial)
     assert summary.failed == {}, summary.failed
@@ -138,22 +139,49 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
 
     # Stage 2b: twins, then compile the differing ones.
     from src.training import align_twins
+    # The tiny synthetic forests are single-leaf stumps (no thresholds), so the
+    # aligner can never change a program and every twin comes out byte-identical,
+    # which would leave the compile branch untested. We therefore force the
+    # DIFFERING branch by making the program hash of every twin except
+    # `false_feasible`'s unequal to its source's: those twins are recorded
+    # twin_identical=False and must be compiled, while the false_feasible twin
+    # stays genuinely identical and must be COPIED from its FALSE_FEASIBLE source.
+    real_sha, differ_from = align_twins._sha256, set()
+
+    def forced_sha(path):
+        name = os.path.basename(path)
+        if name.startswith("joint-off-al_") and name.endswith(".p4"):
+            source = "joint-off_" + name[len("joint-off-al_"):-len(".p4")] + ".p4"
+            if source[:-len(".p4")] != false_feasible:
+                differ_from.add(source)
+                return "forced-different:" + name
+        return real_sha(path)
+
+    monkeypatch.setattr(align_twins, "_sha256", forced_sha)
     assert align_twins.run(run_dir, data=_synthetic_data(), executor_factory=_serial) == 0
     twin_files = [f for f in os.listdir(os.path.join(run_dir, "rows")) if "_joint-off-al_s" in f]
-    assert len(twin_files) == 1
-    twins = pd.read_csv(os.path.join(run_dir, "rows", twin_files[0]), keep_default_na=False, dtype=str)
+    assert len(twin_files) == len(_SPLITS)
+    twins = pd.concat([pd.read_csv(os.path.join(run_dir, "rows", f), keep_default_na=False,
+                                   dtype=str) for f in sorted(twin_files)], ignore_index=True)
     sources = [r for r in design_ids if r.startswith("joint-off_")]
     assert sorted(twins["row_id"]) == sorted(align_twins.twin_row_id(r) for r in sources)
     assert set(twins["infeasible"]) == {""}
     pending = verify_runner.pending_rows(run_dir)
     differing = set(twins.loc[twins["twin_identical"] == "False", "row_id"])
     assert set(pending) == differing
+    # Both branches must really run: a differing twin (compiled) and an identical
+    # one (copied), and the identical one is the twin of the FALSE_FEASIBLE source.
+    assert differing and differing != set(twins["row_id"])
+    ff_twin = align_twins.twin_row_id(false_feasible)
+    assert ff_twin not in differing
     compiler2 = ReplayingCompiler(false_feasible_row=None)
     assert verify_runner.run(run_dir, workers=2, compile_fn=compiler2, min_free_bytes=0) == 0
     assert sorted(compiler2.compiled) == sorted(differing)
     verification = pd.read_csv(os.path.join(run_dir, "verification.csv"),
                                keep_default_na=False, dtype=str)
     by_id = verification.set_index("row_id")
+    assert by_id.loc[ff_twin, "copied_from"] == false_feasible
+    assert by_id.loc[ff_twin, "verdict"] == "FALSE_FEASIBLE"
     for _, t in twins.iterrows():
         if t["twin_identical"] == "True":
             assert by_id.loc[t["row_id"], "copied_from"] == t["source_row_id"]
