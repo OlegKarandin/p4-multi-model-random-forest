@@ -3,14 +3,20 @@ import dataclasses
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from src.p4gen.evaluation import multi_model_memory_evaluation
 from src.training import align_twins
 from src.training import row_artifacts as ra
+from src.training.campaign_run import (atomic_write_text, canonical_json, run_paths,
+                                       split_csv_name)
 from src.training.campaign_run import row_id as make_row_id
+from src.verify import runner as verify_runner
+from src.verify.verdicts import classify
 from tests.test_campaign_runner import _synthetic_data
 from tests.test_row_artifacts import _forests
 from tests.test_train_model_seed import _NAMES
@@ -123,3 +129,120 @@ def test_build_twin_invariant_violation_writes_nothing_and_marks_the_row(tmp_pat
     assert twin['infeasible'].startswith('TwinInvariantViolation')
     assert not os.path.exists(os.path.join(str(tmp_path), 'designs', twin['row_id'] + '.p4'))
     assert not os.path.exists(os.path.join(str(tmp_path), 'designs', twin['row_id'] + '.model.json'))
+
+
+def _serial(max_workers):
+    return ThreadPoolExecutor(max_workers=1)
+
+
+def _verified_run(tmp_path, ks=(3, 4), split=0, M=35):
+    """A run with `len(ks)` joint-off designs in one (M, split) file, every one verified."""
+    rows = []
+    for k in ks:
+        ctx, row = _source(tmp_path, split=split, k=k, M=M)
+        row.update({'n_trees': 7, 'max_depth': 14, 'delta_select': 0.02,
+                    'selection_rule': 'tied_cheapest', 'select_alpha': 0.05,
+                    'alignment_postprocess': False})
+        rows.append(row)
+    paths = run_paths(str(tmp_path)).ensure()
+    pd.DataFrame(rows).to_csv(os.path.join(paths.rows, split_csv_name(7, 14, M, 'joint-off', split)),
+                              index=False)
+    for row in rows:
+        model = json.load(open(os.path.join(paths.designs, row['row_id'] + '.model.json')))
+        rec = verify_runner._record(model, row['row_id'],
+                                    os.path.join(paths.designs, row['row_id'] + '.p4'),
+                                    classify(model, None, M, 'COMPILE_ERROR'), failure='p4c_timeout')
+        atomic_write_text(os.path.join(paths.verify, row['row_id'] + '.json'), canonical_json(rec))
+    return str(tmp_path), rows
+
+
+def _twin_csv(run, M=35, split=0):
+    return os.path.join(run, 'rows', split_csv_name(7, 14, M, 'joint-off-al', split))
+
+
+def test_run_refuses_while_a_source_is_unverified(tmp_path, capsys):
+    run, rows = _verified_run(tmp_path)
+    os.remove(os.path.join(run, 'verify', rows[0]['row_id'] + '.json'))
+    assert align_twins.run(run, data=_synthetic_data(), executor_factory=_serial) == 2
+    assert rows[0]['row_id'] in capsys.readouterr().out
+    assert os.listdir(os.path.join(run, 'rows')) == [split_csv_name(7, 14, 35, 'joint-off', 0)]
+
+
+def test_run_writes_one_twin_file_per_split_and_copies_identical_records(tmp_path):
+    run, rows = _verified_run(tmp_path)
+    assert align_twins.run(run, data=_synthetic_data(), executor_factory=_serial) == 0
+    twins = pd.read_csv(_twin_csv(run), keep_default_na=False, dtype=str)
+    source_cols = list(pd.read_csv(os.path.join(run, 'rows', split_csv_name(7, 14, 35, 'joint-off', 0)),
+                                   nrows=0).columns)
+    assert list(twins.columns)[:len(source_cols)] == source_cols
+    assert {'source_row_id', 'twin_identical', 'alignment_postprocess'} <= set(twins.columns)
+    assert sorted(twins['row_id']) == sorted(align_twins.twin_row_id(r['row_id']) for r in rows)
+    assert set(twins['alignment_postprocess']) == {'True'}
+    assert set(twins['arm']) == {'joint'} and set(twins['alignment_enabled']) == {'False'}
+    for _, t in twins.iterrows():
+        record = os.path.join(run, 'verify', t['row_id'] + '.json')
+        if t['twin_identical'] == 'True':
+            assert json.load(open(record))['copied_from'] == t['source_row_id']
+        else:
+            assert not os.path.exists(record)   # left for the compiler
+    from src.reporting.campaign_data import load_campaign
+    df = load_campaign(run, require_verified=False)
+    assert sorted(set(df['arm_slug'])) == ['joint-off', 'joint-off-al']
+
+
+def test_run_is_resumable_and_does_not_rewrite_a_finished_split(tmp_path):
+    run, rows = _verified_run(tmp_path)
+    assert align_twins.run(run, data=_synthetic_data(), executor_factory=_serial) == 0
+    twin_csv = _twin_csv(run)
+    before = os.stat(twin_csv).st_mtime_ns
+    records = sorted(os.listdir(os.path.join(run, 'verify')))
+    assert align_twins.run(run, data=_synthetic_data(), executor_factory=_serial) == 0
+    assert os.stat(twin_csv).st_mtime_ns == before
+    assert sorted(os.listdir(os.path.join(run, 'verify'))) == records
+
+
+def test_run_after_a_partial_first_run_skips_finished_splits_and_keeps_records(tmp_path):
+    # Two (M, split) files; the first finishes, the second is missing (crash).
+    run, rows35 = _verified_run(tmp_path, ks=(3,), split=0, M=35)
+    _, rows50 = _verified_run(tmp_path, ks=(3,), split=0, M=50)
+    assert align_twins.run(run, data=_synthetic_data(), executor_factory=_serial) == 0
+    done_csv, other_csv = _twin_csv(run, 35), _twin_csv(run, 50)
+    os.remove(other_csv)
+    stamp = os.stat(done_csv).st_mtime_ns
+    record_files = {n: os.stat(os.path.join(run, 'verify', n)).st_mtime_ns
+                    for n in os.listdir(os.path.join(run, 'verify'))}
+    assert align_twins.run(run, data=_synthetic_data(), executor_factory=_serial) == 0
+    assert os.path.isfile(other_csv)
+    assert os.stat(done_csv).st_mtime_ns == stamp
+    for name, mtime in record_files.items():     # no existing record rewritten
+        assert os.stat(os.path.join(run, 'verify', name)).st_mtime_ns == mtime
+
+
+def test_run_marks_an_invariant_violation_infeasible_and_still_finishes(tmp_path, monkeypatch):
+    real = align_twins._usage
+
+    def inflated(*args):
+        u = real(*args)
+        return dataclasses.replace(u, blocks=u.blocks + 1)
+    monkeypatch.setattr(align_twins, '_usage', inflated)
+    run, rows = _verified_run(tmp_path)
+    assert align_twins.run(run, data=_synthetic_data(), executor_factory=_serial) == 0
+    twins = pd.read_csv(_twin_csv(run), keep_default_na=False, dtype=str)
+    assert all(v.startswith('TwinInvariantViolation') for v in twins['infeasible'])
+    assert not any(name.startswith('joint-off-al') for name in os.listdir(os.path.join(run, 'designs')))
+    assert not any(name.startswith('joint-off-al') for name in os.listdir(os.path.join(run, 'verify')))
+    # The loader treats them like any infeasible row: they never reach the frame.
+    from src.reporting.campaign_data import load_campaign
+    df = load_campaign(run, require_verified=False)
+    assert 'joint-off-al' not in set(df['arm_slug'])
+    assert not any(str(r).startswith('joint-off-al') for r in df['row_id'])
+
+
+def test_run_returns_1_when_a_split_fails(tmp_path, monkeypatch):
+    run, _ = _verified_run(tmp_path)
+
+    def boom(*args, **kw):
+        raise RuntimeError('boom')
+    monkeypatch.setattr(align_twins, 'build_twin', boom)
+    assert align_twins.run(run, data=_synthetic_data(), executor_factory=_serial) == 1
+    assert not os.path.exists(_twin_csv(run))

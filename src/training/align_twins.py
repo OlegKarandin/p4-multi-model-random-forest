@@ -11,20 +11,27 @@ Two kinds of twin: one whose program is byte-identical to its source
 verification record (`verify.runner.copy_record`); one whose program differs
 is left for `python -m src.verify --run` to compile.
 """
+import argparse
 import copy
+import csv
 import hashlib
+import io
 import os
 import re
+import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import sklearn
 from sklearn.metrics import accuracy_score
 
 from src.p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
 from src.p4gen.switch_semantics import switch_predict
+from src.training.campaign_run import INF, atomic_write_text, run_paths, split_csv_name
 from src.training.campaign_run import row_id as make_row_id
-from src.training.row_artifacts import write_row_artifacts
+from src.training.row_artifacts import RowContext, load_forests, write_row_artifacts
 from src.training.splits import make_task_splits
 from src.training.threshold_alignment import align_with_policy
+from src.verify.runner import copy_record
 
 CAMPAIGN_RANDOM_STATE = 42          # campaign_runner.DATA_RANDOM_STATE
 SOURCE_ARM_SLUG = 'joint-off'
@@ -138,3 +145,130 @@ def build_twin(ctx, source, forests, data, write_artifacts=True):
               f'{source["row_id"]} -- compiling it rather than copying', flush=True)
     row['twin_identical'] = identical
     return row
+
+
+_INT_FIELDS = ('split', 'k', 'blocks', 'stage_depth', 'n_trees', 'max_depth')
+_EXTRA_COLUMNS = ('source_row_id', 'twin_identical', 'alignment_postprocess')
+
+
+def source_rows(run_dir):
+    """Every joint-off design row (infeasible == ''), grouped by (M, split).
+    M is float('inf') for the unbudgeted cell; values stay CSV text except
+    the integer columns in `_INT_FIELDS`."""
+    paths = run_paths(run_dir)
+    groups = {}
+    for name in sorted(os.listdir(paths.rows)):
+        if not name.endswith('.csv') or f'_{SOURCE_ARM_SLUG}_s' not in name:
+            continue
+        with open(os.path.join(paths.rows, name), newline='', encoding='utf-8') as handle:
+            for row in csv.DictReader(handle):
+                if (row.get('infeasible') or '').strip():
+                    continue
+                for field in _INT_FIELDS:
+                    row[field] = int(float(row[field]))
+                M = INF if row['M'].strip() in ('', 'inf') else float(row['M'])
+                groups.setdefault((M, row['split']), []).append(row)
+    return groups
+
+
+def unverified_sources(run_dir, groups):
+    """Source row ids with no verify/<id>.json."""
+    paths = run_paths(run_dir)
+    return [row['row_id'] for rows in groups.values() for row in rows
+            if not os.path.isfile(os.path.join(paths.verify, row['row_id'] + '.json'))]
+
+
+def twin_csv_path(run_dir, M, split, n_trees, max_depth):
+    return os.path.join(run_paths(run_dir).rows,
+                        split_csv_name(n_trees, max_depth, M, TWIN_ARM_SLUG, split))
+
+
+def _source_columns(run_dir, M, split, n_trees, max_depth):
+    path = os.path.join(run_paths(run_dir).rows,
+                        split_csv_name(n_trees, max_depth, M, SOURCE_ARM_SLUG, split))
+    with open(path, newline='', encoding='utf-8') as handle:
+        return list(next(csv.reader(handle)))
+
+
+def twins_for_split(run_dir, M, split, rows, data, git_commit):
+    """Build every twin of one (M, split) group and write its CSV atomically
+    (last, so the file is the done marker). Returns the path; a split whose
+    CSV exists is skipped. A crash before the CSV leaves artifacts and maybe
+    copied records behind: the re-run rebuilds the artifacts and keeps any
+    record already copied."""
+    paths = run_paths(run_dir).ensure()
+    out = twin_csv_path(run_dir, M, split, rows[0]['n_trees'], rows[0]['max_depth'])
+    if os.path.isfile(out):
+        return out
+    ctx = RowContext(run_dir, TWIN_ARM_SLUG, M, git_commit)
+    twins = []
+    for source in rows:
+        forests = load_forests(os.path.join(paths.forests, source['row_id'] + '.joblib'))
+        twin = build_twin(ctx, source, forests, data)
+        if (twin['infeasible'] == '' and twin['twin_identical'] is True
+                and not os.path.isfile(os.path.join(paths.verify, twin['row_id'] + '.json'))):
+            copy_record(run_dir, twin['row_id'], source['row_id'])
+        twins.append(twin)
+    fieldnames = _source_columns(run_dir, M, split, rows[0]['n_trees'], rows[0]['max_depth'])
+    fieldnames += [c for c in _EXTRA_COLUMNS if c not in fieldnames]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, lineterminator='\n')
+    writer.writeheader()
+    for twin in twins:
+        writer.writerow({k: ('' if v is None else v) for k, v in twin.items()})
+    atomic_write_text(out, buffer.getvalue())
+    return out
+
+
+def _git_commit():
+    import subprocess
+    try:
+        return subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    except Exception:
+        return 'unknown'
+
+
+def run(run_dir, data=None, workers=1, git_commit=None, executor_factory=None):
+    """0 = all splits done, 1 = at least one split failed, 2 = refused
+    (nothing to do, or a source design is unverified; nothing written)."""
+    groups = source_rows(run_dir)
+    if not groups:
+        print(f'{run_dir}: no {SOURCE_ARM_SLUG} design rows', flush=True)
+        return 2
+    missing = unverified_sources(run_dir, groups)
+    if missing:
+        print(f'refusing: {len(missing)} {SOURCE_ARM_SLUG} designs have no verification record '
+              f'(run python -m src.verify --run {run_dir} first):', flush=True)
+        for row_id in missing[:20]:
+            print(f'  {row_id}', flush=True)
+        return 2
+    if data is None:
+        from src.main import load_campaign_data
+        data = load_campaign_data()
+    if git_commit is None:
+        git_commit = _git_commit()
+    executor_factory = executor_factory or ProcessPoolExecutor
+    failed = {}
+    with executor_factory(max(1, workers)) as pool:
+        futures = {pool.submit(twins_for_split, run_dir, M, split, rows, data, git_commit): (M, split)
+                   for (M, split), rows in sorted(groups.items())}
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                print(f'done {key}: {future.result()}', flush=True)
+            except Exception as exc:          # one bad split must not stop the others
+                failed[key] = f'{type(exc).__name__}: {exc}'
+                print(f'FAILED {key}: {failed[key]}', flush=True)
+    return 1 if failed else 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog='python -m src.training.align_twins')
+    parser.add_argument('--run', required=True, metavar='DIR')
+    parser.add_argument('--workers', type=int, default=1)
+    args = parser.parse_args(argv)
+    return run(args.run, workers=args.workers)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
