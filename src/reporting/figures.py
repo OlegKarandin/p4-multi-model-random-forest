@@ -72,7 +72,7 @@ reproduce:
   filtering already happened once, at load.
 
 Arm ordering follows `claims.JOINT_ARM_SLUGS` -- the 3-arm design since
-Task 13: `independent` first, then `joint-off`, then `joint` -- and any arm
+Task 13: `independent` first, then `joint-off`, then `joint-off-al`; a legacy `joint` arm is appended -- and any arm
 slug this module has never heard of is appended at the end rather than
 dropped: an unrecognised arm is a thing to see in the figure, not to hide.
 That includes an ARCHIVED 7-arm frame's delta arms (`joint-d005`,
@@ -255,7 +255,7 @@ def ordered_arms(df, include_baseline=True,
     """The arm slugs present in `df`, in design order.
 
     Known arms come first in `claims.JOINT_ARM_SLUGS` order (`joint-off`,
-    then `joint`), so tables and figures read left to right as the design.
+    then `joint-off-al`; a legacy `joint` arm is appended), so tables and figures read left to right as the design.
     An arm slug this module does not recognise -- including an archived
     delta arm such as `joint-d005` -- is APPENDED rather than dropped: a
     campaign that grew an arm should show up in the figure, not vanish from
@@ -1450,7 +1450,7 @@ def table_5_ablation(df, output_dir=DEFAULT_FIGURE_DIR, confidence=0.95):
 
     Two components, and the second's baseline is the point of the whole
     table: `sharing` is `joint-off - independent`, and `alignment` is
-    `joint - joint-off`. Measuring alignment against `independent`
+    `joint-off-al - joint-off`. Measuring alignment against `independent`
     instead would re-count the sharing effect inside every alignment number
     and the two components would not add up.
     """
@@ -1462,7 +1462,7 @@ def table_5_ablation(df, output_dir=DEFAULT_FIGURE_DIR, confidence=0.95):
         'and on blocks, never pooled across tasks. "sharing" is '
         'joint-off minus independent: joint-off skips threshold alignment '
         'entirely, so the contrast isolates the cost of sharing one feature '
-        'encoding. "alignment" is the aligned joint arm minus joint-off, measured '
+        'encoding. "alignment" is the aligned twin of each joint-off design minus that design (joint-off-al minus joint-off), measured '
         'against joint-off rather than against independent so that the '
         'sharing effect is not counted twice and the two components add up. '
         'Descriptive only: no p-values, because testing these contrasts too '

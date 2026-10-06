@@ -60,6 +60,7 @@ _DELTA_BY_SLUG = {
     # The fresh aligned arm (2026-09-15 onward) carries no delta column at
     # all, so it parses to NaN like joint-off.
     'joint': (float('nan'), False),
+    'joint-off-al': (float('nan'), False),
 }
 
 _FEATURES = ('Flow.IAT.Max', 'Flow.IAT.Min', 'Fwd.IAT.Mean',
@@ -79,7 +80,7 @@ def _features_at(split, task, k):
     return ';'.join(_feature_order(split, task)[:k])
 
 
-def _row(arm_slug='joint', M=25, split=0, k=5,
+def _row(arm_slug='joint-off-al', M=25, split=0, k=5,
          acc_app=0.90, acc_ddos=0.50, blocks=40.0, stages=3.0,
          f1_app=None, f1_ddos=None,
          range_entries=100.0, ternary_entries=50.0):
@@ -163,7 +164,7 @@ def _constant_campaign(arms=(INDEPENDENT_ARM_SLUG,) + JOINT_ARM_SLUGS,
     return _frame(rows)
 
 
-def _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off', 'joint'),
+def _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off', 'joint-off-al'),
                      n_splits=3, m_values=(25, 50, 75), k_values=(3, 4, 5),
                      seed=11):
     """A frame whose accuracies and blocks vary with (M, k, split), so the
@@ -389,7 +390,7 @@ def test_deliverable_1_overlays_every_arm_present_including_unknown_ones():
     # 'joint-d005' / 'joint-dinf' are archived 7-arm slugs: no longer in
     # claims.JOINT_ARM_SLUGS, so they are "unrecognised" here exactly like
     # 'joint-experimental', and must still be appended, not dropped.
-    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off', 'joint',
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off', 'joint-off-al',
                                 'joint-d005', 'joint-dinf'))
     df = pd.concat([df, df[df.arm_slug == 'joint-off'].assign(
         arm_slug='joint-experimental')], ignore_index=True)
@@ -398,7 +399,7 @@ def test_deliverable_1_overlays_every_arm_present_including_unknown_ones():
     # give 2 odd k columns, so 2 tasks x 2 k columns = 4 lines per arm.
     n_odd_k = len({int(k) for k in df['k'].unique() if int(k) % 2 == 1})
     expected = len(figures.TASKS) * n_odd_k
-    for arm in ('independent', 'joint-off', 'joint', 'joint-d005',
+    for arm in ('independent', 'joint-off', 'joint-off-al', 'joint-d005',
                 'joint-dinf', 'joint-experimental'):
         assert len(_lines_by_gid(deliverable.figure, 'front:' + arm)) == expected
 
@@ -411,7 +412,7 @@ def test_deliverable_1_draws_the_3d_pareto_front_claims_computed_not_a_2d_one():
     each k column only shows that k's slice of the one pooled front, which
     is what this test checks for k=3, the first (smallest odd) column."""
     df = _spread_campaign()
-    arm = 'joint'
+    arm = 'joint-off-al'
     k = 3
     pooled = claims.pareto_projections(
         claims.pareto_front_3d(df[df.arm_slug == arm]))['acc_app_vs_blocks']
@@ -434,7 +435,7 @@ def test_deliverable_1_keeps_a_low_accuracy_cell_at_k_17():
     """`plotting.py:356-361` drops any front point below 0.8 accuracy, but
     only when k == 17 -- a magic filter on a magic k."""
     df = _spread_campaign(k_values=(16, 17))
-    df.loc[(df.k == 17) & (df.arm_slug == 'joint'), 'acc_app'] = 0.31
+    df.loc[(df.k == 17) & (df.arm_slug == 'joint-off-al'), 'acc_app'] = 0.31
     deliverable = figures.figure_1_accuracy_vs_blocks(df, output_dir=None)
     assert _contains(_drawn_values(deliverable.figure), 0.31)
 
@@ -622,7 +623,7 @@ def test_deliverable_2_pooling_sentence_reflects_the_joined_grid_not_the_raw_fra
     for M in (25,):    # the joint arm only ran at M=25
         for split in range(3):
             for k in (4, 5):
-                rows.append(_row(arm_slug='joint', M=M, split=split, k=k,
+                rows.append(_row(arm_slug='joint-off-al', M=M, split=split, k=k,
                                  acc_app=BASE_ACC_APP - 0.10,
                                  acc_ddos=BASE_ACC_DDOS - 0.10, blocks=35.0))
     df = _frame(rows)
@@ -675,7 +676,7 @@ def test_deliverable_2_places_the_two_non_numeric_arms_without_inventing_a_delta
     deliverable = figures.figure_2_delta_frontier(
         _constant_campaign(), output_dir=None)
     ticks = [t.get_text() for t in deliverable.figure.axes[0].get_xticklabels()]
-    assert ticks == ['off', 'joint']
+    assert ticks == ['off', 'off-al']
     assert set(deliverable.data['arm_slug']) == set(JOINT_ARM_SLUGS)
 
 
@@ -719,7 +720,7 @@ def test_deliverable_3_draws_two_panels_per_arm_whatever_the_arm_count(n_arms):
 
 def test_deliverable_3_scatters_the_per_task_deltas_claims_paired():
     df = _spread_campaign()
-    arm = 'joint'
+    arm = 'joint-off-al'
     expected = claims.arm_deltas(df, arm, INDEPENDENT_ARM_SLUG)
     deliverable = figures.figure_3_substitution_scatter(df, output_dir=None)
     # Exact match on the title's first line: 'joint' is a substring of
@@ -749,7 +750,7 @@ def test_deliverable_3_f1_row_scatters_the_per_task_f1_deltas():
     `claims.arm_deltas` (which already carries `d_f1_app`/`d_f1_ddos` via
     `claims.DEFAULT_METRICS`) -- no new statistic is computed for it."""
     df = _spread_campaign()
-    arm = 'joint'
+    arm = 'joint-off-al'
     expected = claims.arm_deltas(df, arm, INDEPENDENT_ARM_SLUG)
     deliverable = figures.figure_3_substitution_scatter(df, output_dir=None)
     f1_panel = [ax for ax in deliverable.figure.axes
@@ -806,7 +807,7 @@ def test_a_paired_figure_refuses_to_render_blank_when_the_baseline_is_absent():
     """With no baseline rows every (M, split, k) join is empty, so the figure
     would render complete but with nothing plotted -- the plausible-looking
     wrong artifact. `claims.paired_tests` already raises here; so do these."""
-    df = _spread_campaign(arms=('joint-off', 'joint'))
+    df = _spread_campaign(arms=('joint-off', 'joint-off-al'))
     for render in (figures.figure_2_delta_frontier,
                    figures.figure_3_substitution_scatter):
         with pytest.raises(ValueError, match='baseline'):
@@ -1139,7 +1140,7 @@ def test_deliverable_7_records_the_features_that_survived_to_the_smallest_k():
 
 
 def test_deliverable_7_writes_one_row_per_arm_M_and_split(tmp_path):
-    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'),
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off-al'),
                           n_splits=2, m_values=(25, 50), k_values=(3, 4, 5))
     deliverable = figures.appendix_7_elimination_order(df,
                                                        output_dir=str(tmp_path))
@@ -1169,9 +1170,9 @@ def test_deliverable_8_rounding_loss_matches_the_hand_computed_ratio_gap():
     form: entries_saving = (500 - 400) / 500 = 0.20, blocks_saving =
     (40 - 35) / 40 = 0.125, so rounding_loss = 0.20 - 0.125 = 0.075 on
     every paired cell, for every joint arm."""
-    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'))
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off-al'))
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
-    rows = deliverable.data[deliverable.data['arm_slug'] == 'joint']
+    rows = deliverable.data[deliverable.data['arm_slug'] == 'joint-off-al']
     assert len(rows) > 0
     np.testing.assert_allclose(rows['rounding_loss'].to_numpy(), 0.075,
                                atol=1e-9)
@@ -1184,7 +1185,7 @@ def test_deliverable_8_caption_states_the_pooled_entries_and_blocks_savings():
     """The caption must let a reader make or refute the claim directly:
     'joint mapping removes N% of table entries; the block column moves by
     M%; the gap is quantization.'"""
-    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'))
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off-al'))
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
     assert '20.0%' in deliverable.caption
     assert '12.5%' in deliverable.caption
@@ -1199,7 +1200,7 @@ def test_deliverable_8_caption_states_entries_unavailable_when_columns_are_all_n
     blocks_saving stays populated -- the caption must say entries data is
     unavailable instead of formatting NaN into 'nan%' prose, and must still
     report the real blocks-saving percentage."""
-    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'))
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off-al'))
     df['range_entries'] = np.nan
     df['ternary_entries'] = np.nan
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
@@ -1243,13 +1244,13 @@ def test_deliverable_8_facets_the_markdown_summary_by_odd_k_only():
     df = _spread_campaign()    # k values (3, 4, 5): 4 is even
     deliverable = figures.figure_8_entries_vs_blocks(df, output_dir=None)
     assert set(deliverable.data['k'].unique()) == {3, 4, 5}
-    assert '| joint | 3 |' in deliverable.markdown_body
-    assert '| joint | 5 |' in deliverable.markdown_body
-    assert '| joint | 4 |' not in deliverable.markdown_body
+    assert '| joint-off-al | 3 |' in deliverable.markdown_body
+    assert '| joint-off-al | 5 |' in deliverable.markdown_body
+    assert '| joint-off-al | 4 |' not in deliverable.markdown_body
 
 
 def test_deliverable_8_writes_csv_and_markdown_but_no_pdf(tmp_path):
-    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint'))
+    df = _constant_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off-al'))
     deliverable = figures.figure_8_entries_vs_blocks(df,
                                                       output_dir=str(tmp_path))
     assert deliverable.figure is None
@@ -1327,7 +1328,7 @@ def test_the_flagged_marker_is_an_x():
 def _flagged_campaign():
     df = _spread_campaign()
     df['flagged'] = False
-    target = df.index[(df.arm_slug == 'joint') & (df.k == 3) & (df.M == 50)
+    target = df.index[(df.arm_slug == 'joint-off-al') & (df.k == 3) & (df.M == 50)
                       & (df.split == 1)][0]
     df.loc[target, 'flagged'] = True
     return df, df.loc[target]
@@ -1337,7 +1338,7 @@ def test_deliverable_1_draws_a_flagged_row_as_its_own_artist_holding_only_it():
     df, row = _flagged_campaign()
     fig = figures.figure_1_accuracy_vs_blocks(df, output_dir=None).figure
     flagged = [c for ax in fig.axes for c in ax.collections
-               if c.get_gid() == 'flagged:joint']
+               if c.get_gid() == 'flagged:joint-off-al']
     assert flagged
     expected = [(row['blocks'], row['acc_app']), (row['blocks'], row['acc_ddos']),
                 (row['acc_app'], row['acc_ddos'])]
@@ -1355,7 +1356,7 @@ def test_deliverable_1_draws_a_flagged_row_as_its_own_artist_holding_only_it():
     # no other arm gains a flagged artist
     assert not [c for ax in fig.axes for c in ax.collections
                 if str(c.get_gid()).startswith('flagged:')
-                and c.get_gid() != 'flagged:joint']
+                and c.get_gid() != 'flagged:joint-off-al']
 
 
 def test_deliverable_1_without_a_flagged_column_draws_no_flagged_artist():
@@ -1369,10 +1370,10 @@ def test_deliverable_3_draws_a_pair_with_a_flagged_side_as_flagged():
     df, row = _flagged_campaign()
     fig = figures.figure_3_substitution_scatter(df, output_dir=None).figure
     flagged = [c for ax in fig.axes for c in ax.collections
-               if c.get_gid() == 'flagged:joint']
+               if c.get_gid() == 'flagged:joint-off-al']
     # one on the accuracy row, one on the F1 row, each exactly one pair
     assert len(flagged) == 2
-    deltas = claims.arm_deltas(df, 'joint', INDEPENDENT_ARM_SLUG)
+    deltas = claims.arm_deltas(df, 'joint-off-al', INDEPENDENT_ARM_SLUG)
     cell = deltas[(deltas.M == row['M']) & (deltas.split == row['split'])
                   & (deltas.k == row['k'])].iloc[0]
     offsets = [np.asarray(c.get_offsets(), dtype='float64') for c in flagged]
@@ -1380,7 +1381,7 @@ def test_deliverable_3_draws_a_pair_with_a_flagged_side_as_flagged():
     assert any(np.allclose(o[0], (cell['d_acc_app'], cell['d_acc_ddos']))
                for o in offsets)
     main = [c for ax in fig.axes for c in ax.collections
-            if c.get_gid() == 'substitution:joint'][0]
+            if c.get_gid() == 'substitution:joint-off-al'][0]
     assert len(main.get_offsets()) == len(deltas) - 1
 
 
@@ -1450,7 +1451,7 @@ def test_no_figure_or_table_prints_M_as_inf_or_with_a_trailing_point_zero():
 
 def test_deliverable_9_renders_both_agreement_frames(tmp_path):
     df = _unbudgeted_campaign()
-    miss = 'joint_M025_s00_k03'
+    miss = 'joint-off-al_M025_s00_k03'
     verification = _verification_for(df, miss_row_id=miss)
     summary, misses = claims.agreement_table(verification)
     deliverable = figures.table_9_agreement(verification,
@@ -1519,3 +1520,8 @@ def test_deliverable_4_renders_when_every_split_is_a_development_split(tmp_path)
     df['flagged'] = False
     deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
     assert 'heldout_splits' not in set(deliverable.data['subset'].dropna())
+
+
+def test_ordered_arms_puts_the_twin_arm_third_and_a_legacy_joint_arm_last():
+    df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint', 'joint-off-al', 'joint-off'))
+    assert figures.ordered_arms(df) == (INDEPENDENT_ARM_SLUG, 'joint-off', 'joint-off-al', 'joint')

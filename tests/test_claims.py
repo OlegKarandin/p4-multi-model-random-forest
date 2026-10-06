@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.reporting import claims
+
 from src.reporting.claims import (
     INDEPENDENT_ARM_SLUG,
     JOINT_ARM_SLUGS,
@@ -59,11 +61,12 @@ _DELTA_BY_SLUG = {
     'joint-dinf': (float('nan'), True),
     # The compiler-verified campaign's aligned arm: no tolerance axis.
     'joint': (float('nan'), False),
+    'joint-off-al': (float('nan'), False),
 }
 
 # The archived seven-arm sweep the pre-registration used to name. The
 # 3-arm design (spec 2026-09-29 section 7.3) replaced it with
-# JOINT_ARM_SLUGS = ('joint-off', 'joint'); tests that exercise the Holm
+# JOINT_ARM_SLUGS = ('joint-off', 'joint-off-al'); tests that exercise the Holm
 # correction over a LARGE family keep using these seven via an explicit
 # `arms=`, so their numbers (raw p, Holm-adjusted p) are unchanged.
 _ARCHIVED_SEVEN_SLUGS = (
@@ -126,7 +129,7 @@ def _paired_frame(d_app, d_ddos, d_blocks, treatment='joint-d005',
 def _noninferiority_frame(acc_app_base=0.90, acc_ddos_base=0.85,
                           app_relative_degradation=0.0,
                           ddos_relative_degradation=0.0,
-                          treatment='joint', baseline=INDEPENDENT_ARM_SLUG,
+                          treatment='joint-off-al', baseline=INDEPENDENT_ARM_SLUG,
                           n_splits=6, M=25, k=5):
     """One baseline row and one treatment row per split, where the
     treatment's accuracy is offset from the baseline by a stated FRACTION
@@ -720,12 +723,12 @@ def test_ablation_decomposition_recovers_an_exactly_injected_block_saving():
         rows.append(_row(arm_slug=INDEPENDENT_ARM_SLUG, split=split, blocks=40.0))
         rows.append(_row(arm_slug='joint-off', split=split, blocks=34.0))
         # 3-arm design: the aligned arm is `joint` (was archived `joint-d005`).
-        rows.append(_row(arm_slug='joint', split=split, blocks=30.0))
+        rows.append(_row(arm_slug='joint-off-al', split=split, blocks=30.0))
 
     table = ablation_decomposition(_frame(rows), metrics=('blocks',))
 
     sharing = table[(table['component'] == 'sharing')].iloc[0]
-    alignment = table[(table['treatment'] == 'joint')].iloc[0]
+    alignment = table[(table['treatment'] == 'joint-off-al')].iloc[0]
 
     assert sharing['mean_diff_split_level'] == pytest.approx(-6.0)
     assert alignment['mean_diff_split_level'] == pytest.approx(-4.0)
@@ -840,7 +843,7 @@ def test_f1_is_one_sided_greater_like_accuracy():
 
 def test_paired_tests_raises_when_the_family_is_not_the_size_the_caller_expected():
     df = _full_campaign_frame()
-    df = df[df['arm_slug'] != 'joint']
+    df = df[df['arm_slug'] != 'joint-off-al']
 
     with pytest.raises(ValueError, match='(?i)famil'):
         paired_tests(df, expected_family_size=PRE_REGISTERED_FAMILY_SIZE)
@@ -850,7 +853,7 @@ def test_the_family_sizes_are_derived_from_the_three_arm_grid():
     assert PRE_REGISTERED_FAMILY_SIZE == 10
     assert SUBSTITUTION_FAMILY_SIZE == 2
     assert NONINFERIORITY_FAMILY_SIZE == 4
-    assert JOINT_ARM_SLUGS == ('joint-off', 'joint')
+    assert JOINT_ARM_SLUGS == ('joint-off', 'joint-off-al')
 
 
 def test_a_frame_with_only_joint_off_still_raises_under_the_family_of_ten():
@@ -1164,8 +1167,8 @@ def test_substitution_test_refuses_a_family_shrunk_by_a_MISSING_arm():
     precisely because the campaign runs in chunks, where a missing arm is
     the normal intermediate state -- and a smaller family is a WEAKER Holm
     correction applied silently."""
-    frame = _substitution_sweep_frame(seed=3, correlated_arm='joint', rho=-0.8)
-    frame = frame[frame['arm_slug'] != 'joint']
+    frame = _substitution_sweep_frame(seed=3, correlated_arm='joint-off-al', rho=-0.8)
+    frame = frame[frame['arm_slug'] != 'joint-off-al']
     with pytest.raises(ValueError, match='family'):
         substitution_test_all_arms(
             frame, expected_family_size=SUBSTITUTION_FAMILY_SIZE)
@@ -1174,7 +1177,7 @@ def test_substitution_test_refuses_a_family_shrunk_by_a_MISSING_arm():
 def test_substitution_test_reports_the_split_count_next_to_the_pair_count():
     """The cell-dependence caveat is only checkable if both numbers are
     there."""
-    result = substitution_test(_full_campaign_frame(n_splits=4), 'joint')
+    result = substitution_test(_full_campaign_frame(n_splits=4), 'joint-off-al')
 
     assert result['n_pairs'] == 16
     assert result['n_splits'] == 4
@@ -1228,13 +1231,13 @@ def test_hypervolume_by_arm_at_M_inf_uses_the_whole_pipe_as_reference():
     inf = float('inf')
     rows = [
         _row(arm_slug=INDEPENDENT_ARM_SLUG, M=inf, split=0, acc_app=0.8, blocks=100.0),
-        _row(arm_slug='joint', M=inf, split=0, acc_app=0.9, blocks=40.0),
-        _row(arm_slug='joint', M=inf, split=1, acc_app=0.7, blocks=20.0),
-        _row(arm_slug='joint', M=25.0, split=0, acc_app=0.9, blocks=20.0),
+        _row(arm_slug='joint-off-al', M=inf, split=0, acc_app=0.9, blocks=40.0),
+        _row(arm_slug='joint-off-al', M=inf, split=1, acc_app=0.7, blocks=20.0),
+        _row(arm_slug='joint-off-al', M=25.0, split=0, acc_app=0.9, blocks=20.0),
     ]
     table = hypervolume_by_arm(_frame(rows))
 
-    at_inf = table[(table['arm_slug'] == 'joint') & (table['M'] == inf)
+    at_inf = table[(table['arm_slug'] == 'joint-off-al') & (table['M'] == inf)
                    & (table['task'] == 'app')].iloc[0]
     expected = hypervolume_2d([(0.9, 40.0), (0.7, 20.0)], (0.5, 288))
     assert np.isfinite(at_inf['hypervolume'])
@@ -1242,7 +1245,7 @@ def test_hypervolume_by_arm_at_M_inf_uses_the_whole_pipe_as_reference():
     baseline = hypervolume_2d([(0.8, 100.0)], (0.5, 288))
     assert at_inf['hypervolume_gain'] == pytest.approx(expected / baseline)
 
-    finite = table[(table['arm_slug'] == 'joint') & (table['M'] == 25.0)
+    finite = table[(table['arm_slug'] == 'joint-off-al') & (table['M'] == 25.0)
                    & (table['task'] == 'app')].iloc[0]
     assert finite['hypervolume'] == pytest.approx(
         hypervolume_2d([(0.9, 20.0)], (0.5, 25.0)))
@@ -1336,12 +1339,12 @@ def test_agreement_table_accepts_parsed_bools_as_well_as_csv_text():
 def test_budget_binding_is_the_share_of_rows_at_ninety_percent_of_M():
     inf = float('inf')
     rows = [
-        _row(arm_slug='joint', M=50.0, split=0, blocks=45.0),   # = 0.9 M: binding
-        _row(arm_slug='joint', M=50.0, split=1, blocks=49.0),   # binding
-        _row(arm_slug='joint', M=50.0, split=2, blocks=44.9),
-        _row(arm_slug='joint', M=50.0, split=3, blocks=20.0),
-        _row(arm_slug='joint', M=inf, split=0, blocks=200.0),
-        _row(arm_slug='joint', M=inf, split=1, blocks=20.0),
+        _row(arm_slug='joint-off-al', M=50.0, split=0, blocks=45.0),   # = 0.9 M: binding
+        _row(arm_slug='joint-off-al', M=50.0, split=1, blocks=49.0),   # binding
+        _row(arm_slug='joint-off-al', M=50.0, split=2, blocks=44.9),
+        _row(arm_slug='joint-off-al', M=50.0, split=3, blocks=20.0),
+        _row(arm_slug='joint-off-al', M=inf, split=0, blocks=200.0),
+        _row(arm_slug='joint-off-al', M=inf, split=1, blocks=20.0),
     ]
     table = budget_binding(_frame(rows))
 
@@ -1382,7 +1385,7 @@ def test_paired_tests_robustness_adds_no_flagged_when_any_row_is_flagged():
 
 def test_paired_tests_robustness_holds_only_all_to_the_family_size():
     df = _robustness_frame()
-    df = df[df['arm_slug'] != 'joint']
+    df = df[df['arm_slug'] != 'joint-off-al']
     with pytest.raises(ValueError, match='(?i)famil'):
         paired_tests_robustness(df, expected_family_size=PRE_REGISTERED_FAMILY_SIZE)
 
@@ -1399,3 +1402,33 @@ def test_paired_tests_robustness_skips_an_empty_subset_instead_of_crashing():
     table = paired_tests_robustness(df)
 
     assert set(table['subset']) == {'all'}
+
+
+def _three_arm_frame(n_splits=3):
+    rows = []
+    for arm_index, arm in enumerate(('independent', 'joint-off', 'joint-off-al')):
+        for M in (25, 50):
+            for split in range(n_splits):
+                for k in (3, 5):
+                    rows.append({'arm_slug': arm, 'M': float(M), 'split': split, 'k': k,
+                                 'acc_app': 0.8 + 0.01 * arm_index, 'f1_app': 0.78 + 0.01 * arm_index,
+                                 'acc_ddos': 0.9, 'f1_ddos': 0.88,
+                                 'blocks': float(M - 2 * arm_index), 'stage_depth': 10.0})
+    return pd.DataFrame(rows)
+
+
+def test_joint_arm_slugs_are_sharing_then_twins_and_the_families_keep_their_size():
+    assert claims.JOINT_ARM_SLUGS == ('joint-off', 'joint-off-al')
+    assert claims.LEGACY_ARM_SLUGS == ('joint',)
+    assert claims.PRE_REGISTERED_FAMILY_SIZE == 10
+    assert claims.SUBSTITUTION_FAMILY_SIZE == 2
+    assert claims.NONINFERIORITY_FAMILY_SIZE == 4
+
+
+def test_ablation_decomposition_alignment_contrast_is_twins_minus_joint_off():
+    df = _three_arm_frame()
+    table = claims.ablation_decomposition(df)
+    contrasts = set(table['contrast'])
+    assert 'joint-off - independent' in contrasts
+    assert 'joint-off-al - joint-off' in contrasts
+    assert not any(c.startswith('joint -') for c in contrasts)

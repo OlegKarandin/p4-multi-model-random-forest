@@ -74,12 +74,12 @@ two-sided, and the two are not interchangeable:
 
 **The correction family, stated explicitly.** The compiler-verified campaign
 (spec 2026-09-29, section 7.3) runs one independent arm plus TWO joint arms
-(`JOINT_ARM_SLUGS`): `joint-off` (sharing only) and `joint` (sharing plus
-threshold alignment -- the delta_align tolerance axis was deleted on
+(`JOINT_ARM_SLUGS`): `joint-off` (sharing only) and `joint-off-al` (sharing plus
+post-selection threshold alignment: the aligned twin of each joint-off design -- the delta_align tolerance axis was deleted on
 2026-09-15, so the seven archived `joint-d*` arms no longer exist). The
 family is therefore
 
-    2 contrasts   joint-off, joint -- each against `independent`
+    2 contrasts   joint-off, joint-off-al -- each against `independent`
   x 5 tests       acc_app (one-sided), f1_app (one-sided),
                   acc_ddos (one-sided), f1_ddos (one-sided),
                   blocks (two-sided)
@@ -204,7 +204,7 @@ import pandas as pd
 from scipy import stats
 
 from src.p4model.target import TCAM_BLOCKS_PER_STAGE, TOFINO_PIPELINE_STAGES
-from src.reporting.campaign_data import pair_arms
+from src.reporting.campaign_data import pair_arms, TWIN_ARM_SLUG
 from src.training.campaign_run import DEVELOPMENT_SPLITS
 
 INDEPENDENT_ARM_SLUG = 'independent'
@@ -218,7 +218,11 @@ INDEPENDENT_ARM_SLUG = 'independent'
 # family follows the grid instead of silently drifting from it.
 # `figures.ordered_arms` APPENDS an unrecognised slug rather than dropping it,
 # so an archived `joint-d*` arm still appears in every figure.
-JOINT_ARM_SLUGS = ('joint-off', 'joint')
+JOINT_ARM_SLUGS = ('joint-off', TWIN_ARM_SLUG)
+# The in-search aligned arm `joint` of campaign_2026_10 is a legacy slug
+# (spec 2026-10-06 decision 4): still loadable, appended by
+# `figures.ordered_arms`, never a family member.
+LEGACY_ARM_SLUGS = ('joint',)
 
 # Blocks available to a whole Tofino pipe. The hypervolume reference budget
 # for the unbudgeted cell (M = inf), where `(0.5, M)` would be an infinite
@@ -991,7 +995,8 @@ def ablation_decomposition(df, metrics=DEFAULT_METRICS, confidence=0.95):
       `align_rf_thresholds` call entirely, so it is prediction-identical to
       the unaligned models and the difference isolates the SHARING
       constraint on its own.
-    * `alignment` : `joint-<delta> - joint-off`, for each swept delta.
+    * `alignment` : `joint-off-al - joint-off`, the aligned twin against its
+      own source forest.
       Measured against `joint-off`, NOT against `independent` -- against
       `independent` it would re-count the sharing effect inside every
       alignment number and the two components would not add up.
