@@ -45,6 +45,7 @@ from src.main import load_campaign_data
 from src.p4gen.build_p4_script import dt_thresholds_float_to_int
 from src.p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
 from src.p4gen.switch_semantics import switch_predict
+from src.training.align_twins import column_indices, split_random_state  # noqa: F401
 from src.training.splits import make_task_splits
 from src.training.threshold_alignment import align_with_policy
 from src.training.train_model import rf_params_from_params
@@ -78,22 +79,6 @@ REPLAY_POLICIES = ('none', 'aligned')
 # only. See --verify's own help text for what that costs it.
 
 DEFAULT_K = (17, 13, 9, 5, 2)
-
-
-def split_random_state(split_idx):
-    return CAMPAIGN_RANDOM_STATE + int(split_idx)
-
-
-def column_indices(all_names, joined_names):
-    """Column indices for a row's ';'-joined feature list."""
-    out = []
-    for name in joined_names.split(';'):
-        if name not in all_names:
-            raise ValueError(
-                '{!r} is not in the loaded dataset feature list {!r}'.format(
-                    name, all_names))
-        out.append(all_names.index(name))
-    return out
 
 
 def load_backup(results_dir):

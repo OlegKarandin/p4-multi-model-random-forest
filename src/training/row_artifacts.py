@@ -77,7 +77,10 @@ def load_forests(path):
 
 
 def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddos,
-                        encoding, usage):
+                        encoding, usage, extra=None):
+    """`extra`: a mapping merged into model.json after every computed field
+    (the alignment twins' `source_row_id` / `identical_to`); it may not
+    override a computed key."""
     paths = run_paths(ctx.run_dir).ensure()
     budgeted = ctx.M != float('inf')
     model = {
@@ -117,6 +120,11 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
             'budget_feasible': (not budgeted) or replay['blocks'] <= ctx.M,
             'generator_error': None,
         })
+    if extra:
+        clash = set(extra) & set(model)
+        if clash:
+            raise ValueError(f'extra may not override model.json keys {sorted(clash)}')
+        model.update(extra)
     _save_forests(paths, row_id, model_app, model_ddos, names_app, names_ddos)
     atomic_write_text(os.path.join(paths.designs, row_id + '.model.json'),
                       canonical_json(model))
