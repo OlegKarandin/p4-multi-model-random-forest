@@ -25,6 +25,10 @@ separate JSON files under `results/manifests/`, so a non-recursive
 `results/*.csv` glob does not need to exclude them by name -- confirmed by
 extension alone (manifests carry a `.json` suffix, never `.csv`).
 
+Twin columns (2026-10-06): `source_row_id` str, the `joint-off` row a twin
+was built from, '' otherwise; `twin_identical` 'True'/'False' text on twin
+rows, '' otherwise; `alignment_postprocess` bool.
+
 Two silent-corruption traps this module exists to close -- neither raises on
 its own, both produce a plausible wrong answer:
 
@@ -331,6 +335,18 @@ OPTIONAL_COLUMNS = ('overlap_threshold',
 # _expected_arm_slug already reads as "no delta in this slug".
 ARCHIVED_DELTA_ALIGN_COLUMN = 'delta_align'
 
+# The alignment-twin arm (spec 2026-10-06): a `joint-off` design's forest
+# aligned AFTER selection. Carried by one identity column,
+# `alignment_postprocess`, which only ever reads True on a twin row.
+TWIN_ARM_SLUG = 'joint-off-al'
+TWIN_SOURCE_ARM_SLUG = 'joint-off'
+POSTPROCESS_COLUMN = 'alignment_postprocess'
+
+
+def _is_true(value):
+    """CSV text or a bool: 'True'/True -> True, everything else False."""
+    return value is True or value == 'True'
+
 
 def _parse_filename(path):
     """Parse (n_trees, max_depth, M, arm_slug, split) out of a
@@ -369,7 +385,7 @@ def _parse_bool_column(series, column, where):
 
 
 def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
-                        overlap_threshold_label=''):
+                        overlap_threshold_label='', alignment_postprocess=''):
     """Recompute the arm slug from the in-file identity columns, mirroring
     `TrainConfig.arm_slug` (src/training/config.py) and the two label helpers
     it has since lost -- `delta_align_label` and `overlap_threshold_label` --
@@ -385,15 +401,29 @@ def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
     carried '' (TrainConfig.delta_align_label only returned '' for the
     independent arm or for alignment_enabled=False, both of which return
     above).
+
+    `alignment_postprocess` (2026-10-06) is the twin marker: True turns
+    `joint-off` into `joint-off-al`. It is only legal on arm='joint' with
+    alignment disabled -- a twin is an unaligned search's forest aligned
+    afterwards -- so any other combination is a mislabelled file.
     """
+    postprocess = _is_true(alignment_postprocess)
     if arm == 'independent':
+        if postprocess:
+            raise MislabelledArtifactError(
+                "alignment_postprocess=True on the independent arm: a twin "
+                "needs the joint encoding")
         return 'independent'
     if arm != 'joint':
         raise MislabelledArtifactError(
             "in-file 'arm' column has unrecognised value {!r} (expected "
             "'independent' or 'joint')".format(arm))
     if not alignment_enabled:
-        return 'joint-off'
+        return TWIN_ARM_SLUG if postprocess else 'joint-off'
+    if postprocess:
+        raise MislabelledArtifactError(
+            "alignment_postprocess=True together with alignment_enabled=True: "
+            "a twin is built from an UNALIGNED search's forest")
     if pd.isna(delta_align_label) or delta_align_label == '':
         # Post-2026-09-15: no tolerance axis, so no suffix.
         slug = 'joint'
@@ -500,18 +530,21 @@ def _cross_check_identity(path, parsed, file_df):
     delta_values = pd.unique(file_df['delta_align']) if has_delta else ['']
     has_overlap = 'overlap_threshold' in file_df.columns
     overlap_values = pd.unique(file_df['overlap_threshold']) if has_overlap else ['']
+    has_post = POSTPROCESS_COLUMN in file_df.columns
+    post_values = pd.unique(file_df[POSTPROCESS_COLUMN]) if has_post else ['']
     if (len(arm_values) != 1 or len(align_values) != 1 or len(delta_values) != 1
-            or len(overlap_values) != 1):
+            or len(overlap_values) != 1 or len(post_values) != 1):
         raise MislabelledArtifactError(
             "{}: file mixes more than one (arm, alignment_enabled, delta_align, "
-            "overlap_threshold) combination -- expected exactly one per file "
-            "(arm={}, alignment_enabled={}, delta_align={}, "
-            "overlap_threshold={})".format(
+            "overlap_threshold, alignment_postprocess) combination -- expected "
+            "exactly one per file (arm={}, alignment_enabled={}, delta_align={}, "
+            "overlap_threshold={}, alignment_postprocess={})".format(
                 path, list(arm_values), list(align_values), list(delta_values),
-                list(overlap_values)))
+                list(overlap_values), list(post_values)))
 
     expected_slug = _expected_arm_slug(
-        arm_values[0], bool(align_values[0]), delta_values[0], overlap_values[0])
+        arm_values[0], bool(align_values[0]), delta_values[0], overlap_values[0],
+        post_values[0])
     if expected_slug != parsed['arm_slug']:
         raise MislabelledArtifactError(
             "{}: filename says arm_slug={!r} but in-file columns "
@@ -704,6 +737,9 @@ def load_campaign(results_dir='results', require_verified=None):
             path, keep_default_na=False, na_values=[], dtype=str)
         file_df['alignment_enabled'] = file_df['alignment_enabled'] == 'True'
         _cross_check_identity(path, parsed, file_df)
+        file_df[POSTPROCESS_COLUMN] = (file_df[POSTPROCESS_COLUMN] == 'True'
+                                       if POSTPROCESS_COLUMN in file_df.columns
+                                       else False)
         if 'budgeted' in file_df.columns:
             file_df['budgeted'] = _parse_bool_column(
                 file_df['budgeted'], 'budgeted', path)

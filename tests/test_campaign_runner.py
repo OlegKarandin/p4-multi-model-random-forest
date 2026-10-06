@@ -253,3 +253,16 @@ def test_stamp_records_the_selection_rule_and_alpha():
     frame = _stamp(pd.DataFrame([{'k': 5}]), job)
     assert frame.loc[0, 'selection_rule'] == 'tied_cheapest'
     assert frame.loc[0, 'select_alpha'] == 0.1
+
+
+def test_stamp_marks_every_trained_row_as_not_postprocessed():
+    cfg = TrainConfig(n_trials=12, min_feasible_before_stop=5, lookback=4)
+    job = runner.Job(arm='joint', cfg=cfg, M=35, split=0)
+    frame = runner._stamp(pd.DataFrame([{'k': 3}]), job)
+    assert frame['alignment_postprocess'].tolist() == [False]
+
+
+def test_result_row_carries_the_twin_columns_as_empty_text():
+    from src.training.feature_selection import _build_result_row
+    row = _build_result_row('joint', 'multi', 0, 3, ['a'], ['a'])
+    assert row['source_row_id'] == '' and row['twin_identical'] == ''

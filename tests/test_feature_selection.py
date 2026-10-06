@@ -624,7 +624,7 @@ def test_the_result_row_has_exactly_the_documented_key_set():
     column would have reached every campaign CSV silently."""
     row = fs._build_result_row('joint', 'multi', 0, 5, [], [])
     assert set(row) == set(fs._RESULT_ROW_KEYS)
-    assert len(row) == 39
+    assert len(row) == 41
 
 
 def test_the_new_derived_columns_default_to_literal_None_not_empty_string():

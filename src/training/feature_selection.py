@@ -293,8 +293,9 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
                        ref_blocks=None, ref_stage_depth=None,
                        ref_acc_sel_app=None, ref_acc_sel_ddos=None,
                        ref_acc_app=None, ref_acc_ddos=None,
-                       ref_f1_app=None, ref_f1_ddos=None):
-    """Builds one elimination-loop result row (39 keys). Shared by both the
+                       ref_f1_app=None, ref_f1_ddos=None,
+                       source_row_id=None, twin_identical=None):
+    """Builds one elimination-loop result row (41 keys). Shared by both the
     infeasible branch (`NoFeasibleSolution`) and the feasible branch of
     `_run_elimination`'s loop, which used to write this dict as two
     hand-duplicated literals that had drifted to use different "not
@@ -303,7 +304,7 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
     so any new column belongs in exactly ONE place: this signature and the
     dict below.
 
-    The 39 keys split into four groups:
+    The 41 keys split into four groups:
     - `arm`/`method`/`split`/`k`/`features_app`/`features_ddos`: always
       present with a real value, never a sentinel.
     - 13 metrics (`acc_app`, `f1_app`, `acc_ddos`, `f1_ddos`, `acc_sel_app`,
@@ -332,6 +333,8 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
       `chosen_trial`, `ref_trial`, `n_tied`, and the reference R's
       `ref_blocks`, `ref_stage_depth`, `ref_acc_sel_*`, `ref_acc_*`,
       `ref_f1_*` (test metrics of R's own refit). '' when not computed.
+    - 2 twin fields (spec 2026-10-06): `source_row_id`, `twin_identical`;
+      '' on every trained row, filled only by `align_twins`.
 
     `stages_real`/`tcam_real`/`sram_real`/`map_ram_real`/`compile_errors`
     are deliberately NOT part of this row: they're always attached
@@ -370,6 +373,8 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
         'ref_acc_ddos': _empty_if_none(ref_acc_ddos),
         'ref_f1_app': _empty_if_none(ref_f1_app),
         'ref_f1_ddos': _empty_if_none(ref_f1_ddos),
+        'source_row_id': _empty_if_none(source_row_id),
+        'twin_identical': _empty_if_none(twin_identical),
     }
 
 

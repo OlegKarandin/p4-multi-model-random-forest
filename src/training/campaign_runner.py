@@ -82,6 +82,7 @@ def _stamp(frame, job):
     """The row columns the worker cannot know: the arm's config and budget."""
     budgeted = job.M != INF
     frame['alignment_enabled'] = bool(job.cfg.alignment_enabled and job.arm == 'joint')
+    frame['alignment_postprocess'] = False
     frame['delta_select'] = job.cfg.delta_select
     frame['selection_rule'] = job.cfg.selection_rule
     frame['select_alpha'] = job.cfg.select_alpha

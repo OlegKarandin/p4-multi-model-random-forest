@@ -761,3 +761,40 @@ def test_a_legacy_load_is_unflagged_with_a_float_M(tmp_path):
     assert (df['verdict'] == '').all()
     assert df['M'].dtype == np.float64 and (df['M'] == 25.0).all()
     assert df['budgeted'].all()
+
+
+def test_postprocess_column_makes_the_twin_slug_and_nothing_else():
+    assert _expected_arm_slug('joint', False, '', '', 'True') == 'joint-off-al'
+    assert _expected_arm_slug('joint', False, '', '', True) == 'joint-off-al'
+    assert _expected_arm_slug('joint', False, '', '', 'False') == 'joint-off'
+    assert _expected_arm_slug('joint', False, '', '', '') == 'joint-off'
+    assert _expected_arm_slug('joint', False, '', '', None) == 'joint-off'
+    with pytest.raises(MislabelledArtifactError):
+        _expected_arm_slug('joint', True, '', '', 'True')
+    with pytest.raises(MislabelledArtifactError):
+        _expected_arm_slug('independent', False, '', '', 'True')
+
+
+def test_a_twin_file_loads_as_the_twin_arm_beside_an_old_file_without_the_column(tmp_path):
+    old = [_feasible_row(arm='joint', alignment_enabled=False, delta_align='',
+                         overlap_threshold='')]
+    _write_arm_file(tmp_path, 11, 14, 25, 'joint-off', old)
+    twin = [dict(_feasible_row(arm='joint', alignment_enabled=False, delta_align='',
+                               overlap_threshold=''),
+                 alignment_postprocess=True, source_row_id='joint-off_M025_s10_k17',
+                 twin_identical=False)]
+    _write_arm_file(tmp_path, 11, 14, 25, 'joint-off-al', twin)
+
+    df = load_campaign(results_dir=str(tmp_path / 'results'))
+
+    assert sorted(df['arm_slug']) == ['joint-off', 'joint-off-al']
+    assert df.set_index('arm_slug')['alignment_postprocess'].to_dict() == {
+        'joint-off': False, 'joint-off-al': True}
+
+
+def test_a_twin_file_whose_filename_says_joint_off_is_rejected(tmp_path):
+    twin = [dict(_feasible_row(arm='joint', alignment_enabled=False, delta_align='',
+                               overlap_threshold=''), alignment_postprocess=True)]
+    _write_arm_file(tmp_path, 11, 14, 25, 'joint-off', twin)
+    with pytest.raises(MislabelledArtifactError):
+        load_campaign(results_dir=str(tmp_path / 'results'))
