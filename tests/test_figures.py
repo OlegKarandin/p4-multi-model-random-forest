@@ -1558,3 +1558,23 @@ def test_render_all_omits_deliverable_11_without_twins_and_includes_it_with_them
     numbers = {d.number for d in figures.render_all(
         with_twins, output_dir=None, ceiling_csv=None, verification=_twin_verification(with_twins))}
     assert 11 in numbers
+
+
+def test_deliverable_11_reports_alignment_statistics(tmp_path):
+    df = _spread_campaign()
+    twin = (df.arm_slug == 'joint-off-al').to_numpy()
+    df['align_attempted'] = np.where(twin, 5.0, np.nan)
+    df['align_accepted'] = np.where(twin, np.where(df.k == 3, 0.0, 3.0), np.nan)
+    df['intervals_before'] = np.where(twin, 30.0, np.nan)
+    df['intervals_after'] = np.where(twin, 28.0, np.nan)
+    d = figures.table_11_alignment_twins(df, _twin_verification(df), output_dir=str(tmp_path))
+    stats = dict(d.extra_data)['alignment_stats']
+    assert {'M', 'n', 'mean_intervals_removed', 'mean_align_accepted',
+            'share_no_accepted'} <= set(stats.columns)
+    pooled = stats[stats.M == 'all'].iloc[0]
+    assert pooled['mean_intervals_removed'] == pytest.approx(2.0)
+    assert pooled['share_no_accepted'] == pytest.approx(1 / 3)   # k in (3, 4, 5)
+    assert any(p.endswith('11_alignment_twins_alignment_stats.csv') for p in d.paths)
+    md = open(next(p for p in d.paths if p.endswith('11_alignment_twins.md')),
+              encoding='utf-8').read()
+    assert '## Alignment statistics' in md and _no_bad_M_text(md)

@@ -2030,6 +2030,7 @@ def table_11_alignment_twins(df, verification, output_dir=DEFAULT_FIGURE_DIR,
     effect = claims.twin_effect(df, confidence=confidence)
     ladder = claims.twin_ladder(df, confidence=confidence)
     counts = pd.DataFrame([claims.twin_counts(verification)])
+    alignment = claims.twin_alignment_stats(df)
     c = counts.iloc[0]
     caption = (
         'Threshold alignment applied after selection: every joint-off design '
@@ -2041,7 +2042,12 @@ def table_11_alignment_twins(df, verification, output_dir=DEFAULT_FIGURE_DIR,
         'copied, not compiled), {} compiled ({} EXACT against the cost model), '
         '{} rescued (feasible where the source was not; counted, never paired), '
         '{} infeasible. The ladder table gives independent -> joint-off -> '
-        'joint-off-al means per M on the cells where all three exist.'.format(
+        'joint-off-al means per M on the cells where all three exist. '
+        'p_saves / p_costs are the shares of pairs with a strictly better / worse '
+        'delta (for integer blocks and stages, P(saves >= 1 block) and P(costs >= '
+        '1 block); P(-1 stage) is the stage_depth row). The alignment table gives '
+        'what the step did per M: mean intervals removed, mean accepted / attempted '
+        'alignments, and the share of twins where none was accepted.'.format(
             confidence, int(c['n_twins']), int(c['n_identical']), int(c['n_compiled']),
             int(c['n_compiled_exact']), int(c['n_rescued']), int(c['n_twin_infeasible'])))
     # `group` holds an M on the 'M' rows: print it through `format_M`.
@@ -2049,15 +2055,20 @@ def table_11_alignment_twins(df, verification, output_dir=DEFAULT_FIGURE_DIR,
     if len(shown):
         shown['group'] = [format_M(g) if kind == 'M' else g
                           for kind, g in zip(shown['group_kind'], shown['group'])]
+    shown_alignment = alignment.copy()
+    shown_alignment['M'] = [m if m == 'all' else format_M(m) for m in shown_alignment['M']]
     body = '\n'.join([
         '## Paired twin - source', '', _markdown_table(shown) if len(effect) else '(no pairs)',
         '', '## Ladder', '', _markdown_table(ladder) if len(ladder) else '(no complete cells)',
+        '', '## Alignment statistics', '',
+        _markdown_table(shown_alignment) if len(alignment) else '(no alignment columns)',
         '', '## Counts', '', _markdown_table(counts)])
     return _write(Deliverable(
         number=11, slug='alignment_twins',
         title='Threshold alignment as post-processing: aligned twins against their sources',
         caption=caption, data=effect, markdown_body=body,
-        extra_data=(('ladder', ladder), ('counts', counts))), output_dir)
+        extra_data=(('ladder', ladder), ('alignment_stats', alignment),
+                    ('counts', counts))), output_dir)
 
 
 # ---------------------------------------------------------------------------

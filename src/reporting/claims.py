@@ -1691,6 +1691,35 @@ def twin_ladder(df, confidence=0.95):
     return pd.DataFrame(rows)
 
 
+_ALIGN_COLUMNS = ('align_attempted', 'align_accepted', 'intervals_before', 'intervals_after')
+ALIGNMENT_STATS_COLUMNS = ('M', 'n', 'mean_intervals_removed', 'mean_align_attempted',
+                           'mean_align_accepted', 'share_no_accepted')
+
+
+def twin_alignment_stats(df):
+    """What the alignment step itself did, over the twin rows (spec 2026-10-06
+    section 6 item 4), per M and pooled ('all'): mean `intervals_before -
+    intervals_after`, mean `align_attempted` / `align_accepted`, and the share
+    of twins where nothing was accepted. A frame without the four align
+    columns (a legacy one) yields an empty table."""
+    empty = pd.DataFrame(columns=list(ALIGNMENT_STATS_COLUMNS))
+    if not all(c in df.columns for c in _ALIGN_COLUMNS):
+        return empty
+    twins = df[df['arm_slug'] == TWIN_ARM_SLUG]
+    rows = []
+    for M in list(sorted(twins['M'].unique())) + ['all']:
+        cells = twins if M == 'all' else twins[twins['M'] == M]
+        rows.append({
+            'M': M, 'n': int(len(cells)),
+            'mean_intervals_removed': float(
+                (cells['intervals_before'] - cells['intervals_after']).mean()),
+            'mean_align_attempted': float(cells['align_attempted'].mean()),
+            'mean_align_accepted': float(cells['align_accepted'].mean()),
+            'share_no_accepted': float((cells['align_accepted'] == 0).mean()),
+        })
+    return pd.DataFrame(rows, columns=list(ALIGNMENT_STATS_COLUMNS)) if rows else empty
+
+
 def _p4c_feasible(verification):
     return ~((verification['verdict'] == 'FALSE_FEASIBLE')
              | _as_bool(verification['p4c_over_stages'])

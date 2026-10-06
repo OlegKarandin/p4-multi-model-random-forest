@@ -1539,3 +1539,29 @@ def test_twin_counts_reads_literal_text_flags_from_the_csv():
 def test_twin_counts_text_and_bool_flags_agree(over_stages, over_budget, infeasible):
     counts = claims.twin_counts(_text_flag_verification(over_stages, over_budget))
     assert counts['n_twin_infeasible'] == infeasible
+
+
+def _align_twin_frame():
+    df = _twin_frame()
+    twin = (df.arm_slug == 'joint-off-al').to_numpy()
+    df['align_attempted'] = np.where(twin, 4.0, np.nan)
+    df['align_accepted'] = np.where(twin, np.where(df.k == 3, 0.0, 2.0), np.nan)
+    df['intervals_before'] = np.where(twin, 20.0, np.nan)
+    df['intervals_after'] = np.where(twin, np.where(df.k == 3, 20.0, 17.0), np.nan)
+    return df
+
+
+def test_twin_alignment_stats_per_m_and_pooled():
+    stats = claims.twin_alignment_stats(_align_twin_frame())
+    assert list(stats.columns) == list(claims.ALIGNMENT_STATS_COLUMNS)
+    assert list(stats['M']) == [25.0, 50.0, 'all']
+    row = stats[stats.M == 'all'].iloc[0]
+    assert row['n'] == 18
+    assert row['mean_intervals_removed'] == pytest.approx(2.0)   # 3 on 2/3 of twins
+    assert row['mean_align_attempted'] == 4.0
+    assert row['mean_align_accepted'] == pytest.approx(4 / 3)
+    assert row['share_no_accepted'] == pytest.approx(1 / 3)
+
+
+def test_twin_alignment_stats_without_the_align_columns_is_empty():
+    assert claims.twin_alignment_stats(_twin_frame()).empty
