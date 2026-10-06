@@ -11,9 +11,10 @@ import tarfile
 import pytest
 
 from src.p4gen.p4_compile import CompileResult, P4CompileTimeout
-from src.training.campaign_run import canonical_json
+from src.training.campaign_run import atomic_write_text, canonical_json, run_paths
 from src.verify import runner
 from src.verify import __main__ as cli
+from src.verify.verdicts import classify
 
 _RESOURCES = """\
 | Stage Number | SRAM | Map RAM | TCAM |
@@ -413,3 +414,63 @@ def test_verify_archive_reports_a_raising_design_as_error_and_goes_on(
 
     monkeypatch.setattr(runner, "compile_p4", flaky)
     assert cli.main(["--archive", archive]) == 1
+
+
+def test_copy_record_duplicates_the_source_verdict_for_a_byte_identical_twin(tmp_path):
+    run = str(tmp_path)
+    paths = run_paths(run).ensure()
+    program = "control Ingress() { }\n"
+    for row_id in ("joint-off_M035_s00_k03", "joint-off-al_M035_s00_k03"):
+        atomic_write_text(os.path.join(paths.designs, row_id + ".p4"), program)
+        atomic_write_text(os.path.join(paths.designs, row_id + ".model.json"),
+                          canonical_json(_model(row_id)))
+    source = runner._record(_model("joint-off_M035_s00_k03"), "joint-off_M035_s00_k03",
+                                   os.path.join(paths.designs, "joint-off_M035_s00_k03.p4"),
+                                   classify(_model("x"), None, 35, "COMPILE_ERROR"), failure="p4c_timeout")
+    atomic_write_text(os.path.join(paths.verify, "joint-off_M035_s00_k03.json"), canonical_json(source))
+
+    record = runner.copy_record(run, "joint-off-al_M035_s00_k03", "joint-off_M035_s00_k03")
+
+    on_disk = json.loads(open(os.path.join(paths.verify, "joint-off-al_M035_s00_k03.json")).read())
+    assert on_disk == record
+    assert record["row_id"] == "joint-off-al_M035_s00_k03"
+    assert record["copied_from"] == "joint-off_M035_s00_k03"
+    assert record["verdict"] == source["verdict"] and record["p4_sha256"] == source["p4_sha256"]
+    assert set(record) == set(runner.VERIFICATION_COLUMNS)
+
+
+def test_copy_record_refuses_when_the_twin_program_differs(tmp_path):
+    run = str(tmp_path)
+    paths = run_paths(run).ensure()
+    atomic_write_text(os.path.join(paths.designs, "a.p4"), "A\n")
+    atomic_write_text(os.path.join(paths.designs, "b.p4"), "B\n")
+    rec = runner._record(_model("a"), "a", os.path.join(paths.designs, "a.p4"),
+                                classify(_model("a"), None, 35, "COMPILE_ERROR"), failure="p4c_timeout")
+    atomic_write_text(os.path.join(paths.verify, "a.json"), canonical_json(rec))
+    with pytest.raises(ValueError):
+        runner.copy_record(run, "b", "a")
+
+
+def test_copy_record_refuses_when_the_source_is_unverified(tmp_path):
+    run = str(tmp_path)
+    paths = run_paths(run).ensure()
+    atomic_write_text(os.path.join(paths.designs, "b.p4"), "B\n")
+    with pytest.raises(FileNotFoundError):
+        runner.copy_record(run, "b", "a")
+
+
+def test_a_compiled_record_has_an_empty_copied_from(tmp_path, monkeypatch):
+    # Extend the existing normal-row test: after verify_row, assert record['copied_from'] is None
+    # and that verification.csv has a 'copied_from' header.
+    monkeypatch.setenv("THESIS_P4C_IMAGE", "ghcr.io/x/p4c:1")
+    monkeypatch.delenv("THESIS_P4STUDIO_COMMIT", raising=False)
+    run_dir = _run_dir(tmp_path)
+    fake = FakeCompiler()
+    record = runner.verify_row(run_dir, "r", compile_fn=fake)
+
+    assert record['copied_from'] is None
+
+    runner.merge_verification(run_dir)
+    with open(os.path.join(run_dir, "verification.csv"), newline="") as handle:
+        csv_header = next(csv.reader(handle))
+    assert 'copied_from' in csv_header

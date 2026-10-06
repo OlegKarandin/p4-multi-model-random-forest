@@ -54,7 +54,7 @@ VERIFICATION_COLUMNS = (
     'p4c_stage_depth', 'p4c_blocks', 'p4c_sram', 'p4c_map_ram', 'p4c_phv_containers',
     'p4c_errors', 'p4c_warnings', 'compile_seconds',
     'verdict', 'p4c_over_budget', 'p4c_over_stages', 'unverified', 'failure',
-    'tables_differing',
+    'tables_differing', 'copied_from',
     'p4c_image', 'open_p4studio_commit', 'model_git_commit', 'verifier_git_commit',
     'verified_utc',
 )
@@ -204,6 +204,7 @@ def _record(model, row_id, p4_path, verdict, p4c=None, result=None, failure=None
         'unverified': verdict.unverified,
         'failure': failure,
         'tables_differing': list(verdict.tables_differing),
+        'copied_from': None,
         'p4c_image': provenance.get('p4c_image', os.environ.get('THESIS_P4C_IMAGE')),
         'open_p4studio_commit': provenance.get(
             'open_p4studio_commit', os.environ.get('THESIS_P4STUDIO_COMMIT')),
@@ -262,6 +263,33 @@ def verify_row(run_dir, row_id, compile_fn=None, timeout=300, retry_timeout=1800
         record = _record(model, row_id, p4_path, verdict, p4c, result, failure, seconds)
 
     atomic_write_text(os.path.join(paths.verify, row_id + '.json'), canonical_json(record))
+    return record
+
+
+def copy_record(run_dir, twin_id, source_id):
+    """verify/<twin_id>.json for a twin whose program is byte-identical to
+    its source's (spec 2026-10-06 §4): the source's record with the twin's
+    identity. Nothing is compiled -- an identical program has the identical
+    p4c result -- and the copy is marked `copied_from` so deliverable 11 can
+    count copied against compiled twins. Refuses (ValueError) when the
+    programs differ: that twin must be compiled, not copied."""
+    paths = run_paths(run_dir).ensure()
+    source_path = os.path.join(paths.verify, source_id + '.json')
+    if not os.path.isfile(source_path):
+        raise FileNotFoundError(
+            f"{twin_id}: source {source_id} has no verification record; "
+            "verify the source arm before building twins")
+    source = _read_json(source_path)
+    twin_sha = _sha256(os.path.join(paths.designs, twin_id + '.p4'))
+    if twin_sha != source['p4_sha256']:
+        raise ValueError(
+            f"{twin_id}: program sha {twin_sha[:12]} differs from source "
+            f"{source_id}'s {source['p4_sha256'][:12]}; compile it instead of copying")
+    record = dict(source)
+    record.update({'row_id': twin_id, 'copied_from': source_id,
+                   'verifier_git_commit': _verifier_commit(),
+                   'verified_utc': _utc_now()})
+    atomic_write_text(os.path.join(paths.verify, twin_id + '.json'), canonical_json(record))
     return record
 
 
