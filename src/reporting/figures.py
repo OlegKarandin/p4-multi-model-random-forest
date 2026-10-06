@@ -18,6 +18,7 @@ every statistic, and this module does one thing: render them.
 | 8 | entries vs blocks, faceted by k (S3.3) | T12: is the joint-mapping saving real, or an artifact of TCAM block quantization? |
 | 9 | model-vs-p4c agreement per arm x M, plus every miss (run only) | does the cost model the numbers were selected by agree with the compiler? |
 | 10 | budget binding per arm x M (run only) | does each block budget M actually bind? |
+| 11 | alignment twins: paired twin - source, ladder, counts (run with twins only) | what does alignment buy as a post-processing step? |
 
 Four, five, eight, nine and ten are tables and six is a replay, so `Deliverable`
 carries a `figure` that is None for those; every deliverable is
@@ -293,9 +294,10 @@ def _delta_tick_label(arm_slug, delta_num, is_inf):
     """The x-axis label for one arm on the joint-arm axis.
 
     Non-numeric arms keep their own identity instead of being given an
-    invented numeric position: `joint-off` never ran alignment at all (not
-    delta 0) and `joint` is the aligned arm (no tolerance axis since
-    2026-09-15). An archived frame's `joint-dinf` (the accept-all anchor,
+    invented numeric position: `joint-off` (sharing only) never ran alignment
+    at all (not delta 0) and `joint-off-al` is sharing plus post-selection
+    threshold alignment (no tolerance axis since 2026-09-15; `joint` is only
+    a legacy slug). An archived frame's `joint-dinf` (the accept-all anchor,
     not a large number) keeps 'inf', and its numeric delta arms their delta.
     """
     if bool(is_inf):
@@ -1041,8 +1043,9 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
         'F1) losses are not equal degradations. F1 is shown alongside '
         'accuracy because a minority-class collapse is exactly what '
         'accuracy alone can hide. The arms carry no numeric position and are '
-        'labelled as themselves: "off" shares one encoding but never ran '
-        'threshold alignment, and "joint" is the aligned arm. '
+        'labelled as themselves: "off" (joint-off) shares one encoding but never '
+        'ran threshold alignment, and "off-al" (joint-off-al) is sharing plus '
+        'post-selection threshold alignment. '
         'THE FEATURE SETS DIFFER ACROSS ARMS BY CONSTRUCTION -- sharing and '
         'alignment change which thresholds, and hence which intervals and '
         'which eliminated features, each arm ends up with, so the arms are not '
@@ -2012,6 +2015,52 @@ def table_10_budget_binding(df, output_dir=DEFAULT_FIGURE_DIR, share=0.9):
 
 
 # ---------------------------------------------------------------------------
+# Deliverable 11 -- alignment twins (compiler-verified runs with twins only)
+# ---------------------------------------------------------------------------
+
+def table_11_alignment_twins(df, verification, output_dir=DEFAULT_FIGURE_DIR,
+                             confidence=0.95):
+    """Threshold alignment as a post-selection step: each joint-off design
+    against its aligned twin (spec 2026-10-06 section 6). Rendered from
+    `claims.twin_effect` (paired deltas per M, per k group and pooled),
+    `claims.twin_ladder` (independent -> joint-off -> joint-off-al) and
+    `claims.twin_counts` (identical / compiled / rescued twins). A rescued
+    twin -- feasible where its source was not -- is counted and never paired.
+    """
+    effect = claims.twin_effect(df, confidence=confidence)
+    ladder = claims.twin_ladder(df, confidence=confidence)
+    counts = pd.DataFrame([claims.twin_counts(verification)])
+    c = counts.iloc[0]
+    caption = (
+        'Threshold alignment applied after selection: every joint-off design '
+        'paired with its aligned twin (same forest, thresholds aligned on '
+        'val_align, regenerated and compiled), p4c numbers. Negative blocks and '
+        'stage-depth deltas are savings; F1 in points of the 0-1 scale. '
+        'Intervals are {:.0%} Student-t over split-level mean differences. '
+        '{} twins: {} byte-identical to their source (verification record '
+        'copied, not compiled), {} compiled ({} EXACT against the cost model), '
+        '{} rescued (feasible where the source was not; counted, never paired), '
+        '{} infeasible. The ladder table gives independent -> joint-off -> '
+        'joint-off-al means per M on the cells where all three exist.'.format(
+            confidence, int(c['n_twins']), int(c['n_identical']), int(c['n_compiled']),
+            int(c['n_compiled_exact']), int(c['n_rescued']), int(c['n_twin_infeasible'])))
+    # `group` holds an M on the 'M' rows: print it through `format_M`.
+    shown = effect.copy()
+    if len(shown):
+        shown['group'] = [format_M(g) if kind == 'M' else g
+                          for kind, g in zip(shown['group_kind'], shown['group'])]
+    body = '\n'.join([
+        '## Paired twin - source', '', _markdown_table(shown) if len(effect) else '(no pairs)',
+        '', '## Ladder', '', _markdown_table(ladder) if len(ladder) else '(no complete cells)',
+        '', '## Counts', '', _markdown_table(counts)])
+    return _write(Deliverable(
+        number=11, slug='alignment_twins',
+        title='Threshold alignment as post-processing: aligned twins against their sources',
+        caption=caption, data=effect, markdown_body=body,
+        extra_data=(('ladder', ladder), ('counts', counts))), output_dir)
+
+
+# ---------------------------------------------------------------------------
 # The whole set
 # ---------------------------------------------------------------------------
 
@@ -2027,7 +2076,7 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
     `verification` is `campaign_data.load_verification`'s frame for a
     compiler-verified RUN (a directory with `rows/`); passing it adds
     deliverables 9 (agreement) and 10 (budget binding), which only a run
-    can support. None -- a legacy flat directory -- omits both.
+    can support, and 11 (alignment twins) when the frame has twin rows. None -- a legacy flat directory -- omits both.
 
     `ceiling_csv=None` omits deliverable 6 -- the capacity-ceiling appendix
     replays a measurement that either exists on disk or does not, and a
@@ -2066,4 +2115,7 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
         deliverables.append(
             table_9_agreement(verification, output_dir=output_dir))
         deliverables.append(table_10_budget_binding(df, output_dir=output_dir))
+        if claims.TWIN_ARM_SLUG in set(df['arm_slug']):
+            deliverables.append(
+                table_11_alignment_twins(df, verification, output_dir=output_dir))
     return tuple(sorted(deliverables, key=lambda item: item.number))

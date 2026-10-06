@@ -97,6 +97,8 @@ def _row(arm_slug='joint-off-al', M=25, split=0, k=5,
         'acc_app': acc_app, 'acc_ddos': acc_ddos,
         'f1_app': f1_app, 'f1_ddos': f1_ddos,
         'blocks': blocks, 'stages': stages,
+        # real campaign frames carry `stage_depth` (claims.twin_pairs reads it)
+        'stage_depth': stages,
         'range_entries': range_entries, 'ternary_entries': ternary_entries,
         'delta_align_num': delta_num, 'delta_align_is_inf': is_inf,
         'features_app': _features_at(split, 'app', k),
@@ -669,8 +671,9 @@ def test_deliverable_2_uses_split_level_replication_for_its_confidence_interval(
 
 
 def test_deliverable_2_places_the_two_non_numeric_arms_without_inventing_a_delta():
-    """The 3-arm design's two joint arms, `joint-off` (alignment never ran)
-    and `joint` (aligned, no tolerance axis since 2026-09-15), both carry a
+    """The design's two joint arms, `joint-off` (sharing only, alignment never
+    ran) and `joint-off-al` (sharing plus post-selection alignment, no
+    tolerance axis since 2026-09-15; `joint` is a legacy slug), both carry a
     NaN parsed delta and must not be dropped or given a made-up numeric
     position: each is labelled as itself, in sweep order."""
     deliverable = figures.figure_2_delta_frontier(
@@ -1423,7 +1426,7 @@ def _verification_for(df, miss_row_id=None):
             'model_blocks': str(int(row['blocks'])),
             'p4c_blocks': str(int(row['blocks']) + (2 if miss else 0)),
             'p4c_over_budget': 'False', 'p4c_over_stages': 'False',
-            'unverified': 'False',
+            'unverified': 'False', 'copied_from': '',
             'tables_differing': ('[{"model":4,"p4c":6,"table":"tbl_x"}]'
                                  if miss else '[]'),
             'arm_slug': row['arm_slug'], 'M': float(row['M']),
@@ -1482,7 +1485,8 @@ def test_render_all_adds_deliverables_9_and_10_only_for_a_run():
     df = _unbudgeted_campaign()
     run = figures.render_all(df, output_dir=None, ceiling_csv=None,
                              verification=_verification_for(df))
-    assert [d.number for d in run] == [1, 2, 3, 4, 5, 7, 8, 9, 10]
+    # `_unbudgeted_campaign` has joint-off-al rows, hence deliverable 11
+    assert [d.number for d in run] == [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
     legacy = figures.render_all(df, output_dir=None, ceiling_csv=None)
     assert [d.number for d in legacy] == [1, 2, 3, 4, 5, 7, 8]
 
@@ -1525,3 +1529,32 @@ def test_deliverable_4_renders_when_every_split_is_a_development_split(tmp_path)
 def test_ordered_arms_puts_the_twin_arm_third_and_a_legacy_joint_arm_last():
     df = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint', 'joint-off-al', 'joint-off'))
     assert figures.ordered_arms(df) == (INDEPENDENT_ARM_SLUG, 'joint-off', 'joint-off-al', 'joint')
+
+
+def _twin_verification(df):
+    """`_verification_for` already carries the `copied_from` column
+    `claims.twin_counts` reads (every record compiled, none copied)."""
+    return _verification_for(df)
+
+
+def test_deliverable_11_renders_effect_ladder_and_counts(tmp_path):
+    df = _spread_campaign()   # default arms include joint-off-al since Task 2
+    d = figures.table_11_alignment_twins(df, _twin_verification(df), output_dir=str(tmp_path))
+    assert d.number == 11 and d.figure is None
+    assert {'group_kind', 'metric', 'p_saves', 'p_costs', 'ci_low'} <= set(d.data.columns)
+    names = dict(d.extra_data)
+    assert 'step_alignment_blocks' in names['ladder'].columns
+    assert names['counts'].iloc[0]['n_twins'] == (df.arm_slug == 'joint-off-al').sum()
+    assert any(p.endswith('11_alignment_twins.md') for p in d.paths)
+    assert any(p.endswith('11_alignment_twins_ladder.csv') for p in d.paths)
+
+
+def test_render_all_omits_deliverable_11_without_twins_and_includes_it_with_them():
+    without = _spread_campaign(arms=(INDEPENDENT_ARM_SLUG, 'joint-off'))
+    numbers = {d.number for d in figures.render_all(
+        without, output_dir=None, ceiling_csv=None, verification=_twin_verification(without))}
+    assert 11 not in numbers and 9 in numbers
+    with_twins = _spread_campaign()
+    numbers = {d.number for d in figures.render_all(
+        with_twins, output_dir=None, ceiling_csv=None, verification=_twin_verification(with_twins))}
+    assert 11 in numbers
