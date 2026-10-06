@@ -599,7 +599,7 @@ def _write_small_two_arm_campaign(results_dir):
     # contrast any claims.py family runs.
     joint_rows = [
         _plot_mode_row('joint', 'multi', split=s, k=k,
-                       alignment_enabled=True, delta_align='',
+                       alignment_enabled=False, delta_align='',
                        overlap_threshold='',
                        acc_app=0.91 + 0.001 * s, acc_ddos=0.82 + 0.001 * k,
                        blocks=25 + s)
@@ -607,7 +607,7 @@ def _write_small_two_arm_campaign(results_dir):
     ]
     _write_plot_mode_campaign_file(results_dir, 11, 14, 25, 'independent',
                                    independent_rows)
-    _write_plot_mode_campaign_file(results_dir, 11, 14, 25, 'joint',
+    _write_plot_mode_campaign_file(results_dir, 11, 14, 25, 'joint-off',
                                    joint_rows)
 
 
@@ -704,7 +704,7 @@ def _verified_run_rows(splits=(0, 1, 2, 3), ks=(5, 6), Ms=(35, 'inf')):
 
     arms = (('independent', 'independent', 'single', False, 0.000, 0),
             ('joint-off', 'joint', 'multi', False, 0.004, -2),
-            ('joint', 'joint', 'multi', True, 0.008, -4))
+            ('joint-off-al', 'joint', 'multi', False, 0.008, -4))
     rows, lines = [], []
     for slug, arm, method, aligned, gain, saving in arms:
         for M in Ms:
@@ -717,6 +717,7 @@ def _verified_run_rows(splits=(0, 1, 2, 3), ks=(5, 6), Ms=(35, 'inf')):
                     row.update({
                         'arm': arm, 'method': method,
                         'alignment_enabled': aligned, 'row_id': row_id,
+                        'alignment_postprocess': slug == 'joint-off-al',
                         'acc_app': 0.80 + 0.01 * split + 0.002 * k + gain,
                         'f1_app': 0.78 + 0.01 * split + 0.002 * k + gain,
                         'acc_ddos': 0.90 + 0.005 * split - 0.001 * k + gain,
@@ -737,7 +738,7 @@ def test_plot_mode_end_to_end_over_a_verified_run_renders_deliverables_9_and_10(
     deliverables = m.run_plot_mode(results_dir=run,
                                    output_dir=str(tmp_path / 'figures'))
 
-    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 7, 8, 9, 10]
+    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
     for deliverable in deliverables:
         assert deliverable.paths
         for path in deliverable.paths:

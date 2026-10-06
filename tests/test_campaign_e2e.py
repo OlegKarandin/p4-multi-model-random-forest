@@ -101,7 +101,7 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
     run_dir = str(tmp_path / "run")
 
     # Stage 1: train.
-    arms = [("joint", TrainConfig(**_CFG)), ("independent", TrainConfig(**_CFG))]
+    arms = [("joint", TrainConfig(alignment_enabled=False, **_CFG)), ("independent", TrainConfig(**_CFG))]
     jobs = campaign_runner.plan_jobs(arms, [_M], [0], run_dir)
     summary = campaign_runner.run_jobs(jobs, _synthetic_data(), run_dir, "deadbeef", 1,
                                        executor_factory=_serial)
@@ -125,7 +125,7 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
     assert set(rows["selection_rule"]) == {"tied_cheapest"}
 
     # Stage 2: verify, one row made FALSE_FEASIBLE.
-    false_feasible = design_ids[0]
+    false_feasible = next(r for r in design_ids if r.startswith("joint-off_"))
     compiler = ReplayingCompiler(false_feasible)
     assert verify_runner.run(run_dir, workers=2, compile_fn=compiler,
                              min_free_bytes=0) == 0
@@ -136,21 +136,50 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
     assert verdicts.pop(false_feasible) == "FALSE_FEASIBLE"
     assert set(verdicts.values()) == {"EXACT"}, verdicts
 
+    # Stage 2b: twins, then compile the differing ones.
+    from src.training import align_twins
+    assert align_twins.run(run_dir, data=_synthetic_data(), executor_factory=_serial) == 0
+    twin_files = [f for f in os.listdir(os.path.join(run_dir, "rows")) if "_joint-off-al_s" in f]
+    assert len(twin_files) == 1
+    twins = pd.read_csv(os.path.join(run_dir, "rows", twin_files[0]), keep_default_na=False, dtype=str)
+    sources = [r for r in design_ids if r.startswith("joint-off_")]
+    assert sorted(twins["row_id"]) == sorted(align_twins.twin_row_id(r) for r in sources)
+    assert set(twins["infeasible"]) == {""}
+    pending = verify_runner.pending_rows(run_dir)
+    differing = set(twins.loc[twins["twin_identical"] == "False", "row_id"])
+    assert set(pending) == differing
+    compiler2 = ReplayingCompiler(false_feasible_row=None)
+    assert verify_runner.run(run_dir, workers=2, compile_fn=compiler2, min_free_bytes=0) == 0
+    assert sorted(compiler2.compiled) == sorted(differing)
+    verification = pd.read_csv(os.path.join(run_dir, "verification.csv"),
+                               keep_default_na=False, dtype=str)
+    by_id = verification.set_index("row_id")
+    for _, t in twins.iterrows():
+        if t["twin_identical"] == "True":
+            assert by_id.loc[t["row_id"], "copied_from"] == t["source_row_id"]
+            assert by_id.loc[t["row_id"], "verdict"] == by_id.loc[t["source_row_id"], "verdict"]
+        else:
+            assert by_id.loc[t["row_id"], "copied_from"] == ""
+            assert by_id.loc[t["row_id"], "verdict"] == "EXACT"
+
     # Stage 3: render.
     out_dir = str(tmp_path / "figures")
     deliverables = run_plot_mode(results_dir=run_dir, output_dir=out_dir,
                                  allow_partial_family=True)
     by_number = {d.number: d for d in deliverables}
-    assert {9, 10} <= set(by_number)
+    assert {9, 10, 11} <= set(by_number)
+    assert by_number[11].data["n_pairs"].max() >= 1
     misses_csv = [p for p in by_number[9].paths if p.endswith("_misses.csv")]
     assert len(misses_csv) == 1 and os.path.dirname(misses_csv[0]) == out_dir
     misses = pd.read_csv(misses_csv[0], keep_default_na=False, dtype=str)
-    assert list(misses["row_id"]) == [false_feasible]
-    assert list(misses["verdict"]) == ["FALSE_FEASIBLE"]
+    expected_dropped = {false_feasible} | {
+        t for t in twins.row_id if by_id.loc[t, "verdict"] == "FALSE_FEASIBLE"}
+    assert sorted(misses["row_id"]) == sorted(expected_dropped)
+    assert set(misses["verdict"]) == {"FALSE_FEASIBLE"}
 
     frame = load_campaign(run_dir)
     assert false_feasible not in set(frame["row_id"])
-    assert sorted(frame["row_id"]) == sorted(verdicts)
+    assert set(frame["row_id"]) == set(by_id.index) - expected_dropped
     p4c_blocks = dict(zip(verification["row_id"],
                           pd.to_numeric(verification["p4c_blocks"])))
     for row_id, blocks in zip(frame["row_id"], frame["blocks"]):
