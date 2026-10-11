@@ -1398,6 +1398,10 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   one per distinct raw feature across all tasks; codeword fields follow
   resolve_feature_plan.
 
+  The parameter notes below were written for the two-task form: read
+  clf_<task> / feature_intervals_<task> / selected_features_<task> as that
+  TaskSpec's trees / intervals / features.
+
   match_type: passed straight through to
   generate_tables_and_apply. 'ternary' (the default) switches
   classification tables to resources/table_classification.p4 with ternary
@@ -1430,9 +1434,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   Codewords are computed PER MODEL, against that model's OWN
   feature_intervals_app / feature_intervals_ddos: under genuine disjoint
   encoding the two models' intervals for a shared feature name can differ,
-  so one combined call would produce wrong codewords for one side. The ddos
-  trees are re-keyed by +num_trees_app to match the tree_id convention
-  `generate_P4_tables_and_apply` reads codewords with.
+  so one combined call would produce wrong codewords for one side. Each
+  task's codewords are keyed by that task's own tree id.
 
   Doing that requires each model's ORIGINAL ORDERED training-feature-name
   list, which is why `selected_features_app`/`selected_features_ddos` exist
