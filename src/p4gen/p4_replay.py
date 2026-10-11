@@ -6,10 +6,10 @@ scripts/; the script keeps thin wrappers with the old signatures."""
 import math
 import re
 from collections import namedtuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.p4model.packing import crossbar_stages_needed
-from src.p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK, TASKS,
+from src.p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
                                  VOTE_EPILOGUE_STAGES)
 from src.p4model.ranges import compiler_range_rows
 from src.p4model.registers import gated_block_interior_stages, readiness_levels_for
@@ -23,11 +23,13 @@ from src.p4model.usage import tree_readiness_levels
 class Program:
     """One parsed generated program: tables (name -> key fields), widths /
     bits (field -> crossbar bytes / declared bits), sizes (table -> declared
-    entries)."""
+    entries), priorities (table -> its @placement_priority, for every table
+    that carries one)."""
     tables: dict
     widths: dict
     bits: dict
     sizes: dict
+    priorities: dict = field(default_factory=dict)
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -76,9 +78,20 @@ def _parse_sizes(text):
             sizes[current] = int(size.group(1))
     return sizes
 
+_PLACEMENT_PRIORITY = re.compile(r"@placement_priority\((\d+)\)\s*\n\s*table\s+(\w+)\s*\{")
+
+
+def _parse_priorities(text):
+    """table name -> the @placement_priority pragma directly above it (the
+    generator emits one on every classification tree table, N - i for task i
+    of N -- program.placement_priorities)."""
+    return {name: int(priority)
+            for priority, name in _PLACEMENT_PRIORITY.findall(text)}
+
+
 def parse_program_text(text):
     tables, widths, bits = _parse_keys(text)
-    return Program(tables, widths, bits, _parse_sizes(text))
+    return Program(tables, widths, bits, _parse_sizes(text), _parse_priorities(text))
 
 
 def parse_program(p4_path):
@@ -86,26 +99,32 @@ def parse_program(p4_path):
         return parse_program_text(handle.read())
 
 
-_TREE_TASK = re.compile(r'^get_classification_tree_(%s)_\d+$' % '|'.join(TASKS))
+# get_classification_tree_<task>_<i>: the task is everything between the
+# prefix and the LAST _<digits> (task names are [a-z0-9_]+, so they may hold
+# underscores and digits themselves).
+_TREE_TASK = re.compile(r'^get_classification_tree_(\w+)_(\d+)$')
 _RANGE_TABLE_CODE = re.compile(r'^table_\d+_(\w+)$')
 
 
 def table_tasks(tables):
     """{table name: task label} for every classification tree and range table
     of one generated program -- the replay's counterpart of
-    evaluation._pool_inputs' ternary_task/range_task labels (APP_TASK,
-    DDOS_TASK, SHARED_TASK).
+    evaluation._pool_inputs' ternary_task/range_task labels (a task name,
+    SHARED_TASK, or -- with three or more tasks -- a frozenset of task names;
+    see usage.tree_readiness_levels).
 
     A tree's task is in its name, get_classification_tree_<task>_<i>. A range
     table's is NOT, reliably: build_p4_script names it table_<n>_<resolved>,
-    where resolved is task-prefixed (app_<f>/ddos_<f>) only when both models
-    split feature f with DIFFERENT intervals; a feature one model selects
-    alone, or both split identically, stays un-prefixed
-    (_resolve_disjoint_feature_plan). So the name gives the code field the
-    table writes, meta.code_<resolved>, and the task comes from which trees
-    key on that field: one task's trees -> that task, both -> SHARED_TASK.
-    A field no tree keys on (not emitted today) is labelled SHARED_TASK, so
-    every tree waits for it -- the side that cannot under-count."""
+    where resolved is task-prefixed (app_<f>/ddos_<f>, or <t1>_<t2>_<f> for a
+    group of tasks) only when the tasks selecting feature f split it with
+    DIFFERENT intervals; a feature one task selects alone, or all of its
+    selectors split identically, stays un-prefixed (resolve_feature_plan).
+    So the name gives the code field the table writes, meta.code_<resolved>,
+    and the task comes from which trees key on that field: one task's trees ->
+    that task, every task's -> SHARED_TASK, some but not all -> the frozenset
+    of them. A field no tree keys on (not emitted today) is labelled
+    SHARED_TASK, so every tree waits for it -- the side that cannot
+    under-count."""
     labels, readers = {}, {}
     for name, keys in tables.items():
         match = _TREE_TASK.match(name)
@@ -114,14 +133,45 @@ def table_tasks(tables):
             for key in keys:
                 readers.setdefault(key, set()).add(match.group(1))
         elif name.startswith('get_classification_tree'):
-            raise ValueError('%s: a classification tree must name its task (%s)'
-                             % (name, ', '.join(TASKS)))
+            raise ValueError('%s: a classification tree must be named '
+                             'get_classification_tree_<task>_<index>' % name)
+    every_task = set(labels.values())
     for name in tables:
         match = _RANGE_TABLE_CODE.match(name)
         if match:
             tasks = readers.get('code_' + match.group(1), set())
-            labels[name] = next(iter(tasks)) if len(tasks) == 1 else SHARED_TASK
+            if len(tasks) == 1:
+                labels[name] = next(iter(tasks))
+            elif not tasks or tasks == every_task:
+                labels[name] = SHARED_TASK
+            else:
+                labels[name] = frozenset(tasks)
     return labels
+
+
+def _tree_priority(program, name, task):
+    """A tree table's @placement_priority: the pragma the program carries, or,
+    for a program generated before the pragma existed, the two-task constant
+    the generator has emitted since C5 (program.PLACEMENT_PRIORITY)."""
+    if name in program.priorities:
+        return program.priorities[name]
+    if task not in PLACEMENT_PRIORITY:
+        raise ValueError('%s carries no @placement_priority and %r is not one of '
+                         'the two-task names (%s) a default exists for'
+                         % (name, task, ', '.join(PLACEMENT_PRIORITY)))
+    return PLACEMENT_PRIORITY[task]
+
+
+def _label_tasks(range_task, ternary_task):
+    """Every task name one program's labels use: the trees' tasks plus any a
+    range-table label names."""
+    names = set(ternary_task)
+    for label in range_task:
+        if isinstance(label, frozenset):
+            names |= label
+        elif label != SHARED_TASK:
+            names.add(label)
+    return tuple(sorted(names))
 
 def declared_prices(program):
     """The model's own per-table price for every priced table of a program
@@ -218,12 +268,14 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     # p4c's own.
     ternary_plan = crossbar_stages_needed(
         ternary_specs,
-        readiness_levels=tree_readiness_levels(range_plan.table_stages,
-                                               range_task, ternary_task),
+        readiness_levels=tree_readiness_levels(
+            range_plan.table_stages, range_task, ternary_task,
+            tasks=_label_tasks(range_task, ternary_task)),
         key_fields=ternary_fields, unavailable_stages=interior,
         key_field_bits=ternary_key_bits,
         seed_stages=range_plan.stage_loads,
-        placement_priority=[PLACEMENT_PRIORITY[task] for task in ternary_task])
+        placement_priority=[_tree_priority(program, name, task)
+                            for name, task in zip(ternary_names, ternary_task)])
 
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
     return ReplayPlans(predicted, range_plan, ternary_plan, range_names,

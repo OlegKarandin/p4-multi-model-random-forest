@@ -1,6 +1,9 @@
 """These describe the program *this* generator emits, not the chip it targets;
 a reader modelling a different P4 program changes this file, not target.py."""
 import math
+import re
+from dataclasses import dataclass
+from typing import Mapping, Optional, Sequence
 
 # Width of every per-feature value field the range-matching tables key on
 # (build_p4_script.py:775 emits "bit<16> <feature>_val" for each selected
@@ -67,10 +70,72 @@ TASKS = (APP_TASK, DDOS_TASK)
 # Never a ternary_task value: every classification tree belongs to one task.
 SHARED_TASK = "shared"
 
-# The @placement_priority the generator puts on every classification tree
-# table (build_p4_script.generate_P4_tables_and_apply): ddos trees 2, app trees
-# 1. p4c's table placer takes the highest-priority ready table first, so the
-# pragma pins which task's key is FIRST in a stage both tasks share -- the key
-# every other key in that stage is priced behind. packing.crossbar_stages_needed
-# replays the same order (placement_priority, audit C5).
-PLACEMENT_PRIORITY = {DDOS_TASK: 2, APP_TASK: 1}
+_TASK_NAME = re.compile(r"^[a-z0-9_]+$")
+
+
+@dataclass(frozen=True)
+class TaskSpec:
+  """One concurrent tree model of the program (spec 2026-10-11): the single
+  description of a task shared by the generator and the model.
+
+  name        : identifier used in table and field names
+                (get_classification_tree_<name>_<i>, vote_<name>,
+                code_<name>_<feature>), [a-z0-9_]+, unique within a program,
+                never SHARED_TASK.
+  num_classes : the task's class count (sizes class_tree_<name>_<i> and the
+                vote table).
+  trees       : the task's fitted decision trees, e.g. forest.estimators_
+                (generator only; empty means the task has no trees).
+  features    : the ORDERED training-feature-name list the trees were fitted
+                on (column i of the training data is features[i]), or None
+                when unknown -- the generator then sizes the task's tables by
+                leaf count instead of codeword count.
+  intervals   : raw feature name -> interval list, the task's own
+                discretisation (under 'joint' every task passes the same dict).
+
+  Task ORDER is meaningful: task i of N gets @placement_priority N - i
+  (placement_priorities), so the first task's trees are placed first in a
+  stage they share. The generator emits the tasks in the REVERSE order
+  (lowest priority first); for the two-task program, order (ddos, app), that
+  is today's program text exactly."""
+  name: str
+  num_classes: int
+  trees: Sequence = ()
+  features: Optional[Sequence[str]] = None
+  intervals: Optional[Mapping] = None
+
+  def __post_init__(self):
+    if not isinstance(self.name, str) or not _TASK_NAME.match(self.name):
+      raise ValueError("TaskSpec name %r must match [a-z0-9_]+ (it is spliced "
+                       "into P4 table and field names)" % (self.name,))
+    if self.name == SHARED_TASK:
+      raise ValueError("TaskSpec name %r is reserved for range tables every "
+                       "task reads" % SHARED_TASK)
+
+
+def task_names(tasks):
+  """The names of a task sequence, in order; raises unless they are unique."""
+  names = [task.name if isinstance(task, TaskSpec) else task for task in tasks]
+  if len(set(names)) != len(names):
+    raise ValueError("task names must be unique, got %s" % names)
+  return names
+
+
+def placement_priorities(tasks):
+  """{task name: @placement_priority} for tasks in the given order: task i of
+  N (0-based) gets N - i. p4c's table placer takes the highest-priority ready
+  table first, so the first task's trees are placed first in a stage several
+  tasks share -- the key every other key in that stage is priced behind.
+  packing.crossbar_stages_needed replays the same order (placement_priority,
+  audit C5)."""
+  names = task_names(tasks)
+  return {name: len(names) - index for index, name in enumerate(names)}
+
+
+# The two-task program's task order, ddos first, and the @placement_priority
+# the generator has put on every classification tree table since C5: ddos
+# trees 2, app trees 1. Kept as a constant for the two-task callers
+# (evaluation._pool_inputs' labels via usage.assemble_usage) and for replaying
+# a program that carries no @placement_priority pragma.
+TWO_TASK_ORDER = (DDOS_TASK, APP_TASK)
+PLACEMENT_PRIORITY = placement_priorities(TWO_TASK_ORDER)

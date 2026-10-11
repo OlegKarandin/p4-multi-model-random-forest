@@ -114,7 +114,7 @@ class ResourceUsage:
   ternary_tables: int    # len(ternary_table_specs); see class docstring
 
 
-def tree_readiness_levels(range_table_stages, range_task, ternary_task):
+def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TASKS):
   """The earliest stage each classification tree may occupy (audit C1).
 
   A tree keys on its own task's meta.code_<feature> fields, and a code field
@@ -127,9 +127,15 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task):
   range_table_stages : StagePlan.table_stages of the range pool, one stage
                        index per range table.
   range_task         : one label per range table, positionally aligned:
-                       program.APP_TASK, DDOS_TASK or SHARED_TASK.
-  ternary_task       : one label per classification tree: APP_TASK or
-                       DDOS_TASK.
+                       a task name, SHARED_TASK (every task reads it), or a
+                       frozenset of task names (the tasks it serves, spec
+                       2026-10-11 -- a range table of an N-task program can
+                       serve some tasks but not all).
+  ternary_task       : one label per classification tree: a task name.
+  tasks              : the task names labels may use; program.TASKS (app,
+                       ddos) for the two-task callers. A label outside it
+                       raises, so a misspelt label cannot silently make a
+                       tree wait for nothing.
   Returns one level per tree, aligned with ternary_task.
 
   Under 'joint' every range table is SHARED_TASK, so every tree's level is
@@ -143,15 +149,29 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task):
         "tree_readiness_levels: got %d range table stages for %d range_task "
         "labels; the two must be positionally aligned, one per range table"
         % (len(range_table_stages), len(range_task)))
-  unknown = (set(range_task) - set(TASKS) - {SHARED_TASK}) | (set(ternary_task) - set(TASKS))
+  known = set(tasks)
+
+  def _serves(label):
+    # The tasks a range-table label names; None for an unknown label.
+    if label == SHARED_TASK:
+      return known
+    if isinstance(label, frozenset):
+      return label if label and label <= known else None
+    return {label} if label in known else None
+
+  unknown = ({repr(label) for label in range_task if _serves(label) is None}
+             | {repr(label) for label in ternary_task
+                if isinstance(label, frozenset) or label not in known})
   if unknown:
     raise ValueError(
         "tree_readiness_levels: unknown task label(s) %s; range tables take "
-        "%s or %r, trees take %s" % (sorted(unknown), TASKS, SHARED_TASK, TASKS))
+        "%s, %r or a frozenset of them, trees take %s"
+        % (sorted(unknown), tuple(tasks), SHARED_TASK, tuple(tasks)))
+  served = [_serves(label) for label in range_task]
   ready = {}
-  for task in TASKS:
-    own = [stage for stage, label in zip(range_table_stages, range_task)
-           if label in (task, SHARED_TASK)]
+  for task in known:
+    own = [stage for stage, tasks_served in zip(range_table_stages, served)
+           if task in tasks_served]
     ready[task] = max(own) + 1 if own else FLOW_HASH_LEVEL + 1
   return [ready[task] for task in ternary_task]
 
