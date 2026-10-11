@@ -35,9 +35,11 @@ DESIGNS = (
     ('disjoint', '035', 0, 3, 12), ('disjoint', '035', 1, 5, 13),
     ('disjoint', '050', 2, 4, 14), ('disjoint', '025', 3, 6, 15),
     ('disjoint', '075', 4, 3, 16),
-    ('joint', '035', 0, 3, 12), ('joint', '035', 1, 5, 13),
-    ('joint', '050', 2, 4, 14), ('joint', '025', 3, 6, 15),
-    ('joint', '075', 4, 3, 16),
+    # Joint keys grow with every task's thresholds (a 3-task k=3 union already
+    # passed the 64-byte crossbar limit), so the joint designs use small k.
+    ('joint', '035', 0, 2, 12), ('joint', '035', 1, 3, 13),
+    ('joint', '050', 2, 2, 14), ('joint', '025', 3, 3, 15),
+    ('joint', '075', 4, 2, 16),
 )
 ARM = {'disjoint': 'independent', 'joint': 'joint-off'}
 
@@ -69,7 +71,10 @@ def build(run_dir, out_dir, encoding, m, split, k, third_split):
 
 
 def compare(design, path, out_dir):
-    model = model_breakdown(parse_program(path), design)
+    try:
+        model = model_breakdown(parse_program(path), design)
+    except Exception as exc:  # noqa: BLE001 -- e.g. CrossbarKeyTooWide: reported
+        return {'design': design, 'error': f'model refuses: {type(exc).__name__}: {exc}'}
     compile_dir = os.path.join(out_dir, design)
     result = compile_p4(path, compile_dir, timeout_seconds=1800)
     logs = os.path.join(compile_dir, 'pipe', 'logs')
@@ -108,7 +113,7 @@ def main(argv=None):
     print('|---|---|---|---|---|---|')
     for r in rows:
         if 'error' in r:
-            print(f"| {r['design']} | compile failed: {r['error']} |||||")
+            print(f"| {r['design']} | {r['error']} |||||")
             continue
         print(f"| {r['design']} | {r['model_stage_depth']} | {r['p4c_stage_depth']} | "
               f"{r['model_blocks']} | {r['p4c_blocks']} | {r['tables_exact']}/{r['tables']} |")
