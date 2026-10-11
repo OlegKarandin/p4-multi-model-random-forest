@@ -1,0 +1,229 @@
+"""N-task resource model and generator (spec 2026-10-11).
+
+The N = 2 compatibility gate (byte-identical programs, identical breakdowns on
+every archived design) is scripts/ntask_regression.py, run against data that
+is not in git; these tests pin the N-generic behaviour on synthetic forests:
+N = 1 and N = 3 programs generate, parse back through p4_replay and price;
+placement priorities are N..1; disjoint grouping on a hand-made 3-task plan;
+and the two-task wrapper is exactly the N-task generator with (ddos, app)."""
+import os
+import re
+
+import numpy as np
+import pytest
+from sklearn.ensemble import RandomForestClassifier
+
+from src.p4gen import build_p4_script as bps
+from src.p4gen.p4_replay import (model_breakdown, parse_program,
+                                 parse_program_text, table_tasks)
+from src.p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
+                                 SHARED_TASK, TaskSpec, placement_priorities)
+from src.p4model.usage import tree_readiness_levels
+
+FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
+            "flow_iat_min", "bwd_packet_length_max"]
+
+
+def _forest(n_classes, seed, features=FEATURES, n_trees=2, depth=3):
+    rng = np.random.RandomState(seed)
+    X = rng.randint(0, 2000, size=(300, len(features)))
+    y = (X[:, seed % len(features)] // (2000 // n_classes)).clip(0, n_classes - 1)
+    return RandomForestClassifier(n_estimators=n_trees, max_depth=depth,
+                                  random_state=seed).fit(X, y)
+
+
+def _task(name, n_classes, seed, features=FEATURES, intervals=None, **kwargs):
+    forest = _forest(n_classes, seed, features, **kwargs)
+    ordered = list(features)
+    if intervals is None:
+        intervals = bps.get_feature_intervals(forest, features)
+    else:
+        # Hand-made intervals do not come from these trees, so no codewords:
+        # without the ordered feature list the tables are sized by leaves.
+        ordered = None
+    return TaskSpec(name=name, num_classes=n_classes, trees=list(forest.estimators_),
+                    features=ordered, intervals=intervals)
+
+
+def _generate(tmp_path, tasks, name="design.p4"):
+    path = bps.generate_p4_program(tasks, output_dir=str(tmp_path) + os.sep,
+                                   output_filename=name)
+    with open(path, encoding="utf-8") as handle:
+        return path, handle.read()
+
+
+# --- task descriptor and placement priority -------------------------------
+
+def test_placement_priority_is_n_minus_index():
+    assert placement_priorities(["a", "b", "c"]) == {"a": 3, "b": 2, "c": 1}
+    assert placement_priorities(["only"]) == {"only": 1}
+    # N = 2 in the (ddos, app) order reproduces the constant every two-task
+    # caller has used since C5.
+    assert placement_priorities([DDOS_TASK, APP_TASK]) == PLACEMENT_PRIORITY
+    assert PLACEMENT_PRIORITY == {DDOS_TASK: 2, APP_TASK: 1}
+
+
+@pytest.mark.parametrize("name", ["App", "a-b", "", "shared", "x y"])
+def test_task_names_must_be_lowercase_identifiers_and_not_reserved(name):
+    with pytest.raises(ValueError):
+        TaskSpec(name=name, num_classes=2)
+
+
+def test_task_names_must_be_unique(tmp_path):
+    a = _task("a", 2, 1)
+    with pytest.raises(ValueError, match="unique"):
+        bps.generate_p4_program([a, a], output_dir=str(tmp_path) + os.sep)
+
+
+# --- disjoint grouping ------------------------------------------------------
+
+def test_disjoint_grouping_on_a_hand_made_three_task_plan():
+    one = [(0, 10), (11, 65535)]
+    two = [(0, 20), (21, 65535)]
+    three = [(0, 30), (31, 65535)]
+    x = {"f_all": one, "f_xy": one, "f_each": one, "f_x": one}
+    y = {"f_all": one, "f_xy": one, "f_each": two, "f_y": two}
+    z = {"f_all": one, "f_xy": two, "f_each": three}
+    plan = bps.resolve_feature_plan([("x", x), ("y", y), ("z", z)])
+    assert {name: (raw, models) for name, (raw, _, models) in plan.items()} == {
+        "f_all": ("f_all", {"x", "y", "z"}),   # one group = every selecting task
+        "x_y_f_xy": ("f_xy", {"x", "y"}),       # group named in task order
+        "z_f_xy": ("f_xy", {"z"}),
+        "x_f_each": ("f_each", {"x"}),
+        "y_f_each": ("f_each", {"y"}),
+        "z_f_each": ("f_each", {"z"}),
+        "f_x": ("f_x", {"x"}),                  # only one task selects it
+        "f_y": ("f_y", {"y"}),
+    }
+    # Program order is the reverse of task order (lowest priority first),
+    # each task's features in its own order, a group at its first member.
+    assert list(plan) == ["f_all", "z_f_xy", "z_f_each", "x_y_f_xy", "y_f_each",
+                          "f_y", "x_f_each", "f_x"]
+
+
+def test_two_task_grouping_matches_the_legacy_resolver():
+    one = [(0, 10), (11, 65535)]
+    two = [(0, 20), (21, 65535)]
+    app = {"a": one, "both": one, "x": one}
+    ddos = {"d": two, "both": one, "x": two}
+    legacy = bps._resolve_disjoint_feature_plan(app, ddos)
+    assert bps.resolve_feature_plan([(DDOS_TASK, ddos), (APP_TASK, app)]) == legacy
+    assert list(legacy) == ["a", "both", "app_x", "d", "ddos_x"]
+
+
+# --- generated programs ------------------------------------------------------
+
+def test_single_task_program_generates_parses_and_prices(tmp_path):
+    path, text = _generate(tmp_path, [_task("solo", 2, 3)])
+    assert re.findall(r"@placement_priority\((\d+)\)\s*\n\s*table get_classification_tree_solo_(\d+)",
+                      text) == [("1", "0"), ("1", "1")]
+    assert "table vote_solo" in text
+    assert "_app" not in text and "_ddos" not in text
+    breakdown = model_breakdown(parse_program(path))
+    assert breakdown["stage_depth"] > 0 and breakdown["blocks"] > 0
+    assert {t["table"] for t in breakdown["tables"] if t["kind"] == "ternary"} == {
+        "get_classification_tree_solo_0", "get_classification_tree_solo_1"}
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint"])
+def test_three_task_program_generates_parses_and_prices(tmp_path, encoding):
+    tasks = [_task("ddos", 2, 1), _task("app", 3, 2), _task("third", 4, 5, n_trees=1)]
+    if encoding == "joint":
+        joint = bps.feature_intervals_from_nodes(bps.merge_tree_nodes(*(
+            bps.tree_nodes_for(type("F", (), {"estimators_": t.trees})(), FEATURES)
+            for t in tasks)))
+        tasks = [TaskSpec(t.name, t.num_classes, t.trees, t.features, joint) for t in tasks]
+    path, text = _generate(tmp_path, tasks)
+    found = re.findall(r"@placement_priority\((\d+)\)\s*\n\s*table get_classification_tree_(\w+)_(\d+)",
+                       text)
+    assert {(task, int(p)) for p, task, _ in found} == {("ddos", 3), ("app", 2), ("third", 1)}
+    # Tree ids are per task, from 0, with no global offset.
+    assert sorted((task, int(i)) for _, task, i in found) == [
+        ("app", 0), ("app", 1), ("ddos", 0), ("ddos", 1), ("third", 0)]
+    for task in ("ddos", "app", "third"):
+        assert "table vote_%s" % task in text
+        assert "bit<%d> classification_%s;" % ({"ddos": 1, "app": 2, "third": 2}[task], task) in text
+    program = parse_program(path)
+    assert program.priorities == {name: int(p) for p, task, i in found
+                                  for name in ["get_classification_tree_%s_%s" % (task, i)]}
+    breakdown = model_breakdown(program)
+    assert breakdown["stage_depth"] > 0 and breakdown["blocks"] > 0
+    assert sum(t["kind"] == "ternary" for t in breakdown["tables"]) == 5
+
+
+def test_disjoint_three_task_program_names_groups_and_labels_their_range_tables(tmp_path):
+    one = [(0, 10), (11, 65535)]
+    two = [(0, 20), (21, 65535)]
+    common = ["flow_iat_max", "bwd_iat_mean"]
+    tasks = [
+        _task("x", 2, 1, common, intervals={"flow_iat_max": one, "bwd_iat_mean": one}),
+        _task("y", 2, 2, common, intervals={"flow_iat_max": one, "bwd_iat_mean": two}),
+        _task("z", 2, 3, common, intervals={"flow_iat_max": two, "bwd_iat_mean": two}),
+    ]
+    path, text = _generate(tmp_path, tasks)
+    for field in ("code_x_y_flow_iat_max", "code_z_flow_iat_max",
+                  "code_x_bwd_iat_mean", "code_y_z_bwd_iat_mean"):
+        assert re.search(r"bit<\d+> %s;" % field, text), field
+    # Registers stay per distinct raw feature: one value field each.
+    assert text.count("bit<16> flow_iat_max_val;") == 1
+    labels = table_tasks(parse_program(path).tables)
+    range_labels = {name.split("_", 2)[2]: label for name, label in labels.items()
+                    if name.startswith("table_")}
+    assert range_labels == {"x_y_flow_iat_max": frozenset({"x", "y"}),
+                            "z_flow_iat_max": "z", "x_bwd_iat_mean": "x",
+                            "y_z_bwd_iat_mean": frozenset({"y", "z"})}
+    model_breakdown(parse_program(path))
+
+
+def test_two_task_wrapper_is_the_n_task_generator_in_ddos_app_order(tmp_path):
+    clf_app, clf_ddos = _forest(3, 2), _forest(2, 1)
+    app_iv = bps.get_feature_intervals(clf_app, FEATURES)
+    ddos_iv = bps.get_feature_intervals(clf_ddos, FEATURES)
+    legacy = bps.generate_P4_code(
+        3, 2, clf_app, clf_ddos, feature_intervals_app=app_iv,
+        feature_intervals_ddos=ddos_iv, output_dir=str(tmp_path) + os.sep,
+        output_filename="legacy.p4", selected_features_app=FEATURES,
+        selected_features_ddos=FEATURES)
+    _, generic = _generate(tmp_path, [
+        TaskSpec(DDOS_TASK, 2, list(clf_ddos.estimators_), FEATURES, ddos_iv),
+        TaskSpec(APP_TASK, 3, list(clf_app.estimators_), FEATURES, app_iv)], "generic.p4")
+    with open(legacy, encoding="utf-8") as handle:
+        assert handle.read() == generic
+
+
+# --- replay labels and readiness ---------------------------------------------
+
+def test_tree_readiness_waits_only_for_range_tables_serving_the_trees_task():
+    stages = (4, 6, 8)
+    labels = [frozenset({"x", "y"}), "z", SHARED_TASK]
+    assert tree_readiness_levels(stages, labels, ["x", "y", "z"],
+                                 tasks=("x", "y", "z")) == [9, 9, 9]
+    assert tree_readiness_levels(stages[:2], labels[:2], ["x", "y", "z"],
+                                 tasks=("x", "y", "z")) == [5, 5, 7]
+    with pytest.raises(ValueError, match="unknown task"):
+        tree_readiness_levels((4,), [frozenset({"x", "w"})], ["x"], tasks=("x",))
+
+
+def test_replay_recovers_any_task_name_from_tree_tables():
+    tables = {
+        "get_classification_tree_t_one_0": ["code_a", "code_t_one_t_two_b"],
+        "get_classification_tree_t_two_3": ["code_t_one_t_two_b", "code_c"],
+        "get_classification_tree_t3_1": ["code_c"],
+        "table_0_a": ["a_val"], "table_1_t_one_t_two_b": ["b_val"],
+        "table_2_c": ["c_val"],
+    }
+    assert table_tasks(tables) == {
+        "get_classification_tree_t_one_0": "t_one",
+        "get_classification_tree_t_two_3": "t_two",
+        "get_classification_tree_t3_1": "t3",
+        "table_0_a": "t_one",
+        "table_1_t_one_t_two_b": frozenset({"t_one", "t_two"}),
+        "table_2_c": frozenset({"t_two", "t3"}),
+    }
+
+
+def test_program_without_pragmas_falls_back_to_the_two_task_priorities():
+    text = ("struct m {\n bit<4> code_a;\n bit<16> a_val;\n}\n"
+            "    table get_classification_tree_app_0 {\n        key = {\n"
+            "            meta.code_a : ternary;\n        }\n        size = 3;\n    }\n")
+    assert parse_program_text(text).priorities == {}

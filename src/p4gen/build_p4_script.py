@@ -29,6 +29,8 @@ from src.p4model.target import (
 )
 from src.p4model import lanes
 from src.p4model.names import normalise_feature_name
+from src.p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
+                                 TaskSpec, placement_priorities, task_names)
 
 INFINITE = (2**16)-1
 MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
@@ -869,53 +871,67 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
     output_file.write(json.dumps(table_entries))
 
 
-def _resolve_disjoint_feature_plan(feature_intervals_app, feature_intervals_ddos):
-  '''Decides, per feature name, whether App and DDoS can share ONE
-  discretization table/codeword field or need independent, namespaced
-  ones. Returns an ordered dict: resolved_name -> (raw_feature_name,
-  intervals, models), where `models` is a subset of {"app","ddos"} naming
-  which model(s) actually read this resolved feature's code_<resolved_name>
-  field, and `raw_feature_name` is the underlying feature this resolved
-  entry discretizes (needed because the RAW VALUE register/computation is
-  always shared and keyed by raw_feature_name, never by resolved_name).
+def resolve_feature_plan(task_intervals):
+  '''Decides, per raw feature, which tasks can share ONE discretization
+  table/codeword field and which need their own (spec 2026-10-11, the N-task
+  generalisation of the two-task resolver this replaced).
 
-  Two models share a plain (non-namespaced) entry for a feature only when
-  BOTH select it AND their interval lists are identical -- true by
-  construction for joint-derived callers (both pass the literally same
-  dict), and true only coincidentally for disjoint-derived callers (each
-  model's intervals come from its own independently-trained tree).
-  Features selected by only one model are never namespaced (nothing to
-  disambiguate).
-  '''
-  # NOTE: a feature selected by only ONE model must never be namespaced --
-  # there is nothing to disambiguate against, since the other model doesn't
-  # discretize it at all. Namespacing only applies when BOTH models select
-  # the same feature name with DIFFERING intervals (genuine disjoint
-  # encoding).
+  task_intervals: (task name, {raw feature: intervals}) pairs in TASK order
+  (the order that sets @placement_priority, program.placement_priorities).
+
+  Returns an ordered dict: resolved_name -> (raw_feature_name, intervals,
+  models), where `models` is the set of task names whose classification keys
+  read this resolved entry's code_<resolved_name> field, and
+  `raw_feature_name` is the underlying feature it discretizes (the RAW VALUE
+  register/computation is always shared and keyed by raw_feature_name, never
+  by resolved_name).
+
+  Per raw feature f, the tasks selecting it are grouped by identical interval
+  lists; each group gets one entry, named
+    - `f` when the group is EVERY task selecting f (all of them split it
+      identically, or only one task selects it at all -- nothing to
+      disambiguate), and otherwise
+    - `<t1>_..._<tm>_f`, the group's task names in task order (so a
+      single-task group is `<task>_f`).
+  For two tasks this is exactly the old rule: `f` when both select f with
+  identical intervals or one selects it alone, `app_f`/`ddos_f` otherwise.
+  Identical intervals are true by construction for joint-derived callers
+  (every task passes the literally same dict) and only coincidentally for
+  disjoint-derived ones.
+
+  Entry ORDER is program order, which is the reverse of task order: tasks
+  are walked lowest priority first, each task's features in its own dict
+  order, and a group's entry lands at its first member's position. For
+  (ddos, app) that is app's features, then ddos' -- the two-task program
+  text exactly.'''
   from collections import OrderedDict
+  order = task_names([name for name, _ in task_intervals])
+  intervals_of = {name: (intervals or {}) for name, intervals in task_intervals}
   resolved = OrderedDict()
-  seen = set()
-  for feature in feature_intervals_app:
-    seen.add(feature)
-    in_ddos = feature in feature_intervals_ddos
-    if in_ddos and feature_intervals_app[feature] == feature_intervals_ddos[feature]:
-      resolved[feature] = (feature, feature_intervals_app[feature], {"app", "ddos"})
-    elif in_ddos:
-      # Both models select it, but with differing intervals.
-      resolved["app_" + feature] = (feature, feature_intervals_app[feature], {"app"})
-    else:
-      # App-exclusive -- nothing to disambiguate.
-      resolved[feature] = (feature, feature_intervals_app[feature], {"app"})
-  for feature in feature_intervals_ddos:
-    if feature in seen and feature_intervals_app.get(feature) == feature_intervals_ddos[feature]:
-      continue  # already added as a shared entry above
-    if feature in seen:
-      # Both models select it, but with differing intervals.
-      resolved["ddos_" + feature] = (feature, feature_intervals_ddos[feature], {"ddos"})
-    else:
-      # DDoS-exclusive -- nothing to disambiguate.
-      resolved[feature] = (feature, feature_intervals_ddos[feature], {"ddos"})
+  emitted = set()
+  for task in reversed(order):
+    for feature, intervals in intervals_of[task].items():
+      selectors = [t for t in order if feature in intervals_of[t]]
+      group = tuple(t for t in selectors if intervals_of[t][feature] == intervals)
+      if (feature, group) in emitted:
+        continue
+      emitted.add((feature, group))
+      if len(group) == len(selectors):
+        name = feature
+      else:
+        name = "_".join(group) + "_" + feature
+      resolved[name] = (feature, intervals_of[task][feature], set(group))
   return resolved
+
+
+def _resolve_disjoint_feature_plan(feature_intervals_app, feature_intervals_ddos):
+  '''The two-task form of resolve_feature_plan, task order (ddos, app): a
+  feature both models select with IDENTICAL intervals shares one plain entry
+  (models {"app", "ddos"}), one both select with DIFFERING intervals gets
+  namespaced app_<f>/ddos_<f> entries, and a feature only one model selects
+  is never namespaced.'''
+  return resolve_feature_plan([(DDOS_TASK, feature_intervals_ddos),
+                               (APP_TASK, feature_intervals_app)])
 
 
 def code_field_container_sizes(resolved_plan, tasks):
@@ -960,10 +976,19 @@ def code_field_container_sizes(resolved_plan, tasks):
 
 
 def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):
+  """The two-task form of generate_actions (app's actions, then ddos')."""
+  return generate_actions(feature_intervals,
+                          [(APP_TASK, num_trees_app, bit_per_classes_app),
+                           (DDOS_TASK, num_trees_ddos, bit_per_classes_ddos)])
+
+
+def generate_actions(feature_intervals, task_trees):
   """
       action <ACTION_NAME> (bit<<ACTION_CODE_LENGTH>> code) {
           meta.code_<FEATURE_NAME> = code;
       }
+
+  task_trees: (task name, tree count, class bits) per task, in PROGRAM order.
   """
 
   # Calculate nºbits per feature in the codeword
@@ -989,10 +1014,9 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
   # shared, tree-parameterized action at all: each tree's table binds to its
   # own dedicated action that unconditionally writes only its own field. No
   # `tree` parameter, no conditional, no Mux -- this generalizes uniformly to
-  # any num_trees_app/num_trees_ddos, including 1. Validated against the real
+  # any tree count per task, including 1. Validated against the real
   # TNA compiler in p4/tofino_spike/tna_m2_numtrees3_spike.p4.
-  for task, n_trees, bits in (("app",  num_trees_app,  bit_per_classes_app),
-                              ("ddos", num_trees_ddos, bit_per_classes_ddos)):
+  for task, n_trees, bits in task_trees:
     if n_trees > 0:
       classification_action_template = ""
       for i in range(n_trees):
@@ -1020,7 +1044,34 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
                                   feature_table_sizes,
                                   classification_table_sizes,
                                   config: "p4_gen_config.P4GenConfig" = None):
+  """The two-task form of generate_tables_and_apply: app's trees, then
+  ddos', at program.PLACEMENT_PRIORITY. classification_table_sizes is keyed
+  by the old global tree id (0..num_trees_app-1 app, then ddos); the other
+  arguments are documented on generate_tables_and_apply."""
+  feature_names = list(feature_names)
+  task_tables = []
+  for task, n_trees, names, first in (
+      (APP_TASK, num_trees_app, feature_names_app, 0),
+      (DDOS_TASK, num_trees_ddos, feature_names_ddos, num_trees_app)):
+    sizes = [classification_table_sizes[first + i] for i in range(n_trees)]
+    task_tables.append((task, list(names) if names is not None else feature_names,
+                        sizes))
+  return generate_tables_and_apply(
+      feature_names, task_tables, match_type=match_type,
+      raw_feature_names=raw_feature_names,
+      feature_table_sizes=feature_table_sizes, priorities=PLACEMENT_PRIORITY,
+      config=config)
+
+
+def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
+                              raw_feature_names=None, *, feature_table_sizes,
+                              priorities, config: "p4_gen_config.P4GenConfig" = None):
   """
+  task_tables: (task name, key feature names, per-tree sizes) per task, in
+  PROGRAM order (the reverse of task order). Each task's tree i gets table
+  get_classification_tree_<task>_<i> keyed on meta.code_<name> for every
+  name in its key feature names, sized by sizes[i], with
+  @placement_priority(priorities[task]).
   config: Task 4 -- additive convenience. When given, `config.match_type`
   takes precedence over the individual `match_type` keyword argument above
   (which remains the source of truth when `config` is None, so every
@@ -1078,15 +1129,15 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   _resolve_disjoint_feature_plan) that get a range-matching table declared,
   one per resolved name, regardless of which model(s) actually read it.
 
-  feature_names_app / feature_names_ddos: Task 3, optional. Restrict which
-  of `feature_names` actually appear as a `meta.code_<resolved_name>` key
-  field in the App / DDoS classification tables respectively -- a resolved
-  name selected by only one model (e.g. a namespaced "ddos_<feature>" entry,
-  or a feature only one model selected at all) must not appear as a key in
-  the OTHER model's classification table. Each defaults to `feature_names`
-  itself when omitted (None), exactly reproducing every pre-Task-3 caller's
-  behavior -- both models keying on the identical, full feature set --
-  byte-for-byte.
+  feature_names_app / feature_names_ddos (two-task wrapper only): Task 3,
+  optional. Restrict which of `feature_names` actually appear as a
+  `meta.code_<resolved_name>` key field in the App / DDoS classification
+  tables respectively -- a resolved name selected by only one model (e.g. a
+  namespaced "ddos_<feature>" entry, or a feature only one model selected at
+  all) must not appear as a key in the OTHER model's classification table.
+  Each defaults to `feature_names` itself when omitted (None), exactly
+  reproducing every pre-Task-3 caller's behavior -- both models keying on
+  the identical, full feature set -- byte-for-byte.
 
   raw_feature_names: Task 3, optional. Maps resolved_name -> raw_feature_name
   for the range-matching tables' <FEATURE_NAME> substitution -- the RAW
@@ -1100,7 +1151,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   every pre-Task-3 caller's behavior (which never had this distinction)
   byte-for-byte.
 
-  feature_table_sizes / classification_table_sizes: real, per-table `size = `
+  feature_table_sizes / per-tree sizes: real, per-table `size = `
   values -- required (keyword-only, no default). A fixed literal size,
   disconnected from how many entries each table can actually receive, is not
   free on real hardware (reviews/p4_tofino_reference.md Sec 4.4), so every
@@ -1108,11 +1159,8 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   gets a TypeError at the call instead of a silently oversized table.
 
   feature_table_sizes maps RESOLVED feature name -> entry count (one entry
-  per interval; see get_table_entries' range-entry section).
-  classification_table_sizes maps tree_id -> entry count, keyed exactly the
-  way generate_P4_code's / get_table_entries' `codewords` dict is:
-  0..num_trees_app-1 for the app trees,
-  num_trees_app..num_trees_app+num_trees_ddos-1 for the ddos trees.
+  per interval; see get_table_entries' range-entry section). Each task's
+  per-tree sizes are indexed by that task's own tree id (no global offset).
   """
 
   if config is not None:
@@ -1143,12 +1191,9 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   apply_templates = ""
 
   feature_names = list(feature_names)
-  # Task 3: each model's classification tables key on its OWN resolved
-  # feature set -- defaulting to the full `feature_names` pool when not
-  # given, so every pre-Task-3 caller (a single shared feature_names list)
-  # is byte-identical.
-  feature_names_app = list(feature_names_app) if feature_names_app is not None else feature_names
-  feature_names_ddos = list(feature_names_ddos) if feature_names_ddos is not None else feature_names
+  # Task 3: each task's classification tables key on its OWN resolved
+  # feature set (the two-task wrapper defaults each to the full
+  # `feature_names` pool, so every pre-Task-3 caller is byte-identical).
   raw_feature_names = raw_feature_names or {}
 
   # Tier 3: the classification tables key on one field per selected feature
@@ -1164,41 +1209,34 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
         for feature in names
     )
 
-  classification_keys_by_task = {
-      "app": _classification_keys(feature_names_app),
-      "ddos": _classification_keys(feature_names_ddos),
-  }
-  tree_id_offset_by_task = {"app": 0, "ddos": num_trees_app}
-
-  #Classification tables
-  for task, n_trees in (("app", num_trees_app), ("ddos", num_trees_ddos)):
-    if n_trees > 0:
-      for i in range(n_trees):
-        table_template = classification_table_template
-        table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_"+task+"_"+str(i))
-        table_template = table_template.replace("<KEYS>", classification_keys_by_task[task])
-        table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_"+task+"_"+str(i)+";")
-        size = classification_table_sizes[tree_id_offset_by_task[task] + i]
-        table_template = table_template.replace("<SIZE>", str(size))
-        # C5 (Phase 3 step 1): pin a deterministic ternary-table placement
-        # order -- ddos trees ahead of app trees -- so the (later) packer's
-        # stage simulation knows which key p4c's greedy crossbar allocator
-        # serves first, instead of charging the worst-case ordering. Priority
-        # is per TASK, not per tree: every ddos tree gets the same (2), every
-        # app tree the same (1); p4c breaks ties within a priority by
-        # declaration order, which the "last-listed tree first" rule (Phase 3
-        # step 3, not this task) relies on.
-        priority = 2 if task == "ddos" else 1
-        table_template = table_template.replace(
-            "    table get_classification_tree_"+task+"_"+str(i)+" {",
-            "    @placement_priority("+str(priority)+")"
-            "\n    table get_classification_tree_"+task+"_"+str(i)+" {",
-            1,
-        )
-        table_templates += table_template
-        apply_templates_tmp += "\t\t\tget_classification_tree_"+task+"_"+str(i)+".apply();\n"
-      if task == "app":
-        apply_templates_tmp += "\n"
+  #Classification tables, task by task in program order
+  for position, (task, key_names, sizes) in enumerate(task_tables):
+    keys = _classification_keys(key_names)
+    for i, size in enumerate(sizes):
+      table_template = classification_table_template
+      table_template = table_template.replace("<TABLE_NAME>","get_classification_tree_"+task+"_"+str(i))
+      table_template = table_template.replace("<KEYS>", keys)
+      table_template = table_template.replace("<ACTIONS>", "classify_flow_codeword_"+task+"_"+str(i)+";")
+      table_template = table_template.replace("<SIZE>", str(size))
+      # C5 (Phase 3 step 1): pin a deterministic ternary-table placement
+      # order -- the first task's trees ahead of the next one's -- so the
+      # packer's stage simulation knows which key p4c's greedy crossbar
+      # allocator serves first, instead of charging the worst-case ordering.
+      # Priority is per TASK, not per tree: task i of N gets N - i
+      # (program.placement_priorities; two tasks: ddos 2, app 1); p4c breaks
+      # ties within a priority by declaration order, which the "last-listed
+      # tree first" rule relies on.
+      table_template = table_template.replace(
+          "    table get_classification_tree_"+task+"_"+str(i)+" {",
+          "    @placement_priority("+str(priorities[task])+")"
+          "\n    table get_classification_tree_"+task+"_"+str(i)+" {",
+          1,
+      )
+      table_templates += table_template
+      apply_templates_tmp += "\t\t\tget_classification_tree_"+task+"_"+str(i)+".apply();\n"
+    # One blank line closes every task's apply block but the last one's.
+    if sizes and position < len(task_tables) - 1:
+      apply_templates_tmp += "\n"
 
   feature_idx = 0
   for feature in feature_names:
@@ -1319,8 +1357,49 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
                       use_default_action_discount=False,
                       selected_features_app=None, selected_features_ddos=None,
                       config: "p4_gen_config.P4GenConfig" = None):
-  """match_type: passed straight through to
-  generate_P4_tables_and_apply. 'ternary' (the default) switches
+  """The two-task program (spec 2026-10-11 compatibility wrapper):
+  generate_p4_program with TaskSpecs in the order (ddos, app), which gives
+  the C5 priorities ddos 2 / app 1 and today's program text byte for byte.
+  clf_app / clf_ddos may be None for "no such task" (its trees are then
+  empty); feature_intervals_* are each model's own intervals ({} for a
+  missing task, the same dict for both under joint encoding);
+  selected_features_* are the ordered training-feature-name lists. See
+  generate_p4_program for everything else."""
+  tasks = [
+      TaskSpec(DDOS_TASK, num_class_ddos,
+               trees=list(clf_ddos.estimators_) if clf_ddos is not None else [],
+               features=selected_features_ddos, intervals=feature_intervals_ddos),
+      TaskSpec(APP_TASK, num_class_app,
+               trees=list(clf_app.estimators_) if clf_app is not None else [],
+               features=selected_features_app, intervals=feature_intervals_app),
+  ]
+  return generate_p4_program(
+      tasks, output_dir=output_dir, output_filename=output_filename,
+      match_type=match_type, use_default_action_discount=use_default_action_discount,
+      config=config)
+
+
+class _Forest:
+  """The `.estimators_` view tree_nodes_for reads, over a TaskSpec's trees."""
+  def __init__(self, trees):
+    self.estimators_ = list(trees)
+
+
+def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
+                        output_filename='p4_code_RF_models.p4',
+                        match_type='ternary', use_default_action_discount=False,
+                        config: "p4_gen_config.P4GenConfig" = None):
+  """One P4 program serving every task in `tasks` (Sequence[TaskSpec], N >= 1,
+  spec 2026-10-11). Task order sets @placement_priority (task i of N gets
+  N - i); the program lists the tasks in the reverse order, lowest priority
+  first. Per task: get_classification_tree_<task>_<i> /
+  classify_flow_codeword_<task>_<i> / meta.class_tree_<task>_<i> for its
+  tree i (ids per task, from 0), and one vote_<task> table. Registers stay
+  one per distinct raw feature across all tasks; codeword fields follow
+  resolve_feature_plan.
+
+  match_type: passed straight through to
+  generate_tables_and_apply. 'ternary' (the default) switches
   classification tables to resources/table_classification.p4 with ternary
   keys; 'exact' switches only the classification tables to
   resources/table_classification_exact.p4 / `: exact;` keys (feature-range
@@ -1430,34 +1509,37 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
     match_type = config.match_type
     use_default_action_discount = config.use_default_action_discount
 
-  # clf_app/clf_ddos may be None -- meaning "no task at all" (e.g. M1 is
-  # DDoS-only: clf_app is None, clf_ddos is a trained model).
-  num_trees_app = len(clf_app.estimators_) if clf_app is not None else 0
-  num_trees_ddos = len(clf_ddos.estimators_) if clf_ddos is not None else 0
+  order = task_names(tasks)
+  priorities = placement_priorities(order)
+  # Program order: lowest priority first -- for (ddos, app), app's text
+  # first, exactly the two-task program.
+  program_tasks = list(reversed(list(tasks)))
+  n_trees = {task.name: len(task.trees) for task in tasks}
 
   # generate the definition of the bit containers that contain decisions of
-  # each tree -- only meaningful (and only computed) when the corresponding
-  # task actually has trees, so a missing task's num_class_* is never
-  # consulted and never raises on log2(0)/log2(1 task with 1 class), etc.
-  bit_per_classes_app = math.ceil(math.log2(num_class_app)) if num_trees_app > 0 else 0
-  bit_per_classes_ddos = math.ceil(math.log2(num_class_ddos)) if num_trees_ddos > 0 else 0
+  # each tree -- only meaningful (and only computed) when the task actually
+  # has trees, so a tree-less task's num_classes is never consulted and never
+  # raises on log2(0)/log2(1 task with 1 class), etc.
+  bit_per_classes = {task.name: (math.ceil(math.log2(task.num_classes))
+                                 if n_trees[task.name] > 0 else 0)
+                     for task in tasks}
 
-  # Task 3: resolve App's and DDoS's independently-derived feature_intervals
-  # into ONE plan describing, per resolved name, whether both models share
-  # ONE discretization table/field for a feature or need independent,
+  # Task 3: resolve every task's independently-derived feature_intervals
+  # into ONE plan describing, per resolved name, which tasks share ONE
+  # discretization table/field for a feature and which need their own,
   # namespaced ones. Computed once, consumed by every section below.
-  resolved_plan = _resolve_disjoint_feature_plan(feature_intervals_app, feature_intervals_ddos)
+  resolved_plan = resolve_feature_plan([(task.name, task.intervals) for task in tasks])
 
   metadata_code = ""
   # Accumulated by three separate loops below (per-tree result fields, raw
   # value fields, codeword fields), so it is opened here rather than beside
   # the first @pa_container_size that used to be its only writer.
   phv_pragmas = ""
-  for task, n_trees, bits in (("app",  num_trees_app,  bit_per_classes_app),
-                              ("ddos", num_trees_ddos, bit_per_classes_ddos)):
-    if n_trees > 0:
-      for i in range(n_trees):
-        metadata_code += "\tbit<"+str(bits)+"> class_tree_"+task+"_"+str(i)+";\n"
+  for task in program_tasks:
+    name, bits = task.name, bit_per_classes[task.name]
+    if n_trees[name] > 0:
+      for i in range(n_trees[name]):
+        metadata_code += "\tbit<"+str(bits)+"> class_tree_"+name+"_"+str(i)+";\n"
         # Each tree's classification table writes exactly this field, and a
         # Tofino stage has ONE action ALU per PHV CONTAINER -- not per field.
         # These are bit<1> (binary DDoS) or bit<2> (3-class App), so the
@@ -1476,7 +1558,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
         # the 19 calibration compiles) and a pragma naming a field that does
         # not exist is silently ignored.
         phv_pragmas += ('@pa_solitary("ingress", "ig_md.class_tree_'
-                        + task + "_" + str(i) + '")\n')
+                        + name + "_" + str(i) + '")\n')
         # C5 (Phase 3 step 1): also forbid the allocator from overlaying this
         # field with another one in the same container across control flows.
         # @pa_solitary alone still lets two class_tree_* fields sharing a
@@ -1487,12 +1569,11 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
         # fields get the same pragma since spec 2026-09-29 (emitted with their
         # @pa_solitary, below) -- for a different reason, explained there.
         phv_pragmas += ('@pa_no_overlay("ingress", "ig_md.class_tree_'
-                        + task + "_" + str(i) + '")\n')
+                        + name + "_" + str(i) + '")\n')
       # generate_voting_code (below) writes to meta.classification_<task>; the
       # TNA template no longer declares this field itself (it doesn't know
-      # bit_per_classes_<task> ahead of time), so it must be declared here.
-      metadata_code += "\tbit<"+str(bits)+"> classification_"+task+";\n"
-
+      # the task's class width ahead of time), so it must be declared here.
+      metadata_code += "\tbit<"+str(bits)+"> classification_"+name+";\n"
   # Tier 3 + Task 3: every RESOLVED entry gets its own codeword field
   # (code_<resolved_name>), but the raw tracked-value field (<raw>_val) is
   # declared exactly once per DISTINCT raw feature name -- never twice just
@@ -1564,9 +1645,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   #     (target.py) -- dropping them re-exposes M150_k7_s11.
   # Evidence: results/compiler_calibration_pragmas_2026_09_29/ (73 designs,
   # feasible stage_depth 60/60, blocks 60/60; cost +4.7 PHV containers).
-  tasks_with_trees = [task for task, n_trees in (("app", num_trees_app),
-                                                 ("ddos", num_trees_ddos))
-                      if n_trees > 0]
+  tasks_with_trees = [task.name for task in program_tasks if n_trees[task.name] > 0]
   code_container_sizes = code_field_container_sizes(resolved_plan, tasks_with_trees)
   for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items():
     codeword_width = len(intervals) - 1
@@ -1630,58 +1709,49 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
       resolved_name: intervals
       for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items()
   }
-  action_templates = generate_P4_actions(flat_resolved_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos)
+  action_templates = generate_actions(
+      flat_resolved_intervals,
+      [(task.name, n_trees[task.name], bit_per_classes[task.name]) for task in program_tasks])
 
-  # Task 3, point 4: each model's classification tables must key on
-  # code_<resolved_name> only for resolved entries that model actually
+  # Task 3, point 4: each task's classification tables must key on
+  # code_<resolved_name> only for resolved entries that task actually
   # reads. Point 2/5: the range-matching tables (one per resolved entry,
   # always) still need each entry's raw feature name for the RAW value
   # field they key on.
-  feature_names_app = [name for name, (_, _, models) in resolved_plan.items() if "app" in models]
-  feature_names_ddos = [name for name, (_, _, models) in resolved_plan.items() if "ddos" in models]
+  key_names = {task.name: [name for name, (_, _, models) in resolved_plan.items()
+                           if task.name in models]
+               for task in tasks}
   raw_feature_names = {name: raw for name, (raw, _, _) in resolved_plan.items()}
 
-  # Follow-up: the discount's live path. Codewords are recomputed per model
-  # against that model's OWN intervals (see this function's docstring), and
-  # the ddos trees re-keyed by +num_trees_app -- the exact tree_id convention
-  # generate_P4_tables_and_apply reads codewords with.
+  # Follow-up: the discount's live path. Codewords are recomputed per task
+  # against that task's OWN intervals (see this function's docstring), keyed
+  # by the task's own tree id.
   #
   # Table-sizing follow-up: codewords are ALSO what makes an exact
   # classification-table size derivable, so they are now computed whenever
-  # the caller supplied that model's ordered training-feature-name list --
+  # the caller supplied that task's ordered training-feature-name list --
   # not only when the discount is on. The discount's own requirement (it
   # cannot function without codewords) is unchanged: still a hard ValueError.
   codewords = {}
-  if clf_app is not None:
-    if selected_features_app is not None:
-      tree_nodes_app = tree_nodes_for(clf_app, selected_features_app)
-      paths_app = get_root_to_leaf_paths(tree_nodes_app)
-      codewords.update(generate_codewords(paths_app, feature_intervals_app))
+  for task in program_tasks:
+    if n_trees[task.name] == 0:
+      continue
+    if task.features is not None:
+      tree_nodes = tree_nodes_for(_Forest(task.trees), task.features)
+      paths = get_root_to_leaf_paths(tree_nodes)
+      codewords[task.name] = generate_codewords(paths, task.intervals or {})
     elif use_default_action_discount:
       raise ValueError(
-          "selected_features_app is required when use_default_action_discount=True "
-          "and an App model is active -- generate_P4_code cannot recompute codewords "
-          "without the exact ordered training-feature-name list")
-  if clf_ddos is not None:
-    if selected_features_ddos is not None:
-      tree_nodes_ddos = tree_nodes_for(clf_ddos, selected_features_ddos)
-      paths_ddos = get_root_to_leaf_paths(tree_nodes_ddos)
-      codewords_ddos_0indexed = generate_codewords(paths_ddos, feature_intervals_ddos)
-      codewords.update({tree_id + num_trees_app: tree_codewords
-                        for tree_id, tree_codewords in codewords_ddos_0indexed.items()})
-    elif use_default_action_discount:
-      raise ValueError(
-          "selected_features_ddos is required when use_default_action_discount=True "
-          "and a DDoS model is active -- generate_P4_code cannot recompute codewords "
-          "without the exact ordered training-feature-name list")
-  if not codewords:
-    codewords = None
+          "selected_features_{0} (the features of task {0!r}) is required when "
+          "use_default_action_discount=True and task {0!r} has trees -- the "
+          "generator cannot recompute codewords without the exact ordered "
+          "training-feature-name list".format(task.name))
 
   # Table-sizing follow-up: every generated table is sized from its REAL
   # entry count. Range-matching feature tables get exactly one entry per
   # interval; classification tables get one per distinct codeword (minus the
   # ones the discount turns into the table's default action), or -- when
-  # codewords are not computable for that model -- the fitted tree's own leaf
+  # codewords are not computable for that task -- the fitted tree's own leaf
   # count, a real structural number that can only ever be >= the codeword
   # count (two leaves whose paths round to the same codeword string collapse
   # into one dict entry in generate_codewords, never two), so it never
@@ -1691,39 +1761,32 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
       for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items()
   }
 
-  def _classification_table_size(tree_id, clf, estimator_index):
-    tree_codewords = codewords.get(tree_id) if codewords else None
+  def _classification_table_size(task, tree_id):
+    tree_codewords = codewords.get(task.name, {}).get(tree_id)
     if tree_codewords is None:
-      return max(1, clf.estimators_[estimator_index].get_n_leaves())
+      return max(1, task.trees[tree_id].get_n_leaves())
     if use_default_action_discount:
       _, dropped_codewords = most_common_class_and_dropped_codewords(tree_codewords)
       return max(1, len(tree_codewords) - len(dropped_codewords))
     return max(1, len(tree_codewords))
 
-  classification_table_sizes = {}
-  for i in range(num_trees_app):
-    classification_table_sizes[i] = _classification_table_size(i, clf_app, i)
-  for i in range(num_trees_ddos):
-    classification_table_sizes[num_trees_app + i] = _classification_table_size(
-        num_trees_app + i, clf_ddos, i)
+  task_tables = [(task.name, key_names[task.name],
+                  [_classification_table_size(task, i) for i in range(n_trees[task.name])])
+                 for task in program_tasks]
 
-  table_templates, apply_templates = generate_P4_tables_and_apply(
-      resolved_plan.keys(), num_trees_app, num_trees_ddos, match_type=match_type,
-      feature_names_app=feature_names_app, feature_names_ddos=feature_names_ddos,
+  table_templates, apply_templates = generate_tables_and_apply(
+      resolved_plan.keys(), task_tables, match_type=match_type,
       raw_feature_names=raw_feature_names,
-      feature_table_sizes=feature_table_sizes,
-      classification_table_sizes=classification_table_sizes)
+      feature_table_sizes=feature_table_sizes, priorities=priorities)
 
-  # generate code to vote between the trees -- only for tasks that actually
-  # have trees. generate_voting_code now returns (table_decl, apply_call);
-  # the table declaration joins the other TABLES text, the apply call joins
-  # the other APPLY text -- classification now happens via table application
-  # like every other table in this generator, so there is no more separate
-  # CLASSIFICATION content to build.
-  for task, n_trees, n_classes in (("app",  num_trees_app,  num_class_app),
-                                   ("ddos", num_trees_ddos, num_class_ddos)):
-    if n_trees > 0:
-      vote_table, vote_apply = generate_voting_code(n_trees, n_classes, task)
+  # generate code to vote between the trees -- one vote table per task that
+  # actually has trees. generate_voting_code returns (table_decl,
+  # apply_call); the table declaration joins the other TABLES text, the apply
+  # call joins the other APPLY text.
+  for task in program_tasks:
+    if n_trees[task.name] > 0:
+      vote_table, vote_apply = generate_voting_code(n_trees[task.name],
+                                                    task.num_classes, task.name)
       table_templates += vote_table
       apply_templates += vote_apply
 
