@@ -732,58 +732,28 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
   disjoint-namespaced path through `generate_codewords`/this function
   today (main.py's pipeline is joint-only; feature_selection.py's
   real-compile validation only needs `generate_P4_code`'s emitted .p4
-  SOURCE, not table_entries.json).
+  SOURCE, not table_entries.json). generate_table_entries is the path that
+  handles namespaced fields and any number of tasks.
   '''
 
-  feature_code_length = {}
-
   table_entries = []
-  feature_idx = 0
 
-  for feature_name in feature_intervals:
-    intervals = feature_intervals[feature_name]
-
-    feature_code_length[feature_name] = len(intervals)-1
-
-    # 1. Table entries for generating the codeword based on feature values
-    for idx,interval in enumerate(intervals[::-1]):
-
-      table_entry = {}
-      table_entry["table_name"] = "table_"+str(feature_idx)+"_"+feature_name.lower()
-      table_entry["action"] = "set_code_"+feature_name.lower()
-
-      code = thermometer_code(len(intervals), len(intervals) - 1 - idx)
-
-      minimum = str(interval[0])
-      maximum = str(interval[1])
-
-      # bf_rt exposes a range-matched key field as <short_name>_start /
-      # <short_name>_end. The short name is the P4 key expression without its
-      # `meta.` prefix -- i.e. exactly the <FEATURE_NAME>+"_val" text
-      # generate_P4_tables_and_apply declares this table's key on.
-      table_entry["is_default_action"] = False
-      table_entry["priority"] = idx
-      table_entry["key_fields"] = {
-          feature_name.replace(" ","_").lower()+"_val": {
-              "start": minimum, "end": maximum}
-      }
-      # `code` is the literal parameter name of every set_code_* action
-      # (resources/action.p4).
-      table_entry["action_params"] = {"code": str(int(code, 2))}
-
-      table_entries.append(table_entry)
-
-    feature_idx +=1
-
+  # 1. Table entries for generating the codeword based on feature values
+  for feature_idx, feature_name in enumerate(feature_intervals):
+    table_entries += _range_table_entries(
+        "table_"+str(feature_idx)+"_"+feature_name.lower(),
+        "set_code_"+feature_name.lower(),
+        feature_name.replace(" ","_").lower()+"_val",
+        feature_intervals[feature_name])
 
   # 2. Table entries for getting each tree's classification based on generated codeword
+  fields = [("code_"+feature_name.replace(" ","_").lower(), len(intervals)-1)
+            for feature_name, intervals in feature_intervals.items()]
   for tree_idx,tree in enumerate(codewords):
     # Task M2-B2: `tree` is no longer a runtime action parameter -- each tree
     # has its own dedicated table and action (see generate_P4_actions /
     # generate_P4_tables_and_apply), so action_params carries only the class
-    # value. Derived once per tree, so this tree's explicit entries and its
-    # default-action record below can never disagree about which table they
-    # address.
+    # value.
     if offset==None:
       #One model encoding
       table_name = "get_classification_tree_"+str(tree_idx)
@@ -795,70 +765,8 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
     else:
       table_name = "get_classification_tree_ddos_"+str(tree_idx-offset)
       action_name = "classify_flow_codeword_ddos_"+str(tree_idx-offset)
-
-    # Planter-style discount: every leaf sharing this tree's majority class is
-    # excluded from this tree's explicit entries and covered by ONE
-    # default-action record instead. Computed once per tree, up front, so
-    # every other leaf is still written as before.
-    default_class, dropped_codewords = None, set()
-    if use_default_action_discount and len(codewords[tree]) > 0:
-      default_class, dropped_list = most_common_class_and_dropped_codewords(codewords[tree])
-      dropped_codewords = set(dropped_list)
-
-    priority = 0
-    for codeword in codewords[tree]:
-      if use_default_action_discount and codeword in dropped_codewords:
-        continue
-
-      table_entry={}
-      table_entry["table_name"] = table_name
-      table_entry["action"] = action_name
-      table_entry["is_default_action"] = False
-      # $MATCH_PRIORITY is per table, so this counter restarts with each tree.
-      table_entry["priority"] = priority
-      priority += 1
-
-      # Tier 3: the classification table's key is one ternary field per
-      # selected feature, not one combined codeword field. Slice the
-      # combined codeword string into per-feature chunks, in the same
-      # feature_intervals order generate_codewords used to build it, and
-      # compute a ternary value/mask for each chunk separately. Each chunk's
-      # field name is the bf_rt short name of the key
-      # generate_P4_tables_and_apply's _classification_keys declares for that
-      # feature (meta.code_<feature>, minus the `meta.` prefix).
-      key_fields = {}
-      bit_offset = 0
-      for feature_name in feature_intervals:
-        width = feature_code_length[feature_name]
-        chunk = codeword[bit_offset:bit_offset+width]
-        hex_value, hex_mask = get_ternary_value_and_mask(chunk)
-        key_fields["code_"+feature_name.replace(" ","_").lower()] = {
-            "value": hex_value, "mask": hex_mask}
-        bit_offset += width
-      table_entry["key_fields"] = key_fields
-      # `class` is the literal parameter name of every classify_flow_codeword_*
-      # action (see generate_P4_actions).
-      table_entry["action_params"] = {
-          "class": str(int(float((codewords[tree][codeword]))))}
-      table_entries.append(table_entry)
-
-    # The discounted leaves' class is not lost: it becomes this table's
-    # control-plane-set default action. Without this record, every flow whose
-    # codeword was discounted away would match no entry at all and go
-    # unclassified.
-    if default_class is not None:
-      table_entries.append({
-          "table_name": table_name,
-          "action": action_name,
-          "is_default_action": True,
-          # bf_rt's set_default_with_<action> takes only data fields -- a
-          # default action has no key and no $MATCH_PRIORITY.
-          "priority": None,
-          "key_fields": {},
-          "action_params": {"class": str(int(float(default_class)))},
-      })
-
-
+    table_entries += _tree_table_entries(table_name, action_name, codewords[tree],
+                                         fields, use_default_action_discount)
 
   if verbose == True:
     # Show Generated Table Entries
@@ -869,6 +777,134 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
   ensure_directory_exists(path_to_output)
   with open(path_to_output + output_filename, 'w') as output_file:
     output_file.write(json.dumps(table_entries))
+
+
+def _range_table_entries(table_name, action_name, key_field, intervals):
+  '''One feature's range table: one entry per interval, highest interval
+  first, each writing that interval's thermometer code.'''
+  entries = []
+  for idx, interval in enumerate(intervals[::-1]):
+    code = thermometer_code(len(intervals), len(intervals) - 1 - idx)
+    # bf_rt exposes a range-matched key field as <short_name>_start /
+    # <short_name>_end. The short name is the P4 key expression without its
+    # `meta.` prefix -- i.e. exactly the <FEATURE_NAME>+"_val" text
+    # generate_tables_and_apply declares this table's key on.
+    entries.append({
+        "table_name": table_name,
+        "action": action_name,
+        "is_default_action": False,
+        "priority": idx,
+        "key_fields": {key_field: {"start": str(interval[0]), "end": str(interval[1])}},
+        # `code` is the literal parameter name of every set_code_* action
+        # (resources/action.p4).
+        "action_params": {"code": str(int(code, 2))},
+    })
+  return entries
+
+
+def _tree_table_entries(table_name, action_name, tree_codewords, fields,
+                        use_default_action_discount):
+  '''One tree's classification table. fields: (key field, width) per code
+  field, in the order generate_codewords concatenated the codeword.'''
+  # Planter-style discount: every leaf sharing this tree's majority class is
+  # excluded from this tree's explicit entries and covered by ONE
+  # default-action record instead. Computed once per tree, up front, so
+  # every other leaf is still written as before.
+  default_class, dropped_codewords = None, set()
+  if use_default_action_discount and len(tree_codewords) > 0:
+    default_class, dropped_list = most_common_class_and_dropped_codewords(tree_codewords)
+    dropped_codewords = set(dropped_list)
+
+  entries = []
+  priority = 0
+  for codeword in tree_codewords:
+    if use_default_action_discount and codeword in dropped_codewords:
+      continue
+    # Tier 3: the classification table's key is one ternary field per
+    # selected feature, not one combined codeword field. Slice the
+    # combined codeword string into per-feature chunks, in the same
+    # order generate_codewords used to build it, and compute a ternary
+    # value/mask for each chunk separately. Each chunk's field name is the
+    # bf_rt short name of the key generate_tables_and_apply's
+    # _classification_keys declares for that feature (meta.code_<feature>,
+    # minus the `meta.` prefix).
+    key_fields = {}
+    bit_offset = 0
+    for field, width in fields:
+      hex_value, hex_mask = get_ternary_value_and_mask(codeword[bit_offset:bit_offset+width])
+      key_fields[field] = {"value": hex_value, "mask": hex_mask}
+      bit_offset += width
+    entries.append({
+        "table_name": table_name,
+        "action": action_name,
+        "is_default_action": False,
+        # $MATCH_PRIORITY is per table, so this counter restarts with each tree.
+        "priority": priority,
+        "key_fields": key_fields,
+        # `class` is the literal parameter name of every classify_flow_codeword_*
+        # action (see generate_actions).
+        "action_params": {"class": str(int(float(tree_codewords[codeword])))},
+    })
+    priority += 1
+
+  # The discounted leaves' class is not lost: it becomes this table's
+  # control-plane-set default action. Without this record, every flow whose
+  # codeword was discounted away would match no entry at all and go
+  # unclassified.
+  if default_class is not None:
+    entries.append({
+        "table_name": table_name,
+        "action": action_name,
+        "is_default_action": True,
+        # bf_rt's set_default_with_<action> takes only data fields -- a
+        # default action has no key and no $MATCH_PRIORITY.
+        "priority": None,
+        "key_fields": {},
+        "action_params": {"class": str(int(float(default_class)))},
+    })
+  return entries
+
+
+def generate_table_entries(tasks, use_default_action_discount=False):
+  '''The control-plane entries (get_table_entries' record format, installed
+  by p4/deploy_table_entries.py) of the program generate_p4_program emits for
+  the same `tasks` (Sequence[TaskSpec], N >= 1, either encoding).
+
+  Table and field names come from the same resolve_feature_plan the program
+  text is built from: one range table per resolved entry, keyed on its raw
+  value field, and one table per tree, keyed on its task's own code fields. So
+  namespaced disjoint fields (<task>_<f>) are addressed correctly -- the case
+  get_table_entries' docstring records it gets wrong. Each task's codewords
+  are computed against that task's OWN intervals, which are the intervals of
+  every resolved field it reads.
+
+  Every task with trees needs its ordered training-feature-name list
+  (TaskSpec.features): its codewords are recomputed from its trees.'''
+  plan = resolve_feature_plan([(task.name, task.intervals) for task in tasks])
+  entries = []
+  for index, (name, (raw_feature_name, intervals, _)) in enumerate(plan.items()):
+    entries += _range_table_entries("table_"+str(index)+"_"+name, "set_code_"+name,
+                                    raw_feature_name.replace(" ","_").lower()+"_val",
+                                    intervals)
+  # Program order, lowest priority first, as generate_p4_program lists them.
+  for task in reversed(list(tasks)):
+    if not task.trees:
+      continue
+    if task.features is None:
+      raise ValueError(
+          "task %r has trees but no ordered training-feature-name list "
+          "(TaskSpec.features): its codewords cannot be recomputed" % task.name)
+    intervals = task.intervals or {}
+    field_of = {raw: name for name, (raw, _, models) in plan.items() if task.name in models}
+    fields = [("code_"+field_of[raw], len(iv)-1) for raw, iv in intervals.items()]
+    paths = get_root_to_leaf_paths(tree_nodes_for(_Forest(task.trees), task.features))
+    codewords = generate_codewords(paths, intervals)
+    for i in range(len(task.trees)):
+      entries += _tree_table_entries(
+          "get_classification_tree_"+task.name+"_"+str(i),
+          "classify_flow_codeword_"+task.name+"_"+str(i),
+          codewords[i], fields, use_default_action_discount)
+  return entries
 
 
 def resolve_feature_plan(task_intervals):
@@ -920,6 +956,14 @@ def resolve_feature_plan(task_intervals):
         name = feature
       else:
         name = "_".join(group) + "_" + feature
+      # Task and feature names may both hold underscores, so two entries can
+      # join to the same name (task a + feature b_c, task a_b + feature c);
+      # the second would silently replace the first's field and table.
+      if name in resolved:
+        raise ValueError(
+            "resolved feature name %r is produced twice: feature %r for tasks %s and "
+            "feature %r for tasks %s; rename a task or a feature"
+            % (name, resolved[name][0], sorted(resolved[name][2]), feature, list(group)))
       resolved[name] = (feature, intervals_of[task][feature], set(group))
   return resolved
 
@@ -1356,7 +1400,8 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
                       match_type='ternary',
                       use_default_action_discount=False,
                       selected_features_app=None, selected_features_ddos=None,
-                      config: "p4_gen_config.P4GenConfig" = None):
+                      config: "p4_gen_config.P4GenConfig" = None,
+                      entries_filename=None):
   """The two-task program (spec 2026-10-11 compatibility wrapper):
   generate_p4_program with TaskSpecs in the order (ddos, app), which gives
   the C5 priorities ddos 2 / app 1 and today's program text byte for byte.
@@ -1376,7 +1421,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   return generate_p4_program(
       tasks, output_dir=output_dir, output_filename=output_filename,
       match_type=match_type, use_default_action_discount=use_default_action_discount,
-      config=config)
+      config=config, entries_filename=entries_filename)
 
 
 class _Forest:
@@ -1388,11 +1433,14 @@ class _Forest:
 def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                         output_filename='p4_code_RF_models.p4',
                         match_type='ternary', use_default_action_discount=False,
-                        config: "p4_gen_config.P4GenConfig" = None):
+                        config: "p4_gen_config.P4GenConfig" = None,
+                        entries_filename=None):
   """One P4 program serving every task in `tasks` (Sequence[TaskSpec], N >= 1,
   spec 2026-10-11). Task order sets @placement_priority (task i of N gets
   N - i); the program lists the tasks in the reverse order, lowest priority
-  first. Per task: get_classification_tree_<task>_<i> /
+  first. entries_filename: when given, the program's control-plane entries
+  (generate_table_entries) are written beside it under that name; None
+  writes the program only. Per task: get_classification_tree_<task>_<i> /
   classify_flow_codeword_<task>_<i> / meta.class_tree_<task>_<i> for its
   tree i (ids per task, from 0), and one vote_<task> table. Registers stay
   one per distinct raw feature across all tasks; codeword fields follow
@@ -1813,6 +1861,10 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   written_path = output_dir + output_filename
   with open(written_path, 'w') as switch_template_file:
     switch_template_file.write(switch_template)
+  if entries_filename is not None:
+    with open(output_dir + entries_filename, 'w') as entries_file:
+      entries_file.write(json.dumps(generate_table_entries(
+          tasks, use_default_action_discount=use_default_action_discount)))
 
   return written_path
 

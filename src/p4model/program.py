@@ -79,9 +79,11 @@ class TaskSpec:
   description of a task shared by the generator and the model.
 
   name        : identifier used in table and field names
-                (get_classification_tree_<name>_<i>, vote_<name>,
-                code_<name>_<feature>), [a-z0-9_]+, unique within a program,
-                never SHARED_TASK.
+                (get_classification_tree_<name>_<i>, vote_<name>, and the
+                <name>_..._<feature> prefix of a code field the task does not
+                share with every task selecting that feature,
+                build_p4_script.resolve_feature_plan), [a-z0-9_]+, unique
+                within a program, never SHARED_TASK.
   num_classes : the task's class count (sizes class_tree_<name>_<i> and the
                 vote table).
   trees       : the task's fitted decision trees, e.g. forest.estimators_

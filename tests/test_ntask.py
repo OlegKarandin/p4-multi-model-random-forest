@@ -6,6 +6,7 @@ is not in git; these tests pin the N-generic behaviour on synthetic forests:
 N = 1 and N = 3 programs generate, parse back through p4_replay and price;
 placement priorities are N..1; disjoint grouping on a hand-made 3-task plan;
 and the two-task wrapper is exactly the N-task generator with (ddos, app)."""
+import json
 import os
 import re
 
@@ -227,3 +228,130 @@ def test_program_without_pragmas_falls_back_to_the_two_task_priorities():
             "    table get_classification_tree_app_0 {\n        key = {\n"
             "            meta.code_a : ternary;\n        }\n        size = 3;\n    }\n")
     assert parse_program_text(text).priorities == {}
+
+
+def test_feature_plan_rejects_colliding_resolved_names():
+    # Task "a" splitting "b_c" alone and task "a_b" splitting "c" alone would
+    # both resolve to "a_b_c"; the second must not silently replace the first.
+    one = [(0, 10), (11, 65535)]
+    two = [(0, 20), (21, 65535)]
+    with pytest.raises(ValueError, match="a_b_c"):
+        bps.resolve_feature_plan([("a", {"b_c": one, "c": one}),
+                                  ("a_b", {"b_c": two, "c": two})])
+
+
+# --- control-plane entries ---------------------------------------------------
+
+def _int_forest(n_classes, seed, features=FEATURES, n_trees=2, depth=3):
+    """A forest with integer thresholds, as every deployed forest has
+    (dt_thresholds_float_to_int), so the switch and sklearn agree exactly on
+    integer inputs."""
+    return bps.dt_thresholds_float_to_int(
+        _forest(n_classes, seed, features, n_trees=n_trees, depth=depth))
+
+
+def _tasks(members, encoding):
+    """TaskSpecs for (name, n_classes, forest, features) members: one joint
+    interval set over every forest, or each task's own."""
+    if encoding == "joint":
+        joint = bps.feature_intervals_from_nodes(bps.merge_tree_nodes(*(
+            bps.tree_nodes_for(forest, names) for _, _, forest, names in members)))
+        intervals = [joint] * len(members)
+    else:
+        intervals = [bps.get_feature_intervals(forest, names)
+                     for _, _, forest, names in members]
+    return [TaskSpec(name, n_classes, list(forest.estimators_), names, iv)
+            for (name, n_classes, forest, names), iv in zip(members, intervals)]
+
+
+def _switch_tree_classes(entries, row):
+    """Each tree table's class for one input, by interpreting the entries the
+    way the switch does: every range table writes its code field from the
+    value it keys on, then every tree table matches those codes ternary-wise.
+    Exactly one entry of each table may match (intervals are disjoint and a
+    tree's leaves partition its input space); a tree with no match takes its
+    control-plane default."""
+    codes, by_table = {}, {}
+    for entry in entries:
+        by_table.setdefault(entry["table_name"], []).append(entry)
+    for table, rows in by_table.items():
+        if not table.startswith("table_"):
+            continue
+        hits = [e for e in rows
+                for field, span in e["key_fields"].items()
+                if int(span["start"]) <= row[field[:-len("_val")]] <= int(span["end"])]
+        assert len(hits) == 1, (table, row)
+        codes["code_" + hits[0]["action"][len("set_code_"):]] = int(hits[0]["action_params"]["code"])
+    classes = {}
+    for table, rows in by_table.items():
+        if not table.startswith("get_classification_tree_"):
+            continue
+        hits = [e for e in rows if not e["is_default_action"]
+                and all(codes[field] & int(spec["mask"], 16) == int(spec["value"], 16)
+                        for field, spec in e["key_fields"].items())]
+        assert len(hits) <= 1, (table, row)
+        if not hits:
+            hits = [e for e in rows if e["is_default_action"]]
+        assert len(hits) == 1, (table, row)
+        classes[table] = int(hits[0]["action_params"]["class"])
+    return classes
+
+
+@pytest.mark.parametrize("encoding,discount", [
+    ("joint", False), ("disjoint", False), ("disjoint", True)])
+def test_entries_classify_every_input_exactly_as_each_tree_does(tmp_path, encoding, discount):
+    from src.p4gen.switch_semantics import per_tree_class_indices
+    members = [("ddos", 2, _int_forest(2, 1), FEATURES),
+               ("app", 3, _int_forest(3, 2), FEATURES),
+               # A third task on a feature subset: under disjoint some
+               # features are read by two tasks only, some by one.
+               ("third", 4, _int_forest(4, 5, FEATURES[:3], n_trees=1), FEATURES[:3])]
+    tasks = _tasks(members, encoding)
+    path = bps.generate_p4_program(tasks, output_dir=str(tmp_path) + os.sep,
+                                   output_filename="design.p4",
+                                   use_default_action_discount=discount,
+                                   entries_filename="entries.json")
+    with open(os.path.join(str(tmp_path), "entries.json"), encoding="utf-8") as handle:
+        entries = json.load(handle)
+    assert entries == bps.generate_table_entries(tasks, use_default_action_discount=discount)
+    # Every table the entries address is one the program declares, and the
+    # key fields are the ones it declares for that table.
+    declared = parse_program(path).tables
+    for entry in entries:
+        assert entry["table_name"] in declared
+        if not entry["is_default_action"]:
+            assert sorted(entry["key_fields"]) == sorted(declared[entry["table_name"]])
+    rng = np.random.RandomState(7)
+    X = rng.randint(0, 2000, size=(200, len(FEATURES)))
+    expected = {}
+    for name, _, forest, names in members:
+        columns = [FEATURES.index(f) for f in names]
+        for i, per_tree in enumerate(per_tree_class_indices(forest, X[:, columns])):
+            expected["get_classification_tree_%s_%d" % (name, i)] = per_tree
+    for s, values in enumerate(X):
+        got = _switch_tree_classes(entries, dict(zip(FEATURES, values)))
+        assert got == {table: int(classes[s]) for table, classes in expected.items()}
+
+
+def test_entries_for_joint_two_tasks_equal_the_legacy_main_path(tmp_path):
+    app, ddos = _int_forest(3, 2), _int_forest(2, 1)
+    # main.generate_p4_from_models' path: one joint interval set over app's
+    # trees then ddos', ddos re-keyed past app's trees.
+    nodes = bps.merge_tree_nodes(bps.tree_nodes_for(app, FEATURES),
+                                 bps.tree_nodes_for(ddos, FEATURES))
+    intervals = bps.feature_intervals_from_nodes(nodes)
+    paths = bps.get_root_to_leaf_paths(nodes)
+    bps.get_table_entries(paths, intervals, bps.generate_codewords(paths, intervals),
+                          len(app.estimators_), path_to_output=str(tmp_path) + os.sep)
+    with open(os.path.join(str(tmp_path), "table_entries.json"), encoding="utf-8") as handle:
+        legacy = json.load(handle)
+    tasks = [TaskSpec(DDOS_TASK, 2, list(ddos.estimators_), FEATURES, intervals),
+             TaskSpec(APP_TASK, 3, list(app.estimators_), FEATURES, intervals)]
+    assert bps.generate_table_entries(tasks) == legacy
+
+
+def test_entries_need_each_tasks_ordered_feature_list():
+    one = [(0, 10), (11, 65535)]
+    task = _task("x", 2, 1, ["flow_iat_max"], intervals={"flow_iat_max": one})
+    with pytest.raises(ValueError, match="features"):
+        bps.generate_table_entries([task])
