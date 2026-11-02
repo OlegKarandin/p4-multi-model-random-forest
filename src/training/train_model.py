@@ -26,13 +26,13 @@ from sklearn.metrics import accuracy_score
 
 import numpy as np
 
-from src.p4gen.build_p4_script import (
+from p4gen.build_p4_script import (
     dt_thresholds_float_to_int, MAX_CODEWORD_LENGTH,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
-from src.p4gen.evaluation import (
+from p4gen.evaluation import (
     CodewordTooLong, CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
     multi_model_memory_evaluation)
-from src.p4gen.switch_semantics import switch_predict
+from p4gen.switch_semantics import switch_predict
 from src.training.threshold_alignment import align_with_policy
 from src.training import early_stopping
 from src.training import trial_selection

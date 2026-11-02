@@ -42,8 +42,8 @@ import pandas as pd
 
 from scripts.tcam_stretch_sweep import as_fields, key_bytes_for, synthetic_program
 from scripts.tcam_version_sweep import measured_start_group, read_committed
-from src.p4gen.p4_compile import compile_p4
-from src.p4model.tables import codeword_to_blocks
+from p4gen.p4_compile import compile_p4
+from p4model.tables import codeword_to_blocks
 
 DEFAULT_OUT = 'results/tcam_ledger_divergence_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_ledger_divergence_sweep'

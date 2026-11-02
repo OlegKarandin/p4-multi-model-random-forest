@@ -16,13 +16,13 @@ key's price as a function of WHERE its crossbar run started. Reading p4c's
 own assembly showed that premise false -- a block may pair with any of a
 stage's midbytes, not a fixed partner, and groups need not be consecutive
 (`docs/superpowers/specs/2026-09-20-tcam-block-model-rewrite-design.md` Sec 2).
-The corrected, simpler model in `src/p4model/tables.py` has no `start_group`
+The corrected, simpler model in `p4model/tables.py` has no `start_group`
 parameter: a key's own price no longer depends on where it starts. Every test
 below that pinned a per-table fact (a key's price alone) is kept, rewritten
 against the new no-offset signature. Every test that specifically pinned the
 OFFSET/SHARING effect itself (a key costing more because a DIFFERENT key
 shares its stage) is removed from here with a pointer to where that effect
-now lives -- `src/p4model/packing.py`'s stage-sharing margin, spec Sec 13.2 --
+now lives -- `p4model/packing.py`'s stage-sharing margin, spec Sec 13.2 --
 since there is no offset parameter left on this module's functions to test it
 with. See this task's report for the full accounting of what moved versus
 what was retired outright.
@@ -41,7 +41,7 @@ import math
 import numpy as np
 import pytest
 
-from src.p4model.tables import (codeword_bits_to_blocks, codeword_bytes_to_blocks,
+from p4model.tables import (codeword_bits_to_blocks, codeword_bytes_to_blocks,
                                 codeword_to_blocks, codeword_to_blocks_headline,
                                 crossbar_capacity, tail_is_isolatable)
 
@@ -100,7 +100,7 @@ def test_a_ragged_49_byte_key_costs_9_blocks_alone():
     # 204-bit field), 9 blocks. The SAME key measured 10 blocks when a
     # DIFFERENT key shared its stage (ragged_ax1_bx4/ragged_ax2_bx2) -- that
     # is a stage-PLACEMENT effect, not a property of this key alone, and it
-    # now belongs entirely to src/p4model/packing.py's stage-sharing margin
+    # now belongs entirely to p4model/packing.py's stage-sharing margin
     # (spec Sec 13.2, "Effect 4"); there is no start_group parameter left on
     # codeword_to_blocks to reproduce it here. See this task's report.
     assert codeword_to_blocks((179, 204)) == 9
@@ -163,7 +163,7 @@ def test_the_entry_to_block_arithmetic_has_a_name():
     multiplier is simply the table count -- true on all 19 golden rows. The
     ceil is what stops that coincidence from being baked in.
     """
-    from src.p4model.tables import (entries_across_trees_to_blocks,
+    from p4model.tables import (entries_across_trees_to_blocks,
                                     tree_entries_to_blocks)
 
     assert tree_entries_to_blocks(1) == 1

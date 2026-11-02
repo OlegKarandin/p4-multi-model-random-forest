@@ -1,6 +1,6 @@
 import pytest
 
-from src.p4gen.p4_ground_truth import P4cNumbers
+from p4gen.p4_ground_truth import P4cNumbers
 from src.verify.verdicts import Verdict, classify
 
 INF = float("inf")

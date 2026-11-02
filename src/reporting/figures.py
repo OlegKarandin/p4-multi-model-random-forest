@@ -1515,7 +1515,7 @@ def appendix_6_capacity_ceiling(ceiling_csv=DEFAULT_CEILING_CSV,
 
     # Imported inside the function: `scripts/` is a script directory, not a
     # dependency of the reporting path, and its import pulls in
-    # src.p4gen.build_p4_script (sklearn) for MAX_CODEWORD_LENGTH.
+    # p4gen.build_p4_script (sklearn) for MAX_CODEWORD_LENGTH.
     from scripts.capacity_ceiling import per_cell, report
 
     frame = pd.read_csv(ceiling_csv)
@@ -1785,7 +1785,7 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     # scripts.capacity_ceiling lazily rather than at module scope. This is
     # the single source of truth for the TCAM block boundary; no literal
     # 512 is duplicated here.
-    from src.p4gen.build_p4_script import (
+    from p4gen.build_p4_script import (
         TERNARY_MATCHING_ENTRIES_PER_BLOCK as tcam_rows_per_block)
 
     long = entries_vs_blocks_frame(df, baseline=baseline)
@@ -1881,7 +1881,7 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
         'treatment_blocks) / baseline_blocks, where blocks is already '
         'those same rows rounded UP in steps of {block_size} physical rows '
         'per block (TERNARY_MATCHING_ENTRIES_PER_BLOCK, '
-        'src/p4gen/build_p4_script.py:21) -- a quantized, step-function '
+        'p4gen/build_p4_script.py:21) -- a quantized, step-function '
         'quantity. rounding_loss = entries-saving - blocks-saving: a '
         'POSITIVE value means entries saved proportionally MORE than '
         'blocks did, i.e. quantization ate part of the saving. '.format(
@@ -1895,10 +1895,10 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
 
     body_lines = [
         'Block boundary: TERNARY_MATCHING_ENTRIES_PER_BLOCK = {0} physical '
-        'TCAM rows per block (src/p4gen/build_p4_script.py:21) is the '
+        'TCAM rows per block (p4gen/build_p4_script.py:21) is the '
         'rounding unit behind blocks-saving below. blocks is NOT '
         'ceil(sum(entries) / {0}): range_matching_resource_usage and '
-        'ternary_matching_resource_usage (src/p4gen/evaluation.py) round '
+        'ternary_matching_resource_usage (p4gen/evaluation.py) round '
         'up PER FEATURE (range) and PER TREE (ternary) independently '
         'before summing, and the ternary side further multiplies each '
         'tree by a codeword-width factor -- so blocks can move for '

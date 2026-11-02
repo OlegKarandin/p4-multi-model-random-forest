@@ -35,7 +35,7 @@ import collections
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
-from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
+from p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
 from src.training import threshold_alignment as ta
 from src.training.errors import AlignmentInvariantError
 

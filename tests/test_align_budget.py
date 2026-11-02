@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from src.p4gen.build_p4_script import INFINITE
+from p4gen.build_p4_script import INFINITE
 from src.training import align_budget as ab
 
 
@@ -90,7 +90,7 @@ def test_factor_prices_a_width_dict_exactly_as_p4model_does():
     the generator's, not a copy of it. A dict is what _pooled_widths produces;
     codeword_to_blocks takes a sorted tuple, so the sort belongs here rather
     than at every call site."""
-    from src.p4model.tables import codeword_to_blocks
+    from p4model.tables import codeword_to_blocks
     widths = {'a': 11, 'b': 3, 'c': 84}
     assert ab._factor(widths) == codeword_to_blocks((3, 11, 84))
 
@@ -107,7 +107,7 @@ def test_factor_of_an_empty_width_dict_is_the_empty_key_factor():
     """Reachable, not hypothetical: neither forest split on any feature, which
     happens whenever min_samples_leaf approaches n_samples and every tree is a
     single leaf -- a real Optuna sample, not a synthetic corner case."""
-    from src.p4model.tables import codeword_to_blocks
+    from p4model.tables import codeword_to_blocks
     assert ab._factor({}) == codeword_to_blocks(())
 
 
@@ -158,7 +158,7 @@ def test_total_blocks_equals_the_assembled_usage_on_every_joint_fixture_row():
     keys, see align_budget's module docstring.
     """
     from tests.test_resource_model_golden import load_fixture, rebuild_pool
-    from src.p4model.usage import assemble_usage
+    from p4model.usage import assemble_usage
 
     checked = 0
     for row in load_fixture()['rows']:
@@ -180,8 +180,8 @@ def test_the_range_half_equals_the_generators_own_range_accounting():
     against tables.range_matching_resource_usage on the same merged intervals,
     so a drift in either half is attributable.
     """
-    from src.p4model.tables import range_matching_resource_usage
-    from src.p4gen.build_p4_script import INFINITE
+    from p4model.tables import range_matching_resource_usage
+    from p4gen.build_p4_script import INFINITE
 
     # A gap-free tiling of n intervals, which is what the generator emits.
     def tiling(n):

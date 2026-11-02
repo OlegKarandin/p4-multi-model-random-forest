@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.p4gen.evaluation import multi_model_memory_evaluation
+from p4gen.evaluation import multi_model_memory_evaluation
 from src.training import align_twins
 from src.training import row_artifacts as ra
 from src.training.campaign_run import (atomic_write_text, canonical_json, run_paths,

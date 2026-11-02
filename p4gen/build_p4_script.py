@@ -9,15 +9,15 @@ import json
 from collections import Counter
 from itertools import product
 
-from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
-from src.p4gen import p4_gen_config
-from src.p4gen import switch_semantics
+from p4gen.feature_registers import FEATURE_REGISTER_CATALOG
+from p4gen import p4_gen_config
+from p4gen import switch_semantics
 
-# Geometry this module no longer owns -- it lives in src/p4model/target.py.
+# Geometry this module no longer owns -- it lives in p4model/target.py.
 # Re-exported here so src/training/, scripts/ and tests keep importing it from
 # the path they always have. Explicit names, not `import *`, so the mapping
 # stays greppable.
-from src.p4model.target import (
+from p4model.target import (
     MAX_CODEWORD_LENGTH,
     TCAM_BLOCK_KEY_LENGTH,
     TCAM_BLOCKS_PER_STAGE,
@@ -27,16 +27,18 @@ from src.p4model.target import (
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
-from src.p4model import lanes
-from src.p4model.names import normalise_feature_name
-from src.p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
+from p4model import lanes
+from p4model.names import normalise_feature_name
+from p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
                                  TaskSpec, placement_priorities, task_names)
 
 INFINITE = (2**16)-1
 MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
                       # p4/tofino_spike/tna_m1_flows_iat_spike.p4
 
-PATH = "resources/"
+# The P4 templates ship inside this package (p4gen/resources/), so they are found
+# from this module's own location, not from the current directory.
+PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources") + os.sep
 INTERMEDIATE = "temp/"
 OUTPUT_PATH = "p4/"
 PATH_TABLE_ENTRIES_OUTPUT = OUTPUT_PATH + "table_entries.json"
@@ -1554,7 +1556,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   further down in this function, just never written by anything -- reading
   0 for every packet, forever, silently. The message names every missing
   feature (by the caller-supplied spelling) and points at
-  FEATURE_REGISTER_CATALOG (src/p4gen/feature_registers.py) as the fix."""
+  FEATURE_REGISTER_CATALOG (p4gen/feature_registers.py) as the fix."""
 
   if config is not None:
     match_type = config.match_type
@@ -1750,7 +1752,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
         "no register catalog entry for {} -- the generated program would declare "
         "<feature>_val, key a range table on it, and never write it, so it would "
         "read 0 for every packet. Add the feature to FEATURE_REGISTER_CATALOG "
-        "(src/p4gen/feature_registers.py) or drop it from the feature set.".format(missing))
+        "(p4gen/feature_registers.py) or drop it from the feature set.".format(missing))
 
   # generate_P4_actions only needs resolved_name -> intervals: it writes
   # meta.code_<resolved_name>, one action per resolved entry, and is

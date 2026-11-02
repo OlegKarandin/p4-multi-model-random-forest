@@ -8,11 +8,11 @@ range_entry_count gives -- those answer different questions, and
 range_deployment_overflow exists to keep them apart."""
 import math
 
-from src.p4model.errors import CodewordTooLong, CrossbarKeyTooWide
-from src.p4model.names import normalise_feature_name
-from src.p4model.program import FEATURE_VALUE_BIT_WIDTH
-from src.p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_count
-from src.p4model.target import (
+from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
+from p4model.names import normalise_feature_name
+from p4model.program import FEATURE_VALUE_BIT_WIDTH
+from p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_count
+from p4model.target import (
     CODEWORD_KEY_OVERHEAD_BITS,
     CROSSBAR_PRIVATE_BYTES_PER_GROUP,
     MAX_CODEWORD_LENGTH,
@@ -352,7 +352,7 @@ def codeword_to_blocks(field_bit_widths):
   starts. The real, measured effect the old offset term was chasing --
   `(179, 204)` costing 9 blocks alone and 10 when a different key shares its
   stage -- has not vanished; it belongs to STAGE PLACEMENT, not to this
-  per-table price, and moves to `src/p4model/packing.py`'s stage-sharing
+  per-table price, and moves to `p4model/packing.py`'s stage-sharing
   margin, Sec 13.2.)
 
   `B = sum(ceil(w / 8) for w in field_bit_widths)` crossbar bytes. `g` blocks
@@ -515,7 +515,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   # The per-tree block width: lanes.table_blocks, the lane-model price of the
   # table's pinned crossbar key (2026-10-04). Imported here, not at module
   # level: lanes imports this module at load time.
-  from src.p4model.lanes import table_blocks
+  from p4model.lanes import table_blocks
   factor = table_blocks(ternary_key_field_bits(feature_intervals))
   for index, tree in enumerate(codewords):
     tree_entry_count = len(codewords[tree])

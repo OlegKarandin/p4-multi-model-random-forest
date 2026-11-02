@@ -23,9 +23,9 @@ from itertools import product
 
 import pytest
 
-from src.p4gen import build_p4_script as bps
-from src.p4gen import switch_semantics
-from src.p4gen.build_p4_script import (
+from p4gen import build_p4_script as bps
+from p4gen import switch_semantics
+from p4gen.build_p4_script import (
     feature_intervals_to_csv,
     generate_P4_actions,
     generate_P4_tables_and_apply,
@@ -1507,7 +1507,7 @@ def test_generate_P4_code_discount_emits_no_const_default_action_for_either_task
 def test_generate_P4_code_discount_via_config_object(tmp_path):
   # config must take precedence over the individual keyword argument, the
   # same way it already does for match_type.
-  from src.p4gen import p4_gen_config
+  from p4gen import p4_gen_config
 
   clf_ddos = _fit_real_forest([0, 1], seed=7, n_estimators=1, value_scale=900)
   intervals_ddos = _derive_intervals(clf_ddos)
@@ -2221,7 +2221,7 @@ def test_generate_P4_code_every_solitary_field_gets_pa_no_overlay_next_to_it(tmp
 # overlay pair blocks every partner, known or not; pinning the layout keeps
 # p4c from choosing a split the model does not price.
 # ---------------------------------------------------------------------------
-from src.p4model import lanes  # noqa: E402
+from p4model import lanes  # noqa: E402
 
 _PA_NO_OVERLAY_RE = re.compile(
     r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)')

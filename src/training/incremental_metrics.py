@@ -4,7 +4,7 @@ maintains them across threshold moves -- P3b plan Task T2 (parts a and b).
 `align_rf_thresholds` (threshold_alignment.py) repeatedly proposes a
 threshold move, measures (accuracy, weighted_f1) on a validation set, and
 accepts or rejects the move by comparing metrics before/after. Until T2b that
-measurement went through `src.p4gen.evaluation.accuracy_metrics`,
+measurement went through `p4gen.evaluation.accuracy_metrics`,
 which calls sklearn's `accuracy_score` + `f1_score` -- measured at 4022us per
 call at n=4000, against 256us for the prediction those calls measure. Almost
 all of that is sklearn's fixed per-call overhead (`validate_params`,

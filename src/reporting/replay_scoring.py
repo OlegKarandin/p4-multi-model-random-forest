@@ -14,7 +14,7 @@ one swept threshold but not the other is dropped from that comparison, never
 averaged around, and the verdict reports the surviving pair count first, so a
 result on three pairs cannot be read as one that held on three hundred.
 """
-from src.p4gen.evaluation import codeword_bits_to_blocks
+from p4gen.evaluation import codeword_bits_to_blocks
 
 # One model pair. overlap_threshold is part of the identity because the same
 # (arm, M, split, k) refit is replayed once per threshold.

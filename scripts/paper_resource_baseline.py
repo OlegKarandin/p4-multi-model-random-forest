@@ -31,7 +31,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.p4gen.p4_replay import model_breakdown, parse_program_text  # noqa: E402
+from p4gen.p4_replay import model_breakdown, parse_program_text  # noqa: E402
 
 TCAM_ROWS, TCAM_BITS, BLOCKS_PER_STAGE, ALUS_PER_STAGE = 512, 44, 24, 4
 PROLOGUE_STAGES, VOTE_STAGES, PIPELINE_STAGES = 3, 1, 12

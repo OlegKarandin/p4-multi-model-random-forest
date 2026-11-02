@@ -43,9 +43,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from scripts.tcam_stretch_sweep import measure, synthetic_program
-from src.p4gen.p4_compile import compile_p4
-from src.p4model.packing import _stage_shards
-from src.p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
+from p4gen.p4_compile import compile_p4
+from p4model.packing import _stage_shards
+from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 
 DEFAULT_OUT = 'results/tcam_stage_shard_probe.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_stage_shard_probe'

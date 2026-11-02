@@ -31,16 +31,16 @@ import sys
 # Running this file under bfshell puts p4/ on sys.path[0], not the repo root,
 # so `src` would not import. Same two-line bootstrap scripts/ uses (e.g.
 # scripts/capacity_ceiling.py:105-107). Safe under bfshell's embedded Python:
-# src/p4model/__init__.py eagerly re-exports the whole package, so importing
-# range_entry_count from src.p4model.ranges transitively imports all of
-# src.p4model, .catalog, .errors, .names, .packing, .program, .ranges,
+# p4model/__init__.py eagerly re-exports the whole package, so importing
+# range_entry_count from p4model.ranges transitively imports all of
+# p4model, .catalog, .errors, .names, .packing, .program, .ranges,
 # .registers, .tables, .target, .usage, plus the stdlib modules they use
 # (dataclasses, math, re) -- still no sklearn/numpy/pandas/CWD-relative file
 # reads (see tests/test_p4model_guards.py's standalone-import guard), but the
 # `dataclasses` import means this deploy path needs Python >= 3.7.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.p4model.ranges import range_entry_count
+from p4model.ranges import range_entry_count
 
 PROGRAM_NAME = "p4_code_RF_models"  # must match the program name used to launch bf_switchd -p <PROGRAM_NAME>
 CONTROL_BLOCK = "SwitchIngress"     # matches this project's real control block name (resources/p4_template.p4)

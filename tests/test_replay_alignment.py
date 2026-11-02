@@ -9,7 +9,7 @@ import scripts.replay_alignment as ra
 
 from sklearn.ensemble import RandomForestClassifier
 
-from src.p4gen.build_p4_script import dt_thresholds_float_to_int
+from p4gen.build_p4_script import dt_thresholds_float_to_int
 from src.training.splits import make_task_splits
 
 

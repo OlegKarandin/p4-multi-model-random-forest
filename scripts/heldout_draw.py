@@ -315,9 +315,9 @@ class _Realiser:
     def __call__(self, row):
         from scripts.p4_artifact_replay import replay_design
         from scripts.replay_alignment import refit_pair
-        from src.p4gen.build_p4_script import (
+        from p4gen.build_p4_script import (
             generate_P4_code, get_feature_intervals, get_joint_feature_intervals)
-        from src.p4gen.evaluation import _pool_inputs, multi_model_memory_evaluation
+        from p4gen.evaluation import _pool_inputs, multi_model_memory_evaluation
         from src.training.threshold_alignment import align_with_policy
 
         arm = row['arm_slug']
@@ -453,7 +453,7 @@ def load_manifest(output_root=OUTPUT_ROOT):
 
 def run_compile(output_root=OUTPUT_ROOT, limit=None):
     from scripts.p4_artifact_replay import _committed_blocks, committed_stages_real
-    from src.p4gen.p4_compile import compile_p4, parse_compile_logs
+    from p4gen.p4_compile import compile_p4, parse_compile_logs
 
     manifest = load_manifest(output_root)
     out = os.path.join(output_root, COMPILED_CSV)
@@ -568,10 +568,10 @@ def table_scores(row_id, output_root=OUTPUT_ROOT):
     from scripts.p4_artifact_replay import _p4_table_keys, _p4_table_sizes
     from scripts.tcam_table_scoreboard import price_in_stage
     from scripts.tcam_version_sweep import measured_start_group, read_committed
-    from src.p4model.ranges import compiler_range_rows
-    from src.p4model.tables import (codeword_fields_to_bytes_from_bits,
+    from p4model.ranges import compiler_range_rows
+    from p4model.tables import (codeword_fields_to_bytes_from_bits,
                                     codeword_to_blocks, tree_entries_to_blocks)
-    from src.p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
+    from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 
     logs = os.path.join(output_root, 'compiles', row_id, 'pipe', 'logs')
     committed = read_committed(logs)

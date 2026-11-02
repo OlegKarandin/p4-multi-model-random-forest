@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from src.p4gen import p4_replay as rp
+from p4gen import p4_replay as rp
 
 _C1 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "fixtures", "c1_replay_designs.json")
@@ -69,7 +69,7 @@ def test_parse_program_text_reads_keys_widths_and_sizes():
 
 
 def test_declared_prices_charge_classification_tables_with_table_blocks():
-    from src.p4gen.p4_replay import Program, declared_prices
+    from p4gen.p4_replay import Program, declared_prices
     program = Program(
         tables={'get_classification_tree_ddos_0': ['code_a', 'code_b']},
         widths={'code_a': 4, 'code_b': 7},

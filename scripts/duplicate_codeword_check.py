@@ -54,7 +54,7 @@ import pandas as pd
 from scripts.compiler_calibration import CAMPAIGN_BACKUP_DIR
 from scripts.replay_alignment import column_indices, load_backup, refit_pair
 from src.main import load_campaign_data
-from src.p4gen.build_p4_script import (feature_intervals_from_nodes,
+from p4gen.build_p4_script import (feature_intervals_from_nodes,
                                         generate_codewords, get_root_to_leaf_paths,
                                         merge_tree_nodes, tree_nodes_for)
 

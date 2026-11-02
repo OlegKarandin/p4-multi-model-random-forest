@@ -3,7 +3,7 @@ compiles (results/compiler_calibration_v6), scored against the model.
 
 Originally written for Task 7's offset-based mechanism (`start_group`,
 `version_block_penalty`), which the 2026-09-20 rewrite retired: no per-table
-price in `src.p4model.tables` depends on where a key's crossbar run starts
+price in `p4model.tables` depends on where a key's crossbar run starts
 any more (and `packing.key_width`/`offsets_for`, the last code that read a
 key's position, were deleted by audit C5 on 2026-09-28). The harvest module
 this file exercises (`scripts/tcam_offset_harvest.py`) already says so in its

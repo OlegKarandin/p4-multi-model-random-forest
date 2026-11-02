@@ -2,8 +2,8 @@
 so model.json can be joined to p4c's mau.resources.log by table name."""
 import pytest
 
-from src.p4model.packing import crossbar_stages_needed
-from src.p4model.usage import assemble_usage
+from p4model.packing import crossbar_stages_needed
+from p4model.usage import assemble_usage
 from tests.test_resource_model_golden import load_fixture, rebuild_pool
 
 APP_49 = (179, 204)      # 49 crossbar bytes, 9 blocks standalone, ragged
@@ -41,7 +41,7 @@ def test_table_blocks_sum_to_the_plan_total_on_every_golden_row(row):
 
 def test_ternary_matching_prices_each_tree_with_table_blocks():
     """independent_low_sd5's ddos key (27, 52): ladder 3, lane 2 per word."""
-    from src.p4model.tables import ternary_matching_resource_usage
+    from p4model.tables import ternary_matching_resource_usage
     intervals = {'a': list(range(28)), 'b': list(range(53))}   # widths 27, 52
     codewords = {0: {'0' * 79: 0}, 1: {'0' * 79: 0}}
     entries, blocks, length, specs = ternary_matching_resource_usage(codewords, intervals)

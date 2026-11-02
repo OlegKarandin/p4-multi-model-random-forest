@@ -42,9 +42,9 @@ import pandas as pd
 import sklearn
 
 from src.main import load_campaign_data
-from src.p4gen.build_p4_script import dt_thresholds_float_to_int
-from src.p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
-from src.p4gen.switch_semantics import switch_predict
+from p4gen.build_p4_script import dt_thresholds_float_to_int
+from p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
+from p4gen.switch_semantics import switch_predict
 from src.training.align_twins import column_indices, split_random_state  # noqa: F401
 from src.training.splits import make_task_splits
 from src.training.threshold_alignment import align_with_policy

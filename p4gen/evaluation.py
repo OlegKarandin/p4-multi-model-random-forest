@@ -2,11 +2,11 @@
 # Frontend imports: the tree/codeword machinery this module's own functions
 # still call directly, plus the sklearn.metrics dependency accuracy_metrics
 # needs. Everything the resource model itself needs now lives in
-# src/p4model/ (see the shim block below) and is import-light -- no sklearn,
+# p4model/ (see the shim block below) and is import-light -- no sklearn,
 # no numpy, no CWD dependence.
 # ---------------------------------------------------------------------------
 import sklearn.metrics as mt
-from src.p4gen.build_p4_script import (
+from p4gen.build_p4_script import (
     _reject_colliding_feature_names,
     feature_intervals_from_nodes,
     generate_codewords,
@@ -19,7 +19,7 @@ from src.p4gen.build_p4_script import (
 
 
 # ---------------------------------------------------------------------------
-# Shim block. The resource model itself now lives in src/p4model/ (import-light:
+# Shim block. The resource model itself now lives in p4model/ (import-light:
 # no sklearn, no numpy, no CWD dependence -- see tests/test_p4model_guards.py).
 # Everything below is re-exported at its historical path so src/training/,
 # src/reporting/, scripts/ and the test suite keep the imports they always had.
@@ -38,7 +38,7 @@ from src.p4gen.build_p4_script import (
 #                                            encoding branches converge:
 #                                            _pool_inputs stayed here,
 #                                            assemble_usage -- imported below
-#                                            -- moved to src/p4model/usage.py;
+#                                            -- moved to p4model/usage.py;
 #                                            multi_model_memory_evaluation
 #                                            itself is now a thin composition
 #                                            of the two)
@@ -46,9 +46,9 @@ from src.p4gen.build_p4_script import (
 #                                            reader inside the model
 #   most_common_class_and_dropped_codewords   -- codegen policy, not physics
 # ---------------------------------------------------------------------------
-from src.p4model.usage import ResourceUsage, assemble_usage
-from src.p4model.errors import CodewordTooLong, CrossbarKeyTooWide
-from src.p4model.target import (
+from p4model.usage import ResourceUsage, assemble_usage
+from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
+from p4model.target import (
     CODEWORD_KEY_OVERHEAD_BITS,
     MAX_RANGE_KEY_BITS,
     METER_ALUS_PER_STAGE,
@@ -56,7 +56,7 @@ from src.p4model.target import (
     RANGE_WORST_CASE_ROWS_CAP,
     TOFINO_PIPELINE_STAGES,
 )
-from src.p4model.program import (
+from p4model.program import (
     APP_TASK,
     DDOS_TASK,
     SHARED_TASK,
@@ -67,19 +67,19 @@ from src.p4model.program import (
     REGISTER_BLOCK_ORDER,
     VOTE_EPILOGUE_STAGES,
 )
-from src.p4model.packing import (
+from p4model.packing import (
     StagePlan,
     _stage_shards,
     crossbar_stages_needed,
     fits_two_columns,
 )
-from src.p4model.ranges import (
+from p4model.ranges import (
     compiler_range_rows,
     nibble_widths_for,
     range_entry_count,
 )
-from src.p4model.lanes import table_blocks
-from src.p4model.tables import (
+from p4model.lanes import table_blocks
+from p4model.tables import (
     codeword_bits_to_blocks,
     codeword_bytes_to_blocks,
     codeword_to_blocks,
@@ -94,16 +94,16 @@ from src.p4model.tables import (
     codeword_fields_to_bytes,
     codeword_fields_to_bytes_from_bits,
 )
-from src.p4model import tables as _tables
-from src.p4model.registers import (
+from p4model import tables as _tables
+from p4model.registers import (
     _register_blocks,
     feature_readiness_level,
     gated_block_interior_stages,
     readiness_levels_for,
     register_stage_schedule,
 )
-from src.p4model.names import normalise_feature_name
-from src.p4model.catalog import (
+from p4model.names import normalise_feature_name
+from p4model.catalog import (
     FEATURE_REGISTER_CATALOG,
     register_names_for,
     register_width_bits,
@@ -112,7 +112,7 @@ from src.p4model.catalog import (
 
 def ternary_matching_resource_usage(codewords, feature_intervals,
                                     use_default_action_discount=False):
-  """Wrapper over src.p4model.tables.ternary_matching_resource_usage that owns
+  """Wrapper over p4model.tables.ternary_matching_resource_usage that owns
   this generator's default-action POLICY.
 
   The model takes a per-tree count of folded entries; deciding WHICH leaves fold
@@ -195,7 +195,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   same 15 names regardless of which branch ran.
 
   This is the Tier 2 ProgramSpec seam (Spec S4.5, finding F6): downstream of
-  this function, src.p4model.usage.assemble_usage takes only this dict and is
+  this function, p4model.usage.assemble_usage takes only this dict and is
   import-light -- no sklearn, no fitted forest, no CWD dependence -- which is
   what lets a golden fixture and scripts/validation_table.py replay a real
   prediction with no models and no campaign data.
@@ -208,7 +208,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
 
   range_task and ternary_task say which classification task each table
   serves, one label per entry, positionally aligned with range_table_specs and
-  ternary_table_specs respectively. Labels are src.p4model.program's
+  ternary_table_specs respectively. Labels are p4model.program's
   APP_TASK ('app') and DDOS_TASK ('ddos'); a range table can also be
   SHARED_TASK ('shared'), meaning every task's trees key on its code field --
   every range table under 'joint', and under 'disjoint' the one table of a
@@ -222,7 +222,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   ternary_blocks (the naive per-table block sum each branch computes below)
   is deliberately NOT one of the 15 keys: it is already dead after the branch
   converges -- assemble_usage's ResourceUsage.blocks uses ternary_plan.blocks,
-  the StagePlan total from src.p4model.packing, charged by its ordered stage
+  the StagePlan total from p4model.packing, charged by its ordered stage
   simulation (a key placed behind a different key pays its lane leftover
   price), never this naive sum. Carrying it into the pool would invite exactly
   the confusion the StagePlan.blocks fix (see CLAUDE.md's compiler-calibration
@@ -369,7 +369,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
         "expected 'joint' or 'disjoint'".format(encoding))
 
   # interior_stages depends on gated_block_interior_stages
-  # (src.p4model.registers), so it is computed here rather than in
+  # (p4model.registers), so it is computed here rather than in
   # assemble_usage: assemble_usage is deliberately import-light (no
   # registers, no catalog, no sklearn -- see its own docstring), and pooling
   # this value is what lets it stay that way while still packing both pools

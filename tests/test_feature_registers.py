@@ -19,10 +19,10 @@ import re
 
 import pytest
 
-from src.p4gen import build_p4_script as bps
-from src.p4gen.build_p4_script import generate_P4_registers_and_apply
-from src.p4gen import feature_registers as fr
-from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
+from p4gen import build_p4_script as bps
+from p4gen.build_p4_script import generate_P4_registers_and_apply
+from p4gen import feature_registers as fr
+from p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 
 
 SPIKE_PATH = os.path.join(

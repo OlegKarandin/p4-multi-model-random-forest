@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 
-from src.p4gen import build_p4_script as bps
+from p4gen import build_p4_script as bps
 
 
 def _fit(n_features, max_depth, seed, value_hi=(2 ** 16) - 2, n_samples=6000,

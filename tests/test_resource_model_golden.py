@@ -10,8 +10,8 @@ import os
 
 import pytest
 
-from src.p4model.registers import gated_block_interior_stages
-from src.p4model.usage import assemble_usage
+from p4model.registers import gated_block_interior_stages
+from p4model.usage import assemble_usage
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "fixtures", "resource_model_golden.json")
@@ -132,7 +132,7 @@ def test_classification_stages_are_derivable_from_the_block_factor():
     geometry ever changes, this fails loudly rather than a retired objective
     quietly becoming relevant again (§8).
     """
-    from src.p4model.target import (TCAM_ROWS_PER_STAGE,
+    from p4model.target import (TCAM_ROWS_PER_STAGE,
                                     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
     checked = 0
@@ -175,8 +175,8 @@ def test_the_classification_stage_formula_honours_the_eight_table_cap(factor):
     measured at zero mismatches, so a future change to either limit fails here
     rather than quietly making a retired objective relevant again.
     """
-    from src.p4model.packing import crossbar_stages_needed
-    from src.p4model.target import (TCAM_ROWS_PER_STAGE,
+    from p4model.packing import crossbar_stages_needed
+    from p4model.target import (TCAM_ROWS_PER_STAGE,
                                     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
     # The byte width is a placeholder: with key_fields=None every table gets a

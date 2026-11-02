@@ -1,8 +1,8 @@
 """Classify a model prediction against the p4c ground truth, worst verdict first."""
 from dataclasses import dataclass
 
-from src.p4gen.p4_ground_truth import P4cNumbers
-from src.p4model.target import TOFINO_PIPELINE_STAGES
+from p4gen.p4_ground_truth import P4cNumbers
+from p4model.target import TOFINO_PIPELINE_STAGES
 
 VERDICTS = ('FALSE_FEASIBLE', 'UNDER', 'FALSE_INFEASIBLE', 'OVER', 'EXACT',
             'COMPILE_ERROR', 'TIMEOUT')

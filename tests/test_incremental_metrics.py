@@ -198,7 +198,7 @@ def test_label_universe_places_lab_first_in_order_then_appends_other_labels_sort
 # Comparison is with `==`, never approx, for the same reason as above.
 # ---------------------------------------------------------------------------
 
-from src.p4gen.evaluation import accuracy_metrics
+from p4gen.evaluation import accuracy_metrics
 from src.training import threshold_alignment as ta
 from src.training.incremental_metrics import IncrementalMetrics
 
@@ -458,7 +458,7 @@ def test_ties_break_to_the_smallest_class_index_after_an_incremental_update():
     with a smaller-indexed class, so drive a row into a tie through apply and
     check all three views agree.
     """
-    from src.p4gen.switch_semantics import vote_winner
+    from p4gen.switch_semantics import vote_winner
 
     rf = _FakeForest([0, 1, 2])
     y_true = np.array([2])

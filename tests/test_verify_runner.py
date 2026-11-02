@@ -10,7 +10,7 @@ import tarfile
 
 import pytest
 
-from src.p4gen.p4_compile import CompileResult, P4CompileTimeout
+from p4gen.p4_compile import CompileResult, P4CompileTimeout
 from src.training.campaign_run import atomic_write_text, canonical_json, run_paths
 from src.verify import runner
 from src.verify import __main__ as cli

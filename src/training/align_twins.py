@@ -24,8 +24,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import sklearn
 from sklearn.metrics import accuracy_score
 
-from src.p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
-from src.p4gen.switch_semantics import switch_predict
+from p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
+from p4gen.switch_semantics import switch_predict
 from src.training.campaign_run import INF, atomic_write_text, run_paths, split_csv_name
 from src.training.campaign_run import row_id as make_row_id
 from src.training.row_artifacts import RowContext, load_forests, write_row_artifacts

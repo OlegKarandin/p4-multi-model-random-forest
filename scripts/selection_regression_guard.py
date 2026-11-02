@@ -23,10 +23,10 @@ import pandas as pd  # noqa: E402
 import sklearn  # noqa: E402
 
 from src.main import PRIMARY_ARMS, load_campaign_data  # noqa: E402
-from src.p4gen.evaluation import accuracy_metrics  # noqa: E402
-from src.p4gen.switch_semantics import switch_predict  # noqa: E402
-from src.p4model import lanes  # noqa: E402
-from src.p4model.tables import codeword_to_blocks  # noqa: E402
+from p4gen.evaluation import accuracy_metrics  # noqa: E402
+from p4gen.switch_semantics import switch_predict  # noqa: E402
+from p4model import lanes  # noqa: E402
+from p4model.tables import codeword_to_blocks  # noqa: E402
 from src.training.campaign_run import optuna_seed, split_csv_name  # noqa: E402
 from src.training.splits import make_task_splits  # noqa: E402
 from src.training.train_model import train_multi_RF_Optuna_multi_constrained  # noqa: E402

@@ -37,7 +37,7 @@ from unittest.mock import patch
 
 from src.training import feature_selection as fs
 from src.training.train_model import TrainResult
-from src.p4gen import p4_compile as pc
+from p4gen import p4_compile as pc
 
 
 def _tiny_dataset(n=40, n_features=3, seed=0):
@@ -50,7 +50,7 @@ def _tiny_dataset(n=40, n_features=3, seed=0):
 
 def _fit_tiny_rf(X, y, n_estimators=1, max_depth=2, seed=0):
     from sklearn.ensemble import RandomForestClassifier
-    from src.p4gen import build_p4_script as bps
+    from p4gen import build_p4_script as bps
 
     clf = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth,
                                   random_state=seed).fit(X, y)
@@ -91,7 +91,7 @@ def test_process_single_split_without_hardware_validation_has_none_fields(monkey
     same pattern as the tests below.
     """
     from sklearn.ensemble import RandomForestClassifier
-    from src.p4gen import build_p4_script as bps
+    from p4gen import build_p4_script as bps
 
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset()
 
@@ -164,7 +164,7 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
     import os
     import re
     from sklearn.ensemble import RandomForestClassifier
-    from src.p4gen import build_p4_script as bps
+    from p4gen import build_p4_script as bps
 
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=40, n_features=3)
     _CATALOG_FEATURES = ["flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"]
@@ -206,7 +206,7 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
             errors=0, warnings=0, stages=s, tables=s, tcam=s)})()
 
     with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
-         patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+         patch("p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_single = fs._process_single_split(
             split_idx=3, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, feature_names=_CATALOG_FEATURES,
@@ -262,9 +262,9 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
     the expensive Optuna search; `p4_compile.compile_p4_async` faked the
     same way) rather than a new slow real-Optuna test.
     """
-    from src.p4gen import p4_gen_config
+    from p4gen import p4_gen_config
     from sklearn.ensemble import RandomForestClassifier
-    from src.p4gen import build_p4_script as bps
+    from p4gen import build_p4_script as bps
 
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=30, n_features=2)
 
@@ -285,7 +285,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
     config_dir = str(tmp_path / "config") + "/"
 
     with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
-         patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+         patch("p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_kwargs = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, arm=arm,
@@ -295,7 +295,7 @@ def test_process_single_split_config_matches_equivalent_individual_kwargs(tmp_pa
 
     cfg = p4_gen_config.P4GenConfig(validate_on_hardware=True, hardware_output_dir=config_dir)
     with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
-         patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
+         patch("p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async):
         result_config = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,
             max_blocks=50, arm=arm,
@@ -335,7 +335,7 @@ def test_kickoff_hardware_validation_uncatalogued_feature_returns_unavailable(tm
     clf_app = _fit_tiny_rf(X, y_app, seed=0)
     clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
 
-    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
+    with patch("p4gen.p4_compile.compile_p4_async") as mock_compile:
         handle = fs._kickoff_hardware_validation(
             True, str(tmp_path) + "/", 0, 'single', 2,
             clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], 'disjoint')
@@ -365,7 +365,7 @@ def test_process_single_split_uncatalogued_feature_degrades_not_aborts(tmp_path)
     # (stages_real/tcam_real None, a non-empty reason in compile_errors)
     # instead of the whole split raising.
     from sklearn.ensemble import RandomForestClassifier
-    from src.p4gen import build_p4_script as bps
+    from p4gen import build_p4_script as bps
 
     X_app, X_ddos, y_app, y_ddos = _tiny_dataset(n=40, n_features=2)
 
@@ -401,7 +401,7 @@ def test_kickoff_hardware_validation_joint_makes_one_compile_call(tmp_path):
     clf_app = _fit_tiny_rf(X, y_app, seed=0)
     clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
 
-    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
+    with patch("p4gen.p4_compile.compile_p4_async") as mock_compile:
         fake_future = type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(stages=9, tcam=1)})()
         mock_compile.return_value = fake_future
 
@@ -426,7 +426,7 @@ def test_kickoff_hardware_validation_disjoint_makes_one_compile_call_and_writes_
     clf_app = _fit_tiny_rf(X, y_app, seed=0)
     clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
 
-    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
+    with patch("p4gen.p4_compile.compile_p4_async") as mock_compile:
         fake_future = type("F", (), {"result": lambda self, timeout=None: pc.CompileResult(stages=5, tcam=1)})()
         mock_compile.return_value = fake_future
 
@@ -456,7 +456,7 @@ def test_kickoff_hardware_validation_disjoint_makes_one_compile_call_and_writes_
 # ---------------------------------------------------------------------------
 
 def _discount_and_exact_config(tmp_path):
-    from src.p4gen import p4_gen_config
+    from p4gen import p4_gen_config
     return p4_gen_config.P4GenConfig(
         validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
         use_default_action_discount=True, match_type='exact')
@@ -477,7 +477,7 @@ def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
     build_p4_script.generate_P4_tables_and_apply's docstring).
     """
     import re
-    from src.p4gen import build_p4_script as bps
+    from p4gen import build_p4_script as bps
 
     X = np.random.RandomState(0).randint(0, 65535, size=(60, 2))
     y_app = np.random.RandomState(0).randint(0, 3, size=60)
@@ -488,9 +488,9 @@ def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
     cfg = _discount_and_exact_config(tmp_path)
     real_generate_P4_code = bps.generate_P4_code
 
-    with patch("src.p4gen.build_p4_script.generate_P4_code",
+    with patch("p4gen.build_p4_script.generate_P4_code",
                side_effect=real_generate_P4_code) as spy_generate, \
-         patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
+         patch("p4gen.p4_compile.compile_p4_async") as mock_compile:
         mock_compile.return_value = type("F", (), {
             "result": lambda self, timeout=None: pc.CompileResult(stages=5, tcam=1)})()
 
@@ -523,7 +523,7 @@ def test_kickoff_hardware_validation_without_config_is_unchanged(tmp_path):
     clf_app = _fit_tiny_rf(X, y_app, seed=0)
     clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
 
-    with patch("src.p4gen.p4_compile.compile_p4_async") as mock_compile:
+    with patch("p4gen.p4_compile.compile_p4_async") as mock_compile:
         mock_compile.return_value = type("F", (), {
             "result": lambda self, timeout=None: pc.CompileResult(stages=5, tcam=1)})()
 
@@ -551,9 +551,9 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
     (arm='independent'/arm='joint'); the two calls' `spy_kickoff` histories
     are combined below to check both methods appear across them.
     """
-    from src.p4gen import p4_gen_config
+    from p4gen import p4_gen_config
     from sklearn.ensemble import RandomForestClassifier
-    from src.p4gen import build_p4_script as bps
+    from p4gen import build_p4_script as bps
 
     # Same size/shape/labels as every other _process_single_split test in this
     # file. In particular y_ddos keeps this codebase's {-1, 1} DDoS label
@@ -582,7 +582,7 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
     real_kickoff = fs._kickoff_hardware_validation
 
     with patch("src.training.train_model.train_multi_RF_Optuna_multi_constrained", side_effect=_fake_train), \
-         patch("src.p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async), \
+         patch("p4gen.p4_compile.compile_p4_async", side_effect=_fake_compile_async), \
          patch.object(fs, "_kickoff_hardware_validation",
                       side_effect=real_kickoff) as spy_kickoff:
         # FEATURE_REGISTER_CATALOG's three dependency-free entries (see
@@ -675,7 +675,7 @@ def test_a_feasible_row_reports_the_reference_beside_the_shipped_design(monkeypa
             ref_model_A=ref_A, ref_model_B=ref_B, ref_blocks=2, ref_stage_depth=2,
             ref_acc_sel_A=0.6, ref_acc_sel_B=0.8, trial_table=[])
 
-    from src.p4gen.switch_semantics import switch_predict as real_predict
+    from p4gen.switch_semantics import switch_predict as real_predict
     last = {}
 
     def _spy_predict(model, X):
@@ -688,8 +688,8 @@ def test_a_feasible_row_reports_the_reference_beside_the_shipped_design(monkeypa
 
     monkeypatch.setattr(
         'src.training.train_model.train_multi_RF_Optuna_multi_constrained', _fake_train)
-    monkeypatch.setattr('src.p4gen.switch_semantics.switch_predict', _spy_predict)
-    monkeypatch.setattr('src.p4gen.evaluation.accuracy_metrics', _spy_metrics)
+    monkeypatch.setattr('p4gen.switch_semantics.switch_predict', _spy_predict)
+    monkeypatch.setattr('p4gen.evaluation.accuracy_metrics', _spy_metrics)
 
     result = fs._process_single_split(
         split_idx=0, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,

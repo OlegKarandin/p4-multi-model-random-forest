@@ -13,9 +13,9 @@ import dataclasses
 import joblib
 import sklearn
 
-from src.p4gen.build_p4_script import generate_P4_code
-from src.p4gen.p4_replay import model_breakdown, parse_program
-from src.p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
+from p4gen.build_p4_script import generate_P4_code
+from p4gen.p4_replay import model_breakdown, parse_program
+from p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
 from src.training.campaign_run import (
     atomic_write_text, canonical_json, run_paths)
 

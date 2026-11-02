@@ -59,13 +59,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from scripts.compiler_calibration import committed_table_stages
-from src.p4gen.build_p4_script import (
+from p4gen.build_p4_script import (
     TCAM_BLOCK_KEY_LENGTH,
     TCAM_COLUMNS_PER_STAGE,
     TCAM_ROWS_PER_STAGE,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
-from src.p4gen.p4_compile import compile_p4
+from p4gen.p4_compile import compile_p4
 
 # Sec 4.1: a ternary entry carries a flat 4-bit version/valid overhead before
 # the key is divided into TCAM_BLOCK_KEY_LENGTH-bit rows.

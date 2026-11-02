@@ -1,4 +1,4 @@
-"""Structural guarantees for src/p4model: each name lives in exactly one place,
+"""Structural guarantees for p4model: each name lives in exactly one place,
 and the old import paths resolve to that same object.
 
 Identity (`is`) assertions, not equality: a re-export that rebinds rather than
@@ -11,9 +11,9 @@ import textwrap
 
 import pytest
 
-from src.p4gen import build_p4_script as bps
-from src.p4gen import evaluation as ev
-from src.p4model import errors, program, target
+from p4gen import build_p4_script as bps
+from p4gen import evaluation as ev
+from p4model import errors, program, target
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HEAVY = ("sklearn", "numpy", "pandas", "scipy", "optuna", "matplotlib")
@@ -78,7 +78,7 @@ def test_the_packer_has_no_key_order_search_left():
     # itertools.permutations. The ordered stage simulation replaces all of it.
     import inspect
 
-    from src.p4model import packing
+    from p4model import packing
 
     source = inspect.getsource(packing)
     for gone in ("offsets_for", "def key_width", "def crowded", "def charged",
@@ -144,8 +144,8 @@ def test_register_block_order_lost_its_underscore():
 
 
 def test_names_and_catalog_reexports_are_the_same_object():
-    from src.p4gen import feature_registers as fr
-    from src.p4model import catalog, names
+    from p4gen import feature_registers as fr
+    from p4model import catalog, names
 
     assert bps.normalise_feature_name is names.normalise_feature_name
     assert ev.normalise_feature_name is names.normalise_feature_name
@@ -162,7 +162,7 @@ def test_catalog_imports_normalise_at_module_level_not_inside_a_function():
     # reintroduced it.
     import inspect
 
-    from src.p4model import catalog
+    from p4model import catalog
 
     assert "import" not in inspect.getsource(catalog.register_names_for)
 
@@ -173,7 +173,7 @@ PACKING_REEXPORTS = ("StagePlan", "fits_two_columns", "_stage_shards",
 
 @pytest.mark.parametrize("name", PACKING_REEXPORTS)
 def test_packing_reexports_are_the_same_object(name):
-    from src.p4model import packing
+    from p4model import packing
 
     assert getattr(ev, name) is getattr(packing, name)
 
@@ -198,7 +198,7 @@ TABLES_REEXPORTS = (
 
 @pytest.mark.parametrize("name", TABLES_REEXPORTS)
 def test_tables_reexports_are_the_same_object(name):
-    from src.p4model import tables
+    from p4model import tables
 
     assert getattr(ev, name) is getattr(tables, name)
 
@@ -212,7 +212,7 @@ def test_the_planter_discount_policy_did_not_move_into_the_model():
     # which imports numpy and sklearn.tree at module scope.
     import inspect
 
-    from src.p4model import tables
+    from p4model import tables
 
     assert not hasattr(tables, "most_common_class_and_dropped_codewords")
     assert hasattr(bps, "most_common_class_and_dropped_codewords")
@@ -237,7 +237,7 @@ REGISTERS_REEXPORTS = ("feature_readiness_level", "register_stage_schedule",
 
 @pytest.mark.parametrize("name", REGISTERS_REEXPORTS)
 def test_registers_reexports_are_the_same_object(name):
-    from src.p4model import registers
+    from p4model import registers
 
     assert getattr(ev, name) is getattr(registers, name)
 
@@ -245,13 +245,13 @@ def test_registers_reexports_are_the_same_object(name):
 def test_registers_reports_schedule_and_depth_but_not_sram():
     # Task 1: total register bits answered no question. What survives is the
     # schedule (which drives stage placement) and the depth/count read off it.
-    from src.p4model import registers
+    from p4model import registers
 
     assert not hasattr(registers, "register_sram_bits")
 
 
 def test_resource_usage_is_the_same_class():
-    from src.p4model import usage
+    from p4model import usage
 
     assert ev.ResourceUsage is usage.ResourceUsage
 
@@ -262,7 +262,7 @@ def test_resource_usage_field_order_is_pinned():
     # silent data corruption, so pin it here rather than discover it later.
     import dataclasses
 
-    from src.p4model import usage
+    from p4model import usage
 
     assert [f.name for f in dataclasses.fields(usage.ResourceUsage)] == [
         "stages", "blocks", "stage_depth", "range_entries", "ternary_entries",
@@ -278,10 +278,10 @@ def test_importing_p4model_pulls_in_no_heavy_dependency():
     # real switch.
     out = _run_isolated("""
         import sys
-        import src.p4model
+        import p4model
         print(','.join(sorted(m for m in {heavy} if m in sys.modules)))
     """.format(heavy=HEAVY), cwd=REPO_ROOT)
-    assert out == "", "src.p4model dragged in: " + out
+    assert out == "", "p4model dragged in: " + out
 
 
 def test_importing_every_p4model_submodule_pulls_in_no_heavy_dependency():
@@ -289,10 +289,10 @@ def test_importing_every_p4model_submodule_pulls_in_no_heavy_dependency():
     # could pass while a submodule is dirty. Import them all.
     out = _run_isolated("""
         import sys
-        import src.p4model.catalog, src.p4model.errors, src.p4model.names
-        import src.p4model.packing, src.p4model.program, src.p4model.ranges
-        import src.p4model.registers, src.p4model.tables, src.p4model.target
-        import src.p4model.usage
+        import p4model.catalog, p4model.errors, p4model.names
+        import p4model.packing, p4model.program, p4model.ranges
+        import p4model.registers, p4model.tables, p4model.target
+        import p4model.usage
         print(','.join(sorted(m for m in {heavy} if m in sys.modules)))
     """.format(heavy=HEAVY), cwd=REPO_ROOT)
     assert out == "", "a p4model submodule dragged in: " + out
@@ -304,7 +304,7 @@ def test_p4model_imports_and_computes_from_an_unrelated_cwd(tmp_path):
     # anything importing it must run from the repo root. p4model must not
     # inherit that -- an installed package has no idea where the repo is.
     out = _run_isolated("""
-        from src.p4model.packing import crossbar_stages_needed
+        from p4model.packing import crossbar_stages_needed
         plan = crossbar_stages_needed([(8, 4)] * 3)
         print(plan.occupied)
     """, cwd=str(tmp_path))
@@ -324,7 +324,7 @@ def test_the_cost_decomposition_names_say_what_they_take():
     signature promising otherwise would assert a dependency the quantity does
     not have.
     """
-    from src.p4model import tables
+    from p4model import tables
 
     assert tables.codeword_fields_to_bytes({'a': [0] * 5, 'b': [0] * 5}) == 2
     assert tables.codeword_bytes_to_blocks(11) == 2
@@ -353,7 +353,7 @@ def test_a_deep_table_pays_a_later_keys_price_once_per_row_word():
     (results/tcam_mixed_key_cap_sweep.csv measured exactly 4 behind such a
     spacer). One word: 9 + 4 = 13. Two words (declared 6 blocks): 9 + 8 = 17.
     """
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     spacer = frozenset({(("code", "spacer"), 45)})
     probe = frozenset({(("code", "a"), 7), (("code", "b"), 7)})
@@ -368,12 +368,12 @@ def test_a_deep_table_pays_a_later_keys_price_once_per_row_word():
 
 
 # --------------------------------------------------------------------------
-# The sharing charge (src/p4model/packing.py's ordered stage simulation, audit
+# The sharing charge (p4model/packing.py's ordered stage simulation, audit
 # C5, 2026-09-28): tables are placed in p4c's order (placement priority, then
 # the table listed LAST first), and each stage's distinct keys are priced in
 # that order -- the first key its declared blocks, every later key its lane
 # LEFTOVER price in the crossbar lanes the keys before it left
-# (src/p4model/lanes.py). Two different keys share a stage whenever the lanes
+# (p4model/lanes.py). Two different keys share a stage whenever the lanes
 # price them and the real 64-byte crossbar limit holds; the 62-byte refusal
 # that used to sit on top was retired by spec 2026-09-29 once the generator
 # pinned every key's PHV layout.
@@ -399,9 +399,9 @@ def test_the_packer_charges_sd5s_stage_nine_blocks_an_accepted_under_of_three():
     # charges 3 + 3 * 2 = 9 -- an UNDER of 3, the accepted greedy-miss class
     # (golden fixture known_findings 'lane_price_2026_10'). The ladder's 3 was
     # right by luck.
-    from src.p4model.lanes import table_blocks
-    from src.p4model.packing import crossbar_stages_needed
-    from src.p4model.tables import codeword_to_blocks
+    from p4model.lanes import table_blocks
+    from p4model.packing import crossbar_stages_needed
+    from p4model.tables import codeword_to_blocks
 
     app = frozenset({(("code", "app_flm"), 7), (("code", "app_plm"), 7)})
     ddos = frozenset({(("code", "ddos_bplm"), 4), (("code", "ddos_plm"), 7)})
@@ -423,9 +423,9 @@ def test_a_stage_of_one_shared_key_is_charged_exactly_its_declared_blocks():
     # designs identical to threshold alignment's total_blocks). The key below
     # is 60 bytes, specifically so this test cannot pass merely because the
     # key happened to be small: one key may use the whole crossbar.
-    from src.p4model.lanes import table_blocks
-    from src.p4model.packing import crossbar_stages_needed
-    from src.p4model.tables import codeword_to_blocks
+    from p4model.lanes import table_blocks
+    from p4model.packing import crossbar_stages_needed
+    from p4model.tables import codeword_to_blocks
 
     key = frozenset({(("code", "f"), 60)})
     assert codeword_to_blocks((480,)) == 11
@@ -440,14 +440,14 @@ def test_omitting_key_field_bits_prices_every_table_at_its_declared_width():
     # Without field widths there is no lane simulation: every table costs what
     # it declares. That is what keeps the range pool -- the one caller that
     # passes no bits -- on exactly its pre-existing pricing.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     plan = crossbar_stages_needed([(3, 14), (2, 11), (2, 11), (2, 11)])
     assert plan.blocks == 9
 
 
 def test_placement_priority_needs_key_field_bits_and_one_entry_per_table():
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     with pytest.raises(ValueError, match="key_field_bits"):
         crossbar_stages_needed([(1, 2)], placement_priority=[1])
@@ -465,7 +465,7 @@ def test_the_generator_emits_the_placement_priority_the_packer_replays():
     # first, then ddos, each by index -- evaluation._pool_inputs' order.
     import re
 
-    from src.p4model.program import PLACEMENT_PRIORITY
+    from p4model.program import PLACEMENT_PRIORITY
 
     path = os.path.join(REPO_ROOT, "p4", "p4_code_RF_models_shared.p4")
     with open(path, encoding="utf-8") as handle:
@@ -494,7 +494,7 @@ def test_two_different_ragged_keys_do_not_share_a_stage():
     # blocks). The retired crowded margin co-located one app tree with the
     # ddos trees and charged 61. Measured on the same key by
     # scripts/tcam_stretch_sweep.py: 9 blocks alone, 10 beside a 12-byte key.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     app = frozenset({(("code", "app_a"), 23), (("code", "app_b"), 26)})
     ddos = frozenset({(("code", "ddos_a"), 5), (("code", "ddos_b"), 7)})
@@ -515,7 +515,7 @@ def test_the_ragged_key_pays_one_block_behind_four_narrow_tables():
     # five in ONE stage at 22 TCAM blocks (results/tcam_stretch_sweep.csv):
     # the ddos key first (4 x 3 = 12, one column) and the app key second at
     # 10, the other column. The simulation, ddos first by priority, agrees.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     app = frozenset({(("code", "app_a"), 23), (("code", "app_b"), 26)})
     ddos = frozenset({(("code", "ddos_a"), 5), (("code", "ddos_b"), 7)})
@@ -541,7 +541,7 @@ def test_the_lane_price_alone_keeps_two_probes_off_a_crowded_spacer():
     # which a 12-row column cannot hold, so the second probe moves on -- the
     # price keeps them apart, no byte threshold needed (the 62-byte refusal
     # was retired by spec 2026-09-29).
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     one = crossbar_stages_needed(
         [(8, 41), (4, 22)], readiness_levels=[0] * 2,
@@ -564,7 +564,7 @@ def test_a_41_plus_22_byte_mixed_stage_now_shares_one_stage():
     # (spec 2026-09-29 Sec 5.2), and so does the packer. Probe listed last,
     # so placed first at its own 4; the spacer behind it pays its lane
     # leftover 8.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     plan = crossbar_stages_needed(
         [(8, 41), (4, 22)], readiness_levels=[0] * 2,
@@ -580,7 +580,7 @@ def test_a_later_key_pays_its_lane_leftover_price():
     # -- 9 + 4 = 13 in one stage. Placed FIRST, the same probe pays its own
     # 3 and the spacer, behind it, still finds its 9: 12. The order is the
     # generator's to pin, not the packer's to guess.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     spacer = frozenset({(("code", "spacer"), 45)})
     probe = frozenset({(("code", "a"), 7), (("code", "b"), 7)})
@@ -600,7 +600,7 @@ def test_a_later_key_with_lanes_to_spare_pays_nothing():
     # below (tcam_mixed_key_cap_sweep/onset). Behind a 44-byte spacer the
     # (54, 56) probe still finds lanes for its own 3 blocks: 12. (The retired
     # margin read this as its "free edge"; the simulation needs no threshold.)
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     spacer = frozenset({(("code", "spacer"), 44)})
     probe = frozenset({(("code", "a"), 7), (("code", "b"), 7)})
@@ -617,7 +617,7 @@ def test_the_mixed_key_byte_cap_never_touches_a_single_key_stage():
     # alone may use the whole 64-byte budget (measured: one table at exactly
     # 64 bytes, reviews/p4_tofino_reference.md Sec 4.3). Two trees of one
     # 64-byte key share their field, so the stage still holds 64 bytes.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     key = frozenset({(("code", "wide"), 64)})
     plan = crossbar_stages_needed(
@@ -630,7 +630,7 @@ def test_a_table_is_sharded_as_full_columns_plus_a_remainder():
     """Finding 1.5a. The equal split rounded each piece up, so a 13-block table
     was charged 14. A column holds TCAM_ROWS_PER_STAGE blocks; fill columns and
     leave the remainder, and the shards sum to the table."""
-    from src.p4model.packing import _stage_shards
+    from p4model.packing import _stage_shards
 
     assert _stage_shards(13, 30) == [(12, 30), (1, 30)]
     assert _stage_shards(23, 30) == [(12, 30), (11, 30)]
@@ -640,8 +640,8 @@ def test_a_table_is_sharded_as_full_columns_plus_a_remainder():
 def test_shards_always_sum_to_the_table_and_fit_a_column():
     """The two invariants the split must never break, over the whole reachable
     range: nothing is lost, and no shard is wider than one column."""
-    from src.p4model.packing import _stage_shards
-    from src.p4model.target import TCAM_ROWS_PER_STAGE
+    from p4model.packing import _stage_shards
+    from p4model.target import TCAM_ROWS_PER_STAGE
 
     for blocks in range(0, 60):
         shards = _stage_shards(blocks, 30)
@@ -655,7 +655,7 @@ def test_a_table_inside_one_column_is_not_sharded():
     """The common case, and the one the whole 19-row archive lives in: no
     archived table exceeds 12 blocks, so this path is the only one the
     calibration ever exercises."""
-    from src.p4model.packing import _stage_shards
+    from p4model.packing import _stage_shards
 
     assert _stage_shards(12, 30) == [(12, 30)]
     assert _stage_shards(1, 30) == [(1, 30)]
@@ -721,8 +721,8 @@ def test_row_parity_never_rejects_a_stage_that_fits_by_size():
     run at rows 0-2, then a 2-high app run forced off row 3 to row 4). Both
     gaps sit in columns using 6 of 12 rows, so neither spilled anything.
     """
-    from src.p4model.packing import fits_two_columns
-    from src.p4model.target import TCAM_COLUMNS_PER_STAGE, TCAM_ROWS_PER_STAGE
+    from p4model.packing import fits_two_columns
+    from p4model.target import TCAM_COLUMNS_PER_STAGE, TCAM_ROWS_PER_STAGE
 
     rows, columns = TCAM_ROWS_PER_STAGE, TCAM_COLUMNS_PER_STAGE
     checked = 0
@@ -749,7 +749,7 @@ def test_a_saturated_key_in_an_uncrowded_shared_stage_pays_nothing():
     # and p4c charged nothing (tcam_offset_harvest.csv). The retired per-key
     # saturation margin charged it +1; the lane simulation finds the later
     # key's lanes free and charges nothing, whichever key goes first.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     app = frozenset({(("code", "app_%d" % i), 1) for i in range(10)})
     ddos = frozenset({(("code", "ddos_%d" % i), 1) for i in range(12)})
@@ -766,7 +766,7 @@ def test_a_saturated_key_in_an_uncrowded_shared_stage_pays_nothing():
 # packing, and are never charged or reported by the seeded pool.
 
 def _seed(index, blocks, byte_widths, tables=None):
-    from src.p4model.packing import StageLoad
+    from p4model.packing import StageLoad
 
     return StageLoad(index=index, blocks=tuple(blocks),
                      fields=frozenset((("val", index, i), w)
@@ -775,7 +775,7 @@ def _seed(index, blocks, byte_widths, tables=None):
 
 
 def test_a_seed_counts_against_the_eight_table_cap():
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     key = frozenset({(("code", "k"), 2)})
     plan = crossbar_stages_needed(
@@ -787,7 +787,7 @@ def test_a_seed_counts_against_the_eight_table_cap():
 
 
 def test_a_seed_counts_against_the_64_byte_limit():
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     key = frozenset({(("code", "k"), 8)})
     plan = crossbar_stages_needed(
@@ -797,7 +797,7 @@ def test_a_seed_counts_against_the_64_byte_limit():
 
 
 def test_a_seed_counts_against_the_column_packing():
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     seed = _seed(5, [12, 8], [2, 2])
     # 12 | 8 + 8 = 16 overflows the second column; 12 | 8 + 4 fits.
@@ -810,7 +810,7 @@ def test_a_seed_counts_against_the_column_packing():
 
 
 def test_a_seed_is_never_charged_or_reported_by_the_seeded_pool():
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     plan = crossbar_stages_needed(
         [(3, 5)], readiness_levels=[5],
@@ -823,7 +823,7 @@ def test_a_seed_is_never_charged_or_reported_by_the_seeded_pool():
 
 def test_seeds_leave_an_unseeded_placement_unchanged():
     # Seeds at stages the pool never reaches change nothing at all.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     specs = [(9, 45), (3, 14), (6, 10), (6, 10)]
     fields = [frozenset({(("code", "s"), 45)}),
@@ -848,7 +848,7 @@ def test_seed_range_keys_are_placed_ahead_of_every_tree_key():
     # 4 + 44 + 14 = 62 bytes are within the 64-byte crossbar, but the lanes are not: the
     # spacer still fits behind the range keys, the probe then finds no legal
     # fit and moves to stage 1. The seed itself is never charged.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     spacer = frozenset({(("code", "spacer"), 44)})
     probe = frozenset({(("code", "a"), 7), (("code", "b"), 7)})
@@ -866,7 +866,7 @@ def test_a_tree_key_behind_a_seed_pays_its_leftover_price_never_less():
     # The 60-byte (480,) key costs 11 blocks alone. Behind one 2-byte range key
     # its lanes are short and it costs 12; the first tree key behind a seed is
     # charged max(codeword_to_blocks, lane leftover), so never below 11.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     key = frozenset({(("code", "wide"), 60)})
     plan = crossbar_stages_needed(
@@ -885,7 +885,7 @@ def test_a_seed_and_tree_keys_share_a_stage_up_to_64_bytes_if_the_lanes_fit():
     # 62-byte net refused this outright; now only the lanes and the real
     # 64-byte limit decide. The lanes still cannot fit the spacer behind the
     # seed and the probe, so it moves on -- same placement, new reason.
-    from src.p4model.packing import crossbar_stages_needed, stage_load_fits
+    from p4model.packing import crossbar_stages_needed, stage_load_fits
 
     spacer = frozenset({(("code", "spacer"), 44)})
     probe = frozenset({(("code", "a"), 7), (("code", "b"), 7)})
@@ -901,7 +901,7 @@ def test_a_seed_and_tree_keys_share_a_stage_up_to_64_bytes_if_the_lanes_fit():
 
 
 def test_seed_stages_need_readiness_levels_and_one_load_per_stage():
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     with pytest.raises(ValueError, match="readiness_levels"):
         crossbar_stages_needed([(1, 2)], seed_stages=[_seed(0, [1], [2])])
@@ -912,7 +912,7 @@ def test_seed_stages_need_readiness_levels_and_one_load_per_stage():
 
 
 def test_table_stages_is_each_tables_latest_shard_in_both_branches():
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     # Pure packer: a 30-block table is 12 | 12 | 6 shards; the two full ones
     # fill stage 0, the 6 and the 1-block table share stage 1.
@@ -926,7 +926,7 @@ def test_table_stages_is_each_tables_latest_shard_in_both_branches():
 
 
 def test_stage_load_fits_checks_the_combined_limits():
-    from src.p4model.packing import stage_load_fits
+    from p4model.packing import stage_load_fits
 
     assert stage_load_fits([_seed(0, [12], [2]), _seed(0, [6, 6], [30])])
     assert not stage_load_fits([_seed(0, [12], [2]), _seed(0, [8, 8], [2])])
@@ -941,7 +941,7 @@ def test_a_classification_table_wider_than_a_stage_is_split_by_whole_rows():
     # blocks, 12 | 8) then 2 (10) -- every chunk keeping the full key; the
     # table is done at the later stage. The 1-block second key, placed after
     # the first chunk, finds lanes to spare.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     wide = frozenset({(("code", "w"), 25)})
     small = frozenset({(("code", "s"), 2)})
@@ -955,7 +955,7 @@ def test_a_classification_table_wider_than_a_stage_is_split_by_whole_rows():
 def test_a_classification_table_wider_than_a_column_stays_in_one_stage():
     # 15 blocks spans both columns of ONE stage (12 | 3, measured at 14/16/24
     # blocks, _stage_shards) and counts as ONE table against the 8-table cap.
-    from src.p4model.packing import crossbar_stages_needed
+    from p4model.packing import crossbar_stages_needed
 
     wide = frozenset({(("code", "w"), 25)})
     small = frozenset({(("code", "s"), 2)})
@@ -981,7 +981,7 @@ def test_a_classification_table_wider_than_a_column_stays_in_one_stage():
 # (declared = lanes.table_blocks x words since 2026-10-04).
 
 def _pre_c5_single_key_reference(specs, levels, unavailable):
-    from src.p4model.packing import fits_two_columns
+    from p4model.packing import fits_two_columns
 
     shards = []
     for idx, (blocks, width) in enumerate(specs):
@@ -1022,8 +1022,8 @@ def _pre_c5_single_key_reference(specs, levels, unavailable):
 
 
 def _single_key_config(rng, dist):
-    from src.p4model.errors import CrossbarKeyTooWide
-    from src.p4model.lanes import table_blocks
+    from p4model.errors import CrossbarKeyTooWide
+    from p4model.lanes import table_blocks
 
     while True:
         if dist == "small":
@@ -1061,7 +1061,7 @@ def _single_key_config(rng, dist):
 def test_a_single_key_pool_is_placed_exactly_as_before_the_ordered_simulation(dist):
     import random
 
-    from src.p4model.packing import StageLoad, crossbar_stages_needed
+    from p4model.packing import StageLoad, crossbar_stages_needed
 
     rng = random.Random("single-key-" + dist)
     for case in range(1500):
@@ -1091,7 +1091,7 @@ def test_a_second_key_or_a_reachable_seed_switches_the_simulation_on():
     # The single-key shortcut must not swallow a real pricing question: a
     # 12-byte key ahead of the ragged 49-byte one still makes it pay 10, and a
     # range seed IN the trees' stage still counts as a key placed first.
-    from src.p4model.packing import StageLoad, crossbar_stages_needed
+    from p4model.packing import StageLoad, crossbar_stages_needed
 
     app = frozenset({(("code", "app_a"), 23), (("code", "app_b"), 26)})
     ddos = frozenset({(("code", "ddos_a"), 5), (("code", "ddos_b"), 7)})

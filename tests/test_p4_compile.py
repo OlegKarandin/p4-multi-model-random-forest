@@ -17,10 +17,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.p4gen import build_p4_script as bps
-from src.p4gen import p4_compile
-from src.p4gen import p4_compile as pc
-from src.p4gen.feature_registers import FEATURE_REGISTER_CATALOG
+from p4gen import build_p4_script as bps
+from p4gen import p4_compile
+from p4gen import p4_compile as pc
+from p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 
 
 @pytest.fixture(autouse=True)
@@ -278,7 +278,7 @@ def test_compile_p4_builds_login_shell_command_with_correct_quoting(tmp_path):
     # quoting scheme would mangle.
     output_dir = str(tmp_path / "some path" / "Документы")
 
-    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+    with patch("p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         result = pc.compile_p4(p4_path, output_dir)
 
     assert mock_run.call_count == 1
@@ -300,7 +300,7 @@ def test_compile_p4_builds_login_shell_command_with_correct_quoting(tmp_path):
     # components would survive shell parsing.
     expected_wsl_output_dir = pc._to_wsl_path(output_dir)
     expected_wsl_p4_path = pc._to_wsl_path(p4_path)
-    expected_wsl_include_path = pc._to_wsl_path(pc._resolve_repo_relative("resources"))
+    expected_wsl_include_path = pc._to_wsl_path(pc._resolve_repo_relative(pc.DEFAULT_INCLUDE_PATH))
 
     assert shlex.quote(expected_wsl_output_dir) in full_command
     assert shlex.quote(expected_wsl_p4_path) in full_command
@@ -334,14 +334,14 @@ def test_compile_p4_copies_into_ascii_scratch_dir_before_invoking_p4c(tmp_path):
     p4_path = str(tmp_path / "probe.p4")
     output_dir = str(tmp_path / "some path" / "Документы")
 
-    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+    with patch("p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         pc.compile_p4(p4_path, output_dir)
 
     full_command = mock_run.call_args[0][0][4]
 
     expected_wsl_output_dir = pc._to_wsl_path(output_dir)
     expected_wsl_p4_path = pc._to_wsl_path(p4_path)
-    expected_wsl_include_path = pc._to_wsl_path(pc._resolve_repo_relative("resources"))
+    expected_wsl_include_path = pc._to_wsl_path(pc._resolve_repo_relative(pc.DEFAULT_INCLUDE_PATH))
 
     # A fresh ASCII-only scratch dir is created (mktemp -d defaults to /tmp,
     # guaranteed ASCII regardless of the WSL username) and cleaned up after.
@@ -379,12 +379,12 @@ def test_compile_p4_target_parameter_selects_the_b_flag(tmp_path):
     """
     fake_proc = _fake_completed_process(stdout="0 errors, 10 warnings generated.\n")
 
-    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+    with patch("p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
     default_command = mock_run.call_args[0][0][4]
     assert "-b tofino -a tna" in default_command
 
-    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+    with patch("p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"),
                        architecture="t2na", target="tofino2")
     tofino2_command = mock_run.call_args[0][0][4]
@@ -408,7 +408,7 @@ def test_compile_p4_uses_exec_flag_to_avoid_wsl_reparse_mangling(tmp_path):
     """
     fake_proc = _fake_completed_process(stdout="0 errors, 10 warnings generated.\n")
 
-    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
+    with patch("p4gen.p4_compile.subprocess.run", return_value=fake_proc) as mock_run:
         pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
 
     cmd = mock_run.call_args[0][0]
@@ -455,7 +455,7 @@ def test_compile_p4_errors_and_warnings_degrade_to_none_when_summary_absent(tmp_
     # print), errors/warnings must stay None, not silently become 0.
     fake_proc = _fake_completed_process(stdout="a hard crash before any summary line\n")
 
-    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc):
+    with patch("p4gen.p4_compile.subprocess.run", return_value=fake_proc):
         result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
 
     assert result.errors is None
@@ -470,7 +470,7 @@ def test_compile_p4_raises_when_summary_absent_and_returncode_nonzero(tmp_path):
     fake_proc = _fake_completed_process(stdout="a hard crash before any summary line\n",
                                          returncode=1)
 
-    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc):
+    with patch("p4gen.p4_compile.subprocess.run", return_value=fake_proc):
         with pytest.raises(RuntimeError, match="p4c did not run"):
             pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
 
@@ -482,7 +482,7 @@ def test_compile_p4_parses_errors_even_when_returncode_nonzero(tmp_path):
     fake_proc = _fake_completed_process(stdout="5 errors, 3 warnings generated.\n",
                                          returncode=1)
 
-    with patch("src.p4gen.p4_compile.subprocess.run", return_value=fake_proc):
+    with patch("p4gen.p4_compile.subprocess.run", return_value=fake_proc):
         result = pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
 
     assert result.errors == 5
@@ -494,7 +494,7 @@ def test_compile_p4_converts_timeout_expired_to_runtime_error(tmp_path):
     # compile_p4 must convert this to RuntimeError with a descriptive message
     # (not pass through the bare TimeoutExpired), so timeouts are treated
     # consistently with other toolchain failures.
-    with patch("src.p4gen.p4_compile.subprocess.run",
+    with patch("p4gen.p4_compile.subprocess.run",
                side_effect=subprocess.TimeoutExpired("cmd", 300)):
         with pytest.raises(RuntimeError, match="p4c compilation timed out after 300 seconds"):
             pc.compile_p4(str(tmp_path / "probe.p4"), str(tmp_path / "logs"))
@@ -512,7 +512,7 @@ def test_compile_p4_against_real_toolchain(tmp_path):
     import numpy as np
     from sklearn.ensemble import RandomForestClassifier
 
-    from src.p4gen import build_p4_script as bps
+    from p4gen import build_p4_script as bps
 
     rng = np.random.RandomState(0)
     X = rng.randint(0, 65535, size=(100, 2))
@@ -568,18 +568,19 @@ def test_full_eighteen_feature_pool_compiles(tmp_path):
 # ---------------------------------------------------------------------------
 # include-path resolution
 #
-# _resolve_repo_relative exists so compile_p4's default include_path
-# ("resources") resolves against THIS REPO's root rather than the caller's
-# cwd. It derived that root from os.path.dirname(__file__), which was correct
-# while p4_compile.py lived at the repo root -- but the src/ reorganisation
-# moved it to src/p4gen/, silently turning the default into
-# src/p4gen/resources, a directory that does not exist. p4c would then be
-# handed `-I <nonexistent>` and fail to find p4_headers.p4 / p4_util.p4 for
-# any generated program not sitting beside its own includes.
+# compile_p4's default include_path is DEFAULT_INCLUDE_PATH, the P4 headers that
+# ship inside the p4gen package (p4gen/resources, found from p4_compile.py's own
+# location, so it is absolute and independent of the caller's cwd). A relative
+# include_path is resolved by _resolve_repo_relative against the repo root
+# (two directories above this module in a source checkout). A default that does
+# not exist would hand p4c `-I <nonexistent>`, and it would then fail to find
+# p4_headers.p4 / p4_util.p4 for any generated program not sitting beside its
+# own includes -- which has happened twice, after each move of this module.
 # ---------------------------------------------------------------------------
 
-def test_resolve_repo_relative_finds_the_real_resources_directory():
-    resolved = pc._resolve_repo_relative("resources")
+def test_default_include_path_is_the_packaged_resources_directory():
+    assert os.path.isabs(pc.DEFAULT_INCLUDE_PATH)
+    resolved = pc._resolve_repo_relative(pc.DEFAULT_INCLUDE_PATH)
 
     assert os.path.isdir(resolved), (
         "default include path does not exist: {}".format(resolved))

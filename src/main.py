@@ -1,5 +1,5 @@
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
-from src.p4gen.build_p4_script import (
+from p4gen.build_p4_script import (
     INFINITE,
     OUTPUT_PATH,
     dt_thresholds_float_to_int,

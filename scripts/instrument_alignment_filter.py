@@ -36,7 +36,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
 from src.main import remove_correlated_features_both_datasets
-from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
+from p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
 from src.training import threshold_alignment as ta
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.training.splits import make_task_splits

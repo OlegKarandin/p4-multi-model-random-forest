@@ -31,7 +31,7 @@ assumes. They are still reported, for continuity, but are not the gate:
 
   * FITTED (results/compiler_calibration_v6.csv, 19 rows). Predictions are
     recomputed by replaying tests/fixtures/resource_model_golden.json through
-    src/p4model/usage.py's assemble_usage (no sklearn, no campaign backup).
+    p4model/usage.py's assemble_usage (no sklearn, no campaign backup).
     CAPTION CONSTRAINT: these are 19 ARCHIVED compiles re-evaluated against
     current model code, not 19 fresh compiles. stage_depth 19/19, blocks
     17/17 (2026-09-28).
@@ -79,7 +79,7 @@ import pandas as pd  # noqa: E402
 
 from test_resource_model_golden import rebuild_pool  # noqa: E402
 
-from src.p4model.usage import assemble_usage  # noqa: E402
+from p4model.usage import assemble_usage  # noqa: E402
 from scripts.p4_artifact_replay import replay_design  # noqa: E402
 
 DEFAULT_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "resource_model_golden.json")

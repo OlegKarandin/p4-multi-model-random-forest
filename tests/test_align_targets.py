@@ -2,7 +2,7 @@ import random
 
 import pytest
 
-from src.p4gen.build_p4_script import INFINITE
+from p4gen.build_p4_script import INFINITE
 from src.training import align_targets as at
 from src.training import threshold_alignment as ta
 from src.training.errors import AlignmentInvariantError

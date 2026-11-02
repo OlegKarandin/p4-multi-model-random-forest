@@ -16,7 +16,7 @@ always reproducible from the command's own output, not only from a report
 someone has to trust.
 
 **Not commit-pinned.** `align_rf_thresholds`'s call signature and this
-file's three imports (sklearn, `src.p4gen.build_p4_script`,
+file's three imports (sklearn, `p4gen.build_p4_script`,
 `src.training.threshold_alignment`) were confirmed stable across every P3b
 ladder commit Task 5 measured (`ed019f3` phase base through `ed14399` phase
 head) -- this exact file ran unmodified at all six. To reproduce the ladder
@@ -56,7 +56,7 @@ import time
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
-from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
+from p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
 from src.training import threshold_alignment as ta
 
 rng = np.random.default_rng(0)

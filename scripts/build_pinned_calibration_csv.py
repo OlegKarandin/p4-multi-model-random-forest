@@ -11,12 +11,12 @@ generator's @placement_priority (ddos trees 2, app trees 1) and
 reviews/model_audit_scratch/priority_exp_ddos_first_noovct/, copied here
 byte for byte). The pragmas pin the order p4c places the classification
 trees in, which is what the ordered stage simulation in
-src/p4model/packing.py replays; archives compiled WITHOUT them
+p4model/packing.py replays; archives compiled WITHOUT them
 (compiler_calibration_v6, _extra, tcam_margin_screen) are pre-pragma and
 informational only.
 
 GROUND TRUTH ONLY. Parsed with the same parser every other calibration CSV
-uses (src.p4gen.p4_compile.parse_compile_logs, as compiler_calibration.
+uses (p4gen.p4_compile.parse_compile_logs, as compiler_calibration.
 run_one_row stores it): stages_real is the LAST placement round's stage
 count (table_summary.log), tcam_real / sram_real / map_ram_real are the
 committed totals from mau.resources.log -- blank when the backend never
@@ -42,7 +42,7 @@ import pandas as pd  # noqa: E402
 
 from scripts.p4_artifact_replay import (  # noqa: E402
     _committed_blocks, committed_stages_real)
-from src.p4gen.p4_compile import parse_compile_logs  # noqa: E402
+from p4gen.p4_compile import parse_compile_logs  # noqa: E402
 
 PINNED_ROOT = os.path.join(ROOT, "results", "compiler_calibration_pinned")
 PINNED_CSV = os.path.join(ROOT, "results", "compiler_calibration_pinned.csv")

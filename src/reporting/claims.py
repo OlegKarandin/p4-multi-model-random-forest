@@ -203,7 +203,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from src.p4model.target import TCAM_BLOCKS_PER_STAGE, TOFINO_PIPELINE_STAGES
+from p4model.target import TCAM_BLOCKS_PER_STAGE, TOFINO_PIPELINE_STAGES
 from src.reporting.campaign_data import pair_arms, TWIN_ARM_SLUG
 from src.training.campaign_run import DEVELOPMENT_SPLITS
 

@@ -5,11 +5,11 @@ the compiler-calibration sample (results/campaign_backup_20260825).
 WHY THIS EXISTS. Task 11 of the p4model extraction plan (Spec 4.6). Every
 prior calibration finding (see CLAUDE.md's compiler-calibration note) lives in
 committed CSVs that compare the model's predictions against a real p4c
-compile. Nothing pins whether a REFACTOR of src/p4model/ changes those
+compile. Nothing pins whether a REFACTOR of p4model/ changes those
 predictions at all -- and re-running the real compiler to check would take
 the several minutes this script itself takes, times however many refactor
 steps land. This script serializes the resource model's inputs and outputs at
-the `evaluation._pool_inputs` / `src.p4model.usage.assemble_usage` seam, once,
+the `evaluation._pool_inputs` / `p4model.usage.assemble_usage` seam, once,
 so tests/test_resource_model_golden.py can replay all 19 rows through the
 packing and accounting core with NO sklearn, NO fitted forests, and NO
 campaign backup at test time -- any diff there means the restructuring
@@ -63,7 +63,7 @@ a key's own price cannot depend on where it starts. The paragraph above is
 kept as the record of how the earlier retraction was settled, not as a
 description of live code. What prices a key now is `tables.codeword_to_blocks`
 (no offset argument), and the sharing effect lives in
-`src/p4model/packing.py`'s stage placement -- first as a stage-sharing margin
+`p4model/packing.py`'s stage placement -- first as a stage-sharing margin
 (`known_findings` entry `stage_sharing_margin_2026_09_21` below, an
 OVER-prediction rather than a correction), since audit C5 as an ordered stage
 simulation over crossbar lanes (`ordered_stage_simulation_2026_09_28`).
@@ -90,10 +90,10 @@ from scripts.compiler_calibration import (
 )
 from scripts.replay_alignment import load_backup, refit_pair
 from src.main import load_campaign_data
-from src.p4gen.evaluation import _pool_inputs
-from src.p4model.errors import CrossbarKeyTooWide
-from src.p4model.program import FEATURE_VALUE_BIT_WIDTH
-from src.p4model.usage import assemble_usage
+from p4gen.evaluation import _pool_inputs
+from p4model.errors import CrossbarKeyTooWide
+from p4model.program import FEATURE_VALUE_BIT_WIDTH
+from p4model.usage import assemble_usage
 
 DEFAULT_OUT = 'tests/fixtures/resource_model_golden.json'
 USE_DEFAULT_ACTION_DISCOUNT = False  # run_one_row's own value; see this
@@ -303,7 +303,7 @@ def _metadata(campaign_dir):
                     "per-table offset mechanism entirely (codeword_to_blocks "
                     "has no start_group parameter any more) and moved the "
                     "real effect it was chasing into a stage-PLACEMENT margin "
-                    "in src/p4model/packing.py's charged(): a table whose key is "
+                    "in p4model/packing.py's charged(): a table whose key is "
                     "not the first distinct key in its stage, and whose "
                     "standalone price leaves no spare whole-byte crossbar "
                     "slot (crossbar_capacity(g) == B), pays one extra TCAM "
@@ -387,12 +387,12 @@ def _metadata(campaign_dir):
                     "when two different keys filled more than 58 of a stage's "
                     "64 crossbar bytes) and its any-key-order fit search are "
                     "replaced by an ORDERED stage simulation in "
-                    "src/p4model/packing.py: classification trees are placed "
+                    "p4model/packing.py: classification trees are placed "
                     "in the order the generator's @placement_priority pins "
                     "(ddos 2 before app 1, ties to the tree listed last), the "
                     "first key in a stage pays codeword_to_blocks, and every "
                     "later key pays its lane leftover price "
-                    "(src/p4model/lanes.py). Two different keys above 62 "
+                    "(p4model/lanes.py). Two different keys above 62 "
                     "combined bytes are still refused (the greedy-give-up "
                     "safety net). independent_low_sd12's real stage shares a "
                     "40-byte app key and a 20-byte ddos key at 60 bytes and "

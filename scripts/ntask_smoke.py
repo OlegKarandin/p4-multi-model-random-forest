@@ -9,7 +9,7 @@ every code path of the three-task generator is exercised. Task order is
 independent arm with per-task intervals; 'joint' ones from joint-off with one
 interval set over all three forests' trees.
 
-Each program is compiled with p4c (src.p4gen.p4_compile.compile_p4, WSL) and the
+Each program is compiled with p4c (p4gen.p4_compile.compile_p4, WSL) and the
 model (p4_replay.model_breakdown) is compared with p4c's committed stage depth
 and blocks, exactly as src.verify.model_archive does for the calibration
 archive.
@@ -20,14 +20,14 @@ import argparse
 import os
 import sys
 
-from src.p4gen.build_p4_script import (feature_intervals_from_nodes, generate_p4_program,
+from p4gen.build_p4_script import (feature_intervals_from_nodes, generate_p4_program,
                                        get_feature_intervals, merge_tree_nodes,
                                        tree_nodes_for)
-from src.p4gen.p4_compile import compile_p4
-from src.p4gen.p4_ground_truth import committed_blocks, committed_stages_real
-from src.p4gen.p4_replay import model_breakdown, parse_program
-from src.p4model.program import TaskSpec
-from src.p4model.target import TOFINO_PIPELINE_STAGES
+from p4gen.p4_compile import compile_p4
+from p4gen.p4_ground_truth import committed_blocks, committed_stages_real
+from p4gen.p4_replay import model_breakdown, parse_program
+from p4model.program import TaskSpec
+from p4model.target import TOFINO_PIPELINE_STAGES
 from src.training.row_artifacts import load_forests
 
 # (encoding, M token, split, k, split of the third task's forest)

@@ -1,8 +1,8 @@
 """Canonical home for range_entry_count, nibble_widths_for and compiler_range_rows.
 
-This module stays import-free apart from `math` and the two `src.p4model`
+This module stays import-free apart from `math` and the two `p4model`
 constant modules it needs, so it can be imported both here (via
-src/p4gen/evaluation.py, as part of that module's full sklearn-heavy
+p4gen/evaluation.py, as part of that module's full sklearn-heavy
 dependency stack) and from p4/deploy_table_entries.py running inside
 bfshell's embedded Python, which has no sklearn and thus cannot import
 evaluation.py's own dependency stack. range_entry_count is pure integer
@@ -12,8 +12,8 @@ for exactly this reason; that separate module is now gone and this is the
 single canonical copy."""
 import math
 
-from src.p4model.program import FEATURE_VALUE_BIT_WIDTH
-from src.p4model.target import (
+from p4model.program import FEATURE_VALUE_BIT_WIDTH
+from p4model.target import (
     MAX_RANGE_KEY_BITS,
     RANGE_WORST_CASE_ENTRY_FRACTION,
     RANGE_WORST_CASE_ROWS_CAP,

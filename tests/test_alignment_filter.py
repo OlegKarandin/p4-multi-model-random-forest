@@ -11,7 +11,7 @@ neither had any admission role or reader left."""
 import numpy as np
 import pytest
 
-from src.p4gen.build_p4_script import INFINITE
+from p4gen.build_p4_script import INFINITE
 from src.training import threshold_alignment as ta
 
 
@@ -38,7 +38,7 @@ def test_shift_mass_is_enormous_at_the_clip_atom():
 
 def test_the_candidate_log_records_one_row_per_candidate_with_shift_mass():
     from sklearn.ensemble import RandomForestClassifier
-    from src.p4gen.build_p4_script import dt_thresholds_float_to_int
+    from p4gen.build_p4_script import dt_thresholds_float_to_int
 
     rng = np.random.default_rng(7)
     X1 = np.clip(rng.integers(0, 90000, size=(300, 4)), 0, INFINITE).astype(float)

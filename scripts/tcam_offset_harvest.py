@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from scripts.tcam_version_sweep import measured_start_group, read_committed
-from src.p4model.tables import codeword_bytes_to_blocks, codeword_to_blocks
+from p4model.tables import codeword_bytes_to_blocks, codeword_to_blocks
 
 ARCHIVE = 'results/compiler_calibration_v6/compiles'
 FIXTURE = 'tests/fixtures/resource_model_golden.json'

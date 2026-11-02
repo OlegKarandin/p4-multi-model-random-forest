@@ -3,9 +3,9 @@ import math
 import dataclasses
 import pathlib
 
-from src.p4gen import evaluation as ev
-from src.p4gen import build_p4_script as bps
-from src.p4model.ranges import range_entry_count
+from p4gen import evaluation as ev
+from p4gen import build_p4_script as bps
+from p4model.ranges import range_entry_count
 import pytest
 
 
@@ -29,7 +29,7 @@ def test_accuracy_metrics_app_and_ddos_still_work():
 
 # range_entry_count's own worked-example tests, and the identity check
 # proving evaluation.py shares (not duplicates) the implementation, now
-# live in tests/test_ranges.py alongside src/p4model/ranges.py.
+# live in tests/test_ranges.py alongside p4model/ranges.py.
 
 
 def test_range_matching_resource_usage_uses_exact_real_interval_costs():
@@ -890,10 +890,10 @@ def test_multi_model_memory_evaluation_discount_lowers_blocks(monkeypatch, encod
     # happens entirely inside the two NESTED single_model_memory_evaluation
     # calls, so it only shrinks if the flag is threaded into those too.
     # TERNARY_MATCHING_ENTRIES_PER_BLOCK is read by range_/ternary_matching_
-    # resource_usage, which now live in src/p4model/tables.py -- so the patch
+    # resource_usage, which now live in p4model/tables.py -- so the patch
     # has to land in THAT module's namespace. Patching evaluation's re-export
     # would be a silent no-op: the functions never look there.
-    from src.p4model import tables
+    from p4model import tables
 
     monkeypatch.setattr(tables, "TERNARY_MATCHING_ENTRIES_PER_BLOCK", 2)
 
@@ -1282,7 +1282,7 @@ def test_disjoint_prices_exactly_the_range_tables_the_generator_emits(ddos_label
     # feature is shared (the heldout_independent_M150_k14_s13 bug, there on
     # min_packet_length alone, priced it twice: 51 blocks vs p4c's 50); the
     # second shares nothing, and must stay one table per model.
-    from src.p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
+    from p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
 
     clf_app = _forest_using_all_four_catalog_features([0, 1, 2], seed=0)
     clf_ddos = _forest_using_all_four_catalog_features(ddos_labels, seed=ddos_seed)
@@ -1366,7 +1366,7 @@ def test_max_num_flows_matches_the_p4_template_it_claims_to_mirror():
     """build_p4_script.MAX_NUM_FLOWS is never read as a Python value today --
     it only appears as literal text inside emitted P4, so pin it against the
     authoritative source."""
-    template = pathlib.Path('resources/p4_template.p4').read_text()
+    template = (pathlib.Path(bps.PATH) / 'p4_template.p4').read_text()
     assert 'const bit<32> MAX_NUM_FLOWS = {};'.format(bps.MAX_NUM_FLOWS) in template
 
 
@@ -1767,7 +1767,7 @@ def test_stage_depth_counts_the_vote_epilogue_stage():
                                  + ev.VOTE_EPILOGUE_STAGES)
 
 
-# --- The ordered stage simulation (src/p4model/packing.py, audit C5)
+# --- The ordered stage simulation (p4model/packing.py, audit C5)
 #
 # When two DIFFERENT keys share a stage, the one placed later gets only the
 # crossbar lanes the earlier one left, and pays its lane LEFTOVER price
@@ -1905,7 +1905,7 @@ def test_pool_inputs_then_assemble_reproduces_multi_model_exactly(encoding):
     # return the identical ResourceUsage. This is the property the golden
     # fixture relies on -- it is dumped at the seam and replayed through
     # assemble_usage, so a seam that drifted would silently invalidate it.
-    from src.p4model.usage import assemble_usage
+    from p4model.usage import assemble_usage
 
     features = ["f0", "f1", "f2", "f3"]
     clf_app = _tiny_forest([0, 1, 2], seed=0)
@@ -1944,7 +1944,7 @@ def test_pool_inputs_labels_every_table_with_its_task(encoding):
     # are always one task's (app trees first, even under 'joint', where the
     # merged tree set keeps merge_tree_nodes' order); a range table is its own
     # model's under 'disjoint' and every task's (SHARED_TASK) under 'joint'.
-    from src.p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
+    from p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
 
     features = ["f0", "f1", "f2", "f3"]
     clf_app = _tiny_forest([0, 1, 2], seed=0)
@@ -1968,7 +1968,7 @@ def _c1_pool(range_task, range_levels, ternary_task, tree_blocks):
     """A hand-built assemble_usage pool: one 1-block range table per level,
     each on its own raw-value field, and one tree per ternary_task entry, the
     app trees on one 5-byte key and the ddos trees on another."""
-    from src.p4model.program import APP_TASK
+    from p4model.program import APP_TASK
 
     range_fields = [frozenset({(("val", i), 2)}) for i in range(len(range_levels))]
     keys = {True: frozenset({(("code", "app"), 5)}),
@@ -1997,8 +1997,8 @@ def test_disjoint_trees_start_after_their_own_tasks_range_tables():
     # the ddos table: they take stages 5 and 6, and the ddos tree takes 9 --
     # depth 10, plus the vote stage. Before C1 every tree started at 9 and the
     # same four trees needed stages 9 and 10 (12|12, 12|12), one stage deeper.
-    from src.p4model.program import APP_TASK, DDOS_TASK
-    from src.p4model.usage import assemble_usage
+    from p4model.program import APP_TASK, DDOS_TASK
+    from p4model.usage import assemble_usage
 
     tasks = [APP_TASK] * 3 + [DDOS_TASK]
     usage, range_plan, ternary_plan = assemble_usage(
@@ -2014,8 +2014,8 @@ def test_joint_labels_keep_every_tree_behind_the_whole_range_pool():
     # The same tables with every range table SHARED_TASK -- what 'joint'
     # always passes -- reproduce the pre-C1 placement exactly: every tree
     # starts at range_plan.depth.
-    from src.p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
-    from src.p4model.usage import assemble_usage
+    from p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
+    from p4model.usage import assemble_usage
 
     tasks = [APP_TASK] * 3 + [DDOS_TASK]
     usage, range_plan, ternary_plan = assemble_usage(
@@ -2028,7 +2028,7 @@ def test_joint_labels_keep_every_tree_behind_the_whole_range_pool():
 
 def test_joint_pool_inputs_start_every_tree_at_the_range_pools_depth():
     # The joint invariant on real (tiny) forests: C1 is a no-op under 'joint'.
-    from src.p4model.usage import assemble_usage, tree_readiness_levels
+    from p4model.usage import assemble_usage, tree_readiness_levels
 
     features = ["f0", "f1", "f2", "f3"]
     pool = ev._pool_inputs(
@@ -2047,8 +2047,8 @@ def test_a_tree_may_share_a_stage_with_the_other_tasks_range_tables():
     # App range table at 4, ddos range tables at 5 and 8: the app tree is
     # ready at 5 and lands there beside the ddos range table (a seeded stage),
     # which usage.stages counts once, not twice.
-    from src.p4model.program import APP_TASK, DDOS_TASK
-    from src.p4model.usage import assemble_usage
+    from p4model.program import APP_TASK, DDOS_TASK
+    from p4model.usage import assemble_usage
 
     usage, range_plan, ternary_plan = assemble_usage(
         _c1_pool([APP_TASK, DDOS_TASK, DDOS_TASK], [4, 5, 8],
@@ -2061,8 +2061,8 @@ def test_a_tree_may_share_a_stage_with_the_other_tasks_range_tables():
 
 
 def test_tree_readiness_falls_back_when_a_task_has_no_range_table():
-    from src.p4model.program import APP_TASK, DDOS_TASK, FLOW_HASH_LEVEL
-    from src.p4model.usage import tree_readiness_levels
+    from p4model.program import APP_TASK, DDOS_TASK, FLOW_HASH_LEVEL
+    from p4model.usage import tree_readiness_levels
 
     assert tree_readiness_levels((6,), [DDOS_TASK], [APP_TASK, DDOS_TASK]) == [
         FLOW_HASH_LEVEL + 1, 7]

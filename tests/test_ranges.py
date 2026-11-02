@@ -1,5 +1,5 @@
-from src.p4model import ranges
-from src.p4gen import evaluation as ev
+from p4model import ranges
+from p4gen import evaluation as ev
 import pytest
 
 

@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from src.p4gen import p4_ground_truth as gt
+from p4gen import p4_ground_truth as gt
 
 _RESOURCES = """\
 Allocated Resource Usage

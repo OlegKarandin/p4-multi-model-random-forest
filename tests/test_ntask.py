@@ -14,12 +14,12 @@ import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 
-from src.p4gen import build_p4_script as bps
-from src.p4gen.p4_replay import (model_breakdown, parse_program,
+from p4gen import build_p4_script as bps
+from p4gen.p4_replay import (model_breakdown, parse_program,
                                  parse_program_text, table_tasks)
-from src.p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
+from p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
                                  SHARED_TASK, TaskSpec, placement_priorities)
-from src.p4model.usage import tree_readiness_levels
+from p4model.usage import tree_readiness_levels
 
 FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
             "flow_iat_min", "bwd_packet_length_max"]
@@ -300,7 +300,7 @@ def _switch_tree_classes(entries, row):
 @pytest.mark.parametrize("encoding,discount", [
     ("joint", False), ("disjoint", False), ("disjoint", True)])
 def test_entries_classify_every_input_exactly_as_each_tree_does(tmp_path, encoding, discount):
-    from src.p4gen.switch_semantics import per_tree_class_indices
+    from p4gen.switch_semantics import per_tree_class_indices
     members = [("ddos", 2, _int_forest(2, 1), FEATURES),
                ("app", 3, _int_forest(3, 2), FEATURES),
                # A third task on a feature subset: under disjoint some

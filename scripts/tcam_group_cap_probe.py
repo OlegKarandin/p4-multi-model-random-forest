@@ -57,9 +57,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from scripts.tcam_stretch_sweep import measure, synthetic_program
-from src.p4gen.p4_compile import compile_p4
-from src.p4model.packing import crossbar_stages_needed
-from src.p4model.tables import codeword_bytes_to_blocks
+from p4gen.p4_compile import compile_p4
+from p4model.packing import crossbar_stages_needed
+from p4model.tables import codeword_bytes_to_blocks
 
 DEFAULT_OUT = 'results/tcam_group_cap_probe.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_group_cap_probe'

@@ -26,10 +26,10 @@ three stages of metadata-init/hash-precompute/hash ahead of it, measured
 across the real compiles this project has calibrated against."""
 import collections
 
-from src.p4model.catalog import FEATURE_REGISTER_CATALOG
-from src.p4model.names import normalise_feature_name
-from src.p4model.program import FLOW_HASH_LEVEL, ORIENTATION_REGISTER, REGISTER_BLOCK_ORDER
-from src.p4model.target import METER_ALUS_PER_STAGE
+from p4model.catalog import FEATURE_REGISTER_CATALOG
+from p4model.names import normalise_feature_name
+from p4model.program import FLOW_HASH_LEVEL, ORIENTATION_REGISTER, REGISTER_BLOCK_ORDER
+from p4model.target import METER_ALUS_PER_STAGE
 
 
 def feature_readiness_level(feature_name, catalog=None):

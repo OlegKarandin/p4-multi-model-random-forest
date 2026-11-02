@@ -1,4 +1,4 @@
-from src.p4gen import p4_gen_config as cfg
+from p4gen import p4_gen_config as cfg
 
 
 def test_p4_gen_config_defaults_match_pre_existing_behavior():

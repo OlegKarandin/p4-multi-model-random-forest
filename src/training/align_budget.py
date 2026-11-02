@@ -36,7 +36,7 @@ blocks where codeword_bits_to_blocks says 2. It looked right for years only
 because on few wide fields byte-rounding is nearly a no-op.
 codeword_bits_to_blocks no longer appears in this module at all -- band_ceiling
 and band_target, its only callers here, were pruned once the block-domain
-repair made them stats-only; codeword_bits_to_blocks itself (src/p4model/tables.py)
+repair made them stats-only; codeword_bits_to_blocks itself (p4model/tables.py)
 survives only as the empty-key floor codeword_to_blocks special-cases to, and
 in src/reporting/replay_scoring.py's band_factor_before/after columns. It no
 longer gates anything.
@@ -52,12 +52,12 @@ pinned by tests/test_resource_model_golden.py).
 Imports from p4gen only, so both threshold_alignment and the replay harness
 can use it without importing the mutation loop.
 """
-from src.p4gen.build_p4_script import INFINITE
-from src.p4gen.evaluation import (codeword_fields_to_bytes_from_bits,
+from p4gen.build_p4_script import INFINITE
+from p4gen.evaluation import (codeword_fields_to_bytes_from_bits,
                                   codeword_to_blocks,
                                   entries_across_trees_to_blocks)
-from src.p4model.ranges import compiler_range_rows
-from src.p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
+from p4model.ranges import compiler_range_rows
+from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 
 
 def pooled_interval_count(ranges1, ranges2):

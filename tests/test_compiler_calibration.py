@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 import scripts.compiler_calibration as cc
-from src.p4gen import evaluation as ev
+from p4gen import evaluation as ev
 from scripts.compiler_calibration import (
     GROUPS,
     K_BANDS,
@@ -840,7 +840,7 @@ def test_replay_rejects_a_row_the_backend_never_allocated():
 # parameter) -- at the time of this comment (2026-09-06) the version-block
 # penalty; later the crowded-stage margin; since audit C5 (2026-09-28) the
 # ordered stage simulation that prices a later key in the crossbar lanes the
-# earlier keys left (src/p4model/lanes.py).
+# earlier keys left (p4model/lanes.py).
 # ---------------------------------------------------------------------------
 
 _CURRENT_ARTIFACTS = {
@@ -878,7 +878,7 @@ def test_independent_low_sd9_costs_the_stage_the_version_charge_buys():
     # and p4c still refuses.
     #
     # What reproduces that today is the ordered stage simulation (audit C5,
-    # src/p4model/packing.py's crossbar_stages_needed): the ddos trees are
+    # p4model/packing.py's crossbar_stages_needed): the ddos trees are
     # placed first (placement priority), and the app key, priced in the
     # crossbar lanes the ddos key left (lanes.price_with_supply), costs 10
     # blocks there instead of 9 -- a mixed stage then prices past 24 and the
@@ -1156,8 +1156,8 @@ def test_waiting_for_every_range_table_reproduces_the_pre_c1_depth(
     # SHARED_TASK -- every tree waits for the last range table of either task,
     # the pre-C1 rule -- and the old, one-stage-deeper prediction comes back.
     # table_tasks lives in the library now; replay_plans looks it up there.
-    from src.p4gen import p4_replay as replay
-    from src.p4model.program import SHARED_TASK
+    from p4gen import p4_replay as replay
+    from p4model.program import SHARED_TASK
 
     real_table_tasks = replay.table_tasks
 

@@ -3,7 +3,7 @@ anchored at the pre-alignment scores for the whole run (no ratchet)."""
 import numpy as np
 import pytest
 
-from src.p4gen.build_p4_script import (
+from p4gen.build_p4_script import (
     INFINITE, dt_thresholds_float_to_int, get_feature_intervals_from_thresholds)
 from src.training import threshold_alignment as ta
 

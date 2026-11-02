@@ -19,9 +19,9 @@ import functools
 import math
 from dataclasses import dataclass
 
-from src.p4model import lanes
-from src.p4model.errors import CrossbarKeyTooWide
-from src.p4model.target import (
+from p4model import lanes
+from p4model.errors import CrossbarKeyTooWide
+from p4model.target import (
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
     TCAM_ROWS_PER_STAGE,

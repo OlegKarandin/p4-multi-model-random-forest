@@ -255,7 +255,7 @@ def test_hardware_validation_survives_an_interleaved_infeasible_row(monkeypatch)
     added) was the purpose-built regression test for exactly this bug; this
     replaces that coverage against the merged loop.
     """
-    from src.p4gen.p4_compile import CompileResult
+    from p4gen.p4_compile import CompileResult
 
     class _FakeFuture:
         def __init__(self, k):
@@ -438,8 +438,8 @@ def test_features_round_trip_through_the_semicolon_join(monkeypatch):
 def _campaign_trainer(raise_at_k=(), seeds=None):
     """Real (tiny) forests per k plus a real ResourceUsage, so
     write_row_artifacts has something genuine to generate a program from."""
-    from src.p4gen.build_p4_script import dt_thresholds_float_to_int
-    from src.p4gen.evaluation import multi_model_memory_evaluation
+    from p4gen.build_p4_script import dt_thresholds_float_to_int
+    from p4gen.evaluation import multi_model_memory_evaluation
 
     def trainer(X_A, y_A, X_B, y_B, val_align_A, val_align_B,
                 val_select_A, val_select_B, features_A, features_B,

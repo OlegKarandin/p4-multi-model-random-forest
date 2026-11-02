@@ -4,21 +4,21 @@ Pure parsing of a generated program (p4_src/<row>.p4) and of p4c's committed
 logs (compiles/<row>/pipe/logs), plus two replays that pack the result with
 the model's own packer. Split out of scripts/compiler_calibration.py so that
 scripts/validation_table.py can replay held-out designs without importing
-sklearn or the campaign backup: this module imports only src.p4model and the
+sklearn or the campaign backup: this module imports only p4model and the
 standard library. compiler_calibration re-exports every name, so existing
 callers are unaffected.
 """
 import os
 import re
 
-from src.p4gen.p4_replay import (  # noqa: F401
+from p4gen.p4_replay import (  # noqa: F401
     Program, declared_prices, parse_program, replay_plans, table_tasks)
 
 
 # The committed-allocation parsers live in the library now (spec 2026-09-29
 # §6.2: library code never imports from scripts/). Re-exported under their
 # old names so every script and test that imports them from here is unchanged.
-from src.p4gen.p4_ground_truth import (  # noqa: F401
+from p4gen.p4_ground_truth import (  # noqa: F401
     RESOURCE_TABLE_ROW as _RESOURCE_TABLE_ROW,
     committed_blocks as _committed_blocks,
     committed_stages_real,

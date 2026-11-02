@@ -241,20 +241,23 @@ def _find_header_and_totals_rows(text: str) -> Tuple[Optional[str], Optional[str
     return header_row, None
 
 
-# This file lives at <repo root>/src/p4gen/p4_compile.py, so the repo root is
-# three levels up. It used to be one level up, which was correct while this
-# module sat at the repo root -- the src/ reorganisation silently turned the
-# default include path into src/p4gen/resources (a directory that does not
-# exist), handing p4c `-I <nonexistent>`.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# This file lives at <repo root>/p4gen/p4_compile.py, so in a source checkout
+# the repo root is two levels up. (An installed copy has no repo root; its
+# callers pass absolute paths, and the default include path below is absolute.)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The P4 headers p4c includes (p4_headers.p4, p4_util.p4, ...) ship inside this
+# package, next to the program templates.
+DEFAULT_INCLUDE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources")
 
 
 def _resolve_repo_relative(path: str) -> str:
     """Resolves a possibly-relative path against this repo's root, not cwd.
 
-    include_path defaults to the repo-relative 'resources' -- resolving it
-    against cwd (the usual os.path.abspath behavior) would break compile_p4
-    when called from any cwd other than the repo root. p4_path/output_dir
+    A relative include_path (e.g. 'p4/tofino_spike/common') is repo-relative --
+    resolving it against cwd (the usual os.path.abspath behavior) would break
+    compile_p4 when called from any cwd other than the repo root. The default,
+    DEFAULT_INCLUDE_PATH, is absolute. p4_path/output_dir
     are left to the caller (they may be relative-to-cwd or absolute; either
     way _to_wsl_path's os.path.abspath handles them the normal way).
     """
@@ -293,7 +296,7 @@ def _native_p4c():
 
 def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
                 target: str = "tofino",
-                include_path: str = "resources",
+                include_path: str = DEFAULT_INCLUDE_PATH,
                 p4c_path: str = "~/open-p4studio/install/bin/p4c",
                 timeout_seconds: int = 300) -> CompileResult:
     """Blocking: runs the real Tofino compiler and parses its resource

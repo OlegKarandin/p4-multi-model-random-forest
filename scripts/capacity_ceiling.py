@@ -120,10 +120,10 @@ from sklearn.ensemble import RandomForestClassifier
 # use('default')` / `sns.set_palette` -- used to be the sharper reason this
 # mattered; that module is gone, but the import-cost argument stands on its
 # own.)
-from src.p4gen.build_p4_script import (
+from p4gen.build_p4_script import (
     INFINITE, MAX_CODEWORD_LENGTH, dt_thresholds_float_to_int,
     get_feature_intervals, get_joint_feature_intervals)
-from src.p4gen.evaluation import (
+from p4gen.evaluation import (
     CodewordTooLong, CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
     multi_model_memory_evaluation)
 from src.training.dataset import read_app_dataset, read_DDOS_dataset

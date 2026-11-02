@@ -5,7 +5,7 @@ the lane price instead.
 E1-lite: does TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62 hold for probe
 keys other than the one it was read off?
 
-The cap (src/p4model/target.py) was set from ONE probe, results/
+The cap (p4model/target.py) was set from ONE probe, results/
 tcam_discount_scan.csv's (84, 84) key: 5 blocks at 60-62 combined crossbar
 bytes, 7 at 63-64. This sweep puts five differently-shaped probe keys -- solid,
 two-field ragged, four-field, and a 13-field high-k key taken from a real
@@ -33,8 +33,8 @@ import pandas as pd  # noqa: E402
 
 from scripts.tcam_offset_scan import collect  # noqa: E402
 from scripts.tcam_stretch_sweep import key_bytes_for  # noqa: E402
-from src.p4model.tables import codeword_to_blocks  # noqa: E402
-from src.p4model.packing import _stage_key_prices  # noqa: E402
+from p4model.tables import codeword_to_blocks  # noqa: E402
+from p4model.packing import _stage_key_prices  # noqa: E402
 
 DEFAULT_OUT = 'results/tcam_mixed_key_cap_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_mixed_key_cap_sweep'

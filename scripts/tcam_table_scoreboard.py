@@ -20,7 +20,7 @@ THREE PREDICTED QUANTITIES, per row:
                       LADDER per-table price (the production price is now
                       lanes.table_blocks; headline plus the Sec 2.3
                       isolation credit, capped at one field per Sec 6.1).
-  blocks_charged  -- what src/p4model/packing.py's ordered stage simulation
+  blocks_charged  -- what p4model/packing.py's ordered stage simulation
                       charges the table (audit C5): blocks_refined when its
                       key is the first distinct key in its stage (or the
                       source cannot say what was placed ahead of it); when a
@@ -83,13 +83,13 @@ if ROOT not in sys.path:
 
 import pandas as pd  # noqa: E402
 
-from src.p4model.tables import (  # noqa: E402
+from p4model.tables import (  # noqa: E402
     codeword_fields_to_bytes_from_bits,
     codeword_to_blocks,
     codeword_to_blocks_headline,
     crossbar_capacity,
 )
-from src.p4model.packing import _stage_key_prices  # noqa: E402
+from p4model.packing import _stage_key_prices  # noqa: E402
 
 RESULTS_DIR = os.path.join(ROOT, "results")
 DEFAULT_OUT = os.path.join(RESULTS_DIR, "tcam_table_scoreboard.csv")

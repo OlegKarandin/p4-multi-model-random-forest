@@ -57,8 +57,8 @@ import pandas as pd
 from scripts.tcam_phv_slice_sweep import read_bfa_table, read_phv_container
 from scripts.tcam_stretch_sweep import key_bytes_for, synthetic_program
 from scripts.tcam_version_sweep import read_committed
-from src.p4gen.p4_compile import compile_p4
-from src.p4model.tables import codeword_to_blocks
+from p4gen.p4_compile import compile_p4
+from p4model.tables import codeword_to_blocks
 
 DEFAULT_OUT = 'results/tcam_field_count_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_field_count_sweep'

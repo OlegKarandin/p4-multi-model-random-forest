@@ -8,15 +8,15 @@ import re
 from collections import namedtuple
 from dataclasses import dataclass, field
 
-from src.p4model.packing import crossbar_stages_needed
-from src.p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
+from p4model.packing import crossbar_stages_needed
+from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
                                  VOTE_EPILOGUE_STAGES)
-from src.p4model.ranges import compiler_range_rows
-from src.p4model.registers import gated_block_interior_stages, readiness_levels_for
-from src.p4model import lanes
-from src.p4model.tables import tree_entries_to_blocks
-from src.p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
-from src.p4model.usage import tree_readiness_levels
+from p4model.ranges import compiler_range_rows
+from p4model.registers import gated_block_interior_stages, readiness_levels_for
+from p4model import lanes
+from p4model.tables import tree_entries_to_blocks
+from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
+from p4model.usage import tree_readiness_levels
 
 
 @dataclass(frozen=True)

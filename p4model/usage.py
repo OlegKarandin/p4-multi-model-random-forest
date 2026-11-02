@@ -7,8 +7,8 @@ the physics that produces one) can import it without pulling in the rest of
 the model."""
 from dataclasses import dataclass
 
-from src.p4model.packing import crossbar_stages_needed, stage_load_fits
-from src.p4model.program import (
+from p4model.packing import crossbar_stages_needed, stage_load_fits
+from p4model.program import (
     FLOW_HASH_LEVEL,
     PLACEMENT_PRIORITY,
     SHARED_TASK,

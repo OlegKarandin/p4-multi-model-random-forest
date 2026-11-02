@@ -6,7 +6,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, normalise_feature_name
+from p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, normalise_feature_name
 from src.training import align_budget as ab
 from src.training import align_targets as at
 from src.training import threshold_alignment as ta
@@ -133,7 +133,7 @@ def test_ensemble_prediction_is_the_cached_path_to_switch_predict():
     hard vote from scratch; this function computes it from the incrementally
     maintained cache. They must agree exactly -- otherwise the alignment guard
     is measuring something the reported accuracy is not."""
-    from src.p4gen.switch_semantics import switch_predict
+    from p4gen.switch_semantics import switch_predict
 
     rf, X, y = _forest_and_data()
     tree_predictions, _ = ta.build_prediction_cache(rf, X)
@@ -146,7 +146,7 @@ def test_ensemble_prediction_is_the_cached_path_to_switch_predict():
 def test_ensemble_prediction_matches_the_generated_vote_tables_rule():
     """Pin the tie-break too, against the same vote_winner the generated
     vote_<task> table's const entries are built from."""
-    from src.p4gen.switch_semantics import vote_winner
+    from p4gen.switch_semantics import vote_winner
 
     rf, X, y = _forest_and_data()
     tree_predictions, _ = ta.build_prediction_cache(rf, X)
@@ -482,7 +482,7 @@ def test_extract_feature_intervals_agrees_with_the_generator():
     disagree, the block savings are mis-targeted -- so they must be the same
     partition, by construction."""
     from sklearn.ensemble import RandomForestClassifier
-    from src.p4gen.build_p4_script import get_feature_intervals
+    from p4gen.build_p4_script import get_feature_intervals
 
     names = ['Flow.IAT.Max', 'Fwd.IAT.Max', 'Fwd.Packet.Length.Max', 'Bwd.IAT.Min']
     rng = np.random.default_rng(5)
@@ -1555,7 +1555,7 @@ def test_the_recorded_codeword_is_the_one_the_block_cost_was_computed_from():
     same column space -- which align_rf_thresholds documents as required
     (threshold_alignment.py:180-184) and which holds throughout this campaign.
     Pin it, or C1 could silently gate on the wrong number."""
-    from src.p4gen.evaluation import multi_model_memory_evaluation
+    from p4gen.evaluation import multi_model_memory_evaluation
 
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     names = ['f{}'.format(i) for i in range(X1.shape[1])]
@@ -1882,8 +1882,8 @@ def test_the_byte_domain_stats_are_recorded():
 def test_pooled_key_bytes_equals_the_evaluators_codeword_fields_to_bytes():
     """E1, the premise. If this fails the budget prices a table the switch
     does not build, and nothing else in the byte domain may be read."""
-    from src.p4gen.build_p4_script import get_joint_feature_intervals
-    from src.p4gen.evaluation import codeword_fields_to_bytes
+    from p4gen.build_p4_script import get_joint_feature_intervals
+    from p4gen.evaluation import codeword_fields_to_bytes
 
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     names = ['f0', 'f1', 'f2', 'f3']
@@ -1904,8 +1904,8 @@ def test_the_block_factor_equals_the_evaluators_block_factor():
     the block rule changes, this fails loudly rather than alignment silently
     going stale, which is exactly how the superseded band model survived for
     years."""
-    from src.p4gen.build_p4_script import get_joint_feature_intervals
-    from src.p4gen.evaluation import codeword_to_blocks, ternary_key_field_bits
+    from p4gen.build_p4_script import get_joint_feature_intervals
+    from p4gen.evaluation import codeword_to_blocks, ternary_key_field_bits
 
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     names = ['f0', 'f1', 'f2', 'f3']
@@ -1928,7 +1928,7 @@ def test_the_block_factor_matches_p4model_on_random_width_vectors(seed):
     particular width mixes, which one pair will rarely produce. 1-15 fields of 1-60 bits is the design's own probe
     range (§1.3). Guards against anyone reimplementing _factor's arithmetic
     locally instead of delegating."""
-    from src.p4model.tables import codeword_to_blocks
+    from p4model.tables import codeword_to_blocks
     rng = np.random.default_rng(seed)
     widths = {i: int(w) for i, w in
               enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}

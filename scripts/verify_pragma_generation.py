@@ -35,7 +35,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from scripts.p4_artifact_replay import _p4_table_keys  # noqa: E402
-from src.p4gen.build_p4_script import code_field_container_sizes  # noqa: E402
+from p4gen.build_p4_script import code_field_container_sizes  # noqa: E402
 
 ARCHIVE = os.path.join(ROOT, "results", "compiler_calibration_pragmas_2026_09_29")
 _ROW = re.compile(r"^(?:heldout_|margin_)?(.+)_M(\d+)_k(\d+)_s(\d+)$")
@@ -99,7 +99,7 @@ def regenerate_and_compare(row_id, root=ARCHIVE):
     from scripts.compiler_calibration import CAMPAIGN_BACKUP_DIR
     from scripts.replay_alignment import load_backup, refit_pair
     from src.main import load_campaign_data
-    from src.p4gen.build_p4_script import (
+    from p4gen.build_p4_script import (
         generate_P4_code, get_feature_intervals, get_joint_feature_intervals)
 
     arm, M, k, split = _ROW.match(row_id).groups()

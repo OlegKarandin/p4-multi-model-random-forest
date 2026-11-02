@@ -1,11 +1,34 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
+# Installs the two reusable parts of this repository:
+#   p4model  resource model of the Tofino compiler (TCAM blocks and pipeline stages
+#            of feature-based tree models); standard library only.
+#   p4gen    P4 program generator for the same models, and the glue that evaluates the
+#            model on trained scikit-learn forests; needs numpy and scikit-learn.
+# The training and campaign code (src/) is run from a checkout of the repository and
+# is not part of the installed package.
 [project]
-name = "thesis-p4rf"
+name = "p4rf"
 version = "0.1.0"
+description = "Resource model of the Tofino compiler and P4 program generator for concurrent feature-based tree models"
 requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scikit-learn>=1.5",
+]
+
+[project.urls]
+Repository = "https://github.com/OlegKarandin/p4-multi-model-random-forest"
 
 [tool.setuptools]
-packages = ["src", "src.p4gen", "src.p4model", "src.training", "src.reporting"]
+packages = ["p4model", "p4gen"]
+
+[tool.setuptools.package-data]
+p4gen = ["resources/*.p4"]

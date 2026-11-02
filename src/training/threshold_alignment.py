@@ -1,4 +1,4 @@
-from src.p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
+from p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.training.align_budget import (_factor,
                                        _own_floor_widths,
                                        _pooled_widths,
@@ -12,7 +12,7 @@ from src.training.align_targets import (LOWER_EDGE, boundary_moves,
                                         candidate_targets,
                                         hypothetical_ranges, lower_boundary,
                                         neighbour_writes)
-from src.p4model.tables import crossbar_capacity
+from p4model.tables import crossbar_capacity
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg

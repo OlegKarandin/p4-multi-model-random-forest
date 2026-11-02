@@ -20,7 +20,7 @@ import pandas as pd
 
 import scripts.capacity_ceiling as capacity_ceiling
 import src.main as main_module
-from src.p4gen.evaluation import CrossbarKeyTooWide
+from p4gen.evaluation import CrossbarKeyTooWide
 
 
 def test_collect_marks_crossbar_rejected_cell_as_not_within_limit(monkeypatch):

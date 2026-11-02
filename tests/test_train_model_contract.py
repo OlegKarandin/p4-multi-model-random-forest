@@ -57,7 +57,7 @@ def test_blocks_le_max_blocks_holds_for_the_RETURNED_models():
     """THE invariant, and the entire point of F7: the constraint is evaluated
     on the shipped artifact, not on a CV-fold proxy. Re-measure independently
     rather than trusting the returned number."""
-    from src.p4gen.evaluation import multi_model_memory_evaluation
+    from p4gen.evaluation import multi_model_memory_evaluation
 
     for max_blocks in (40, 60, 90):
         out = _call(max_blocks=max_blocks)
@@ -225,7 +225,7 @@ def test_stage_depth_over_the_tofino_ceiling_records_stages_violation_not_the_ot
         captured['study'] = study
         return study
 
-    import src.p4gen.evaluation as ev
+    import p4gen.evaluation as ev
 
     monkeypatch.setattr(tm.optuna, 'create_study', capture)
     over_ceiling_depth = tm.TOFINO_PIPELINE_STAGES + 3
@@ -422,7 +422,7 @@ def test_a_feasible_trial_records_stage_depth_separately_from_stages(monkeypatch
     even if both were wired to usage.stages."""
     import optuna
     import src.training.train_model as tm
-    import src.p4gen.evaluation as ev
+    import p4gen.evaluation as ev
 
     optuna.logging.set_verbosity(optuna.logging.CRITICAL)
 
@@ -774,7 +774,7 @@ def test_correctness_capture_does_not_change_the_selection_accuracies(monkeypatc
     accuracy_score gives on the same predictions -- balanced must reproduce the
     pre-2026-10-04 search exactly."""
     from sklearn.metrics import accuracy_score
-    from src.p4gen.switch_semantics import switch_predict
+    from p4gen.switch_semantics import switch_predict
     out = _call(cfg=TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3,
                                 selection_rule='balanced'))
     X_app, y_app, X_ddos, y_ddos = _tiny_problem()

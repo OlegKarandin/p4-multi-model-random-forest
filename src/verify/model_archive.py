@@ -14,9 +14,9 @@ in KNOWN_MISSES with the same numbers, and on any KNOWN_MISSES entry that no
 longer occurs. The archive is not in git, so this is a command, not a test."""
 import os
 
-from src.p4gen.p4_ground_truth import committed_blocks, committed_stages_real
-from src.p4gen.p4_replay import model_breakdown, parse_program
-from src.p4model.target import TOFINO_PIPELINE_STAGES
+from p4gen.p4_ground_truth import committed_blocks, committed_stages_real
+from p4gen.p4_replay import model_breakdown, parse_program
+from p4model.target import TOFINO_PIPELINE_STAGES
 
 # results/compiler_calibration_pragmas_2026_09_29 under the lane price
 # (2026-10-04): stage_depth 70/73 (feasible 60/60), blocks 59/60.

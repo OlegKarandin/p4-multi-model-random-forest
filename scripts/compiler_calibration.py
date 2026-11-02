@@ -17,7 +17,7 @@ OUTCOME (2026-09-05). The study ran, and its results changed the model: the
 19 committed placements showed the readiness-level origin was 2 stages early
 and that the ternary crossbar charges the union of distinct key FIELDS
 rather than the sum of per-table key widths. Both are fixed in
-src/p4gen/evaluation.py, M2 now predicts 9 against the compiler's 9, and
+p4gen/evaluation.py, M2 now predicts 9 against the compiler's 9, and
 `replay_stage_depth` below re-checks all 19 rows without recompiling.
 stage_depth still under-predicts the real compiler by 0-3 stages -- PHV
 container conflicts and TCAM column geometry remain unmodelled -- so the
@@ -64,13 +64,13 @@ import pandas as pd
 
 from scripts.replay_alignment import load_backup, refit_pair
 from src.main import load_campaign_data
-from src.p4gen.build_p4_script import (
+from p4gen.build_p4_script import (
     generate_P4_code,
     get_feature_intervals,
     get_joint_feature_intervals,
 )
-from src.p4gen.evaluation import multi_model_memory_evaluation
-from src.p4gen.p4_compile import compile_p4
+from p4gen.evaluation import multi_model_memory_evaluation
+from p4gen.p4_compile import compile_p4
 
 GROUPS = ('independent', 'joint')
 K_BANDS = ('low', 'high')

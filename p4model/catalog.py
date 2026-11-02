@@ -13,7 +13,7 @@ header comment before changing anything here.
 This is the EXAMPLE catalog: the 18 features this project's generator
 supports. A reader modelling their own P4 program replaces this catalog
 (and its callers' inputs) with their own feature/register set -- nothing
-about the model in src/p4model/ depends on these particular 18 entries.
+about the model in p4model/ depends on these particular 18 entries.
 
 Key casing
 ----------
@@ -154,7 +154,7 @@ one, register_sram_bits, was dropped in Task 1 -- but it is kept here as
 part of the catalog's public surface (build_p4_script.py and
 tests/test_feature_registers.py still call it directly).
 """
-from src.p4model.names import normalise_feature_name
+from p4model.names import normalise_feature_name
 
 FEATURE_REGISTER_CATALOG = {
     "flow_iat_max": {

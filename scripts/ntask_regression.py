@@ -26,7 +26,7 @@ import os
 import sys
 import tempfile
 
-from src.p4gen.p4_replay import model_breakdown, parse_program
+from p4gen.p4_replay import model_breakdown, parse_program
 
 # Arm slug -> encoding, as in the campaign manifest (independent: disjoint;
 # joint-off and its aligned twins: joint).
@@ -57,7 +57,7 @@ def sample_rows(run_dir, take_all=False):
 
 
 def regenerate(run_dir, row_id, scratch):
-    from src.p4gen.build_p4_script import generate_P4_code
+    from p4gen.build_p4_script import generate_P4_code
     from src.training.feature_selection import (
         _derive_feature_intervals, _derive_joint_feature_intervals)
     from src.training.row_artifacts import load_forests

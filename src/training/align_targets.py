@@ -7,7 +7,7 @@ before committing to one, and today that question can only be answered by
 performing the mutation and catching AlignmentInvariantError out of the middle
 of it.
 """
-from src.p4gen.build_p4_script import INFINITE
+from p4gen.build_p4_script import INFINITE
 
 
 # The range's lower EDGE, as a boundary value (spec 2026-09-28 T2).

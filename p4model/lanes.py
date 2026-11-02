@@ -54,13 +54,13 @@ import functools
 import itertools
 import math
 
-from src.p4model.errors import CrossbarKeyTooWide
-from src.p4model.tables import (
+from p4model.errors import CrossbarKeyTooWide
+from p4model.tables import (
     codeword_bits_to_blocks,
     codeword_fields_to_bytes_from_bits,
     codeword_to_blocks,
 )
-from src.p4model.target import (
+from p4model.target import (
     TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE,
     TERNARY_CROSSBAR_GROUPS_PER_STAGE,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,

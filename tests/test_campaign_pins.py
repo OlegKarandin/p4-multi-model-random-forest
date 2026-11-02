@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(
 def _sample_rows(n_spread=20):
     """>= 20 rows across arms, every row whose program has a 49-56-bit
     code_* field among the first 2000, plus an even spread."""
-    from src.p4gen.p4_replay import parse_program
+    from p4gen.p4_replay import parse_program
     designs = os.path.join(RUN, 'designs')
     ids = sorted(name[:-3] for name in os.listdir(designs) if name.endswith('.p4')
                  and os.path.isfile(os.path.join(RUN, 'forests', name[:-3] + '.joblib')))

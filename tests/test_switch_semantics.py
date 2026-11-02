@@ -4,8 +4,8 @@ import pytest
 from itertools import product
 from sklearn.ensemble import RandomForestClassifier
 
-from src.p4gen import switch_semantics as ss
-from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, generate_voting_code
+from p4gen import switch_semantics as ss
+from p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int, generate_voting_code
 
 
 def _forest(n_estimators=7, n_classes=3, min_samples_leaf=200, n=1200, seed=0):

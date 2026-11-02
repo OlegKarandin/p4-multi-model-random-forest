@@ -8,7 +8,7 @@ import os
 import re
 from typing import Optional
 
-from src.p4gen.p4_compile import parse_compile_logs
+from p4gen.p4_compile import parse_compile_logs
 
 
 RESOURCE_TABLE_ROW = re.compile(

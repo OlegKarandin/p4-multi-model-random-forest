@@ -13,7 +13,7 @@ from src.training.config import TrainConfig
 from src.training.splits import make_task_splits
 from src.training.campaign_run import optuna_seed, row_id
 from src.training.row_artifacts import write_row_artifacts, write_trial_table
-from src.p4gen import p4_gen_config
+from p4gen import p4_gen_config
 
 
 # =============================================================================
@@ -48,7 +48,7 @@ def _derive_feature_intervals(clf, feature_names):
     `clf`/`feature_intervals` on its own, so only the intervals are needed
     here).
     """
-    from src.p4gen.build_p4_script import get_feature_intervals
+    from p4gen.build_p4_script import get_feature_intervals
 
     return get_feature_intervals(clf, feature_names)
 
@@ -62,7 +62,7 @@ def _derive_joint_feature_intervals(model_app, model_ddos, feature_names_app, fe
     numbers are meant to validate against, so the real program must be built
     from the same interval derivation, not a re-invented one.
     """
-    from src.p4gen.build_p4_script import get_joint_feature_intervals
+    from p4gen.build_p4_script import get_joint_feature_intervals
 
     return get_joint_feature_intervals(
         model_app, feature_names_app, model_ddos, feature_names_ddos)
@@ -120,8 +120,8 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     if not validate_on_hardware:
         return None
 
-    from src.p4gen.p4_compile import compile_p4_async
-    from src.p4gen.build_p4_script import generate_P4_code
+    from p4gen.p4_compile import compile_p4_async
+    from p4gen.build_p4_script import generate_P4_code
 
     if encoding == 'joint':
         feature_intervals = _derive_joint_feature_intervals(
@@ -424,8 +424,8 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
         `write_row_artifacts`. When None: `row_id` is '', no seed, no writes.
     """
     from src.training.train_model import train_multi_RF_Optuna_multi_constrained
-    from src.p4gen.evaluation import accuracy_metrics
-    from src.p4gen.switch_semantics import switch_accuracy_scorer, switch_predict
+    from p4gen.evaluation import accuracy_metrics
+    from p4gen.switch_semantics import switch_accuracy_scorer, switch_predict
 
     if arm not in ('independent', 'joint'):
         raise ValueError("arm must be 'independent' or 'joint', got {!r}".format(arm))

@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
 from src.main import run_plot_mode
-from src.p4gen.p4_compile import CompileResult
+from p4gen.p4_compile import CompileResult
 from src.reporting.campaign_data import load_campaign
 from src.training import campaign_runner
 from src.training.config import TrainConfig

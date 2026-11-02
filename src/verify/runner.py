@@ -30,11 +30,11 @@ import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from src.p4gen.p4_compile import P4CompileTimeout, compile_p4
-from src.p4gen.p4_ground_truth import (
+from p4gen.p4_compile import P4CompileTimeout, compile_p4
+from p4gen.p4_ground_truth import (
     committed_blocks, committed_stages_real, p4c_numbers)
-from src.p4gen.p4_replay import model_breakdown, parse_program
-from src.p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
+from p4gen.p4_replay import model_breakdown, parse_program
+from p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
 from src.reporting.manifest import git_provenance
 from src.training.campaign_run import (
     atomic_write_bytes, atomic_write_text, canonical_json, run_paths)

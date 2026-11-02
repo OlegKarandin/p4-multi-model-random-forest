@@ -6,8 +6,8 @@ import pytest
 import sklearn
 from sklearn.ensemble import RandomForestClassifier
 
-from src.p4gen.build_p4_script import dt_thresholds_float_to_int
-from src.p4gen.evaluation import multi_model_memory_evaluation
+from p4gen.build_p4_script import dt_thresholds_float_to_int
+from p4gen.evaluation import multi_model_memory_evaluation
 from src.training import row_artifacts as ra
 from tests.test_train_model_seed import _NAMES, _task
 

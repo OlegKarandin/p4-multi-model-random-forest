@@ -1,4 +1,4 @@
-"""src/p4model/lanes.py: the crossbar lane model (audit
+"""p4model/lanes.py: the crossbar lane model (audit
 reviews/model_audit_2026-09-27.md Sec 7.2-7.5), ported from the audit's scratch
 scripts width_layout.py / fastlane.py / stage_sim_fast.py.
 
@@ -27,9 +27,9 @@ differences, 99 read as None.
 """
 import pytest
 
-from src.p4model import lanes
-from src.p4model.tables import codeword_to_blocks
-from src.p4model.target import TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE
+from p4model import lanes
+from p4model.tables import codeword_to_blocks
+from p4model.target import TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE
 
 
 REAL_DESIGN_KEYS = (
@@ -440,8 +440,8 @@ def test_later_key_occupancy_consumes_whole_groups_and_low_midbytes_only():
 
 # ------------------------------------------------ table_blocks (spec 2026-10-04)
 
-from src.p4model.errors import CrossbarKeyTooWide
-from src.p4model.tables import codeword_bits_to_blocks
+from p4model.errors import CrossbarKeyTooWide
+from p4model.tables import codeword_bits_to_blocks
 
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)

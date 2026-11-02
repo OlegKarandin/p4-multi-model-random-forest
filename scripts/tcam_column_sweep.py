@@ -56,7 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from scripts.compiler_calibration import _committed_blocks, committed_table_stages
-from src.p4gen.build_p4_script import (
+from p4gen.build_p4_script import (
     TCAM_BLOCK_KEY_LENGTH,
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
@@ -67,8 +67,8 @@ from src.p4gen.build_p4_script import (
 # Re-exported, not redefined: this sweep is what MEASURED the column geometry,
 # and the model is what has to obey it. Two copies of the packing rule could
 # drift and the sweep would then certify a rule the estimator does not use.
-from src.p4gen.evaluation import fits_two_columns
-from src.p4gen.p4_compile import compile_p4
+from p4gen.evaluation import fits_two_columns
+from p4gen.p4_compile import compile_p4
 
 # Sec 4.1: a ternary entry carries a flat 4-bit overhead before the key is
 # divided into TCAM_BLOCK_KEY_LENGTH-bit rows.

@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 
-from src.p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
-from src.p4gen.switch_semantics import switch_predict
+from p4gen.build_p4_script import INFINITE, dt_thresholds_float_to_int
+from p4gen.switch_semantics import switch_predict
 
 
 def _raw_forest(X, y, n_estimators=7, seed=0):

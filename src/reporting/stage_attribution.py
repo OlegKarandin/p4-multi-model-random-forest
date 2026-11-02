@@ -8,7 +8,7 @@ sign flip in the k=17 story.
 Requires scripts/replay_alignment.py to have been run with
 `--policies none,aligned` (or whichever subset is available) so
 every row carries the joint_*/counterfactual_disjoint_* columns Phase 1
-(src/p4gen/evaluation.py's ResourceUsage) and Phase 2's run_one_policy
+(p4gen/evaluation.py's ResourceUsage) and Phase 2's run_one_policy
 change add.
 
 D2 and D3 are evaluated on the 'none' policy by default (see score's
