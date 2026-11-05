@@ -72,7 +72,8 @@ TERNARY_CROSSBAR_STAGE_BYTES = 66
 # keys in one stage, as the lane simulation does. Every probe point at 56-64
 # bytes (tcam_mixed_key_cap_sweep, tcam_discount_scan dsp01-42) stayed in one
 # stage and _stage_key_prices reproduces all 42 charges; dsp43-45 at 65-67 bytes
-# are refused by the real limit above. Evidence: spec
+# stay refused, by the lane simulation at 65-66 and TERNARY_CROSSBAR_STAGE_BYTES
+# at 67. Evidence: spec
 # docs/superpowers/specs/2026-09-29-overlay-and-layout-pragmas-design.md
 # Sec 5.2. THE RETIREMENT HOLDS ONLY WHILE THOSE PINS ARE EMITTED -- a
 # generator change that drops them re-exposes M150_k7_s11.

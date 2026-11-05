@@ -5,7 +5,9 @@ Two checks, both of which must report zero differences for N = 2:
 1. ``--campaign DIR``: regenerate the P4 program of a sample of campaign rows
    from their saved forests (forests/<row_id>.joblib) exactly as
    row_artifacts._generate does, and diff it byte for byte against the
-   archived designs/<row_id>.p4. The model side is checked too:
+   archived designs/<row_id>.p4, apart from the range tables'
+   @placement_priority, which every program since 2026-11 carries and no
+   archived one does. The model side is checked too:
    model_breakdown(parse_program(<archived p4>)) must equal the archived
    model.json's stage_depth / blocks / tables.
 
@@ -23,6 +25,7 @@ Usage (PolimiML env):
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -35,6 +38,13 @@ ARM_ENCODING = {'independent': 'disjoint', 'joint-off': 'joint',
 SAMPLE_M = ('015', '035', '075', 'inf')
 SAMPLE_SPLITS = (0, 7, 13, 24)
 SAMPLE_K = (1, 2, 4, 6, 9, 12, 14, 17)
+
+
+def _without_range_priority(program_bytes):
+    """The program without the range tables' @placement_priority(3) (the
+    two-task value, program.range_table_priority): the one line a current
+    generator adds to an archived program."""
+    return re.sub(rb'@placement_priority\(3\)\n\s*', b'', program_bytes)
 
 
 def _arm_of(row_id):
@@ -93,7 +103,7 @@ def check_campaign(run_dir, take_all=False):
             archived_path = os.path.join(run_dir, 'designs', row + '.p4')
             with open(archived_path, 'rb') as handle:
                 archived = handle.read()
-            if regenerate(run_dir, row, scratch) != archived:
+            if _without_range_priority(regenerate(run_dir, row, scratch)) != archived:
                 p4_diffs.append(row)
             with open(os.path.join(run_dir, 'designs', row + '.model.json'),
                       encoding='utf-8') as handle:

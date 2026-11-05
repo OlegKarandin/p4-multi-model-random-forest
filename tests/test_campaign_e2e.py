@@ -227,3 +227,37 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
     for row_id, blocks in zip(frame["row_id"], frame["blocks"]):
         assert blocks == p4c_blocks[row_id], row_id
     assert not frame["flagged"].any()
+
+
+def test_the_per_task_arm_trains_verifies_and_renders_without_twins(tmp_path, monkeypatch):
+    """The new arm next to its baseline, with no twins stage: rows carry its
+    identity, every program is per-task and replays to training's numbers, and
+    every deliverable renders (a partial family, as any run of this arm is)."""
+    monkeypatch.delenv("THESIS_P4C_IMAGE", raising=False)
+    monkeypatch.delenv("THESIS_P4STUDIO_COMMIT", raising=False)
+    run_dir = str(tmp_path / "run")
+    arms = [("joint-task", TrainConfig(alignment_enabled=False, **_CFG)),
+            ("independent", TrainConfig(**_CFG))]
+    jobs = campaign_runner.plan_jobs(arms, [_M], list(_SPLITS), run_dir)
+    assert {job.slug for job in jobs} == {"joint-task", "independent"}
+    summary = campaign_runner.run_jobs(jobs, _synthetic_data(), run_dir, "deadbeef", 1,
+                                       executor_factory=_serial)
+    assert summary.failed == {}, summary.failed
+    feasible = _row_ids(run_dir)
+    per_task = [r for r in feasible["row_id"] if r.startswith("joint-task_M035_s00_k")]
+    assert per_task
+    assert set(feasible.loc[feasible["row_id"].isin(per_task), "arm"]) == {"joint-task"}
+    assert set(feasible.loc[feasible["row_id"].isin(per_task), "alignment_enabled"]) == {"False"}
+
+    compiler = ReplayingCompiler(false_feasible_row=None)
+    assert verify_runner.run(run_dir, workers=2, compile_fn=compiler, min_free_bytes=0) == 0
+    assert sorted(compiler.compiled) == sorted(feasible["row_id"])
+    verification = pd.read_csv(os.path.join(run_dir, "verification.csv"),
+                               keep_default_na=False, dtype=str)
+    assert set(verification["verdict"]) == {"EXACT"}
+
+    deliverables = run_plot_mode(results_dir=run_dir, output_dir=str(tmp_path / "figures"),
+                                 allow_partial_family=True)
+    by_number = {d.number: d for d in deliverables}
+    assert {9, 10} <= set(by_number) and 11 not in by_number
+    assert set(load_campaign(run_dir)["arm_slug"]) == {"joint-task", "independent"}

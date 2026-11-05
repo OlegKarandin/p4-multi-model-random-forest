@@ -386,6 +386,48 @@ def test_a_table_interval_that_does_not_refine_a_tasks_own_is_refused():
         bps._range_table_entries("t", "a", "f_val", _iv(5), [("code_app", _iv(3))])
 
 
+# --- N tasks -------------------------------------------------------------------
+
+def _three_tasks():
+    forests = {"a": _forest(2, 1), "b": _forest(3, 2), "c": _forest(4, 5, FEATURES[:3], n_trees=1)}
+    names = {"a": FEATURES, "b": FEATURES, "c": FEATURES[:3]}
+    classes = {"a": 2, "b": 3, "c": 4}
+    return [TaskSpec(t, classes[t], list(forests[t].estimators_), names[t], _own(forests[t], names[t]))
+            for t in ("a", "b", "c")], forests, names
+
+
+def test_three_task_program_replays_and_labels_a_subset_of_tasks_with_a_frozenset(tmp_path):
+    tasks, forests, names = _three_tasks()
+    path = bps.generate_p4_program(tasks, output_dir=str(tmp_path) + os.sep, output_filename="d.p4",
+                                   per_task_codes=True)
+    program = parse_program(path)
+    assert {t: sorted(k) for t, k in program.tables.items() if t == "get_classification_tree_c_0"} == {
+        "get_classification_tree_c_0": sorted("code_tk_c_" + f for f in _own(forests["c"], names["c"]))}
+    labels = table_tasks(program.tables)
+    own = {t.name: set(t.intervals) for t in tasks}
+    for i, f in enumerate(sorted(own["a"] | own["b"] | own["c"])):
+        readers = {t for t in own if f in own[t]}
+        expected = SHARED_TASK if len(readers) == 3 else (
+            frozenset(readers) if len(readers) == 2 else next(iter(readers)))
+        assert labels["table_%d_%s" % (i, f)] == expected
+    breakdown = model_breakdown(program)
+    assert breakdown["stage_depth"] > 0 and breakdown["blocks"] > 0
+
+
+def test_three_task_entries_classify_exactly_as_each_tree(tmp_path):
+    tasks, forests, names = _three_tasks()
+    entries = bps.generate_table_entries(tasks, per_task_codes=True)
+    X = np.random.RandomState(3).randint(0, 2100, size=(120, len(FEATURES)))
+    expected = {}
+    for task in tasks:
+        cols = [FEATURES.index(f) for f in names[task.name]]
+        for i, classes in enumerate(per_tree_class_indices(forests[task.name], X[:, cols])):
+            expected["get_classification_tree_%s_%d" % (task.name, i)] = classes
+    for s, values in enumerate(X):
+        got = _switch_tree_classes(entries, dict(zip(FEATURES, values)))
+        assert got == {table: int(classes[s]) for table, classes in expected.items()}
+
+
 # --- the 66-byte stage check --------------------------------------------------
 
 def _load(index, fields, blocks=(1,), tables=1):
