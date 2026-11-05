@@ -30,7 +30,8 @@ from p4model.target import (
 from p4model import lanes
 from p4model.names import normalise_feature_name
 from p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
-                                 TaskSpec, placement_priorities, task_names)
+                                 TaskSpec, per_task_field, placement_priorities,
+                                 range_table_priority, task_names)
 
 INFINITE = (2**16)-1
 MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
@@ -781,12 +782,34 @@ def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, o
     output_file.write(json.dumps(table_entries))
 
 
-def _range_table_entries(table_name, action_name, key_field, intervals):
+def _per_task_code(interval, own_intervals):
+  '''The thermometer code of one shared-table interval in one task's OWN
+  discretization. The table's intervals are the union of every task's
+  thresholds, so each lies wholly inside exactly one of the task's own.'''
+  for idx, (low, high) in enumerate(own_intervals):
+    if interval[1] <= high:
+      if interval[0] < low:
+        raise ValueError("interval {} is not inside the task's own interval {}: "
+                         "the table's intervals must refine it".format(interval, (low, high)))
+      return thermometer_code(len(own_intervals), idx)
+  raise ValueError("interval {} is past the task's last own interval {}".format(
+      interval, own_intervals[-1]))
+
+
+def _range_table_entries(table_name, action_name, key_field, intervals, writes=None):
   '''One feature's range table: one entry per interval, highest interval
-  first, each writing that interval's thermometer code.'''
+  first, each writing that interval's thermometer code. writes: None for a
+  table writing one code (parameter `code`), or (action parameter, the task's
+  own intervals) per code a per-task table writes (resolve_per_task_plan).'''
   entries = []
   for idx, interval in enumerate(intervals[::-1]):
-    code = thermometer_code(len(intervals), len(intervals) - 1 - idx)
+    if writes is None:
+      # `code` is the literal parameter name of every single-code set_code_*
+      # action (resources/action.p4).
+      code = thermometer_code(len(intervals), len(intervals) - 1 - idx)
+      params = {"code": str(int(code, 2))}
+    else:
+      params = {param: str(int(_per_task_code(interval, own), 2)) for param, own in writes}
     # bf_rt exposes a range-matched key field as <short_name>_start /
     # <short_name>_end. The short name is the P4 key expression without its
     # `meta.` prefix -- i.e. exactly the <FEATURE_NAME>+"_val" text
@@ -797,9 +820,7 @@ def _range_table_entries(table_name, action_name, key_field, intervals):
         "is_default_action": False,
         "priority": idx,
         "key_fields": {key_field: {"start": str(interval[0]), "end": str(interval[1])}},
-        # `code` is the literal parameter name of every set_code_* action
-        # (resources/action.p4).
-        "action_params": {"code": str(int(code, 2))},
+        "action_params": params,
     })
   return entries
 
@@ -867,10 +888,11 @@ def _tree_table_entries(table_name, action_name, tree_codewords, fields,
   return entries
 
 
-def generate_table_entries(tasks, use_default_action_discount=False):
+def generate_table_entries(tasks, use_default_action_discount=False, per_task_codes=False):
   '''The control-plane entries (get_table_entries' record format, installed
   by p4/deploy_table_entries.py) of the program generate_p4_program emits for
-  the same `tasks` (Sequence[TaskSpec], N >= 1, either encoding).
+  the same `tasks` (Sequence[TaskSpec], N >= 1, either encoding) and the same
+  per_task_codes.
 
   Table and field names come from the same resolve_feature_plan the program
   text is built from: one range table per resolved entry, keyed on its raw
@@ -880,14 +902,29 @@ def generate_table_entries(tasks, use_default_action_discount=False):
   are computed against that task's OWN intervals, which are the intervals of
   every resolved field it reads.
 
+  per_task_codes (resolve_per_task_plan): one range table per feature, holding
+  the union of the tasks' intervals, whose action parameter code_<task> is the
+  interval's code in that task's own discretization -- which is what that
+  task's codewords, against its own intervals, expect to find.
+
   Every task with trees needs its ordered training-feature-name list
   (TaskSpec.features): its codewords are recomputed from its trees.'''
-  plan = resolve_feature_plan([(task.name, task.intervals) for task in tasks])
+  task_intervals = [(task.name, task.intervals) for task in tasks]
   entries = []
-  for index, (name, (raw_feature_name, intervals, _)) in enumerate(plan.items()):
-    entries += _range_table_entries("table_"+str(index)+"_"+name, "set_code_"+name,
-                                    raw_feature_name.replace(" ","_").lower()+"_val",
-                                    intervals)
+  if per_task_codes:
+    table_plan, plan = resolve_per_task_plan(task_intervals)
+    own_of = {task.name: task.intervals for task in tasks}
+    for index, (feature, (intervals, written)) in enumerate(table_plan.items()):
+      writes = [("code_"+task, own_of[task][feature]) for task, _, _ in written]
+      entries += _range_table_entries("table_"+str(index)+"_"+feature, "set_code_"+feature,
+                                      feature.replace(" ","_").lower()+"_val",
+                                      intervals, writes)
+  else:
+    plan = resolve_feature_plan(task_intervals)
+    for index, (name, (raw_feature_name, intervals, _)) in enumerate(plan.items()):
+      entries += _range_table_entries("table_"+str(index)+"_"+name, "set_code_"+name,
+                                      raw_feature_name.replace(" ","_").lower()+"_val",
+                                      intervals)
   # Program order, lowest priority first, as generate_p4_program lists them.
   for task in reversed(list(tasks)):
     if not task.trees:
@@ -898,7 +935,10 @@ def generate_table_entries(tasks, use_default_action_discount=False):
           "(TaskSpec.features): its codewords cannot be recomputed" % task.name)
     intervals = task.intervals or {}
     field_of = {raw: name for name, (raw, _, models) in plan.items() if task.name in models}
-    fields = [("code_"+field_of[raw], len(iv)-1) for raw, iv in intervals.items()]
+    # A task's own field on a feature with no bits does not exist under
+    # per_task_codes, and it adds no bits to a codeword either.
+    fields = [("code_"+field_of[raw], len(iv)-1) for raw, iv in intervals.items()
+              if raw in field_of]
     paths = get_root_to_leaf_paths(tree_nodes_for(_Forest(task.trees), task.features))
     codewords = generate_codewords(paths, intervals)
     for i in range(len(task.trees)):
@@ -980,6 +1020,53 @@ def _resolve_disjoint_feature_plan(feature_intervals_app, feature_intervals_ddos
                                (APP_TASK, feature_intervals_app)])
 
 
+def resolve_per_task_plan(task_intervals):
+  '''The per-task encoding's plan (program.PER_TASK_ENCODING): ONE threshold
+  table per raw feature, its action writing one code per task with a threshold
+  on that feature, as wide as that task's own thresholds.
+
+  task_intervals: (task name, {raw feature: the task's OWN intervals}) pairs in
+  TASK order, as resolve_feature_plan takes them.
+
+  Returns (table_plan, field_plan):
+    table_plan: raw feature -> (the union of the tasks' intervals, the
+      (task, resolved field name, field width) of every code the table writes,
+      lowest-priority task first, which is program order). Sorted by feature
+      name: feature_intervals_from_nodes sorts the merged 'joint' intervals the
+      same way, so everything but the code fields (registers, range-table
+      order, table sizes) is what the same forests get under 'joint'.
+    field_plan: resolve_feature_plan's shape over the code fields, resolved name
+      tk_<task>_<feature> -> (raw feature, the task's own intervals, {task}), so
+      every section that walks a plan -- metadata, pragmas, keys -- is unchanged.
+
+  A task with no threshold on a feature has no field for it. No field is ever
+  read by two tasks, so @pa_container_size cannot conflict.'''
+  order = task_names([name for name, _ in task_intervals])
+  intervals_of = {name: (intervals or {}) for name, intervals in task_intervals}
+  features = sorted(set().union(*(set(own) for own in intervals_of.values())))
+  table_plan, field_plan = {}, {}
+  for feature in features:
+    thresholds = set()
+    written = []
+    for task in reversed(order):
+      own = intervals_of[task].get(feature)
+      if own is None or len(own) < 2:
+        continue
+      thresholds.update((feature, high) for _, high in own[:-1])
+      name = per_task_field(task, feature)
+      if name in field_plan:
+        raise ValueError(
+            "resolved field name %r is produced twice: feature %r of task %r and "
+            "feature %r of task %r; rename a task or a feature"
+            % (name, field_plan[name][0], sorted(field_plan[name][2])[0], feature, task))
+      field_plan[name] = (feature, own, {task})
+      written.append((task, name, len(own) - 1))
+    if written:
+      union = get_feature_intervals_from_thresholds(sorted(thresholds))[feature]
+      table_plan[feature] = (union, written)
+  return table_plan, field_plan
+
+
 def code_field_container_sizes(resolved_plan, tasks):
   '''resolved_name -> @pa_container_size sizes (low slice first) for every
   code_<resolved_name> field some classification key reads.
@@ -1028,13 +1115,16 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
                            (DDOS_TASK, num_trees_ddos, bit_per_classes_ddos)])
 
 
-def generate_actions(feature_intervals, task_trees):
+def generate_actions(feature_intervals, task_trees, per_task_writes=None):
   """
       action <ACTION_NAME> (bit<<ACTION_CODE_LENGTH>> code) {
           meta.code_<FEATURE_NAME> = code;
       }
 
   task_trees: (task name, tree count, class bits) per task, in PROGRAM order.
+  per_task_writes: None for one code per entry of feature_intervals, or, under
+  per_task_codes, entry name -> resolve_per_task_plan's (task, field, width)
+  list: one action parameter code_<task> per code the table writes.
   """
 
   # Calculate nºbits per feature in the codeword
@@ -1073,6 +1163,14 @@ def generate_actions(feature_intervals, task_trees):
       action_templates += classification_action_template
 
   for feature in feature_names:
+    if per_task_writes is not None:
+      params = ", ".join("bit<"+str(width)+"> code_"+task
+                         for task, _, width in per_task_writes[feature])
+      body = "".join("        meta.code_"+field+" = code_"+task+";\n"
+                     for task, field, _ in per_task_writes[feature])
+      action_templates += ("    \n    action set_code_"+feature+" ("+params+") {\n"
+                           + body + "    }\n")
+      continue
     action_template = _ACTION_TEMPLATE
     action_template = action_template.replace("<ACTION_NAME>", "set_code_" + feature)
     action_template = action_template.replace("<ACTION_CODE_LENGTH>", str(codeword_bits_per_feature[feature]))
@@ -1284,6 +1382,7 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
     if sizes and position < len(task_tables) - 1:
       apply_templates_tmp += "\n"
 
+  range_priority = range_table_priority(priorities)
   feature_idx = 0
   for feature in feature_names:
     # Task 3: the range table's key reads the RAW tracked-value field
@@ -1312,6 +1411,14 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
     # caller before this task.
     table_template = table_template.replace("<SIZE>;\n    }", "<SIZE>;\n    }   ")
     table_template = table_template.replace("<SIZE>", str(size))
+    # Above every tree's priority, so p4c serves the range pool first, as the
+    # model's packer assumes (program.range_table_priority has the evidence).
+    table_template = table_template.replace(
+        "    table table_"+str(feature_idx)+"_"+feature+" {",
+        "    @placement_priority("+str(range_priority)+")"
+        "\n    table table_"+str(feature_idx)+"_"+feature+" {",
+        1,
+    )
     table_templates += table_template
     apply_templates += "\t\t\ttable_"+str(feature_idx)+"_"+feature+".apply();\n"
 
@@ -1403,13 +1510,14 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
                       use_default_action_discount=False,
                       selected_features_app=None, selected_features_ddos=None,
                       config: "p4_gen_config.P4GenConfig" = None,
-                      entries_filename=None):
+                      entries_filename=None, per_task_codes=False):
   """The two-task program (spec 2026-10-11 compatibility wrapper):
   generate_p4_program with TaskSpecs in the order (ddos, app), which gives
   the C5 priorities ddos 2 / app 1 and today's program text byte for byte.
   clf_app / clf_ddos may be None for "no such task" (its trees are then
   empty); feature_intervals_* are each model's own intervals ({} for a
-  missing task, the same dict for both under joint encoding);
+  missing task, the same dict for both under joint encoding; each model's
+  own, always, under per_task_codes);
   selected_features_* are the ordered training-feature-name lists. See
   generate_p4_program for everything else."""
   tasks = [
@@ -1423,7 +1531,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   return generate_p4_program(
       tasks, output_dir=output_dir, output_filename=output_filename,
       match_type=match_type, use_default_action_discount=use_default_action_discount,
-      config=config, entries_filename=entries_filename)
+      config=config, entries_filename=entries_filename, per_task_codes=per_task_codes)
 
 
 class _Forest:
@@ -1436,10 +1544,11 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                         output_filename='p4_code_RF_models.p4',
                         match_type='ternary', use_default_action_discount=False,
                         config: "p4_gen_config.P4GenConfig" = None,
-                        entries_filename=None):
+                        entries_filename=None, per_task_codes=False):
   """One P4 program serving every task in `tasks` (Sequence[TaskSpec], N >= 1,
   spec 2026-10-11). Task order sets @placement_priority (task i of N gets
-  N - i); the program lists the tasks in the reverse order, lowest priority
+  N - i, every range table N + 1, program.range_table_priority); the program
+  lists the tasks in the reverse order, lowest priority
   first. entries_filename: when given, the program's control-plane entries
   (generate_table_entries) are written beside it under that name; None
   writes the program only. Per task: get_classification_tree_<task>_<i> /
@@ -1447,6 +1556,12 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   tree i (ids per task, from 0), and one vote_<task> table. Registers stay
   one per distinct raw feature across all tasks; codeword fields follow
   resolve_feature_plan.
+
+  per_task_codes: the per-task encoding (program.PER_TASK_ENCODING,
+  resolve_per_task_plan) instead of resolve_feature_plan: every TaskSpec carries
+  its OWN intervals, the one range table per feature holds their union, and its
+  action writes meta.code_tk_<task>_<feature> for every task with a threshold
+  on the feature. False (the default) leaves every other encoding as it was.
 
   The parameter notes below were written for the two-task form: read
   clf_<task> / feature_intervals_<task> / selected_features_<task> as that
@@ -1580,8 +1695,14 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # Task 3: resolve every task's independently-derived feature_intervals
   # into ONE plan describing, per resolved name, which tasks share ONE
   # discretization table/field for a feature and which need their own,
-  # namespaced ones. Computed once, consumed by every section below.
-  resolved_plan = resolve_feature_plan([(task.name, task.intervals) for task in tasks])
+  # namespaced ones. Computed once, consumed by every section below. Under
+  # per_task_codes the plan describes the code FIELDS (one reader task each)
+  # and table_plan the one range table per feature that writes them.
+  task_intervals = [(task.name, task.intervals) for task in tasks]
+  if per_task_codes:
+    table_plan, resolved_plan = resolve_per_task_plan(task_intervals)
+  else:
+    table_plan, resolved_plan = None, resolve_feature_plan(task_intervals)
 
   metadata_code = ""
   # Accumulated by three separate loops below (per-tree result fields, raw
@@ -1758,13 +1879,23 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # meta.code_<resolved_name>, one action per resolved entry, and is
   # already agnostic to whether a name is "raw" or "resolved"/namespaced --
   # no change needed to that function itself, only to what it's fed here.
-  flat_resolved_intervals = {
-      resolved_name: intervals
-      for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items()
-  }
+  #
+  # Under per_task_codes the entries of these sections are the range tables,
+  # one per raw feature, not the code fields: the table holds the union of the
+  # tasks' intervals and its action writes every field of the feature.
+  if per_task_codes:
+    flat_resolved_intervals = {feature: union for feature, (union, _) in table_plan.items()}
+    per_task_writes = {feature: written for feature, (_, written) in table_plan.items()}
+  else:
+    flat_resolved_intervals = {
+        resolved_name: intervals
+        for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items()
+    }
+    per_task_writes = None
   action_templates = generate_actions(
       flat_resolved_intervals,
-      [(task.name, n_trees[task.name], bit_per_classes[task.name]) for task in program_tasks])
+      [(task.name, n_trees[task.name], bit_per_classes[task.name]) for task in program_tasks],
+      per_task_writes=per_task_writes)
 
   # Task 3, point 4: each task's classification tables must key on
   # code_<resolved_name> only for resolved entries that task actually
@@ -1774,7 +1905,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   key_names = {task.name: [name for name, (_, _, models) in resolved_plan.items()
                            if task.name in models]
                for task in tasks}
-  raw_feature_names = {name: raw for name, (raw, _, _) in resolved_plan.items()}
+  raw_feature_names = ({feature: feature for feature in table_plan} if per_task_codes
+                       else {name: raw for name, (raw, _, _) in resolved_plan.items()})
 
   # Follow-up: the discount's live path. Codewords are recomputed per task
   # against that task's OWN intervals (see this function's docstring), keyed
@@ -1811,7 +1943,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # underestimates.
   feature_table_sizes = {
       resolved_name: max(1, len(intervals))
-      for resolved_name, (raw_feature_name, intervals, models) in resolved_plan.items()
+      for resolved_name, intervals in flat_resolved_intervals.items()
   }
 
   def _classification_table_size(task, tree_id):
@@ -1828,7 +1960,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                  for task in program_tasks]
 
   table_templates, apply_templates = generate_tables_and_apply(
-      resolved_plan.keys(), task_tables, match_type=match_type,
+      flat_resolved_intervals.keys(), task_tables, match_type=match_type,
       raw_feature_names=raw_feature_names,
       feature_table_sizes=feature_table_sizes, priorities=priorities)
 
@@ -1866,7 +1998,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   if entries_filename is not None:
     with open(output_dir + entries_filename, 'w') as entries_file:
       entries_file.write(json.dumps(generate_table_entries(
-          tasks, use_default_action_discount=use_default_action_discount)))
+          tasks, use_default_action_discount=use_default_action_discount,
+          per_task_codes=per_task_codes)))
 
   return written_path
 

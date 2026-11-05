@@ -215,6 +215,7 @@ control SwitchIngress(
         size = 5;
     }
     
+    @placement_priority(3)
     table table_0_app_flow_iat_max {
         key = {
             meta.flow_iat_max_val: range;
@@ -225,6 +226,7 @@ control SwitchIngress(
         size = 2;
     }   
     
+    @placement_priority(3)
     table table_1_ddos_flow_iat_max {
         key = {
             meta.flow_iat_max_val: range;
@@ -235,6 +237,7 @@ control SwitchIngress(
         size = 2;
     }   
     
+    @placement_priority(3)
     table table_2_fwd_packet_length_max {
         key = {
             meta.fwd_packet_length_max_val: range;

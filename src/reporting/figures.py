@@ -263,7 +263,7 @@ def ordered_arms(df, include_baseline=True,
     it.
     """
     present = list(dict.fromkeys(df['arm_slug'].tolist()))
-    known = list(claims.JOINT_ARM_SLUGS)
+    known = list(claims.REPORTED_JOINT_ARM_SLUGS)
     if include_baseline:
         known = [baseline] + known
     ordered = [slug for slug in known if slug in present]

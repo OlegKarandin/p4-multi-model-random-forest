@@ -8,21 +8,38 @@ filename is derived from the config that produced it.
 """
 from dataclasses import dataclass
 
+from p4model.program import (DISJOINT_ENCODING, ENCODINGS, JOINT_ENCODING,
+                             PER_TASK_ENCODING)
 from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
 SELECTION_RULES = ('balanced', 'tied_cheapest')
 
+# The arm names `_run_elimination` and the rows' `arm` column use, and the
+# encoding each is priced and generated under. `joint` and `joint-task` both
+# eliminate ONE shared feature list; they differ in the leaf keys.
+PER_TASK_ARM = 'joint-task'
+ARM_ENCODINGS = {'independent': DISJOINT_ENCODING, 'joint': JOINT_ENCODING,
+                 PER_TASK_ARM: PER_TASK_ENCODING}
+
+
+def arm_encoding(arm):
+    """The encoding of one arm name; raises on anything else, so a typo cannot
+    fall through to some other arm's encoding."""
+    if arm not in ARM_ENCODINGS:
+        raise ValueError('arm must be one of {}, got {!r}'.format(sorted(ARM_ENCODINGS), arm))
+    return ARM_ENCODINGS[arm]
+
 
 def _validate_encoding(encoding):
     """Shared guard for `TrainConfig.arm_slug`, which branches on
-    `encoding == 'disjoint'` vs. everything else, so an unrecognized string (a
+    the encoding, so an unrecognized string (a
     typo, say) used to fall through to the joint-arm behaviour silently instead
     of failing loudly.
 
     It guarded `delta_align_label` too until the 2026-09-15 deletion of the
     delta_align axis, which took that method with it."""
-    if encoding not in ('joint', 'disjoint'):
-        raise ValueError("encoding must be 'joint' or 'disjoint', got {!r}".format(encoding))
+    if encoding not in ENCODINGS:
+        raise ValueError('encoding must be one of {}, got {!r}'.format(ENCODINGS, encoding))
 
 
 @dataclass(frozen=True)
@@ -164,10 +181,16 @@ class TrainConfig:
         own `delta_align` column. Reporting ACCEPTS that column; nothing WRITES
         it. The same is true of the `-o{:03d}` overlap_threshold suffix retired
         in 2026-09-14.
+
+        `joint-task` (the per-task encoding, 2026-11) deliberately ignores the
+        alignment fields too: alignment reduces the union of thresholds, and a
+        per-task key does not depend on the union, so the arm never aligns.
         """
         _validate_encoding(encoding)
-        if encoding == 'disjoint':
+        if encoding == DISJOINT_ENCODING:
             return 'independent'
+        if encoding == PER_TASK_ENCODING:
+            return PER_TASK_ARM
         if not self.alignment_enabled:
             return 'joint-off'
         return 'joint'

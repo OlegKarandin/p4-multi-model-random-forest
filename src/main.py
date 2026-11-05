@@ -13,7 +13,7 @@ from p4gen.build_p4_script import (
     merge_tree_nodes,
     tree_nodes_for,
 )
-from src.training.config import TrainConfig
+from src.training.config import PER_TASK_ARM, TrainConfig, arm_encoding
 from src.training import campaign_run
 from src.training.campaign_runner import plan_jobs, run_jobs
 
@@ -66,6 +66,15 @@ PRIMARY_ARMS = [
     ('joint', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
 ]
 
+# The per-task encoding (p4model.program.PER_TASK_ENCODING): named by slug
+# (--arm-slugs joint-task), not part of the 'primary' preset, whose three arms
+# are the archived campaigns' grid. alignment_enabled=False because alignment
+# reduces the union of thresholds and a per-task key does not depend on the
+# union (identical bits on source and twin in 100% of pairs measured); it also
+# keeps the arm's config equal to joint-off's on every other field.
+PER_TASK_ARM_ENTRY = (PER_TASK_ARM, TrainConfig(alignment_enabled=False,
+                                                ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
+
 
 def select_arms(which):
     if which == 'primary':
@@ -91,9 +100,8 @@ def select_arm_slugs(slugs):
     rather than the answer.
     """
     catalogue = {}
-    for arm, cfg in PRIMARY_ARMS:
-        encoding = 'disjoint' if arm == 'independent' else 'joint'
-        catalogue[cfg.arm_slug(encoding)] = (arm, cfg)
+    for arm, cfg in PRIMARY_ARMS + [PER_TASK_ARM_ENTRY]:
+        catalogue[cfg.arm_slug(arm_encoding(arm))] = (arm, cfg)
 
     chosen = []
     for slug in slugs:
@@ -123,7 +131,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--arm-slugs", dest="arm_slugs", type=_parse_arm_slugs, default=None,
         help="run exactly these arms, named by slug (e.g. "
-             "'--arm-slugs independent,joint'), in the order given. "
+             "'--arm-slugs independent,joint-task'), in the order given. "
              "Overrides --arms. Exists because an arm SET can cross the "
              "--arms presets and because cell ORDER is sometimes "
              "pre-registered; pass an unknown slug to see the known ones in "

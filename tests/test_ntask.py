@@ -145,8 +145,14 @@ def test_three_task_program_generates_parses_and_prices(tmp_path, encoding):
         assert "table vote_%s" % task in text
         assert "bit<%d> classification_%s;" % ({"ddos": 1, "app": 2, "third": 2}[task], task) in text
     program = parse_program(path)
-    assert program.priorities == {name: int(p) for p, task, i in found
-                                  for name in ["get_classification_tree_%s_%s" % (task, i)]}
+    trees = {name: p for name, p in program.priorities.items()
+             if name.startswith("get_classification_tree_")}
+    assert trees == {name: int(p) for p, task, i in found
+                     for name in ["get_classification_tree_%s_%s" % (task, i)]}
+    # Every range table outranks every tree: N + 1, program.range_table_priority.
+    assert {p for name, p in program.priorities.items() if name not in trees} == {4}
+    assert {name for name in program.priorities if name not in trees} == {
+        name for name in program.tables if name.startswith("table_")}
     breakdown = model_breakdown(program)
     assert breakdown["stage_depth"] > 0 and breakdown["blocks"] > 0
     assert sum(t["kind"] == "ternary" for t in breakdown["tables"]) == 5

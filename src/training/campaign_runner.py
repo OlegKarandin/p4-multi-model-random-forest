@@ -16,16 +16,12 @@ from typing import Dict, List
 
 from src.training.campaign_run import (
     INF, m_token, run_paths, split_csv_name)
-from src.training.config import TrainConfig
+from src.training.config import TrainConfig, arm_encoding
 from src.training.feature_selection import _process_single_split
 from src.training.row_artifacts import RowContext
 
 # The data seed is DATA_RANDOM_STATE + split (make_task_splits, spec §5.4).
 DATA_RANDOM_STATE = 42
-
-
-def _encoding(arm):
-    return 'joint' if arm == 'joint' else 'disjoint'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -37,7 +33,7 @@ class Job:
 
     @property
     def slug(self):
-        return self.cfg.arm_slug(_encoding(self.arm))
+        return self.cfg.arm_slug(arm_encoding(self.arm))
 
     @property
     def key(self):

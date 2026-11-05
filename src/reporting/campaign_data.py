@@ -78,7 +78,7 @@ parsing. Downstream modules (P7b `claims.py`, P7c `figures.py`) should treat
 this as the interface:
 
 Identity / provenance
-    arm            str   'independent' or 'joint' -- NOT the full arm
+    arm            str   'independent', 'joint' or 'joint-task' -- NOT the full arm
                           identity (every joint sensitivity arm shares
                           arm == 'joint'; see arm_slug below).
     method         str   legacy derived duplicate of arm ('single'/'multi').
@@ -341,6 +341,9 @@ ARCHIVED_DELTA_ALIGN_COLUMN = 'delta_align'
 TWIN_ARM_SLUG = 'joint-off-al'
 TWIN_SOURCE_ARM_SLUG = 'joint-off'
 POSTPROCESS_COLUMN = 'alignment_postprocess'
+# The per-task encoding's arm (2026-11): shared threshold tables, per-task leaf
+# keys. Its `arm` column and its slug are the same string.
+PER_TASK_ARM_SLUG = 'joint-task'
 
 
 def _is_true(value):
@@ -406,8 +409,17 @@ def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
     `joint-off` into `joint-off-al`. It is only legal on arm='joint' with
     alignment disabled -- a twin is an unaligned search's forest aligned
     afterwards -- so any other combination is a mislabelled file.
+
+    `joint-task` (the per-task encoding) is its own arm name, never aligned,
+    during the search or after it.
     """
     postprocess = _is_true(alignment_postprocess)
+    if arm == PER_TASK_ARM_SLUG:
+        if alignment_enabled or postprocess:
+            raise MislabelledArtifactError(
+                "alignment on the {} arm: a per-task key does not depend on the "
+                "union of thresholds, so the arm never aligns".format(PER_TASK_ARM_SLUG))
+        return PER_TASK_ARM_SLUG
     if arm == 'independent':
         if postprocess:
             raise MislabelledArtifactError(
@@ -417,7 +429,7 @@ def _expected_arm_slug(arm, alignment_enabled, delta_align_label,
     if arm != 'joint':
         raise MislabelledArtifactError(
             "in-file 'arm' column has unrecognised value {!r} (expected "
-            "'independent' or 'joint')".format(arm))
+            "'independent', 'joint' or {!r})".format(arm, PER_TASK_ARM_SLUG))
     if not alignment_enabled:
         return TWIN_ARM_SLUG if postprocess else 'joint-off'
     if postprocess:

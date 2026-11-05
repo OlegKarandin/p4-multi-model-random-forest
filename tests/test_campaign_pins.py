@@ -1,11 +1,13 @@
 """Pin identity (spec 2026-10-04 Sec I.4 item 3): regenerating a
 campaign_2026_10 design from its stored forests must give the byte-identical
-.p4 it was compiled from. The fill-low layout fix must not move a single
+.p4 it was compiled from, apart from the range tables' @placement_priority,
+added since. The fill-low layout fix must not move a single
 @pa_container_size pin.
 
 Skipped when the campaign run is not on disk (results/ is gitignored)."""
 import hashlib
 import os
+import re
 import tempfile
 
 import pytest
@@ -39,7 +41,9 @@ def _sample_rows(n_spread=20):
 def _sha256(path):
     with open(path, 'rb') as handle:
         # The campaign ran on Linux (LF); a Windows checkout writes CRLF.
-        return hashlib.sha256(handle.read().replace(b'\r\n', b'\n')).hexdigest()
+        text = handle.read().replace(b'\r\n', b'\n')
+    # Range tables got @placement_priority after this campaign (trees had it).
+    return hashlib.sha256(re.sub(rb'@placement_priority\(3\)\n\s*', b'', text)).hexdigest()
 
 
 def test_regenerated_programs_are_byte_identical():

@@ -28,6 +28,7 @@ from p4model.target import (
     TERNARY_CROSSBAR_GROUPS_PER_STAGE,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
+    TERNARY_CROSSBAR_STAGE_BYTES,
 )
 
 
@@ -45,7 +46,7 @@ class StageLoad:
            shard. Kept per shard rather than summed because the 12x2 column
            packing (fits_two_columns) needs the widths, not the total.
   fields : the distinct crossbar key fields present, (field_id, field_bytes)
-           pairs -- the 64-byte limit charges their union, not their sum.
+           pairs -- the per-stage byte limit charges their union, not their sum.
   tables : tables placed in the stage -- what the 8-table cap counts (the
            range pool counts shards, which is the same number: no range table
            is ever wider than one column)."""
@@ -101,7 +102,7 @@ class StagePlan:
 def stage_load_fits(loads):
   """Whether several pools' StageLoads for the SAME stage index fit together
   under the per-stage limits: <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
-  tables, <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes of distinct key
+  tables, <= TERNARY_CROSSBAR_STAGE_BYTES bytes of distinct key
   fields, and a 12x2 column packing of every shard (fits_two_columns). The check crossbar_stages_needed's seed_stages
   makes while placing (there on per-key byte SUMS, which are never below
   this union), restated as a predicate so a caller can assert it after the
@@ -111,7 +112,7 @@ def stage_load_fits(loads):
   fields = frozenset().union(*(load.fields for load in loads))
   total_bytes = sum(field_bytes for _, field_bytes in fields)
   return (sum(load.tables for load in loads) <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
-          and total_bytes <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+          and total_bytes <= TERNARY_CROSSBAR_STAGE_BYTES
           and fits_two_columns([b for load in loads for b in load.blocks]))
 
 
@@ -343,7 +344,7 @@ def _stage_charges(units, seed):
 
   A stage fits when all of these hold:
     * at most TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE tables (seed included);
-    * at most TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes of distinct fields;
+    * at most TERNARY_CROSSBAR_STAGE_BYTES bytes of distinct fields;
     * every key has a lane price (_stage_key_prices);
     * the charged blocks, seed shards included, pack 12x2 (fits_two_columns).
   """
@@ -351,7 +352,7 @@ def _stage_charges(units, seed):
     return None
   present = frozenset().union(*(unit.fields for unit in units)) | seed.fields
   if (sum(field_bytes for _, field_bytes in present)
-      > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE):
+      > TERNARY_CROSSBAR_STAGE_BYTES):
     return None
   order, key_bits = [], {}
   for unit in units:
@@ -479,7 +480,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     * TCAM blocks, as a 12x2 COLUMN packing (fits_two_columns), not a flat
       <= TCAM_BLOCKS_PER_STAGE total
     * <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE independent tables
-    * <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes of DISTINCT key fields
+    * <= TERNARY_CROSSBAR_STAGE_BYTES bytes of DISTINCT key fields
   (RM-5/RM-6/RM-7, reviews/p4_tofino_reference.md §4.3.) These constraints
   are not separable: tables (20 blocks, 5 B), (20, 5), (1, 60) need 3 stages
   although each relaxation alone says 2.
@@ -514,11 +515,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       price per 512-row word. A seeded stage's range keys come first, so
       every tree key there is a later key -- never charged below
       lanes.table_blocks.
-    * Fit -- at most 8 tables, at most 64 bytes of distinct key fields,
-      every key priced, and the charged blocks pack 12x2. There is no
-      mixed-key byte threshold below 64: the 62-byte refusal was retired
-      2026-09-29, valid only while the generator pins every tree key's PHV
-      layout (target.py).
+    * Fit -- at most 8 tables, at most TERNARY_CROSSBAR_STAGE_BYTES (66) bytes
+      of distinct key fields, every key priced, and the charged blocks pack
+      12x2. There is no mixed-key byte threshold below that: the 62-byte
+      refusal was retired 2026-09-29, valid only while the generator pins
+      every tree key's PHV layout (target.py).
   A table charged more than one stage's 24 blocks is split into chunks of
   whole rows that each fit a stage.
 
@@ -651,7 +652,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     seed = stage[2]
     present = stage[0] | fields | seed.fields
     return (sum(field_bytes for _, field_bytes in present)
-            <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+            <= TERNARY_CROSSBAR_STAGE_BYTES
             and len(stage[1]) + seed.tables + 1
             <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
             and fits_two_columns(list(seed.blocks) + stage[1] + [blocks]))

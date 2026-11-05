@@ -10,7 +10,7 @@ import math
 
 from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from p4model.names import normalise_feature_name
-from p4model.program import FEATURE_VALUE_BIT_WIDTH
+from p4model.program import FEATURE_VALUE_BIT_WIDTH, per_task_field
 from p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_count
 from p4model.target import (
     CODEWORD_KEY_OVERHEAD_BITS,
@@ -600,6 +600,18 @@ def range_key_fields_for(feature_intervals, key_bit_width=FEATURE_VALUE_BIT_WIDT
   key_bytes = math.ceil(key_bit_width / 8)
   return [frozenset({(normalise_feature_name(feature), key_bytes)})
           for feature in feature_intervals]
+
+
+def per_task_key_fields(task, feature_intervals):
+  """ternary_key_fields for the per-task encoding (program.PER_TASK_ENCODING):
+  feature_intervals is `task`'s OWN intervals and the field id is the generated
+  field's own name, tagged with the task. Two tasks never share a code field
+  here, even on identical interval lists, so the (name, intervals) id
+  ternary_key_fields uses would wrongly merge them."""
+  return frozenset(
+      (per_task_field(task, normalise_feature_name(feature)),
+       math.ceil(max(len(intervals) - 1, 0) / 8))
+      for feature, intervals in feature_intervals.items())
 
 
 def ternary_key_fields(feature_intervals):

@@ -204,7 +204,7 @@ import pandas as pd
 from scipy import stats
 
 from p4model.target import TCAM_BLOCKS_PER_STAGE, TOFINO_PIPELINE_STAGES
-from src.reporting.campaign_data import pair_arms, TWIN_ARM_SLUG
+from src.reporting.campaign_data import pair_arms, PER_TASK_ARM_SLUG, TWIN_ARM_SLUG
 from src.training.campaign_run import DEVELOPMENT_SPLITS
 
 INDEPENDENT_ARM_SLUG = 'independent'
@@ -223,6 +223,11 @@ JOINT_ARM_SLUGS = ('joint-off', TWIN_ARM_SLUG)
 # (spec 2026-10-06 decision 4): still loadable, appended by
 # `figures.ordered_arms`, never a family member.
 LEGACY_ARM_SLUGS = ('joint',)
+# The per-task encoding's arm (2026-11) is a joint arm in every contrast, in
+# every table and figure, but not a member of the pre-registered families above,
+# whose sizes describe the archived grid: a run of it renders with
+# --allow-partial-family.
+REPORTED_JOINT_ARM_SLUGS = JOINT_ARM_SLUGS + (PER_TASK_ARM_SLUG,)
 
 # Blocks available to a whole Tofino pipe. The hypervolume reference budget
 # for the unbudgeted cell (M = inf), where `(0.5, M)` would be an infinite
@@ -561,7 +566,7 @@ def hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG, arms=None):
 
     if arms is None:
         present = set(df['arm_slug'].unique()) if len(df) else set()
-        known = [baseline] + list(JOINT_ARM_SLUGS)
+        known = [baseline] + list(REPORTED_JOINT_ARM_SLUGS)
         ordered = [slug for slug in known if slug in present]
         extras = [slug for slug in present if slug not in known]
         arms = tuple(ordered + extras)
@@ -981,7 +986,7 @@ def attach_delta_columns(table, df):
 def _arms_present(df, arms):
     if arms is None:
         present = set(df['arm_slug'].unique())
-        return tuple(slug for slug in JOINT_ARM_SLUGS if slug in present)
+        return tuple(slug for slug in REPORTED_JOINT_ARM_SLUGS if slug in present)
     return tuple(arms)
 
 
@@ -1001,6 +1006,9 @@ def ablation_decomposition(df, metrics=DEFAULT_METRICS, confidence=0.95):
       `independent` it would re-count the sharing effect inside every
       alignment number and the two components would not add up.
 
+    `joint-task` carries a second `sharing` row, `joint-task - independent`: it
+    shares threshold tables but not codes, and it never aligns.
+
     Descriptive only: no p-values. These contrasts decompose where the effect
     comes from; testing them too would enlarge the multiplicity family
     (`paired_tests`) without enlarging the claim.
@@ -1011,10 +1019,11 @@ def ablation_decomposition(df, metrics=DEFAULT_METRICS, confidence=0.95):
     `median_diff_pairwise` are reported alongside for transparency; they
     differ from `mean_diff_split_level` whenever the design is unbalanced.
     """
-    contrasts = [('sharing', 'joint-off', INDEPENDENT_ARM_SLUG)]
+    contrasts = [('sharing', 'joint-off', INDEPENDENT_ARM_SLUG),
+                 ('sharing', PER_TASK_ARM_SLUG, INDEPENDENT_ARM_SLUG)]
     present = set(df['arm_slug'].unique())
     for slug in _arms_present(df, None):
-        if slug == 'joint-off':
+        if slug in ('joint-off', PER_TASK_ARM_SLUG):
             continue
         contrasts.append(('alignment', slug, 'joint-off'))
 
@@ -1305,7 +1314,7 @@ def _as_list(value):
 def _cell_order(frame):
     """(arm_slug, M) cells in reading order: the independent baseline, then
     JOINT_ARM_SLUGS, then any other arm; M ascending (inf last)."""
-    known = [INDEPENDENT_ARM_SLUG] + list(JOINT_ARM_SLUGS)
+    known = [INDEPENDENT_ARM_SLUG] + list(REPORTED_JOINT_ARM_SLUGS)
     rank = {slug: i for i, slug in enumerate(known)}
     return frame.assign(
         _arm_rank=frame['arm_slug'].map(lambda a: rank.get(a, len(known)))

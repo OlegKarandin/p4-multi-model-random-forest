@@ -15,6 +15,7 @@ import sklearn
 
 from p4gen.build_p4_script import generate_P4_code
 from p4gen.p4_replay import model_breakdown, parse_program
+from p4model.program import JOINT_ENCODING, PER_TASK_ENCODING
 from p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
 from src.training.campaign_run import (
     atomic_write_text, canonical_json, run_paths)
@@ -36,10 +37,12 @@ def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encodin
     # would be circular.
     from src.training.feature_selection import (
         _derive_feature_intervals, _derive_joint_feature_intervals)
-    if encoding == 'joint':
+    if encoding == JOINT_ENCODING:
         intervals_app = intervals_ddos = _derive_joint_feature_intervals(
             model_app, model_ddos, names_app, names_ddos)
     else:
+        # Each model's own, both for 'disjoint' and for 'per_task' (whose
+        # generator rebuilds the shared tables' union from them).
         intervals_app = _derive_feature_intervals(model_app, names_app)
         intervals_ddos = _derive_feature_intervals(model_ddos, names_ddos)
     paths = run_paths(ctx.run_dir).ensure()
@@ -49,7 +52,8 @@ def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encodin
             3, 2, model_app, model_ddos,
             feature_intervals_app=intervals_app, feature_intervals_ddos=intervals_ddos,
             output_dir=scratch + os.sep, output_filename=row_id + '.p4',
-            selected_features_app=names_app, selected_features_ddos=names_ddos)
+            selected_features_app=names_app, selected_features_ddos=names_ddos,
+            per_task_codes=encoding == PER_TASK_ENCODING)
         final = os.path.join(paths.designs, row_id + '.p4')
         os.replace(written, final)
         return final

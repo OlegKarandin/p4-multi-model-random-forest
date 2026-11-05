@@ -59,6 +59,8 @@ from p4model.target import (
 from p4model.program import (
     APP_TASK,
     DDOS_TASK,
+    ENCODINGS,
+    PER_TASK_ENCODING,
     SHARED_TASK,
     FEATURE_VALUE_BIT_WIDTH,
     FLOW_HASH_LEVEL,
@@ -85,6 +87,7 @@ from p4model.tables import (
     codeword_to_blocks,
     entries_across_trees_to_blocks,
     exact_match_resource_usage,
+    per_task_key_fields,
     range_deployment_overflow,
     range_key_fields_for,
     range_matching_resource_usage,
@@ -190,8 +193,8 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
 def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                  use_default_action_discount=False):
   """Fitted-forest frontend for multi_model_memory_evaluation: runs the
-  'joint'/'disjoint' encoding branches on both RandomForestClassifiers and
-  pools everything they produce, once converged, into a plain dict under the
+  'joint'/'per_task'/'disjoint' encoding branches on both RandomForestClassifiers
+  and pools everything they produce, once converged, into a plain dict under the
   same 15 names regardless of which branch ran.
 
   This is the Tier 2 ProgramSpec seam (Spec S4.5, finding F6): downstream of
@@ -271,6 +274,56 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     range_task = [SHARED_TASK] * len(range_table_specs)
     ternary_task = ([APP_TASK] * len(tree_nodes_app)
                     + [DDOS_TASK] * len(tree_nodes_ddos))
+
+  elif encoding == PER_TASK_ENCODING:
+    # The range pool is exactly 'joint''s: one table per feature over the union
+    # of both forests' thresholds, one register schedule. Only the keys differ:
+    # each task's trees key its own code fields, as wide as its own thresholds
+    # on the feature, against its own intervals -- so the classification side
+    # is priced as 'disjoint' prices it, and now holds two distinct keys, which
+    # is what brings a shared design into the ordered stage simulation.
+    _reject_colliding_feature_names(list(selected_features_app) + list(selected_features_ddos))
+    tree_nodes_app = tree_nodes_for(clf_app, selected_features_app)
+    tree_nodes_ddos = tree_nodes_for(clf_ddos, selected_features_ddos)
+    feature_intervals = feature_intervals_from_nodes(
+        merge_tree_nodes(tree_nodes_app, tree_nodes_ddos))
+    range_entries, range_blocks, range_table_specs = range_matching_resource_usage(feature_intervals)
+
+    feature_intervals_app = feature_intervals_from_nodes(tree_nodes_app)
+    feature_intervals_ddos = feature_intervals_from_nodes(tree_nodes_ddos)
+    (ternary_entries_app, ternary_blocks_app, codeword_length_app,
+     ternary_table_specs_app) = ternary_matching_resource_usage(
+        generate_codewords(get_root_to_leaf_paths(tree_nodes_app), feature_intervals_app),
+        feature_intervals_app, use_default_action_discount=use_default_action_discount)
+    (ternary_entries_ddos, ternary_blocks_ddos, codeword_length_ddos,
+     ternary_table_specs_ddos) = ternary_matching_resource_usage(
+        generate_codewords(get_root_to_leaf_paths(tree_nodes_ddos), feature_intervals_ddos),
+        feature_intervals_ddos, use_default_action_discount=use_default_action_discount)
+    ternary_entries = ternary_entries_app + ternary_entries_ddos
+    ternary_blocks = ternary_blocks_app + ternary_blocks_ddos
+    # Two independent keys, as under 'disjoint': see ResourceUsage.codeword_length.
+    codeword_length = max(codeword_length_app, codeword_length_ddos)
+    ternary_table_specs = ternary_table_specs_app + ternary_table_specs_ddos
+
+    range_levels = readiness_levels_for(feature_intervals)
+    emitted_features = list(feature_intervals)
+    register_names = register_names_for(feature_intervals)
+    range_fields = range_key_fields_for(feature_intervals)
+    ternary_fields = (
+        [per_task_key_fields(APP_TASK, feature_intervals_app)] * len(ternary_table_specs_app) +
+        [per_task_key_fields(DDOS_TASK, feature_intervals_ddos)] * len(ternary_table_specs_ddos))
+    ternary_key_bits = (
+        [ternary_key_field_bits(feature_intervals_app)] * len(ternary_table_specs_app) +
+        [ternary_key_field_bits(feature_intervals_ddos)] * len(ternary_table_specs_ddos))
+    # A table writes a code only for a task with a threshold on its feature, so
+    # a tree waits only for those: the same per-task rule as 'disjoint', on one
+    # table per feature. Only a feature both tasks split is SHARED_TASK.
+    range_task = [SHARED_TASK if feature in feature_intervals_app
+                  and feature in feature_intervals_ddos
+                  else (APP_TASK if feature in feature_intervals_app else DDOS_TASK)
+                  for feature in feature_intervals]
+    ternary_task = ([APP_TASK] * len(ternary_table_specs_app)
+                    + [DDOS_TASK] * len(ternary_table_specs_ddos))
 
   elif encoding == 'disjoint':
 
@@ -366,7 +419,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   else:
     raise ValueError(
         "multi_model_memory_evaluation: unknown encoding {!r}; "
-        "expected 'joint' or 'disjoint'".format(encoding))
+        "expected one of {}".format(encoding, ENCODINGS))
 
   # interior_stages depends on gated_block_interior_stages
   # (p4model.registers), so it is computed here rather than in

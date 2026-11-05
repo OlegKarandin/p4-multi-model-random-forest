@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from p4model.packing import crossbar_stages_needed
 from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
-                                 VOTE_EPILOGUE_STAGES)
+                                 VOTE_EPILOGUE_STAGES, feature_of_per_task_field)
 from p4model.ranges import compiler_range_rows
 from p4model.registers import gated_block_interior_stages, readiness_levels_for
 from p4model import lanes
@@ -84,7 +84,9 @@ _PLACEMENT_PRIORITY = re.compile(r"@placement_priority\((\d+)\)\s*\n\s*table\s+(
 def _parse_priorities(text):
     """table name -> the @placement_priority pragma directly above it (the
     generator emits one on every classification tree table, N - i for task i
-    of N -- program.placement_priorities)."""
+    of N -- program.placement_priorities -- and, on a program generated since
+    2026-11, N + 1 on every range table -- program.range_table_priority -- which
+    the replay does not need: the model places the range pool first either way)."""
     return {name: int(priority)
             for priority, name in _PLACEMENT_PRIORITY.findall(text)}
 
@@ -124,14 +126,20 @@ def table_tasks(tables):
     that task, every task's -> SHARED_TASK, some but not all -> the frozenset
     of them. A field no tree keys on (not emitted today) is labelled
     SHARED_TASK, so every tree waits for it -- the side that cannot
-    under-count."""
+    under-count.
+
+    Per-task codes (program.PER_TASK_ENCODING): table_<n>_<f> writes one
+    code_tk_<task>_<f> per task with a threshold on f, so a reader of any of
+    them is a reader of the table's feature."""
     labels, readers = {}, {}
     for name, keys in tables.items():
         match = _TREE_TASK.match(name)
         if match:
             labels[name] = match.group(1)
             for key in keys:
-                readers.setdefault(key, set()).add(match.group(1))
+                feature = feature_of_per_task_field(key, match.group(1))
+                written_by = key if feature is None else 'code_' + feature
+                readers.setdefault(written_by, set()).add(match.group(1))
         elif name.startswith('get_classification_tree'):
             raise ValueError('%s: a classification tree must be named '
                              'get_classification_tree_<task>_<index>' % name)

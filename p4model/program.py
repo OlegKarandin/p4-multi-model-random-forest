@@ -70,6 +70,40 @@ TASKS = (APP_TASK, DDOS_TASK)
 # Never a ternary_task value: every classification tree belongs to one task.
 SHARED_TASK = "shared"
 
+# The encodings a two-task program can be built under, as evaluation._pool_inputs
+# and the training path spell them. 'joint' is one threshold table per feature
+# writing ONE code every tree of both tasks reads. 'disjoint' is one table and
+# one code per task per feature, merged where the interval lists agree. 'per_task'
+# is one threshold table per feature, as under 'joint', whose action writes one
+# code per task that has a threshold on the feature, as wide as that task's own
+# thresholds, and each tree keys only its own task's codes -- so sharing a table
+# no longer widens anybody's key.
+JOINT_ENCODING = "joint"
+DISJOINT_ENCODING = "disjoint"
+PER_TASK_ENCODING = "per_task"
+ENCODINGS = (JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING)
+
+# The per-task code fields' resolved names, code_<resolved> being the metadata
+# field: tk_<task>_<feature>. The generator, the model's field identities and the
+# replay's reading of a program all go through these two.
+PER_TASK_FIELD_PREFIX = "tk_"
+
+
+def per_task_field(task, feature):
+  """The resolved name of task's own code field on feature (spec'd by
+  PER_TASK_ENCODING), e.g. tk_app_flow_iat_max for code_tk_app_flow_iat_max."""
+  return "%s%s_%s" % (PER_TASK_FIELD_PREFIX, task, feature)
+
+
+def feature_of_per_task_field(field, task):
+  """feature when `field` (with or without its code_ prefix) is task's own
+  per-task code field, else None. It takes the task because task and feature
+  names may both hold underscores, so a field name alone cannot be split."""
+  prefix = per_task_field(task, "")
+  name = field[len("code_"):] if field.startswith("code_") else field
+  return name[len(prefix):] if name.startswith(prefix) else None
+
+
 _TASK_NAME = re.compile(r"^[a-z0-9_]+$")
 
 
@@ -132,6 +166,21 @@ def placement_priorities(tasks):
   audit C5)."""
   names = task_names(tasks)
   return {name: len(names) - index for index, name in enumerate(names)}
+
+
+def range_table_priority(priorities):
+  """The @placement_priority of every range/threshold table: one above the
+  largest tree priority in `priorities` ({task: priority}, as
+  placement_priorities returns), so N + 1 for N tasks.
+
+  The model places the whole range pool before any tree of the pool's stage
+  (crossbar_stages_needed's seed_stages). p4c does not unless told to: at the
+  8-table stage cap it lets a ready tree with a priority beat the other task's
+  pending range table, which has none, and "user-provided priority" outranks its
+  dependence-chain tie-break (table_placement.cpp:4872). Pinning the order the
+  model assumes turned 16/16 FALSE_FEASIBLE and 10/10 UNDER-stage independent
+  designs exact, 8/8 controls unchanged."""
+  return max(priorities.values(), default=0) + 1
 
 
 # The two-task program's task order, ddos first, and the @placement_priority

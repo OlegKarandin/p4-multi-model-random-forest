@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from src.training.errors import NoFeasibleSolution
-from src.training.config import TrainConfig
+from src.training.config import TrainConfig, arm_encoding
 from src.training.splits import make_task_splits
 from src.training.campaign_run import optuna_seed, row_id
 from src.training.row_artifacts import write_row_artifacts, write_trial_table
@@ -107,6 +107,9 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     through as feature_intervals_app/feature_intervals_ddos --
     `generate_P4_code` resolves per-feature sharing vs namespacing itself.
 
+    encoding == 'per_task': each model's OWN intervals too, with
+    `per_task_codes=True` (`resolve_per_task_plan`).
+
     config: forwarded verbatim to `generate_P4_code` in both branches, so
     `P4GenConfig.match_type` / `use_default_action_discount` actually take
     effect on this real-compiler-validation path (they used to be silently
@@ -128,7 +131,7 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             model_app, model_ddos, feature_names_app, feature_names_ddos)
         feature_intervals_app = feature_intervals
         feature_intervals_ddos = feature_intervals
-    elif encoding == 'disjoint':
+    elif encoding in ('disjoint', 'per_task'):
         feature_intervals_app = _derive_feature_intervals(model_app, feature_names_app)
         feature_intervals_ddos = _derive_feature_intervals(model_ddos, feature_names_ddos)
     else:
@@ -143,7 +146,7 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             output_dir=hardware_output_dir, output_filename=filename,
             selected_features_app=feature_names_app,
             selected_features_ddos=feature_names_ddos,
-            config=config)
+            config=config, per_task_codes=encoding == 'per_task')
     except ValueError as e:
         # NB: this also swallows generate_P4_code's shared-field layout-conflict
         # ValueError (build_p4_script.code_field_container_sizes); practically
@@ -393,10 +396,11 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     twice and could silently diverge.
 
     arm : 'independent' (disjoint encoding, each task eliminates its own
-        features) or 'joint' (joint encoding, ONE shared feature set --
+        features), 'joint' (joint encoding, ONE shared feature set --
         required, because under joint encoding every tree's codeword spans the
         merged interval pool, so a feature used by only one task widens BOTH
-        tasks' codewords).
+        tasks' codewords) or 'joint-task' (per-task encoding: the same one
+        shared feature set and threshold tables, keys per task).
     app, ddos : TaskSplits.
 
     Both arms drop exactly one feature per task per iteration, so the two
@@ -427,11 +431,8 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     from p4gen.evaluation import accuracy_metrics
     from p4gen.switch_semantics import switch_accuracy_scorer, switch_predict
 
-    if arm not in ('independent', 'joint'):
-        raise ValueError("arm must be 'independent' or 'joint', got {!r}".format(arm))
-
-    shared = (arm == 'joint')
-    encoding = 'joint' if shared else 'disjoint'
+    encoding = arm_encoding(arm)
+    shared = (arm != 'independent')
     method = 'multi' if shared else 'single'
 
     remaining_app = list(range(app.X_train.shape[1]))
@@ -771,7 +772,7 @@ def compare_feature_selection_approaches_parallel(
 ):
     """Run ONE arm across n_splits, each split in its own process.
 
-    arm : 'independent' or 'joint'.
+    arm : 'independent', 'joint' or 'joint-task'.
     cfg : TrainConfig -- the arm definition. Frozen, so it is safe to ship to
         every worker.
 
@@ -815,8 +816,7 @@ def compare_feature_selection_approaches_parallel(
     if X_app.shape[1] != X_ddos.shape[1]:
         raise ValueError("Both datasets must have the same number of features")
 
-    encoding = 'joint' if arm == 'joint' else 'disjoint'
-    print(f"Starting arm {cfg.arm_slug(encoding)} at M={max_blocks} over {n_splits} splits")
+    print(f"Starting arm {cfg.arm_slug(arm_encoding(arm))} at M={max_blocks} over {n_splits} splits")
     print(f"App dataset shape: {X_app.shape}, DDoS dataset shape: {X_ddos.shape}")
     print("-" * 70)
 

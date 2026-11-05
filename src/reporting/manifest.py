@@ -134,9 +134,10 @@ def build_manifest(arms, M_values, n_splits, n_rows_app, n_rows_ddos, cwd=None):
         remains for an encoder to flatten. The rule stands anyway: a label is
         for the row schema, a manifest is for provenance.
     """
+    from src.training.config import arm_encoding  # deferred: pulls in the trainer
     encoded_arms = []
     for arm, cfg in arms:
-        encoding = 'joint' if arm == 'joint' else 'disjoint'
+        encoding = arm_encoding(arm)
         encoded_arms.append({
             'arm': arm,
             'encoding': encoding,

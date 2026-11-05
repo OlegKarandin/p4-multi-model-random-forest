@@ -55,6 +55,14 @@ TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 # 09-27.md Appendix C).
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
 TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
+# What one stage's crossbar holds across ALL its keys, as opposed to the limit
+# above, which MAX_CODEWORD_LENGTH and CrossbarKeyTooWide read for a lone key and
+# which has only been validated at 64. 12 groups x 5 private bytes + 6 midbytes
+# (p4c's input_xbar.cpp:1319 says 66), and real stages of 65 and 66 distinct bytes
+# were built. Replay of 691 designs: 5 stage depths corrected, 0 regressions.
+# Bytes alone do not admit a stage at 65-66: the lane simulation still has to fit
+# every key (lanes.price_with_supply returning None is what makes a stage rise).
+TERNARY_CROSSBAR_STAGE_BYTES = 66
 # RETIRED 2026-09-29: TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62, the
 # "greedy-give-up safety net" that refused a stage holding two different keys
 # past 62 combined crossbar bytes. Its one real-design case, M150_k7_s11

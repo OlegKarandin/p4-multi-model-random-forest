@@ -309,8 +309,8 @@ def test_crossbar_stages_needed_beats_max_of_two_relaxations():
     # max(ceil(blocks/24), crossbar_only): blocks-only says
     # ceil(41/24) = 2, crossbar-only says 2 ({60} | {5,5}), so the old
     # max() reported 2 -- but no two of these three tables fit one stage
-    # (20+20 = 40 blocks > 24; 5+60 = 65 bytes > 64). Truth is 3.
-    assert ev.crossbar_stages_needed([(20, 5), (20, 5), (1, 60)]).occupied == 3
+    # (20+20 = 40 blocks > 24; 5+62 = 67 bytes > the stage's 66). Truth is 3.
+    assert ev.crossbar_stages_needed([(20, 5), (20, 5), (1, 62)]).occupied == 3
 
 
 def test_crossbar_stages_needed_single_oversized_table_spans_stages():

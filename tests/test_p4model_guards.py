@@ -880,10 +880,10 @@ def test_a_tree_key_behind_a_seed_pays_its_leftover_price_never_less():
     assert plan.blocks == 1
 
 
-def test_a_seed_and_tree_keys_share_a_stage_up_to_64_bytes_if_the_lanes_fit():
+def test_a_seed_and_tree_keys_share_a_stage_up_to_66_bytes_if_the_lanes_fit():
     # 44 + 14 + 6 = 64 bytes, three range keys ahead of two tree keys. The old
     # 62-byte net refused this outright; now only the lanes and the real
-    # 64-byte limit decide. The lanes still cannot fit the spacer behind the
+    # 66-byte limit decide. The lanes still cannot fit the spacer behind the
     # seed and the probe, so it moves on -- same placement, new reason.
     from p4model.packing import crossbar_stages_needed, stage_load_fits
 
@@ -894,10 +894,10 @@ def test_a_seed_and_tree_keys_share_a_stage_up_to_64_bytes_if_the_lanes_fit():
         key_fields=[spacer, probe], key_field_bits=[(352,), (54, 56)],
         seed_stages=[_seed(0, [1, 1, 1], [2, 2, 2])])
     assert (plan.occupied, plan.blocks, plan.table_stages) == (2, 12, (1, 0))
-    # Judged after the fact: two pools totalling exactly 64 bytes now fit;
-    # 66 bytes are past the real crossbar limit and still do not.
-    assert stage_load_fits([_seed(0, [1], [6]), _seed(0, [9, 3], [58])])
-    assert not stage_load_fits([_seed(0, [1], [8]), _seed(0, [9, 3], [58])])
+    # Judged after the fact: two pools totalling exactly 66 bytes fit;
+    # 68 bytes are past the real crossbar limit and still do not.
+    assert stage_load_fits([_seed(0, [1], [8]), _seed(0, [9, 3], [58])])
+    assert not stage_load_fits([_seed(0, [1], [10]), _seed(0, [9, 3], [58])])
 
 
 def test_seed_stages_need_readiness_levels_and_one_load_per_stage():
