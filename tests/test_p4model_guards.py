@@ -845,9 +845,14 @@ def test_seed_range_keys_are_placed_ahead_of_every_tree_key():
     # audit C1 the two pools never shared a stage), so they are not exempted.
     # Without a seed the spacer (listed last, so placed first) and the probe
     # share stage 0 at 9 + 3 = 12. With two 2-byte range keys already there,
-    # 4 + 44 + 14 = 62 bytes are within the 64-byte crossbar, but the lanes are not: the
-    # spacer still fits behind the range keys, the probe then finds no legal
-    # fit and moves to stage 1. The seed itself is never charged.
+    # 4 + 44 + 14 = 62 bytes are within the 64-byte crossbar, but the lanes
+    # are not: the spacer still fits behind the range keys, and the probe,
+    # placed third, pays its lane leftover price of 4 instead of 3 for the
+    # slots the range keys took. The seed itself is never charged.
+    # (Until 2026-11-06 the second range key consumed a whole crossbar group,
+    # which left the probe no legal fit at all and moved it to stage 1; a
+    # later key now occupies only the slots its fit takes, lanes.
+    # later_key_occupancy.)
     from p4model.packing import crossbar_stages_needed
 
     spacer = frozenset({(("code", "spacer"), 44)})
@@ -859,7 +864,7 @@ def test_seed_range_keys_are_placed_ahead_of_every_tree_key():
                                     seed_stages=[_seed(0, [1, 1], [2, 2])],
                                     **kwargs)
     assert (alone.occupied, alone.blocks, alone.table_stages) == (1, 12, (0, 0))
-    assert (seeded.occupied, seeded.blocks, seeded.table_stages) == (2, 12, (1, 0))
+    assert (seeded.occupied, seeded.blocks, seeded.table_stages) == (1, 13, (0, 0))
 
 
 def test_a_tree_key_behind_a_seed_pays_its_leftover_price_never_less():

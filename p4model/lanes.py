@@ -399,17 +399,33 @@ def price_with_supply(byte_list, free_groups, free_mids):
   blocks = max(groups used, 2w + t + 1). Returns the minimum such block count,
   or `None` if the key cannot fit. "Lowest free midbyte" reproduces p4c on
   133/133 keys in crowded stages given where the other keys actually landed
-  (audit Sec 7.2)."""
+  (audit Sec 7.2). The block count of `fit_with_supply`, which also says WHERE
+  the fit sits."""
+  fit = fit_with_supply(byte_list, free_groups, free_mids)
+  return None if fit is None else fit[0]
+
+
+def fit_with_supply(byte_list, free_groups, free_mids):
+  """price_with_supply's cheapest fit, and where it sits -- what a later key's
+  bookkeeping (later_key_occupancy) needs. Returns
+  `(blocks, groups, whole, tail, tail_class)`: the block count; the tuple of
+  group indices used; the tuple of midbytes holding a whole byte; the midbyte
+  holding the one tail nibble, or None; and the `(kind, lane-or-parity)` class
+  (see _nibble_types) of the byte in that nibble, or None. Among equally cheap
+  fits it is the FIRST one the search meets -- the fewest groups, then the
+  lowest group indices, then the fewest whole midbytes -- which is the order
+  price_with_supply has always searched in, so the price is unchanged.
+  `None` when the key cannot fit."""
   c = _counts(byte_list)
   n = len(byte_list)
-  nib_types = _nibble_types(byte_list)
+  nib_types = sorted(_nibble_types(byte_list))   # sorted: a fixed tie order, not the set's
   cands = [g for g in range(_GROUPS) if free_groups.get(g)]
   lanes = {g: collections.Counter((GROUP_START[g] + j) % _LANES for j in free_groups[g])
            for g in cands}
   mids = sorted(free_mids)
   best = None
   for gcount in range(1, len(cands) + 1):
-    if best is not None and gcount >= best:
+    if best is not None and gcount >= best[0]:
       break
     seen = set()
     for S in itertools.combinations(cands, gcount):
@@ -425,17 +441,23 @@ def price_with_supply(byte_list, free_groups, free_mids):
         for m in mids[:w]:
           s[MID_LANES[m]] += 1
         blocks = max(gcount, 2 * w + 1)
-        if (best is None or blocks < best) and _fits(c, s):
-          best = blocks
-        if w < len(mids):  # plus one tail nibble
+        if (best is None or blocks < best[0]) and _fits(c, s):
+          best = (blocks, S, tuple(mids[:w]), None, None)
+        if w < len(mids):  # plus one tail nibble, in the next lowest midbyte only
+          # (Widening this to "the lowest free midbyte the nibble's lane
+          # allows" was tried 2026-11-06 and rejected: it matches p4c's tail
+          # choice more often -- 151 vs 109 of 191 later keys in the per-tree
+          # dev set -- but makes the model a better optimiser than p4c, which
+          # takes groups greedily and then pays a whole midbyte; three designs
+          # went under. See results/encoding_evidence_2026_11/per_tree_model/.)
           tl = MID_LANES[mids[w]]
           for kind, lp in nib_types:
             if not _tail_allowed(kind, lp, tl):
               continue
             c2 = _remove_one(c, kind, lp)
             blocks = max(gcount, 2 * w + 2)
-            if (best is None or blocks < best) and _fits(c2, s):
-              best = blocks
+            if (best is None or blocks < best[0]) and _fits(c2, s):
+              best = (blocks, S, tuple(mids[:w]), mids[w], (kind, lp))
   return best
 
 
@@ -454,6 +476,17 @@ def first_key_occupancy(byte_list, g):
   groups 0..g-1, filled lane by lane: each slot takes an unplaced byte that
   may sit in its lane (W of that lane, else H of its parity, else B), and a
   slot no remaining byte can use stays free ("lane-aware fill").
+
+  Known and deliberately NOT modelled (2026-11-06, results/
+  encoding_evidence_2026_11/per_tree_model/report.md): p4c puts a first key's
+  nibble-only byte into a midbyte nibble whenever its price leaves one free
+  (241 of 241 first keys at even prices in the per-tree dev set), where this
+  fill puts it in a group slot. Modelling that alone over-prices the NEXT key
+  (price_with_supply's tail may only take the next lowest midbyte, and that
+  one is now taken), and widening the tail's midbyte choice to match makes the
+  model a better optimiser than p4c and under-prices keys p4c allocates
+  greedily (M035_s13_k03). The two coincident simplifications are kept
+  together; the residual +-1 misses are listed there as accepted.
 
   Returns `(free_groups, free_mids)` in `price_with_supply`'s format."""
   free = {grp: set(range(_SLOTS_PER_GROUP)) for grp in range(_GROUPS)}
@@ -493,10 +526,9 @@ def stage_prices(keys_bytes, order=None):
   order      : placement order, a sequence of indices into keys_bytes
                (default: list order). The first placed key pays its
                `standalone` price and occupies its midbytes and groups as
-               `first_key_occupancy` says; each later key pays
-               `price_with_supply` into what is left, then consumes the first
-               `price` groups that still have a free slot (wholly) and the
-               lowest `(price - 1) // 2` free midbytes.
+               `first_key_occupancy` says; each later key pays the price of
+               its `fit_with_supply` into what is left, then occupies the
+               slots of that fit (`later_key_occupancy`).
 
   Returns {key index: blocks per 512-row table word, or None}. `None` means
   the key has no legal fit in that stage; once one key has no price, every
@@ -522,28 +554,81 @@ def stage_prices(keys_bytes, order=None):
         continue
       free, free_mids = first_key_occupancy(kb, g)
       continue
-    price = price_with_supply(kb, free, free_mids)
-    prices[k] = price
-    if price is None:
+    fit = fit_with_supply(kb, free, free_mids)
+    if fit is None:
+      prices[k] = None
       exhausted = True
       continue
-    free, free_mids = later_key_occupancy(free, free_mids, price)
+    prices[k] = fit[0]
+    free, free_mids = later_key_occupancy(kb, free, free_mids, fit)
   return prices
 
 
-def later_key_occupancy(free_groups, free_mids, price):
-  """What a LATER key priced at `price` blocks leaves free: it consumes, whole,
-  the first `price` groups that still have a free slot, and the lowest
-  `(price - 1) // 2` free midbytes (stage_prices' bookkeeping, split out so
-  packing.crossbar_stages_needed can run the same simulation with the first
-  key charged its production price). Returns new `(free_groups, free_mids)`;
-  the arguments are not modified."""
+def later_key_occupancy(byte_list, free_groups, free_mids, fit):
+  """What a LATER key leaves free: everything but the slots its fit takes
+  (stage_prices' bookkeeping, split out so packing.crossbar_stages_needed can
+  run the same simulation with the first key charged its production price).
+
+  THE RULE (2026-11-06). A later key occupies only the crossbar slots its
+  bytes need: the midbytes its fit used, and in the groups its fit chose one
+  lane-legal slot per remaining byte, filled in slot order exactly as
+  first_key_occupancy fills the first key's groups. The slots it leaves free
+  in a group it shares stay available to the keys placed after it.
+
+  Read from p4c's own assembly (prog.bfa) over the per-tree dev set
+  (results/encoding_evidence_2026_11/per_tree_model/step1/): 50 of 359 later
+  tree keys under per-tree codes, and 177 of 351 under per-task codes, hold a
+  crossbar group that an earlier table of the same stage also holds -- groups
+  are shared, not consumed whole -- and every one of the 1120 trees' committed
+  block counts equals max(groups, 2*whole + tail + 1), the price this fit is
+  built on. Before this the function consumed, whole, the first `price`
+  groups with a free slot and the lowest (price - 1) // 2 midbytes, which
+  over-stated what the THIRD and later keys of a stage had left: 9 of the 18
+  missed per-tree designs, and every "no lane fit" refusal in a stage p4c
+  had filled, came from that. Nothing reads this ledger after a stage's last
+  key, so a stage of one or two keys -- every one-code design, every per-task
+  stage of the campaigns -- is priced exactly as before.
+
+  `fit` is fit_with_supply's result for `byte_list` on (free_groups,
+  free_mids). Returns new `(free_groups, free_mids)`; the arguments are not
+  modified."""
+  _blocks, groups, whole, tail, tail_class = fit
   free = {grp: set(slots) for grp, slots in free_groups.items()}
-  need = price
-  for grp in range(_GROUPS):
-    if need <= 0:
-      break
-    if free.get(grp):
-      free[grp] = set()
-      need -= 1
-  return free, set(free_mids) - set(sorted(free_mids)[:max(0, (price - 1) // 2)])
+  W, H, B = _counts(byte_list)
+  W, H, Bc = list(W), list(H), [B]
+
+  def take(lane):
+    if W[lane] > 0:
+      W[lane] -= 1
+      return True
+    if H[lane % 2] > 0:
+      H[lane % 2] -= 1
+      return True
+    if Bc[0] > 0:
+      Bc[0] -= 1
+      return True
+    return False
+
+  if tail is not None:
+    kind, lp = tail_class
+    if kind == 'W':
+      W[lp] -= 1
+    elif kind == 'H':
+      H[lp] -= 1
+    else:
+      Bc[0] -= 1
+  for m in whole:
+    take(MID_LANES[m])
+  for grp in groups:
+    for j in sorted(free[grp]):
+      if take((GROUP_START[grp] + j) % _LANES):
+        free[grp].discard(j)
+  # Unreachable with a fit made on these very slots (Hall's condition on the
+  # chosen supply guarantees the lane-wise fill places every byte); a stale
+  # fit can then only over-state the key's use, never under-state it.
+  left = sum(W) + sum(H) + Bc[0]
+  for grp in groups:
+    while left > 0 and free[grp]:
+      free[grp].pop()
+      left -= 1
+  return free, set(free_mids) - set(whole) - ({tail} if tail is not None else set())

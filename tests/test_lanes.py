@@ -425,17 +425,48 @@ def test_no_module_level_mode_flags_remain():
     assert not hasattr(lanes, name)
 
 
-def test_later_key_occupancy_consumes_whole_groups_and_low_midbytes_only():
-  # stage_prices' later-key bookkeeping, split out for packing's simulation:
-  # a key priced at 5 consumes the first 5 groups with a free slot, wholly,
-  # and the lowest (5 - 1) // 2 = 2 free midbytes; its inputs are untouched.
+def test_later_key_occupancy_takes_only_the_slots_of_its_fit():
+  # stage_prices' later-key bookkeeping, split out for packing's simulation
+  # (rule of 2026-11-06, read from prog.bfa: groups are shared between the
+  # tables of a stage, not consumed whole). Three 8-bit bytes fit the lowest
+  # free group at 1 block and take three of its five slots; the other two,
+  # every other group and every midbyte stay free. The inputs are untouched.
   free = {g: set(range(5)) for g in range(12)}
   free[0] = set()
   mids = {1, 2, 4, 5}
-  new_free, new_mids = lanes.later_key_occupancy(free, mids, 5)
-  assert [g for g in range(12) if new_free[g]] == [6, 7, 8, 9, 10, 11]
-  assert new_mids == {4, 5}
+  key = lanes.key_bytes((8, 8, 8))
+  fit = lanes.fit_with_supply(key, free, mids)
+  assert fit == (1, (1,), (), None, None)
+  new_free, new_mids = lanes.later_key_occupancy(key, free, mids, fit)
+  assert new_free[1] == {3, 4}
+  assert all(new_free[g] == set(range(5)) for g in range(2, 12))
+  assert new_mids == {1, 2, 4, 5}
   assert free[1] == set(range(5)) and mids == {1, 2, 4, 5}
+
+
+def test_later_key_occupancy_takes_the_midbytes_of_its_fit():
+  # Seven lane-free bytes into one free group of five slots need two more:
+  # the two lowest free midbytes (whole bytes go in the lowest-index free
+  # midbytes), giving max(1, 2w + 1) = 5 blocks. The key occupies exactly
+  # those two midbytes and the group's five slots; the other four midbytes
+  # stay free.
+  free = {g: set() for g in range(12)}
+  free[0] = set(range(5))
+  mids = set(range(6))
+  key = lanes.key_bytes((8,) * 7)
+  fit = lanes.fit_with_supply(key, free, mids)
+  assert fit == (5, (0,), (0, 1), None, None)
+  new_free, new_mids = lanes.later_key_occupancy(key, free, mids, fit)
+  assert new_free[0] == set()
+  assert new_mids == {2, 3, 4, 5}
+
+
+def test_price_with_supply_is_the_fit_price():
+  free = {g: set(range(5)) for g in range(12)}
+  for widths in REAL_DESIGN_KEYS[:20]:
+    kb = lanes.key_bytes(widths)
+    fit = lanes.fit_with_supply(kb, free, set(range(6)))
+    assert lanes.price_with_supply(kb, free, set(range(6))) == fit[0]
 
 
 # ------------------------------------------------ table_blocks (spec 2026-10-04)

@@ -253,8 +253,9 @@ def _stage_key_prices(seed_keys, keys):
   prices it, which is what keeps every 'joint' design identical to
   threshold alignment's total_blocks) and occupies _first_key_groups groups
   with lanes.first_key_occupancy. Every later key pays
-  lanes.price_with_supply, its LEFTOVER price in what the keys before it
-  left, and then occupies lanes.later_key_occupancy. The first of this
+  lanes.fit_with_supply's price, its LEFTOVER price in what the keys before it
+  left, and then occupies the slots of that fit (lanes.later_key_occupancy).
+  The first of this
   pool's keys behind a seed is a later key of the stage, but is never
   charged below lanes.table_blocks either.
 
@@ -269,10 +270,10 @@ def _stage_key_prices(seed_keys, keys):
         return None
       free, mids = lanes.first_key_occupancy(key, groups)
       continue
-    price = lanes.price_with_supply(key, free, mids)
-    if price is None:
+    fit = lanes.fit_with_supply(key, free, mids)
+    if fit is None:
       return None
-    free, mids = lanes.later_key_occupancy(free, mids, price)
+    free, mids = lanes.later_key_occupancy(key, free, mids, fit)
   prices = []
   for position, bits in enumerate(keys):
     key = list(_lane_key_bytes(bits))
@@ -280,13 +281,14 @@ def _stage_key_prices(seed_keys, keys):
       prices.append(lanes.table_blocks(bits))
       free, mids = lanes.first_key_occupancy(key, _first_key_groups(bits))
       continue
-    price = lanes.price_with_supply(key, free, mids)
-    if price is None:
+    fit = lanes.fit_with_supply(key, free, mids)
+    if fit is None:
       return None
+    price = fit[0]
     if position == 0:
       price = max(price, lanes.table_blocks(bits))
     prices.append(price)
-    free, mids = lanes.later_key_occupancy(free, mids, price)
+    free, mids = lanes.later_key_occupancy(key, free, mids, fit)
   return tuple(prices)
 
 
