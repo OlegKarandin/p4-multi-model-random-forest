@@ -922,11 +922,16 @@ def _tree_table_entries(table_name, action_name, tree_codewords, fields,
   return entries
 
 
-def generate_table_entries(tasks, use_default_action_discount=False, per_task_codes=False):
+def generate_table_entries(tasks, use_default_action_discount=False, encoding=JOINT_ENCODING):
   '''The control-plane entries (get_table_entries' record format, installed
   by p4/deploy_table_entries.py) of the program generate_p4_program emits for
-  the same `tasks` (Sequence[TaskSpec], N >= 1, either encoding) and the same
-  per_task_codes.
+  the same `tasks` (Sequence[TaskSpec], N >= 1) and the same `encoding`
+  (program.ENCODINGS; any other value raises ValueError):
+
+    JOINT_ENCODING, DISJOINT_ENCODING: resolve_feature_plan; the tasks'
+      intervals decide which fields are shared, as in the program text.
+    PER_TASK_ENCODING: resolve_per_task_plan, below.
+    PER_TREE_ENCODING: generate_per_tree_table_entries.
 
   Table and field names come from the same resolve_feature_plan the program
   text is built from: one range table per resolved entry, keyed on its raw
@@ -936,16 +941,22 @@ def generate_table_entries(tasks, use_default_action_discount=False, per_task_co
   are computed against that task's OWN intervals, which are the intervals of
   every resolved field it reads.
 
-  per_task_codes (resolve_per_task_plan): one range table per feature, holding
+  PER_TASK_ENCODING (resolve_per_task_plan): one range table per feature, holding
   the union of the tasks' intervals, whose action parameter code_<task> is the
   interval's code in that task's own discretization -- which is what that
   task's codewords, against its own intervals, expect to find.
 
   Every task with trees needs its ordered training-feature-name list
   (TaskSpec.features): its codewords are recomputed from its trees.'''
+  if encoding not in ENCODINGS:
+    raise ValueError("encoding must be one of {}, got {!r}".format(
+        ", ".join(repr(name) for name in ENCODINGS), encoding))
+  if encoding == PER_TREE_ENCODING:
+    return generate_per_tree_table_entries(
+        tasks, use_default_action_discount=use_default_action_discount)
   task_intervals = [(task.name, task.intervals) for task in tasks]
   entries = []
-  if per_task_codes:
+  if encoding == PER_TASK_ENCODING:
     table_plan, plan = resolve_per_task_plan(task_intervals)
     own_of = {task.name: task.intervals for task in tasks}
     for index, (feature, (intervals, written)) in enumerate(table_plan.items()):
@@ -970,7 +981,7 @@ def generate_table_entries(tasks, use_default_action_discount=False, per_task_co
     intervals = task.intervals or {}
     field_of = {raw: name for name, (raw, _, models) in plan.items() if task.name in models}
     # A task's own field on a feature with no bits does not exist under
-    # per_task_codes, and it adds no bits to a codeword either.
+    # the per-task encoding, and it adds no bits to a codeword either.
     fields = [("code_"+field_of[raw], len(iv)-1) for raw, iv in intervals.items()
               if raw in field_of]
     paths = get_root_to_leaf_paths(tree_nodes_for(_Forest(task.trees), task.features))
@@ -1083,7 +1094,10 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
   feature over the union of the tasks' intervals (resolve_per_task_plan), its
   action set_code_<f> taking code_<task>_<i> for every tree with a threshold on
   f; each tree table keying its own codes, sliced by per_tree_key_slices from
-  the pins lanes.key_layout gives that tree's key.
+  the pins per_tree.pins_for gives every code field -- the call generate_p4_program
+  makes, so the slices are the program's keys. It also refuses what the program
+  refuses: a tree with no split (NoSplitTree) and a feature whose range table
+  writes more action data than the bus carries (ActionDataTooWide).
 
   Each code written is the interval's thermometer code in the TREE's own
   intervals, which is what that tree's codewords, built against the same
@@ -1092,6 +1106,7 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
   task_intervals = [(task.name, task.intervals) for task in tasks]
   by_name = {task.name: task for task in tasks}
   own = {task.name: per_tree_intervals(task) for task in tasks}
+  pins, _ = per_tree.pins_for(per_tree.widths_of(own))
   table_plan, _ = resolve_per_task_plan(task_intervals)
   entries = []
   for index, (feature, (intervals, written)) in enumerate(table_plan.items()):
@@ -1111,13 +1126,11 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
           "(TaskSpec.features): its codewords cannot be recomputed" % task.name)
     for i, tree in enumerate(task.trees):
       intervals = own[task.name][i]
-      # the generator's pin rule (code_field_container_sizes): one layout per tree key
-      layout = lanes.key_layout([len(iv) - 1 for iv in intervals.values()]) if intervals else None
       fields = []
       for feature, iv in intervals.items():
         field = "code_" + per_tree_field(task.name, i, feature)
         width = len(iv) - 1
-        slices = per_tree_key_slices(width, sum(lanes.container_sizes(width, layout)))
+        slices = per_tree_key_slices(width, sum(pins[per_tree_field(task.name, i, feature)]))
         fields.append((field, width, [(bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo)), hi, lo)
                                       for hi, lo in slices] if slices else None))
       paths = get_root_to_leaf_paths(tree_nodes_for(_Forest([tree]), task.features))
@@ -2257,13 +2270,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   with open(written_path, 'w') as switch_template_file:
     switch_template_file.write(switch_template)
   if entries_filename is not None:
-    if tree_codes:
-      entries = generate_per_tree_table_entries(
-          tasks, use_default_action_discount=use_default_action_discount)
-    else:
-      entries = generate_table_entries(
-          tasks, use_default_action_discount=use_default_action_discount,
-          per_task_codes=task_codes)
+    entries = generate_table_entries(
+        tasks, use_default_action_discount=use_default_action_discount, encoding=encoding)
     with open(output_dir + entries_filename, 'w') as entries_file:
       entries_file.write(json.dumps(entries))
 

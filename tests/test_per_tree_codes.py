@@ -8,14 +8,18 @@ spill by range table). That the generator's per-tree text equals the investigati
 byte for byte on 477 stored designs is checked outside git
 (results/encoding_evidence_2026_11/per_tree_arm/scripts/check_identity.py)."""
 import hashlib
+import json
 import os
 import pickle
 import re
 
+import numpy as np
 import pytest
+from sklearn.ensemble import RandomForestClassifier
 
 from p4gen import build_p4_script as bps
 from p4gen.p4_replay import model_breakdown, parse_program_text
+from p4gen.switch_semantics import per_tree_class_indices, vote_winner
 from p4model import lanes
 from p4model.errors import ActionDataTooWide, CrossbarKeyTooWide, NoSplitTree
 from p4model.lanes import Spilled
@@ -26,8 +30,18 @@ from p4model.program import (APP_TASK, DDOS_TASK, DISJOINT_ENCODING, ENCODINGS, 
                              feature_of_per_tree_field, per_tree_field)
 from p4model.target import PER_TREE_MAX_ACTION_BYTES, PER_TREE_MAX_PIN8_FIELDS
 from tests.test_per_task_codes import FEATURES, _forest, _own, _rng_design, _three_tasks
-from tests.test_per_tree_entries import FEATURES as DEEP_FEATURES
-from tests.test_per_tree_entries import _forest as _deep_forest
+
+DEEP_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean"]
+
+
+def _deep_forest(n_classes, seed, depth, n_trees=2):
+  # the label follows feature 0 in fine steps, so deep trees split it many times: codes wider
+  # than 64 bits
+  rng = np.random.RandomState(seed)
+  X = rng.randint(0, 5000, size=(4000, len(DEEP_FEATURES)))
+  y = ((X[:, 0] // 37) + (X[:, 1] > 2500) + (X[:, 2] // 1700)) % n_classes
+  return bps.dt_thresholds_float_to_int(RandomForestClassifier(
+      n_estimators=n_trees, max_depth=depth, random_state=seed).fit(X, y))
 
 
 def _widths(app=(), ddos=()):
@@ -206,14 +220,17 @@ def test_a_spilled_key_too_wide_still_raises():
 
 # --- the generator's per-tree program ---------------------------------------------
 
-def _specs(app, ddos, names_app=FEATURES, names_ddos=FEATURES):
-  return [TaskSpec(DDOS_TASK, 2, list(ddos.estimators_), names_ddos, _own(ddos, names_ddos)),
-          TaskSpec(APP_TASK, 3, list(app.estimators_), names_app, _own(app, names_app))]
+def _specs(app, ddos, names_app=FEATURES, names_ddos=FEATURES, intervals_app=None,
+           intervals_ddos=None):
+  return [TaskSpec(DDOS_TASK, 2, list(ddos.estimators_), names_ddos,
+                   _own(ddos, names_ddos) if intervals_ddos is None else intervals_ddos),
+          TaskSpec(APP_TASK, 3, list(app.estimators_), names_app,
+                   _own(app, names_app) if intervals_app is None else intervals_app)]
 
 
 def _deep_specs(n_app=2):
   """Deep app trees on one feature: codes wider than 64 bits, codes that fill their pins and
-  narrow ones (test_per_tree_entries' fixture)."""
+  narrow ones (the entries tests' fixture too)."""
   app, ddos = _deep_forest(3, 0, depth=9, n_trees=n_app), _deep_forest(2, 1, depth=3)
   return _specs(app, ddos, DEEP_FEATURES, DEEP_FEATURES)
 
@@ -472,6 +489,10 @@ def test_an_unknown_encoding_raises(tmp_path):
   with pytest.raises(ValueError):
     _two_task(tmp_path, app, ddos, FEATURES, (_own(app), _own(ddos)), encoding="perTask")
   assert not (tmp_path / "t.p4").exists() and not (tmp_path / "d.p4").exists()
+  # the control-plane entries refuse it the same way, and name the same encodings
+  with pytest.raises(ValueError) as e:
+    bps.generate_table_entries(tasks, encoding="per_forest")
+  assert all(repr(name) in str(e.value) for name in ENCODINGS)
 
 
 def test_the_per_task_codes_argument_is_gone(tmp_path):
@@ -482,6 +503,8 @@ def test_the_per_task_codes_argument_is_gone(tmp_path):
   app, ddos = _forest(3, 2), _forest(2, 1)
   with pytest.raises(TypeError):
     _two_task(tmp_path, app, ddos, FEATURES, (_own(app), _own(ddos)), per_task_codes=True)
+  with pytest.raises(TypeError):
+    bps.generate_table_entries(tasks, per_task_codes=True)
 
 
 # --- rule A -------------------------------------------------------------------------
@@ -562,3 +585,235 @@ def test_replay_prices_the_rule_a_program_as_the_unpadded_one(tmp_path):
     assert program.bits["code_" + name] == width
   assert program.tables == parse_program_text(unpadded).tables
   assert model_breakdown(program) == model_breakdown(parse_program_text(unpadded))
+
+
+# --- the control-plane entries -------------------------------------------------------
+#
+# Asserted on MEANING, like test_per_task_codes' entry tests: the entries are played as the
+# switch plays them (a range table's action writes each tree's code, every tree table matches
+# value/mask on each key slice) and must give every tree's own class. The slicing is rule A of
+# the 2026-11 action-data-bus investigation; that the compiled program loads and runs these
+# entries was checked live on tofino-model (results/encoding_evidence_2026_11/
+# adb_investigation/step7_live).
+
+_ENTRIES_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "entries_by_encoding.json")
+
+
+def _entry_tasks(encoding, seed):
+  """The seed's synthetic design as tasks: both tasks share one joint dict under joint, each
+  has its own intervals otherwise (the intervals decide joint or disjoint, as in the program)."""
+  app, ddos, names = _rng_design(seed)
+  if encoding == JOINT_ENCODING:
+    joint = bps.get_joint_feature_intervals(app, names, ddos, names)
+    return _specs(app, ddos, names, names, joint, joint)
+  return _specs(app, ddos, names, names)
+
+
+def _frozen_hash(entries):
+  text = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+  return {"entries": len(entries), "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+
+
+@pytest.mark.parametrize("encoding", [JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING])
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("discount", [False, True])
+def test_each_encoding_writes_exactly_the_frozen_entries(encoding, seed, discount):
+  """Gate B5: the entries the old per_task_codes flag wrote, frozen 2026-11-08 before
+  `encoding` replaced it (joint and disjoint were both flag off; the intervals decide)."""
+  with open(_ENTRIES_FIXTURE, encoding="utf-8") as handle:
+    frozen = json.load(handle)
+  entries = bps.generate_table_entries(_entry_tasks(encoding, seed),
+                                       use_default_action_discount=discount, encoding=encoding)
+  assert _frozen_hash(entries) == frozen["%s/seed%d/discount_%s" % (
+      encoding, seed, "on" if discount else "off")]
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_generate_p4_program_writes_the_entries_of_its_encoding(tmp_path, encoding):
+  tasks = _deep_specs() if encoding == PER_TREE_ENCODING else _entry_tasks(encoding, 0)
+  _program(tmp_path, tasks, encoding=encoding, entries_filename="entries.json",
+           use_default_action_discount=True)
+  with open(tmp_path / "entries.json", encoding="utf-8") as handle:
+    written = json.load(handle)
+  assert written == bps.generate_table_entries(tasks, use_default_action_discount=True,
+                                               encoding=encoding)
+  assert written
+  # each encoding addresses its own code parameters: code_<task> per task, code_<task>_<i> per tree
+  params = {name for e in written if e["table_name"].startswith("table_")
+            for name in e["action_params"]}
+  per_tree = {name for name in params if re.match(r"^code_\w+_\d+$", name)}
+  assert bool(per_tree) == (encoding == PER_TREE_ENCODING)
+  if encoding == PER_TREE_ENCODING:
+    assert written == bps.generate_per_tree_table_entries(tasks, use_default_action_discount=True)
+  if encoding == PER_TASK_ENCODING:
+    assert all(re.match(r"^code_(app|ddos)$", name) for name in params)
+
+
+def _program_tables(text):
+  """{table: [(bf_rt key name, match kind)]} of a program text, in key order."""
+  return {name: [(bps.bfrt_key_name(expression), kind)
+                 for expression, kind in re.findall(r"(meta\.[\w\[\]:]+)\s*:\s*(\w+);", block)]
+          for name, block in re.findall(r"table (\w+) \{\s*key = \{(.*?)\}", text, re.S)}
+
+
+def test_entry_key_names_are_the_programs_keys_as_bf_rt_names_them(tmp_path):
+  tasks = _deep_specs()
+  declared = _program_tables(_program(tmp_path, tasks))
+  entries = bps.generate_table_entries(tasks, encoding=PER_TREE_ENCODING)
+  seen = set()
+  for entry in entries:
+    if entry["is_default_action"]:
+      assert entry["key_fields"] == {}
+      continue
+    assert list(entry["key_fields"]) == [name for name, _ in declared[entry["table_name"]]], entry
+    seen.add(entry["table_name"])
+  trees = {t for t in declared if t.startswith("get_classification_tree_")}
+  ranges = {t for t in declared if t.startswith("table_")}
+  assert trees and ranges and seen == trees | ranges
+  # a range table is addressed by its raw value field
+  assert all(kind == "range" for t in ranges for _, kind in declared[t])
+  assert all(kind == "ternary" for t in trees for _, kind in declared[t])
+  names = {name for t in trees for name, _ in declared[t]}
+  # a whole key, a single slice and a code wider than 64 bits (two slices) are all addressed
+  assert any(re.match(r"^code_tr_\w+_\d+_0_$", n) and not n.endswith("_63_0_") for n in names)
+  assert any(n.endswith("_63_0_") for n in names)
+  assert any(re.match(r"^code_tr_\w+_\d+_\d+_$", n) and not n.endswith("_0_") for n in names)
+  assert any(n.startswith("code_tr_") and not re.search(r"_\d+_\d+_$", n) for n in names)
+
+
+def test_entry_params_match_the_action_params_in_the_program_text(tmp_path):
+  for tasks in (_deep_specs(), _specs(_forest(3, 2), _forest(2, 1))):
+    text = _program(tmp_path, tasks)
+    actions = {name: [(p.split()[1], int(p.split()[0][4:-1])) for p in params.split(",") if p.strip()]
+               for name, params in re.findall(r"action (\w+)\s*\(([^)]*)\)", text)}
+    entries = bps.generate_table_entries(tasks, use_default_action_discount=True,
+                                         encoding=PER_TREE_ENCODING)
+    assert entries
+    for entry in entries:
+      declared = actions[entry["action"]]
+      assert list(entry["action_params"]) == [name for name, _ in declared], entry["action"]
+      for (name, width), value in zip(declared, entry["action_params"].values()):
+        assert 0 <= int(value) < (1 << width), (entry["action"], name, width, value)
+
+
+def test_entries_with_one_task_having_no_trees(tmp_path):
+  app = _forest(3, 2)
+  tasks = [TaskSpec(DDOS_TASK, 2, [], None, {}),
+           TaskSpec(APP_TASK, 3, list(app.estimators_), FEATURES, _own(app))]
+  declared = _program_tables(_program(tmp_path, tasks))
+  entries = bps.generate_table_entries(tasks, encoding=PER_TREE_ENCODING)
+  assert entries and {e["table_name"] for e in entries} <= set(declared)
+  assert not any("ddos" in e["table_name"] or "ddos" in " ".join(e["action_params"])
+                 for e in entries)
+  X = np.random.RandomState(1).randint(0, 2100, size=(40, len(FEATURES)))
+  want = per_tree_class_indices(app, X)
+  for s, values in enumerate(X):
+    got = _play(entries, dict(zip(FEATURES, values)))
+    assert got == {"get_classification_tree_app_%d" % i: int(c) for i, c in enumerate(want[:, s])}
+
+
+_SLICE = re.compile(r"^(code_tr_\w+?)_(\d+)_(\d+)_$")
+
+
+def _play(entries, row):
+  """{tree table: class} for one input, the entries interpreted as the switch does."""
+  codes, by_table = {}, {}
+  for entry in entries:
+    by_table.setdefault(entry["table_name"], []).append(entry)
+  for table, rows in by_table.items():
+    if not table.startswith("table_"):
+      continue
+    feature = rows[0]["action"][len("set_code_"):]
+    hits = [e for e in rows if int(e["key_fields"][feature + "_val"]["start"]) <= row[feature]
+            <= int(e["key_fields"][feature + "_val"]["end"])]
+    assert len(hits) == 1, (table, row)
+    for param, value in hits[0]["action_params"].items():
+      task, tree = re.match(r"^code_(app|ddos)_(\d+)$", param).groups()
+      codes["code_" + per_tree_field(task, int(tree), feature)] = int(value)
+  classes = {}
+  for table, rows in by_table.items():
+    if not table.startswith("get_classification_tree_"):
+      continue
+
+    def matches(entry):
+      for name, spec in entry["key_fields"].items():
+        m = _SLICE.match(name)
+        field, hi, lo = (m[1], int(m[2]), int(m[3])) if m else (name, None, 0)
+        value = codes[field] >> lo
+        if hi is not None:
+          value &= (1 << (hi - lo + 1)) - 1
+        if value & int(spec["mask"], 16) != int(spec["value"], 16):
+          return False
+      return True
+    hits = [e for e in rows if not e["is_default_action"] and matches(e)]
+    assert len(hits) <= 1, (table, row)
+    hits = hits or [e for e in rows if e["is_default_action"]]
+    assert len(hits) == 1, (table, row)
+    classes[table] = int(hits[0]["action_params"]["class"])
+  return classes
+
+
+def test_bfrt_key_name_keeps_a_slices_bounds():
+  assert bps.bfrt_key_name("meta.code_tr_app_0_bwd_packet_length_mean[63:0]") == "code_tr_app_0_bwd_packet_length_mean_63_0_"
+  assert bps.bfrt_key_name("meta.code_tr_app_0_bwd_packet_length_mean[89:64]") == "code_tr_app_0_bwd_packet_length_mean_89_64_"
+  assert bps.bfrt_key_name("meta.code_flow_iat_max") == "code_flow_iat_max"
+  assert bps.bfrt_key_name("meta.flow_iat_max_val") == "flow_iat_max_val"
+
+
+@pytest.mark.parametrize("width, pinned, slices", [
+    (3, 8, None),               # a narrow code keeps its padding: two may share a byte
+    (8, 8, None),
+    (27, 32, [(26, 0)]),        # declared bit<32>, keyed on its own 27 bits
+    (32, 32, None),             # fills its container: nothing to pad
+    (36, 40, [(35, 0)]),
+    (64, 64, None),
+    (74, 80, [(63, 0), (73, 64)]),   # p4c asserts on one slice wider than 64 bits
+    (90, 96, [(63, 0), (89, 64)]),
+    (200, 208, [(63, 0), (127, 64), (191, 128), (199, 192)]),
+])
+def test_per_tree_key_slices_is_rule_a(width, pinned, slices):
+  assert bps.per_tree_key_slices(width, pinned) == slices
+
+
+def test_fixture_has_codes_that_are_split_sliced_and_whole():
+  names = {n for e in bps.generate_table_entries(_deep_specs(), encoding=PER_TREE_ENCODING)
+           if e["table_name"].startswith("get_") for n in e["key_fields"]}
+  assert any(n.endswith("_63_0_") for n in names), "no code wider than 64 bits"
+  assert any(_SLICE.match(n) and not n.endswith("_63_0_") and n.split("_")[-2] == "0" for n in names), "no single slice"
+  assert any(not _SLICE.match(n) for n in names), "no whole key"
+
+
+@pytest.mark.parametrize("discount", [False, True])
+@pytest.mark.parametrize("seed", range(3))
+def test_per_tree_entries_classify_every_input_exactly_as_each_tree(seed, discount):
+  app, ddos = _deep_forest(3, seed, depth=9), _deep_forest(2, seed + 10, depth=4)
+  tasks = _specs(app, ddos, DEEP_FEATURES, DEEP_FEATURES)
+  entries = bps.generate_table_entries(tasks, use_default_action_discount=discount,
+                                       encoding=PER_TREE_ENCODING)
+  rng = np.random.RandomState(seed)
+  X = np.vstack([np.array([[v] * len(DEEP_FEATURES) for v in (0, 1, 2500, 4999, 5000, 65535)]),
+                 rng.randint(0, 5100, size=(250, len(DEEP_FEATURES)))])
+  trees = {APP_TASK: per_tree_class_indices(app, X), DDOS_TASK: per_tree_class_indices(ddos, X)}
+  for s, values in enumerate(X):
+    got = _play(entries, dict(zip(DEEP_FEATURES, values)))
+    want = {"get_classification_tree_%s_%d" % (t, i): int(c) for t in trees
+            for i, c in enumerate(trees[t][:, s])}
+    assert got == want
+    assert vote_winner([got["get_classification_tree_app_%d" % i] for i in range(2)], 3) == \
+        vote_winner(list(trees[APP_TASK][:, s]), 3)
+
+
+def test_each_tree_writes_its_own_thermometer_code():
+  app, ddos = _deep_forest(3, 2, depth=5), _deep_forest(2, 3, depth=3)
+  tasks = _specs(app, ddos, DEEP_FEATURES, DEEP_FEATURES)
+  own = {t.name: bps.per_tree_intervals(t) for t in tasks}
+  for entry in bps.generate_table_entries(tasks, encoding=PER_TREE_ENCODING):
+    if not entry["table_name"].startswith("table_"):
+      continue
+    feature = entry["action"][len("set_code_"):]
+    x = int(entry["key_fields"][feature + "_val"]["start"])
+    for param, value in entry["action_params"].items():
+      task, tree = re.match(r"^code_(app|ddos)_(\d+)$", param).groups()
+      iv = own[task][int(tree)][feature]
+      idx = next(j for j, (lo, hi) in enumerate(iv) if lo <= x <= hi)
+      assert int(value) == int(bps.thermometer_code(len(iv), idx), 2)

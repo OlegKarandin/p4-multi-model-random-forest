@@ -342,7 +342,7 @@ def test_entries_classify_every_input_exactly_as_each_tree_and_the_forest(tmp_pa
     with open(os.path.join(str(tmp_path), "entries.json"), encoding="utf-8") as handle:
         entries = json.load(handle)
     assert entries == bps.generate_table_entries(
-        tasks, use_default_action_discount=discount, per_task_codes=True)
+        tasks, use_default_action_discount=discount, encoding=PER_TASK_ENCODING)
     # Every table the entries address exists, with the key fields it declares.
     declared = parse_program(path).tables
     for entry in entries:
@@ -416,7 +416,7 @@ def test_three_task_program_replays_and_labels_a_subset_of_tasks_with_a_frozense
 
 def test_three_task_entries_classify_exactly_as_each_tree(tmp_path):
     tasks, forests, names = _three_tasks()
-    entries = bps.generate_table_entries(tasks, per_task_codes=True)
+    entries = bps.generate_table_entries(tasks, encoding=PER_TASK_ENCODING)
     X = np.random.RandomState(3).randint(0, 2100, size=(120, len(FEATURES)))
     expected = {}
     for task in tasks:
