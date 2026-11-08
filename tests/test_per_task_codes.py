@@ -56,7 +56,7 @@ def _generate(tmp_path, app, ddos, names_app=FEATURES, names_ddos=FEATURES, **kw
         feature_intervals_ddos=_own(ddos, names_ddos),
         output_dir=str(tmp_path) + os.sep, output_filename="design.p4",
         selected_features_app=names_app, selected_features_ddos=names_ddos,
-        per_task_codes=True, **kwargs)
+        encoding=PER_TASK_ENCODING, **kwargs)
     with open(path, encoding="utf-8") as handle:
         return path, handle.read()
 
@@ -204,7 +204,7 @@ def test_every_range_table_outranks_every_tree_in_every_arm(tmp_path, arm):
         3, 2, app, ddos, feature_intervals_app=intervals[0], feature_intervals_ddos=intervals[1],
         output_dir=str(tmp_path) + os.sep, output_filename="d.p4",
         selected_features_app=FEATURES, selected_features_ddos=FEATURES,
-        per_task_codes=arm == "per_task")
+        encoding=arm)
     program = parse_program(path)
     ranges = [n for n in program.tables if n.startswith("table_")]
     trees = [n for n in program.tables if n.startswith("get_classification_tree_")]
@@ -338,7 +338,7 @@ def test_entries_classify_every_input_exactly_as_each_tree_and_the_forest(tmp_pa
     path = bps.generate_p4_program(
         tasks, output_dir=str(tmp_path) + os.sep, output_filename="d.p4",
         use_default_action_discount=discount, entries_filename="entries.json",
-        per_task_codes=True)
+        encoding=PER_TASK_ENCODING)
     with open(os.path.join(str(tmp_path), "entries.json"), encoding="utf-8") as handle:
         entries = json.load(handle)
     assert entries == bps.generate_table_entries(
@@ -399,7 +399,7 @@ def _three_tasks():
 def test_three_task_program_replays_and_labels_a_subset_of_tasks_with_a_frozenset(tmp_path):
     tasks, forests, names = _three_tasks()
     path = bps.generate_p4_program(tasks, output_dir=str(tmp_path) + os.sep, output_filename="d.p4",
-                                   per_task_codes=True)
+                                   encoding=PER_TASK_ENCODING)
     program = parse_program(path)
     assert {t: sorted(k) for t, k in program.tables.items() if t == "get_classification_tree_c_0"} == {
         "get_classification_tree_c_0": sorted("code_tk_c_" + f for f in _own(forests["c"], names["c"]))}

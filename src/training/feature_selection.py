@@ -107,8 +107,8 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     through as feature_intervals_app/feature_intervals_ddos --
     `generate_P4_code` resolves per-feature sharing vs namespacing itself.
 
-    encoding == 'per_task': each model's OWN intervals too, with
-    `per_task_codes=True` (`resolve_per_task_plan`).
+    encoding == 'per_task': each model's OWN intervals too, passed as
+    `encoding` (`resolve_per_task_plan`).
 
     config: forwarded verbatim to `generate_P4_code` in both branches, so
     `P4GenConfig.match_type` / `use_default_action_discount` actually take
@@ -146,7 +146,7 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             output_dir=hardware_output_dir, output_filename=filename,
             selected_features_app=feature_names_app,
             selected_features_ddos=feature_names_ddos,
-            config=config, per_task_codes=encoding == 'per_task')
+            config=config, encoding=encoding)
     except ValueError as e:
         # NB: this also swallows generate_P4_code's shared-field layout-conflict
         # ValueError (build_p4_script.code_field_container_sizes); practically
