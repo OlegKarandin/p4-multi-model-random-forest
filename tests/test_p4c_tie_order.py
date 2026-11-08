@@ -37,7 +37,9 @@ FIXTURES = {
 def _program(row_id):
     path = os.path.join(HERE, row_id + '.p4')
     with open(path, 'rb') as handle:
-        assert hashlib.sha256(handle.read()).hexdigest().startswith(FIXTURES[row_id][2])
+        # Hashed with LF line ends: git may check the fixture out with CRLF (core.autocrlf).
+        text = handle.read().replace(b'\r\n', b'\n')
+    assert hashlib.sha256(text).hexdigest().startswith(FIXTURES[row_id][2])
     return parse_program(path)
 
 

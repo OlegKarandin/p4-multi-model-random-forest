@@ -80,11 +80,11 @@ def test_pinned_pairs_are_informational_since_the_code_pins():
         pytest.skip("needs results/compiler_calibration_pinned (gitignored)")
     stage_pairs, blocks_pairs = vt.pinned_pairs()
     stages = vt.aggregate(stage_pairs)
-    assert (stages["n_compared"], stages["exact"]) == (43, 41)
+    # 2026-11-08: independent_high_sd12 exact under p4c's tie order (02fb523).
+    assert (stages["n_compared"], stages["exact"]) == (43, 42)
     misses = {p["row_id"]: p["predicted"] - p["real"] for p in stage_pairs
               if p["predicted"] != p["real"]}
-    assert misses == {"independent_high_sd12": -1,
-                      "margin_independent_M150_k7_s11": -1}
+    assert misses == {"margin_independent_M150_k7_s11": -1}
     assert set(misses) == set(vt.KNOWN_PINNED_MISSES)
     blocks = vt.aggregate(blocks_pairs)
     assert (blocks["n_compared"], blocks["exact"], blocks["under"],
@@ -108,12 +108,12 @@ def test_pragmas_pairs_are_the_primary_gate():
     stage_pairs, blocks_pairs = vt.pragmas_pairs()
     stages = vt.aggregate(stage_pairs)
     blocks = vt.aggregate(blocks_pairs)
-    assert (stages["n_compared"], stages["exact"]) == (73, 70)
+    # 2026-11-08: independent_high_sd12 and heldout_independent_M150_k15_s16
+    # exact under p4c's tie order (02fb523).
+    assert (stages["n_compared"], stages["exact"]) == (73, 72)
     misses = {p["row_id"]: p["predicted"] - p["real"] for p in stage_pairs
               if p["predicted"] != p["real"]}
-    assert misses == {"independent_high_sd12": -1,
-                      "heldout_independent_M150_k15_s16": 1,
-                      "heldout_independent_M250_k14_s12": -1}
+    assert misses == {"heldout_independent_M250_k14_s12": -1}
     assert set(misses) == set(vt.KNOWN_PRAGMAS_MISSES)
     feasible = [p for p in stage_pairs if p["real"] <= 12]
     assert len(feasible) == 60

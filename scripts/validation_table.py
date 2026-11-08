@@ -92,13 +92,11 @@ DEFAULT_CSV = os.path.join(ROOT, "results", "compiler_calibration_v6.csv")
 PRAGMAS_ROOT = os.path.join(ROOT, "results", "compiler_calibration_pragmas_2026_09_29")
 PRAGMAS_CSV = os.path.join(ROOT, "results", "compiler_calibration_pragmas_2026_09_29.csv")
 # Its three misses: all on designs neither the model nor p4c fits in 12 stages.
+# 2026-11-08: independent_high_sd12 (was 13 vs 14) and
+# heldout_independent_M150_k15_s16 (was 14 vs 13) are exact under p4c's tie
+# order for registers and range tables and per-tree readiness (02fb523), so
+# this archive stands at 72/73.
 KNOWN_PRAGMAS_MISSES = {
-    "independent_high_sd12": (
-        "stage_depth 13 vs p4c 14 (UNDER by 1, infeasible either way); "
-        "pre-existing, see KNOWN_PINNED_MISSES"),
-    "heldout_independent_M150_k15_s16": (
-        "stage_depth 14 vs p4c 13 (OVER by 1, infeasible either way); "
-        "pre-existing"),
     "heldout_independent_M250_k14_s12": (
         "stage_depth 15 vs p4c 16 (UNDER by 1, infeasible either way), "
         "produced in p4c's REDO_PHV2 retry rounds for a program that does not "
@@ -116,12 +114,9 @@ PINNED_ROOT = os.path.join(ROOT, "results", "compiler_calibration_pinned")
 PINNED_CSV = os.path.join(ROOT, "results", "compiler_calibration_pinned.csv")
 # The pinned archive's two known misses, printed with its reason rather than
 # silenced: an UNDER-prediction on a design p4c cannot fit anyway.
+# 2026-11-08: independent_high_sd12 (was 13 vs 14) is exact under p4c's tie
+# order (02fb523); this archive stands at 42/43.
 KNOWN_PINNED_MISSES = {
-    "independent_high_sd12": (
-        "stage_depth 13 vs p4c 14 (UNDER by 1, design infeasible either way: "
-        "> 12 stages). The one design where the @pa_no_overlay/"
-        "@placement_priority pragmas themselves cost p4c a stage -- 13 without "
-        "them (reviews/model_audit_2026-09-27.md §7.3/§7.6)"),
     "margin_independent_M150_k7_s11": (
         "stage_depth 11 vs p4c 12 (UNDER by 1) since the 62-byte refusal was "
         "retired: this archive predates the code_* layout pins, and unpinned "

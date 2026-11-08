@@ -786,6 +786,9 @@ def test_the_extra_range_stage_holds_only_phv_advanced_tables(row_id):
     assert all(advanced[name] == last for name in on_last)
 
 
+_ITEM_16_LEVELS_NOW_EXACT = {'joint_high_sd7'}
+
+
 @_no_artifacts
 @pytest.mark.parametrize('row_id', _ITEM_16_ROWS)
 def test_readiness_levels_are_not_what_costs_these_rows_their_stage(row_id):
@@ -812,7 +815,13 @@ def test_readiness_levels_are_not_what_costs_these_rows_their_stage(row_id):
             oracle[feature] = max(real[r['name']] for r in entry['registers']) + 1
 
     modelled = dict(zip(features, ev.readiness_levels_for(features)))
-    assert oracle != modelled          # the oracle really is a different input
+    # The oracle really is a different input -- except where, since
+    # 2026-11-08, the model's register schedule (p4c's tie order) reproduces
+    # the compiler's committed register stages exactly.
+    if row_id in _ITEM_16_LEVELS_NOW_EXACT:
+        assert oracle == modelled
+    else:
+        assert oracle != modelled
     assert (cc.replay_stage_depth(row_id, _ARTIFACTS, readiness_levels=oracle)
             == _REPLAY_EXPECTED[row_id])
 
@@ -979,8 +988,10 @@ _PINNED_CSV = os.path.join('results', 'compiler_calibration_pinned.csv')
 # predate the generator's code_* layout pins, and unpinned p4c laid the ddos
 # key's fields out whole in W containers and moved the app key a stage. With
 # the pins (results/compiler_calibration_pragmas_2026_09_29) it is 11, exact.
-_PINNED_KNOWN_STAGE_MISSES = {'independent_high_sd12': -1,
-                              'margin_independent_M150_k7_s11': -1}
+# 2026-11-08: independent_high_sd12 is exact (14) under p4c's tie order for
+# registers and range tables and rule E (tests/test_p4c_tie_order.py), and
+# leaves the list; the pre-pragma compile's 13 is the C1 fixture's (below).
+_PINNED_KNOWN_STAGE_MISSES = {'margin_independent_M150_k7_s11': -1}
 
 # The lane price's accepted greedy miss (2026-10-04): independent_low_sd5's
 # three ddos trees key (27, 52), lane 2 per tree vs p4c 3. model - p4c.
@@ -1029,9 +1040,9 @@ _PRAGMAS_ROOT = os.path.join('results', 'compiler_calibration_pragmas_2026_09_29
 _PRAGMAS_CSV = os.path.join('results', 'compiler_calibration_pragmas_2026_09_29.csv')
 
 # Every miss is on a design neither the model nor p4c fits in 12 stages.
-_PRAGMAS_KNOWN_STAGE_MISSES = {'independent_high_sd12': -1,
-                               'heldout_independent_M150_k15_s16': 1,
-                               'heldout_independent_M250_k14_s12': -1}
+# 2026-11-08: independent_high_sd12 (was -1) and
+# heldout_independent_M150_k15_s16 (was +1) are exact under p4c's tie order.
+_PRAGMAS_KNOWN_STAGE_MISSES = {'heldout_independent_M250_k14_s12': -1}
 
 
 def _pragmas_rows():
@@ -1149,9 +1160,9 @@ def test_per_task_readiness_makes_these_designs_exact(row_id, design):
     # 13). Each design's app trees no longer wait for its ddos range tables.
     # 2026-11-08: with p4c's register order (register_stage_schedule) and
     # per-tree readiness, independent_high_sd12 prices 14 -- p4c's number on
-    # the compile WITH the code_* pins (compiler_calibration_pragmas_2026_09_29,
-    # the primary gate, where 13 was a listed miss); this fixture's 13 is the
-    # pre-pin compile (compiler_calibration_pinned, informational only).
+    # the compiles WITH the pragmas (compiler_calibration_pinned and
+    # compiler_calibration_pragmas_2026_09_29, the primary gate, where 13 was a
+    # listed miss); this fixture's 13 is the pre-pragma compile.
     depth, blocks = _c1_replay(design)
     assert depth == _C1_NOW.get(row_id, design['stages_real']), row_id
     if design['tcam_real'] is not None:
