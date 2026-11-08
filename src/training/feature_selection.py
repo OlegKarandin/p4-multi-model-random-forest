@@ -107,8 +107,8 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     through as feature_intervals_app/feature_intervals_ddos --
     `generate_P4_code` resolves per-feature sharing vs namespacing itself.
 
-    encoding == 'per_task': each model's OWN intervals too, passed as
-    `encoding` (`resolve_per_task_plan`).
+    encoding == 'per_task' or 'per_tree': each model's OWN intervals too, with
+    `encoding` passed through (`resolve_per_task_plan` / `resolve_per_tree_plan`).
 
     config: forwarded verbatim to `generate_P4_code` in both branches, so
     `P4GenConfig.match_type` / `use_default_action_discount` actually take
@@ -131,7 +131,7 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             model_app, model_ddos, feature_names_app, feature_names_ddos)
         feature_intervals_app = feature_intervals
         feature_intervals_ddos = feature_intervals
-    elif encoding in ('disjoint', 'per_task'):
+    elif encoding in ('disjoint', 'per_task', 'per_tree'):
         feature_intervals_app = _derive_feature_intervals(model_app, feature_names_app)
         feature_intervals_ddos = _derive_feature_intervals(model_ddos, feature_names_ddos)
     else:
@@ -399,8 +399,9 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
         features), 'joint' (joint encoding, ONE shared feature set --
         required, because under joint encoding every tree's codeword spans the
         merged interval pool, so a feature used by only one task widens BOTH
-        tasks' codewords) or 'joint-task' (per-task encoding: the same one
-        shared feature set and threshold tables, keys per task).
+        tasks' codewords), 'joint-task' (per-task encoding: the same one
+        shared feature set and threshold tables, keys per task) or
+        'joint-tree' (per-tree encoding: likewise, keys per tree).
     app, ddos : TaskSplits.
 
     Both arms drop exactly one feature per task per iteration, so the two
@@ -772,7 +773,7 @@ def compare_feature_selection_approaches_parallel(
 ):
     """Run ONE arm across n_splits, each split in its own process.
 
-    arm : 'independent', 'joint' or 'joint-task'.
+    arm : 'independent', 'joint', 'joint-task' or 'joint-tree'.
     cfg : TrainConfig -- the arm definition. Frozen, so it is safe to ship to
         every worker.
 

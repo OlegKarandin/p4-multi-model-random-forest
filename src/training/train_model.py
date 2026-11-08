@@ -33,6 +33,9 @@ from p4gen.evaluation import (
     CodewordTooLong, CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
     multi_model_memory_evaluation)
 from p4gen.switch_semantics import switch_predict
+from p4model.errors import ActionDataTooWide, NoSplitTree
+from p4model.program import PER_TREE_ENCODING
+from p4model.target import PER_TREE_MAX_ACTION_BYTES
 from src.training.threshold_alignment import align_with_policy
 from src.training import early_stopping
 from src.training import trial_selection
@@ -366,6 +369,25 @@ def train_multi_RF_Optuna_multi_constrained(
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
+        except ActionDataTooWide as e:
+            # Per-tree codes only (spec 9.3): a range table whose action writes
+            # more container bytes than the action data bus carries. Reported
+            # through the crossbar attribute, as the other width refusal.
+            trial.set_user_attr('crossbar_violation',
+                                max(1, e.args[1] - PER_TREE_MAX_ACTION_BYTES))
+            trial.set_user_attr('codeword_violation', 0.0)
+            trial.set_user_attr('blocks_violation', 0.0)
+            trial.set_user_attr('stages_violation', 0.0)
+            return -1.0, -1.0, float('inf')
+        except NoSplitTree:
+            # Per-tree codes only (spec 9.4): a tree with no threshold has a table
+            # with no key. Counted in the trial table (`no_split_tree`).
+            trial.set_user_attr('no_split_tree', True)
+            trial.set_user_attr('crossbar_violation', 1.0)
+            trial.set_user_attr('codeword_violation', 0.0)
+            trial.set_user_attr('blocks_violation', 0.0)
+            trial.set_user_attr('stages_violation', 0.0)
+            return -1.0, -1.0, float('inf')
 
         if usage.blocks > max_blocks:
             trial.set_user_attr('codeword_violation', 0.0)
@@ -464,8 +486,9 @@ def train_multi_RF_Optuna_multi_constrained(
             pass  # Ignore if enqueue fails (e.g. bounds changed between k)
 
     # catch=() deliberately: the ONLY expected RuntimeErrors are the codeword
-    # (CodewordTooLong) and crossbar-width (CrossbarKeyTooWide) violations,
-    # and the objective already handles both itself. The previous
+    # (CodewordTooLong), crossbar-width (CrossbarKeyTooWide) and, under per-tree
+    # codes, action-width (ActionDataTooWide) and no-split-tree (NoSplitTree)
+    # violations, and the objective already handles all four itself. The previous
     # catch=(RuntimeError,) also swallowed align_rf_thresholds' own
     # AlignmentInvariantError (raised as a bare RuntimeError("Smth is
     # very-very wrong") before it was given its own type), hiding corrupted
@@ -594,5 +617,9 @@ def train_multi_RF_Optuna_multi_constrained(
         ref_stage_depth=int(ref_usage.stage_depth),
         ref_acc_sel_A=reference.user_attrs['acc_app'],
         ref_acc_sel_B=reference.user_attrs['acc_ddos'],
-        trial_table=trial_selection.trial_rows(study.trials, table),
+        # no_split_tree is a per-tree column only: every other arm's trials/
+        # CSV keeps its header.
+        trial_table=trial_selection.trial_rows(
+            study.trials, table,
+            extra_attrs=('no_split_tree',) if encoding == PER_TREE_ENCODING else ()),
     )

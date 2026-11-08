@@ -204,7 +204,8 @@ import pandas as pd
 from scipy import stats
 
 from p4model.target import TCAM_BLOCKS_PER_STAGE, TOFINO_PIPELINE_STAGES
-from src.reporting.campaign_data import pair_arms, PER_TASK_ARM_SLUG, TWIN_ARM_SLUG
+from src.reporting.campaign_data import (
+    pair_arms, PER_TASK_ARM_SLUG, PER_TREE_ARM_SLUG, TWIN_ARM_SLUG)
 from src.training.campaign_run import DEVELOPMENT_SPLITS
 
 INDEPENDENT_ARM_SLUG = 'independent'
@@ -223,11 +224,11 @@ JOINT_ARM_SLUGS = ('joint-off', TWIN_ARM_SLUG)
 # (spec 2026-10-06 decision 4): still loadable, appended by
 # `figures.ordered_arms`, never a family member.
 LEGACY_ARM_SLUGS = ('joint',)
-# The per-task encoding's arm (2026-11) is a joint arm in every contrast, in
-# every table and figure, but not a member of the pre-registered families above,
-# whose sizes describe the archived grid: a run of it renders with
-# --allow-partial-family.
-REPORTED_JOINT_ARM_SLUGS = JOINT_ARM_SLUGS + (PER_TASK_ARM_SLUG,)
+# The per-task and per-tree encodings' arms (2026-11) are joint arms in every
+# contrast, in every table and figure, but not members of the pre-registered
+# families above, whose sizes describe the archived grid: a run of either
+# renders with --allow-partial-family.
+REPORTED_JOINT_ARM_SLUGS = JOINT_ARM_SLUGS + (PER_TASK_ARM_SLUG, PER_TREE_ARM_SLUG)
 
 # Blocks available to a whole Tofino pipe. The hypervolume reference budget
 # for the unbudgeted cell (M = inf), where `(0.5, M)` would be an infinite
@@ -1006,8 +1007,8 @@ def ablation_decomposition(df, metrics=DEFAULT_METRICS, confidence=0.95):
       `independent` it would re-count the sharing effect inside every
       alignment number and the two components would not add up.
 
-    `joint-task` carries a second `sharing` row, `joint-task - independent`: it
-    shares threshold tables but not codes, and it never aligns.
+    `joint-task` and `joint-tree` carry further `sharing` rows, `<arm> - independent`:
+    they share threshold tables but not codes, and they never align.
 
     Descriptive only: no p-values. These contrasts decompose where the effect
     comes from; testing them too would enlarge the multiplicity family
@@ -1020,10 +1021,11 @@ def ablation_decomposition(df, metrics=DEFAULT_METRICS, confidence=0.95):
     differ from `mean_diff_split_level` whenever the design is unbalanced.
     """
     contrasts = [('sharing', 'joint-off', INDEPENDENT_ARM_SLUG),
-                 ('sharing', PER_TASK_ARM_SLUG, INDEPENDENT_ARM_SLUG)]
+                 ('sharing', PER_TASK_ARM_SLUG, INDEPENDENT_ARM_SLUG),
+                 ('sharing', PER_TREE_ARM_SLUG, INDEPENDENT_ARM_SLUG)]
     present = set(df['arm_slug'].unique())
     for slug in _arms_present(df, None):
-        if slug in ('joint-off', PER_TASK_ARM_SLUG):
+        if slug in ('joint-off', PER_TASK_ARM_SLUG, PER_TREE_ARM_SLUG):
             continue
         contrasts.append(('alignment', slug, 'joint-off'))
 

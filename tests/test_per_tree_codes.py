@@ -1106,3 +1106,250 @@ def test_one_code_and_per_task_programs_replay_unchanged(tmp_path, seed):
     assert not any(isinstance(bits, Spilled) for bits in program.bits.values())
     breakdown = json.dumps(model_breakdown(program), sort_keys=True)
     assert _sha(breakdown) == _OTHER_REPLAY_SHAS[(encoding, seed)], (encoding, seed)
+
+
+# --- the Spilled mark changes a price (forest-free) ------------------------------------
+
+def test_the_spilled_mark_alone_changes_a_tables_block_price():
+  assert lanes.table_blocks((Spilled(3),) * 4) == 2
+  assert lanes.table_blocks((3,) * 4) == 1
+
+
+def test_declared_prices_charge_a_marked_key_twice_what_the_unmarked_one_costs():
+  import dataclasses
+  from p4gen.p4_replay import declared_prices
+  fields = ["code_tr_app_0_%s" % f for f in "abcd"]
+  text = "\n".join(
+      ["\tbit<3> %s;" % f for f in fields]
+      + ['@pa_container_size("ingress", "ig_md.%s", 16)' % f for f in fields]
+      + ["table get_classification_tree_app_0 {", "\tkey = {"]
+      + ["\t\tmeta.%s : ternary;" % f for f in fields]
+      + ["\t}", "\tsize = 100;", "}", ""])
+  program = parse_program_text(text)
+  assert all(isinstance(program.bits[f], Spilled) for f in fields)
+  unmarked = {name: int(bits) for name, bits in program.bits.items()}
+  assert declared_prices(program) == {"get_classification_tree_app_0": 2}
+  assert declared_prices(dataclasses.replace(program, bits=unmarked)) == {
+      "get_classification_tree_app_0": 1}
+
+
+# --- the arm joint-tree (spec 9.1, 9.3, 9.4) -------------------------------------------
+
+def test_arm_identity_flows_through_config_row_id_jobs_and_the_loader():
+  from src.main import PER_TREE_ARM_ENTRY, select_arm_slugs
+  from src.reporting import claims
+  from src.reporting.campaign_data import PER_TREE_ARM_SLUG, _expected_arm_slug
+  from src.training.campaign_run import row_id, split_csv_name
+  from src.training.campaign_runner import Job, plan_jobs
+  from src.training.config import ARM_ENCODINGS, PER_TREE_ARM, arm_encoding
+  assert PER_TREE_ARM == PER_TREE_ARM_SLUG == "joint-tree"
+  assert ARM_ENCODINGS[PER_TREE_ARM] == PER_TREE_ENCODING
+  (arm, cfg), = select_arm_slugs(["joint-tree"])
+  assert (arm, cfg) == PER_TREE_ARM_ENTRY
+  assert arm == "joint-tree" and arm_encoding(arm) == PER_TREE_ENCODING
+  assert cfg.arm_slug(PER_TREE_ENCODING) == "joint-tree"
+  assert not cfg.alignment_enabled
+  assert cfg == dict(select_arm_slugs(["joint-off"]))["joint"]     # only the encoding differs
+  assert cfg == select_arm_slugs(["joint-task"])[0][1]
+  job = Job(arm=arm, cfg=cfg, M=35, split=7)
+  assert job.slug == "joint-tree" and job.key == "joint-tree_M035_s07"
+  assert os.path.basename(job.csv_path("run")) == split_csv_name(
+      cfg.n_trees, cfg.max_depth, 35, "joint-tree", 7)
+  assert row_id("joint-tree", 35, 7, 9) == "joint-tree_M035_s07_k09"
+  assert [j.key for j in plan_jobs([(arm, cfg)], [15, 75], [0], "no_such_dir")] == [
+      "joint-tree_M015_s00", "joint-tree_M075_s00"]
+  assert _expected_arm_slug("joint-tree", False, "") == "joint-tree"
+  assert "joint-tree" in claims.REPORTED_JOINT_ARM_SLUGS
+  assert "joint-tree" not in claims.JOINT_ARM_SLUGS      # outside the pre-registered family
+
+
+def test_the_primary_preset_is_unchanged():
+  from src.main import select_arms
+  from src.training.config import arm_encoding
+  assert [cfg.arm_slug(arm_encoding(arm)) for arm, cfg in select_arms("primary")] == [
+      "independent", "joint-off", "joint"]
+
+
+def test_row_artifacts_of_the_arm_replay_to_the_trainings_numbers(tmp_path):
+  from src.training import row_artifacts as ra
+  app, ddos = _forest(3, 2), _forest(2, 1)
+  usage = _evaluate(app, ddos, FEATURES)
+  ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
+  row = "joint-tree_M035_s00_k05"
+  model = ra.write_row_artifacts(ctx, row, app, ddos, FEATURES, FEATURES, PER_TREE_ENCODING, usage)
+  assert model["model_paths_differ"] is False
+  assert model["generator_error"] is None
+  assert (model["stage_depth"], model["blocks"]) == (usage.stage_depth, usage.blocks)
+  assert "code_tr_app_0_" in (tmp_path / "designs" / (row + ".p4")).read_text(encoding="utf-8")
+
+
+def test_the_loader_refuses_alignment_on_the_arm():
+  from src.reporting.campaign_data import MislabelledArtifactError, _expected_arm_slug
+  with pytest.raises(MislabelledArtifactError):
+    _expected_arm_slug("joint-tree", True, "")
+  with pytest.raises(MislabelledArtifactError):
+    _expected_arm_slug("joint-tree", False, "", "", True)       # a twin of it
+  with pytest.raises(MislabelledArtifactError):
+    _expected_arm_slug("joint-tree-off", False, "")
+
+
+def test_ablation_has_a_sharing_row_for_the_arm_and_no_alignment_row():
+  import pandas as pd
+  from src.reporting.claims import ablation_decomposition
+  rows = []
+  for split in range(3):
+    for slug, blocks in (("independent", 40.0), ("joint-off", 34.0), ("joint-task", 32.0),
+                         ("joint-tree", 30.0)):
+      rows.append({"arm_slug": slug, "M": 25, "split": split, "k": 5, "acc_app": 0.9,
+                   "acc_ddos": 0.85, "f1_app": 0.88, "f1_ddos": 0.83, "blocks": blocks,
+                   "stages": 3.0})
+  table = ablation_decomposition(pd.DataFrame(rows), metrics=("blocks",))
+  assert set(table["contrast"]) == {"joint-off - independent", "joint-task - independent",
+                                    "joint-tree - independent"}
+  assert set(table["component"]) == {"sharing"}
+  tree = table[table["treatment"] == "joint-tree"].iloc[0]
+  assert tree["baseline"] == "independent"
+  assert tree["mean_diff_split_level"] == pytest.approx(-10.0)
+
+
+def _generator_error_row(tmp_path, app, ddos, names):
+  from src.training import row_artifacts as ra
+  usage = _evaluate(_forest(3, 2), _forest(2, 1), FEATURES)      # a harmless design's numbers
+  ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
+  row = "joint-tree_M035_s00_k05"
+  model = ra.write_row_artifacts(ctx, row, app, ddos, names, names, PER_TREE_ENCODING, usage)
+  return row, model
+
+
+def test_an_action_above_112_bytes_is_recorded_as_a_generator_error_not_a_crash(tmp_path):
+  app, ddos = _deep_forest(3, 0, depth=9, n_trees=20), _deep_forest(2, 1, depth=3)
+  row, model = _generator_error_row(tmp_path, app, ddos, DEEP_FEATURES)
+  assert "action data bus" in model["generator_error"]
+  assert model["stage_depth"] is None and model["blocks"] is None
+  assert model["hw_feasible"] is False and model["budget_feasible"] is False
+  assert (tmp_path / "designs" / (row + ".generator_error.txt")).read_text() == \
+      model["generator_error"]
+  assert not (tmp_path / "designs" / (row + ".p4")).exists()
+
+
+def test_a_tree_with_no_splits_is_recorded_as_a_generator_error_not_a_crash(tmp_path):
+  X = np.zeros((60, len(FEATURES)), dtype=int)
+  flat = bps.dt_thresholds_float_to_int(RandomForestClassifier(
+      n_estimators=2, max_depth=3, random_state=0).fit(X, np.arange(60) % 3))
+  row, model = _generator_error_row(tmp_path, flat, _forest(2, 1), FEATURES)
+  assert "no split" in model["generator_error"]
+  assert model["hw_feasible"] is False
+
+
+def _search(monkeypatch, replacement, n_trials=6):
+  """The trials of a real per-tree search whose evaluation is `replacement(real, call)`
+  (call = how many evaluations came before); returns (study trials, train result or None).
+  4000 rows, because forests trained on fewer are mostly stumps (NoSplitTree)."""
+  import optuna
+  import src.training.train_model as tm
+  from src.training.config import TrainConfig
+  from src.training.errors import NoFeasibleSolution
+  from tests.test_train_model_contract import _call
+  captured = {}
+  real_create = optuna.create_study
+
+  def capture(*args, **kwargs):
+    captured["study"] = real_create(*args, **kwargs)
+    return captured["study"]
+
+  monkeypatch.setattr(tm.optuna, "create_study", capture)
+  real = tm.multi_model_memory_evaluation
+  calls = []
+
+  def evaluate(*args, **kwargs):
+    calls.append(1)
+    return replacement(real, len(calls) - 1)(*args, **kwargs)
+
+  monkeypatch.setattr(tm, "multi_model_memory_evaluation", evaluate)
+  cfg = TrainConfig(n_trials=n_trials, min_feasible_before_stop=3, lookback=2)
+  try:
+    result = _call(encoding=PER_TREE_ENCODING, cfg=cfg, max_blocks=200, n=4000)
+  except NoFeasibleSolution:
+    result = None
+  return captured["study"].trials, result
+
+
+def test_an_action_above_the_limit_is_an_infeasible_trial_with_its_overflow(monkeypatch):
+  from src.training import early_stopping
+
+  def replacement(real, call):
+    if call == 0:
+      def refuse(*args, **kwargs):
+        raise ActionDataTooWide("too wide", PER_TREE_MAX_ACTION_BYTES + 5)
+      return refuse
+    return real
+
+  trials, result = _search(monkeypatch, replacement)
+  first = trials[0]
+  assert first.user_attrs["crossbar_violation"] == 5.0
+  for attr in ("codeword_violation", "blocks_violation", "stages_violation"):
+    assert first.user_attrs[attr] == 0.0
+  assert first.values == [-1.0, -1.0, float("inf")]
+  assert not early_stopping.is_feasible(first)
+  assert "no_split_tree" not in first.user_attrs
+  assert len(trials) > 1                          # the search continued
+  assert result is not None                       # and found a feasible design
+
+
+def test_an_action_overflow_is_floored_at_one(monkeypatch):
+  def replacement(real, call):
+    def refuse(*args, **kwargs):
+      raise ActionDataTooWide("too wide", PER_TREE_MAX_ACTION_BYTES)
+    return refuse
+
+  trials, result = _search(monkeypatch, replacement, n_trials=3)
+  assert result is None
+  assert {t.user_attrs["crossbar_violation"] for t in trials} == {1}
+
+
+def test_a_no_split_tree_is_an_infeasible_trial_and_counted(monkeypatch):
+  from src.training import early_stopping
+
+  def replacement(real, call):
+    if call == 0:
+      def refuse(*args, **kwargs):
+        raise NoSplitTree("tree app_0 has no split", "app_0")
+      return refuse
+    return real
+
+  trials, result = _search(monkeypatch, replacement)
+  first = trials[0]
+  assert first.user_attrs["no_split_tree"] is True
+  assert first.user_attrs["crossbar_violation"] == 1.0
+  for attr in ("codeword_violation", "blocks_violation", "stages_violation"):
+    assert first.user_attrs[attr] == 0.0
+  assert first.values == [-1.0, -1.0, float("inf")]
+  assert not early_stopping.is_feasible(first)
+  assert result is not None
+  rows = {row["number"]: row for row in result.trial_table}
+  assert rows[0]["no_split_tree"] is True and rows[0]["feasible"] is False
+  # the column is the trials' own attribute (the search also meets stumps by itself)
+  assert {number for number, row in rows.items() if row["no_split_tree"]} == {
+      t.number for t in trials if t.user_attrs.get("no_split_tree")}
+  assert all(row["feasible"] is False for row in rows.values() if row["no_split_tree"])
+
+
+def test_other_arms_trial_tables_keep_their_columns(tmp_path):
+  from src.training import row_artifacts as ra
+  from tests.test_train_model_contract import _call
+  header = ("number,params,feasible,acc_sel_app,acc_sel_ddos,blocks,stage_depth,"
+            "b_app,c_app,b_ddos,c_ddos,tied")
+  for encoding in (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING):
+    result = _call(encoding=encoding)
+    assert list(result.trial_table[0]) == header.split(",")
+    assert "no_split_tree" not in result.trial_table[0]
+    ctx = ra.RowContext(str(tmp_path / encoding), "x", 35, "abc")
+    path = ra.write_trial_table(ctx, "x_M035_s00_k01", result.trial_table)
+    with open(path, encoding="utf-8", newline="") as handle:
+      assert handle.readline().rstrip("\n") == header
+  result = _call(encoding=PER_TREE_ENCODING, n=4000)
+  assert list(result.trial_table[0]) == header.split(",") + ["no_split_tree"]
+  ctx = ra.RowContext(str(tmp_path / "tree"), "x", 35, "abc")
+  path = ra.write_trial_table(ctx, "x_M035_s00_k01", result.trial_table)
+  with open(path, encoding="utf-8", newline="") as handle:
+    assert handle.readline().rstrip("\n") == header + ",no_split_tree"

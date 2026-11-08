@@ -13,7 +13,7 @@ from p4gen.build_p4_script import (
     merge_tree_nodes,
     tree_nodes_for,
 )
-from src.training.config import PER_TASK_ARM, TrainConfig, arm_encoding
+from src.training.config import PER_TASK_ARM, PER_TREE_ARM, TrainConfig, arm_encoding
 from src.training import campaign_run
 from src.training.campaign_runner import plan_jobs, run_jobs
 
@@ -75,6 +75,12 @@ PRIMARY_ARMS = [
 PER_TASK_ARM_ENTRY = (PER_TASK_ARM, TrainConfig(alignment_enabled=False,
                                                 ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
 
+# The per-tree encoding (p4model.program.PER_TREE_ENCODING), named by slug
+# (--arm-slugs joint-tree) and outside the 'primary' preset for the same reasons
+# as the per-task arm; its config is the per-task arm's.
+PER_TREE_ARM_ENTRY = (PER_TREE_ARM, TrainConfig(alignment_enabled=False,
+                                                ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
+
 
 def select_arms(which):
     if which == 'primary':
@@ -100,7 +106,7 @@ def select_arm_slugs(slugs):
     rather than the answer.
     """
     catalogue = {}
-    for arm, cfg in PRIMARY_ARMS + [PER_TASK_ARM_ENTRY]:
+    for arm, cfg in PRIMARY_ARMS + [PER_TASK_ARM_ENTRY, PER_TREE_ARM_ENTRY]:
         catalogue[cfg.arm_slug(arm_encoding(arm))] = (arm, cfg)
 
     chosen = []

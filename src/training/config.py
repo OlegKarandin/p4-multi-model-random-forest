@@ -9,17 +9,18 @@ filename is derived from the config that produced it.
 from dataclasses import dataclass
 
 from p4model.program import (DISJOINT_ENCODING, ENCODINGS, JOINT_ENCODING,
-                             PER_TASK_ENCODING)
+                             PER_TASK_ENCODING, PER_TREE_ENCODING)
 from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
 SELECTION_RULES = ('balanced', 'tied_cheapest')
 
 # The arm names `_run_elimination` and the rows' `arm` column use, and the
-# encoding each is priced and generated under. `joint` and `joint-task` both
-# eliminate ONE shared feature list; they differ in the leaf keys.
+# encoding each is priced and generated under. `joint`, `joint-task` and
+# `joint-tree` all eliminate ONE shared feature list; they differ in the leaf keys.
 PER_TASK_ARM = 'joint-task'
+PER_TREE_ARM = 'joint-tree'
 ARM_ENCODINGS = {'independent': DISJOINT_ENCODING, 'joint': JOINT_ENCODING,
-                 PER_TASK_ARM: PER_TASK_ENCODING}
+                 PER_TASK_ARM: PER_TASK_ENCODING, PER_TREE_ARM: PER_TREE_ENCODING}
 
 
 def arm_encoding(arm):
@@ -185,12 +186,15 @@ class TrainConfig:
         `joint-task` (the per-task encoding, 2026-11) deliberately ignores the
         alignment fields too: alignment reduces the union of thresholds, and a
         per-task key does not depend on the union, so the arm never aligns.
+        `joint-tree` (per-tree codes) ignores them for the same reason.
         """
         _validate_encoding(encoding)
         if encoding == DISJOINT_ENCODING:
             return 'independent'
         if encoding == PER_TASK_ENCODING:
             return PER_TASK_ARM
+        if encoding == PER_TREE_ENCODING:
+            return PER_TREE_ARM
         if not self.alignment_enabled:
             return 'joint-off'
         return 'joint'

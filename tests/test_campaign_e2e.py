@@ -14,6 +14,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
 import pandas as pd
 
 from src.main import run_plot_mode
@@ -263,3 +264,59 @@ def test_the_per_task_arm_trains_verifies_and_renders_without_twins(tmp_path, mo
     by_number = {d.number: d for d in deliverables}
     assert {9, 10} <= set(by_number) and 11 not in by_number
     assert set(load_campaign(run_dir)["arm_slug"]) == {"joint-task", "independent"}
+
+
+def _per_tree_data():
+    """4000 learnable rows per task: _synthetic_data's 240 make most forests stumps, and a
+    per-tree design with a stump has no key to match on (NoSplitTree), so no row is feasible."""
+    rng = np.random.default_rng(3)
+    X_app = rng.integers(0, 5000, size=(4000, 3))
+    X_ddos = rng.integers(0, 5000, size=(4000, 3))
+    y_app = np.minimum(X_app[:, 0] // 1700 + (rng.random(4000) < 0.05) * rng.integers(0, 3, 4000), 2)
+    y_ddos = (X_ddos[:, 1] > 2500).astype(int) ^ (rng.random(4000) < 0.05)
+    return X_app, X_ddos, y_app, y_ddos, ["Fwd.Packet.Length.Max", "Flow.IAT.Max", "Bwd.IAT.Min"]
+
+
+def test_the_per_tree_arm_trains_verifies_and_renders_without_twins(tmp_path, monkeypatch):
+    """The per-tree arm next to its baseline, with no twins stage: rows carry its
+    identity, every program is per-tree and replays to training's numbers, and
+    every deliverable renders (a partial family, as any run of this arm is)."""
+    monkeypatch.delenv("THESIS_P4C_IMAGE", raising=False)
+    monkeypatch.delenv("THESIS_P4STUDIO_COMMIT", raising=False)
+    run_dir = str(tmp_path / "run")
+    arms = [("joint-tree", TrainConfig(alignment_enabled=False, **_CFG)),
+            ("independent", TrainConfig(**_CFG))]
+    jobs = campaign_runner.plan_jobs(arms, [_M], list(_SPLITS), run_dir)
+    assert {job.slug for job in jobs} == {"joint-tree", "independent"}
+    summary = campaign_runner.run_jobs(jobs, _per_tree_data(), run_dir, "deadbeef", 1,
+                                       executor_factory=_serial)
+    assert summary.failed == {}, summary.failed
+    feasible = _row_ids(run_dir)
+    per_tree = [r for r in feasible["row_id"] if r.startswith("joint-tree_M035_s00_k")]
+    assert per_tree
+    assert set(feasible.loc[feasible["row_id"].isin(per_tree), "arm"]) == {"joint-tree"}
+    assert set(feasible.loc[feasible["row_id"].isin(per_tree), "alignment_enabled"]) == {"False"}
+    for row_id in per_tree:
+        with open(os.path.join(run_dir, "designs", row_id + ".p4"), encoding="utf-8") as handle:
+            assert "code_tr_" in handle.read()
+        with open(os.path.join(run_dir, "designs", row_id + ".model.json"),
+                  encoding="utf-8") as handle:
+            assert json.load(handle)["model_paths_differ"] is False
+    trial_tables = [name for name in os.listdir(os.path.join(run_dir, "trials"))
+                    if name.startswith("joint-tree_")]
+    assert trial_tables
+    with open(os.path.join(run_dir, "trials", trial_tables[0]), encoding="utf-8") as handle:
+        assert handle.readline().rstrip("\n").endswith(",tied,no_split_tree")
+
+    compiler = ReplayingCompiler(false_feasible_row=None)
+    assert verify_runner.run(run_dir, workers=2, compile_fn=compiler, min_free_bytes=0) == 0
+    assert sorted(compiler.compiled) == sorted(feasible["row_id"])
+    verification = pd.read_csv(os.path.join(run_dir, "verification.csv"),
+                               keep_default_na=False, dtype=str)
+    assert set(verification["verdict"]) == {"EXACT"}
+
+    deliverables = run_plot_mode(results_dir=run_dir, output_dir=str(tmp_path / "figures"),
+                                 allow_partial_family=True)
+    by_number = {d.number: d for d in deliverables}
+    assert {9, 10} <= set(by_number) and 11 not in by_number
+    assert set(load_campaign(run_dir)["arm_slug"]) == {"joint-tree", "independent"}

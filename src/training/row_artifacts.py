@@ -16,6 +16,7 @@ import sklearn
 from p4gen.build_p4_script import generate_P4_code
 from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.program import JOINT_ENCODING
+from p4model.errors import ActionDataTooWide, NoSplitTree
 from p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
 from src.training.campaign_run import (
     atomic_write_text, canonical_json, run_paths)
@@ -104,7 +105,11 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
     try:
         p4_path = _generate(ctx, row_id, model_app, model_ddos,
                             names_app, names_ddos, encoding)
-    except ValueError as exc:
+    except (ValueError, ActionDataTooWide, NoSplitTree) as exc:
+        # The two per-tree refusals are RuntimeErrors (p4model.errors), like the
+        # other model refusals; the search records them as infeasible trials
+        # (train_model.objective), so selection should never reach one, but a
+        # design that does is a generator_error row, not a crashed job.
         message = str(exc)
         atomic_write_text(os.path.join(paths.designs, row_id + '.generator_error.txt'),
                           message)
