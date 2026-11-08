@@ -1895,6 +1895,9 @@ POOL_KEYS = {
     "ternary_fields", "ternary_key_bits", "interior_stages", "emitted_features",
     "register_names", "range_entries", "range_blocks", "ternary_entries",
     "codeword_length", "range_task", "ternary_task",
+    # 2026-11-08: trees reading each range table, the range pool's p4c tie
+    # order (crossbar_stages_needed table_dependents).
+    "range_dependents",
 }
 
 
@@ -1991,12 +1994,14 @@ def _c1_pool(range_task, range_levels, ternary_task, tree_blocks):
     }
 
 
-def test_disjoint_trees_start_after_their_own_tasks_range_tables():
-    # The app range table lands at stage 4 and the ddos one at 8. Three
-    # 12-block app trees (one column each, so two per stage) need not wait for
-    # the ddos table: they take stages 5 and 6, and the ddos tree takes 9 --
-    # depth 10, plus the vote stage. Before C1 every tree started at 9 and the
-    # same four trees needed stages 9 and 10 (12|12, 12|12), one stage deeper.
+def test_disjoint_trees_wait_for_their_own_tables_and_never_precede_the_last():
+    # Rule E (2026-11-08; usage.tree_readiness_levels): the app range table
+    # lands at stage 4 and the ddos one at 8. An app tree reads only the app
+    # table, so it no longer waits one stage PAST the ddos table (pre-C1: 9),
+    # but it may not run BEFORE it either (C1 alone: 5) -- p4c keeps a tree
+    # behind every range table listed ahead of it in the apply block and lets
+    # it share that table's stage. The three 12-block app trees start at 8,
+    # beside the ddos range table, and the ddos tree waits for 9.
     from p4model.program import APP_TASK, DDOS_TASK
     from p4model.usage import assemble_usage
 
@@ -2005,8 +2010,10 @@ def test_disjoint_trees_start_after_their_own_tasks_range_tables():
         _c1_pool([APP_TASK, DDOS_TASK], [4, 8], tasks, tree_blocks=12))
 
     assert range_plan.table_stages == (4, 8)
-    assert sorted(ternary_plan.indices) == [5, 6, 9]
-    assert usage.stage_depth == 11
+    assert min(ternary_plan.table_stages[:3]) == 8
+    assert ternary_plan.table_stages[3] >= 9
+    assert sorted(ternary_plan.indices) == [8, 9, 10]
+    assert usage.stage_depth == 12
     assert usage.blocks == 2 + 4 * 12
 
 
@@ -2044,9 +2051,10 @@ def test_joint_pool_inputs_start_every_tree_at_the_range_pools_depth():
 
 
 def test_a_tree_may_share_a_stage_with_the_other_tasks_range_tables():
-    # App range table at 4, ddos range tables at 5 and 8: the app tree is
-    # ready at 5 and lands there beside the ddos range table (a seeded stage),
-    # which usage.stages counts once, not twice.
+    # App range table at 4, ddos range tables at 5 and 8: the app tree has
+    # its own code at 5 but may not precede the ddos table at 8 (rule E), so
+    # it lands at 8 beside it (a seeded stage), which usage.stages counts
+    # once, not twice. The ddos tree reads the stage-8 table and waits for 9.
     from p4model.program import APP_TASK, DDOS_TASK
     from p4model.usage import assemble_usage
 
@@ -2055,7 +2063,7 @@ def test_a_tree_may_share_a_stage_with_the_other_tasks_range_tables():
                  [APP_TASK, DDOS_TASK], tree_blocks=2))
 
     assert range_plan.indices == {4, 5, 8}
-    assert ternary_plan.indices == {5, 9}
+    assert ternary_plan.indices == {8, 9}
     assert usage.stages == 4
     assert usage.blocks == 3 + 2 * 2
 
@@ -2064,8 +2072,12 @@ def test_tree_readiness_falls_back_when_a_task_has_no_range_table():
     from p4model.program import APP_TASK, DDOS_TASK, FLOW_HASH_LEVEL
     from p4model.usage import tree_readiness_levels
 
-    assert tree_readiness_levels((6,), [DDOS_TASK], [APP_TASK, DDOS_TASK]) == [
-        FLOW_HASH_LEVEL + 1, 7]
+    # The app task has no range table: its trees need nothing past the
+    # flow-hash prologue (FLOW_HASH_LEVEL + 1), but rule E keeps them from
+    # preceding the ddos range table at 6.
+    assert FLOW_HASH_LEVEL + 1 < 6
+    assert tree_readiness_levels((6,), [DDOS_TASK], [APP_TASK, DDOS_TASK]) == [6, 7]
+    assert tree_readiness_levels((), [], [APP_TASK]) == [FLOW_HASH_LEVEL + 1]
     with pytest.raises(ValueError, match="unknown task"):
         tree_readiness_levels((6,), ["shared"], ["shared"])
     with pytest.raises(ValueError, match="positionally aligned"):

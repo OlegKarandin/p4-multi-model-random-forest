@@ -137,9 +137,8 @@ def table_tasks(tables):
         if match:
             labels[name] = match.group(1)
             for key in keys:
-                feature = feature_of_per_task_field(key, match.group(1))
-                written_by = key if feature is None else 'code_' + feature
-                readers.setdefault(written_by, set()).add(match.group(1))
+                readers.setdefault(code_written_by(key, match.group(1)),
+                                   set()).add(match.group(1))
         elif name.startswith('get_classification_tree'):
             raise ValueError('%s: a classification tree must be named '
                              'get_classification_tree_<task>_<index>' % name)
@@ -155,6 +154,43 @@ def table_tasks(tables):
             else:
                 labels[name] = frozenset(tasks)
     return labels
+
+
+def code_written_by(key, task):
+    """The code field a range table writes for a tree of `task` keying `key`:
+    the key itself, or for a per-task code code_tk_<task>_<f>, the field
+    code_<f> that table_<n>_<f> is named after (feature_of_per_task_field).
+    The one place a new code encoding teaches the replay which range table a
+    tree key comes from (table_tasks and tree_range_reads both read it)."""
+    feature = feature_of_per_task_field(key, task)
+    return key if feature is None else 'code_' + feature
+
+
+def tree_range_reads(tables):
+    """{tree name: [range table names its key reads]} for one program, or None
+    when some tree key matches no range table (a program this replay cannot
+    map: the caller falls back to task labels). A range table table_<n>_<r>
+    writes code_<r>, so a key is read from the table whose code_<r> is
+    code_written_by(key, task)."""
+    writer = {}
+    for name in tables:
+        match = _RANGE_TABLE_CODE.match(name)
+        if match and tables[name]:
+            writer['code_' + match.group(1)] = name
+    reads = {}
+    for name, keys in tables.items():
+        match = _TREE_TASK.match(name)
+        if not match:
+            continue
+        tables_read = []
+        for key in keys:
+            table = writer.get(code_written_by(key, match.group(1)))
+            if table is None:
+                return None
+            if table not in tables_read:
+                tables_read.append(table)
+        reads[name] = tables_read
+    return reads
 
 
 def _tree_priority(program, name, task):
@@ -217,8 +253,23 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             feature = keys[0][:-len('_val')]
             if feature not in row_features:
                 row_features.append(feature)
+    # Who reads what (2026-11-08): per tree, the range tables its key reads
+    # (rule E, usage.tree_readiness_levels); per range table and per feature,
+    # how many trees read it -- p4c's tie order for registers
+    # (register_stage_schedule) and for the range pool (table_dependents).
+    reads = tree_range_reads(tables)
+    table_readers = {}
+    for tables_read in (reads or {}).values():
+        for table in tables_read:
+            table_readers[table] = table_readers.get(table, 0) + 1
+    feature_readers = {}
+    for name, count in table_readers.items():
+        feature = tables[name][0][:-len('_val')]
+        feature_readers[feature] = feature_readers.get(feature, 0) + count
+    dependents = feature_readers if reads is not None else None
     if readiness_levels is None:
-        levels = dict(zip(row_features, readiness_levels_for(row_features)))
+        levels = dict(zip(row_features, readiness_levels_for(
+            row_features, dependents=dependents)))
     else:
         missing = [f for f in row_features if f not in readiness_levels]
         if missing:
@@ -229,7 +280,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         levels = readiness_levels
     # Mechanism B: stages the placer spends wholly inside a gated register
     # block hold no table from the outer sequence, however empty they are.
-    interior = gated_block_interior_stages(row_features)
+    interior = gated_block_interior_stages(row_features, dependents=dependents)
 
     tasks = table_tasks(tables)
     range_specs, range_fields, range_levels, range_task = [], [], [], []
@@ -262,9 +313,16 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             ternary_task.append(tasks[name])
             ternary_names.append(name)
 
-    range_plan = crossbar_stages_needed(range_specs, readiness_levels=range_levels,
-                                         key_fields=range_fields,
-                                         unavailable_stages=interior)
+    range_plan = crossbar_stages_needed(
+        range_specs, readiness_levels=range_levels, key_fields=range_fields,
+        unavailable_stages=interior,
+        table_dependents=([table_readers.get(name, 0) for name in range_names]
+                          if reads is not None else None))
+    position = {name: index for index, name in enumerate(range_names)}
+    tree_reads = None
+    if reads is not None:
+        tree_reads = [[position[table] for table in reads[name] if table in position]
+                      for name in ternary_names]
     # Per-task tree readiness and the seeded ternary pool, exactly as
     # usage.assemble_usage does it (audit C1): a tree waits for its own task's
     # range tables and the shared ones, and may land in a stage still holding
@@ -278,7 +336,8 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         ternary_specs,
         readiness_levels=tree_readiness_levels(
             range_plan.table_stages, range_task, ternary_task,
-            tasks=_label_tasks(range_task, ternary_task)),
+            tasks=_label_tasks(range_task, ternary_task),
+            tree_reads=tree_reads),
         key_fields=ternary_fields, unavailable_stages=interior,
         key_field_bits=ternary_key_bits,
         seed_stages=range_plan.stage_loads,

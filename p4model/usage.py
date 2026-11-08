@@ -114,8 +114,31 @@ class ResourceUsage:
   ternary_tables: int    # len(ternary_table_specs); see class docstring
 
 
-def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TASKS):
-  """The earliest stage each classification tree may occupy (audit C1).
+def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TASKS,
+                          tree_reads=None):
+  """The earliest stage each classification tree may occupy (audit C1, then
+  rule E, 2026-11-08).
+
+  RULE E (results/encoding_evidence_2026_11/per_tree_model2): a tree is ready
+  one stage after the LAST RANGE TABLE IT READS, and never in a stage before
+  the last range table of the pool (it may share that stage). The first half
+  is C1 made per tree: under per-tree codes a tree keys only the features it
+  splits on, so waiting for its task's last table is one stage too late
+  (per-tree k>=9 stage depth exact 183 -> 191 of 191 with the register order
+  of register_stage_schedule). The second half is p4c's in-sequence order:
+  every range table precedes every tree in the generated apply block, and
+  p4c's log skips a tree "due to in-sequence control dependence" on an
+  unplaced range table ahead of it. p4c breaks it rarely (12 of 11,262 trees
+  of campaign_2026_11d, an app tree one stage before a ddos-only table); it
+  changed no predicted number on any set measured, and it can only make a
+  tree later, never earlier.
+
+  tree_reads : optional, one entry per tree: the positions (into
+               range_table_stages) of the range tables whose code fields the
+               tree keys. None derives them from the labels -- every table
+               labelled with the tree's task or SHARED_TASK -- which is exact
+               for every encoding where a tree keys all of its task's
+               features ('joint', 'disjoint', per-task codes).
 
   A tree keys on its own task's meta.code_<feature> fields, and a code field
   exists one stage after the range table that writes it. So a tree of task t
@@ -168,12 +191,25 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
         "%s, %r or a frozenset of them, trees take %s"
         % (sorted(unknown), tuple(tasks), SHARED_TASK, tuple(tasks)))
   served = [_serves(label) for label in range_task]
-  ready = {}
-  for task in known:
-    own = [stage for stage, tasks_served in zip(range_table_stages, served)
-           if task in tasks_served]
-    ready[task] = max(own) + 1 if own else FLOW_HASH_LEVEL + 1
-  return [ready[task] for task in ternary_task]
+  if tree_reads is None:
+    tree_reads = [[position for position, tasks_served in enumerate(served)
+                   if task in tasks_served] for task in ternary_task]
+  elif len(tree_reads) != len(ternary_task):
+    raise ValueError(
+        "tree_readiness_levels: got %d tree_reads entries for %d trees; the "
+        "two must be positionally aligned" % (len(tree_reads), len(ternary_task)))
+  last = max(range_table_stages, default=None)
+  levels = []
+  for reads in tree_reads:
+    reads = list(reads)
+    if any(not 0 <= position < len(range_table_stages) for position in reads):
+      raise ValueError("tree_readiness_levels: tree_reads names a range table "
+                       "position outside 0..%d: %s"
+                       % (len(range_table_stages) - 1, reads))
+    own = (max(range_table_stages[position] for position in reads) + 1
+           if reads else FLOW_HASH_LEVEL + 1)
+    levels.append(own if last is None else max(own, last))
+  return levels
 
 
 def assemble_usage(pool):
@@ -235,10 +271,15 @@ def assemble_usage(pool):
   # reason a stage can sit at 0/24 TCAM blocks and still take no table. It is
   # a placement constraint rather than a penalty precisely so that it costs
   # nothing on the rows whose tables were not going to land there anyway.
+  # Range-pool tie order (2026-11-08): among tables ready in one stage, the
+  # one more trees read first, then the later-listed one -- p4c's
+  # DOWNWARD_TD then DEFAULT (crossbar_stages_needed's table_dependents). A
+  # pool serialized before the key existed keeps the old first-listed order.
   range_plan = crossbar_stages_needed(range_table_specs,
                                       readiness_levels=range_levels,
                                       key_fields=range_fields,
-                                      unavailable_stages=interior_stages)
+                                      unavailable_stages=interior_stages,
+                                      table_dependents=pool.get("range_dependents"))
   # Per-task tree readiness (audit C1): a tree waits for the range tables of
   # ITS OWN task -- the ones writing the code_<feature> fields it keys on --
   # plus any SHARED_TASK table, never for the other task's. Under 'joint'
@@ -254,7 +295,8 @@ def assemble_usage(pool):
   # table for a task, its trees start right after the flow-hash prologue
   # (tree_readiness_levels).
   ternary_levels = tree_readiness_levels(range_plan.table_stages, range_task,
-                                         ternary_task)
+                                         ternary_task,
+                                         tree_reads=pool.get("tree_reads"))
   # Only the classification pool gets key_field_bits, which switches on the
   # ordered stage simulation (packing.crossbar_stages_needed, audit C5): trees
   # are placed in p4c's order -- @placement_priority, ddos before app

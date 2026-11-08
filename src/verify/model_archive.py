@@ -22,10 +22,11 @@ from p4model.target import TOFINO_PIPELINE_STAGES
 # (2026-10-04): stage_depth 70/73 (feasible 60/60), blocks 59/60.
 # row -> {metric: (model, p4c)}. See CLAUDE.md "Accuracy -- current gates".
 KNOWN_MISSES = {
-    # Infeasible either way (> 12 stages); listed in CLAUDE.md.
-    'heldout_independent_M150_k15_s16': {'stage_depth': (14, 13)},
+    # Infeasible either way (> 12 stages); listed in CLAUDE.md. Exact since
+    # 2026-11-08 (p4c's tie order for registers and range tables, rule E):
+    # heldout_independent_M150_k15_s16 (was 14 vs 13) and
+    # independent_high_sd12 (was 13 vs 14).
     'heldout_independent_M250_k14_s12': {'stage_depth': (15, 16)},
-    'independent_high_sd12': {'stage_depth': (13, 14)},
     # The lane price's accepted greedy miss: ddos key (27, 52), 2 per tree vs
     # p4c's 3, three trees (golden fixture known_findings 'lane_price_2026_10').
     'independent_low_sd5': {'blocks': (13, 16)},

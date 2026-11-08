@@ -205,8 +205,10 @@ def test_tree_readiness_waits_only_for_range_tables_serving_the_trees_task():
     labels = [frozenset({"x", "y"}), "z", SHARED_TASK]
     assert tree_readiness_levels(stages, labels, ["x", "y", "z"],
                                  tasks=("x", "y", "z")) == [9, 9, 9]
+    # x and y read only the stage-4 table, but rule E keeps them from
+    # preceding z's table at 6: they may share its stage.
     assert tree_readiness_levels(stages[:2], labels[:2], ["x", "y", "z"],
-                                 tasks=("x", "y", "z")) == [5, 5, 7]
+                                 tasks=("x", "y", "z")) == [6, 6, 7]
     with pytest.raises(ValueError, match="unknown task"):
         tree_readiness_levels((4,), [frozenset({"x", "w"})], ["x"], tasks=("x",))
 

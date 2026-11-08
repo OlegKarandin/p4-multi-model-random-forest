@@ -436,7 +436,8 @@ def _ordered_stage_simulation(table_specs, key_fields, key_field_bits, levels,
 
 def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                            unavailable_stages=frozenset(), key_field_bits=None,
-                           seed_stages=(), placement_priority=None):
+                           seed_stages=(), placement_priority=None,
+                           table_dependents=None):
   """Packs independent match tables into pipeline stages under every
   per-stage hardware limit simultaneously, and returns a StagePlan
   describing where the tables landed (not just how many stages that took).
@@ -495,6 +496,18 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   occupies 2 stages); without them, first-fit-decreasing. A range table's
   key is one whole-byte 16-bit field, and 8 of them (the table cap) fill 16
   bytes, so no sharing price applies.
+
+  table_dependents (2026-11-08, the range pool): one int per table, the
+  classification trees reading its code. Given, tables tied on (level, load)
+  are placed in p4c's order -- more dependents first, then the table listed
+  LATER -- instead of first-listed. p4c's own log over the range tables it
+  compares (per_tree_model2/step12/range_reasons_out.txt): "fewer total
+  dependencies in dominance frontier" picks the one more trees read in 714 of
+  714 (campaign independent sample), 628 of 628 (joint-task), 2,361 of 2,430
+  (per-tree); "default choice" picks the later-listed in every case. With the
+  8-table stage cap binding, which table is left over decides which trees
+  wait (campaign independent_M075_s20_k10). Only for the declared-price
+  placement below; a classification pool (key_field_bits) refuses it.
 
   THE CLASSIFICATION POOL (key_field_bits given: one tuple of key-field BIT
   widths per table) is placed by an ORDERED STAGE SIMULATION (audit C5,
@@ -566,6 +579,17 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
         "two must be positionally aligned, one field-width tuple per table, or "
         "a table would be priced against another table's key shape"
         % (len(key_field_bits), len(table_specs)))
+  if table_dependents is not None:
+    if key_field_bits is not None:
+      raise ValueError(
+          "crossbar_stages_needed: table_dependents orders the declared-price "
+          "range placement; the classification pool is ordered by "
+          "placement_priority")
+    if len(table_dependents) != len(table_specs):
+      raise ValueError(
+          "crossbar_stages_needed: got %d table_dependents for %d table_specs; "
+          "the two must be positionally aligned"
+          % (len(table_dependents), len(table_specs)))
   if placement_priority is not None:
     if key_field_bits is None:
       raise ValueError(
@@ -706,7 +730,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   # The result counts OCCUPIED stages, not the index span -- stages below the
   # lowest level hold register/hash work, not tables from this pool.
   by_index = {}
-  ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]], -load(s)))
+  if table_dependents is None:
+    ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]], -load(s)))
+  else:
+    ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]], -load(s),
+                                            -table_dependents[s[2]], -s[2]))
   for blocks, _width, table_idx, fields in ordered:
     index = readiness_levels[table_idx]
     while (index in unavailable_stages or

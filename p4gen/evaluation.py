@@ -259,7 +259,13 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     ternary_entries, ternary_blocks, codeword_length, ternary_table_specs = ternary_matching_resource_usage(
         codewords, feature_intervals, use_default_action_discount=use_default_action_discount)
 
-    range_levels = readiness_levels_for(feature_intervals)
+    # Every tree of both tasks keys every feature: p4c's tie orders
+    # (register_stage_schedule, the range pool's table_dependents) see one
+    # count everywhere and fall back to program order.
+    n_trees = len(tree_nodes_app) + len(tree_nodes_ddos)
+    dependents = {feature: n_trees for feature in feature_intervals}
+    range_dependents = [n_trees] * len(range_table_specs)
+    range_levels = readiness_levels_for(feature_intervals, dependents=dependents)
     emitted_features = list(feature_intervals)
     register_names = register_names_for(feature_intervals)
     # One merged interval set, so every tree keys on the same fields.
@@ -305,7 +311,13 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     codeword_length = max(codeword_length_app, codeword_length_ddos)
     ternary_table_specs = ternary_table_specs_app + ternary_table_specs_ddos
 
-    range_levels = readiness_levels_for(feature_intervals)
+    # A task's trees key every feature of that task: a feature is read by the
+    # trees of each task with a threshold on it.
+    dependents = {feature: len(ternary_table_specs_app) * (feature in feature_intervals_app)
+                  + len(ternary_table_specs_ddos) * (feature in feature_intervals_ddos)
+                  for feature in feature_intervals}
+    range_dependents = [dependents[feature] for feature in feature_intervals]
+    range_levels = readiness_levels_for(feature_intervals, dependents=dependents)
     emitted_features = list(feature_intervals)
     register_names = register_names_for(feature_intervals)
     range_fields = range_key_fields_for(feature_intervals)
@@ -387,9 +399,21 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # that feature), so both calls must read their levels off a schedule of
     # the UNION -- see readiness_levels_for's emitted_features.
     emitted_features = list(feature_intervals_app) + list(feature_intervals_ddos)
+    # Readers per feature (the register tie order) and per range table (the
+    # range pool's): an app table is read by the app trees, plus the ddos
+    # trees when the feature is shared; a ddos-only table by the ddos trees.
+    n_app, n_ddos = len(ternary_table_specs_app), len(ternary_table_specs_ddos)
+    dependents = {feature: n_app * (feature in feature_intervals_app)
+                  + n_ddos * (feature in feature_intervals_ddos)
+                  for feature in emitted_features}
+    range_dependents = ([n_app + (n_ddos if feature in shared_features else 0)
+                         for feature in feature_intervals_app]
+                        + [n_ddos] * len(range_table_specs_ddos))
     range_levels = (
-        readiness_levels_for(feature_intervals_app, emitted_features=emitted_features) +
-        readiness_levels_for(ddos_only_intervals, emitted_features=emitted_features))
+        readiness_levels_for(feature_intervals_app, emitted_features=emitted_features,
+                             dependents=dependents) +
+        readiness_levels_for(ddos_only_intervals, emitted_features=emitted_features,
+                             dependents=dependents))
     # Same per-model split, same concatenation order, for the crossbar field
     # identities. Two models that selected the same feature resolve to the
     # same range field (the raw _val field is always shared) and, when their
@@ -428,7 +452,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   # this value is what lets it stay that way while still packing both pools
   # dependency-aware. See assemble_usage's Mechanism B comment for why the
   # value itself matters.
-  interior_stages = gated_block_interior_stages(emitted_features)
+  interior_stages = gated_block_interior_stages(emitted_features,
+                                                dependents=dependents)
 
   # ternary_blocks (the naive per-table sum each branch computed above) is
   # deliberately NOT one of the 15 keys below -- see this function's own
@@ -449,6 +474,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       "range_blocks": range_blocks,
       "ternary_entries": ternary_entries,
       "codeword_length": codeword_length,
+      "range_dependents": range_dependents,
   }
 
 

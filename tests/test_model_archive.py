@@ -100,10 +100,10 @@ def test_blocks_are_not_compared_on_an_infeasible_design(tmp_path, monkeypatch):
 
 
 def test_the_shipped_known_misses_are_the_spec_list():
+    # 2026-11-08: heldout_independent_M150_k15_s16 and independent_high_sd12
+    # are exact under p4c's tie order and rule E, and leave the list.
     assert model_archive.KNOWN_MISSES == {
-        "heldout_independent_M150_k15_s16": {"stage_depth": (14, 13)},
         "heldout_independent_M250_k14_s12": {"stage_depth": (15, 16)},
-        "independent_high_sd12": {"stage_depth": (13, 14)},
         "independent_low_sd5": {"blocks": (13, 16)},
     }
 

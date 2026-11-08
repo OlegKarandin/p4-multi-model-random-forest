@@ -48,6 +48,9 @@ def rebuild_pool(row):
         "range_entries": src["range_entries"],
         "range_blocks": src["range_blocks"],
         "ternary_entries": src["ternary_entries"],
+        # Absent from a fixture dumped before 2026-11-08: the range pool then
+        # keeps the first-listed tie order it was dumped with.
+        "range_dependents": src.get("range_dependents"),
         "codeword_length": src["codeword_length"],
     }
     # Bits are authoritative; the recorded byte width is redundant with them and

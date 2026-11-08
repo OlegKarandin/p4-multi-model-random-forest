@@ -111,9 +111,29 @@ def _register_blocks(features, catalog):
 
 
 def register_stage_schedule(features, catalog=None,
-                            alus_per_stage=METER_ALUS_PER_STAGE):
+                            alus_per_stage=METER_ALUS_PER_STAGE,
+                            dependents=None):
   """Register base name -> the pipeline stage its RegisterAction runs in, for
   the whole set of features whose registers the generator will emit.
+
+  REVISED 2026-11-08 (results/encoding_evidence_2026_11/per_tree_model2,
+  notes.md): Pass 4 below is a STAGE-BY-STAGE list schedule over the READY
+  registers, ranked the way p4c's placer ranks two candidates for one stage
+  (table_placement.cpp DecidePlacement::is_better, read in p4c's own
+  placement log): the longer dependence chain first ("longer downward prop
+  ... tail chain", the `height` below), then the one more trees depend on
+  ("fewer total dependencies in dominance frontier"), then the one listed
+  LATER in the program ("default choice"). `features` is in program order,
+  and `dependents` maps a feature (as spelled in `features`) to the number of
+  classification trees whose key reads that feature's code; a register's
+  dependents are the sum over the features it serves. Without `dependents`
+  every register ties there and the later-listed one goes first. Measured
+  (designs whose every register lands in p4c's stage, k>=9): per-tree
+  programs 37 -> 182 of 191, campaign_2026_11d independent 82 -> 296 of 300,
+  joint-task 65 -> 294 of 300. The level-first greedy it replaces let a
+  low-level register take a stage p4c gives to a ready higher-level one with
+  more dependents. The old docstring paragraphs below describe the floor and
+  the ALU cap, both unchanged.
 
   feature_readiness_level models a register chain's DEPTH -- how many stages
   a single feature's registers must run back to back. This models the
@@ -186,33 +206,61 @@ def register_stage_schedule(features, catalog=None,
     if parent is not None:
       height[parent] = max(height[parent], height[name] + 1)
 
-  # Pass 4: list schedule, one block at a time in emission order. Within a
-  # block, sorted by level so a predecessor is always placed before anything
-  # that waits on it; then by height, then by name so the result never
-  # depends on feature iteration order. `floor` carries the cursor forward:
-  # no register of a later block may precede the last stage an earlier one
-  # used. ALU load is shared across blocks -- there is one set of four
-  # stateful ALUs per stage, whichever block's register claims it.
+  # Pass 4: list schedule, one block at a time in emission order, one STAGE at
+  # a time inside a block. A register is ready in a stage once its level is
+  # reached and its predecessor ran in an EARLIER stage; the ready ones take
+  # the stage's free ALUs in p4c's order (docstring head): -height, -trees
+  # depending on it, later program position, then name so the result is a
+  # function of the arguments alone. `floor` carries the cursor forward: no
+  # register of a later block may precede the last stage an earlier one used.
+  # ALU load is shared across blocks -- there is one set of four stateful
+  # ALUs per stage, whichever block's register claims it.
+  order = list(dict.fromkeys(features))
+  served = collections.defaultdict(list)
+  for position, feature in enumerate(order):
+    entry = catalog.get(normalise_feature_name(feature))
+    for register in (entry or {}).get("registers", ()):
+      served[register["name"]].append(position)
+  dependents = dependents or {}
+
+  def rank(name):
+    positions = served.get(name, ())
+    return (-height[name],
+            -sum(dependents.get(order[p], 0) for p in positions),
+            -max(positions, default=-1),
+            name)
+
   placed, load, floor = {}, collections.Counter(), 0
   for block in REGISTER_BLOCK_ORDER:
     names = [name for name, owner in gate.items() if owner == block]
     if not names:
       continue
-    for name in sorted(names, key=lambda n: (levels[n], -height[n], n)):
-      stage = max(levels[name], floor)
-      parent = predecessor.get(name)
-      if parent is not None:
-        stage = max(stage, placed[parent] + 1)
-      while load[stage] >= alus_per_stage:
-        stage += 1
-      placed[name] = stage
-      load[stage] += 1
+    todo = set(names)
+    stage = max(floor, min(levels[name] for name in names))
+    # A register becomes ready at most len(gate) stages after the block
+    # starts unless its predecessor can never be placed (a catalog cycle,
+    # which level_of already tolerates); fail loudly instead of spinning.
+    limit = stage + len(gate) + max(levels.values()) + 1
+    while todo:
+      if stage > limit:
+        raise ValueError("register_stage_schedule: registers never become "
+                         "ready: %s" % sorted(todo))
+      ready = [name for name in todo
+               if levels[name] <= stage
+               and (predecessor.get(name) is None
+                    or placed.get(predecessor[name], stage) < stage)]
+      for name in sorted(ready, key=rank)[:max(0, alus_per_stage - load[stage])]:
+        placed[name] = stage
+        load[stage] += 1
+        todo.discard(name)
+      stage += 1
     floor = max(placed[name] for name in names)
   return placed
 
 
 def gated_block_interior_stages(features, catalog=None,
-                                alus_per_stage=METER_ALUS_PER_STAGE):
+                                alus_per_stage=METER_ALUS_PER_STAGE,
+                                dependents=None):
   """The stage indices no match table can be placed in, because the placer
   spends the whole of each of them inside a gated register block.
 
@@ -246,7 +294,8 @@ def gated_block_interior_stages(features, catalog=None,
     catalog = FEATURE_REGISTER_CATALOG
 
   gate, _ = _register_blocks(features, catalog)
-  placed = register_stage_schedule(features, catalog, alus_per_stage)
+  placed = register_stage_schedule(features, catalog, alus_per_stage,
+                                   dependents=dependents)
 
   interior = set()
   for block in REGISTER_BLOCK_ORDER:
@@ -260,7 +309,8 @@ def gated_block_interior_stages(features, catalog=None,
   return frozenset(interior)
 
 
-def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None):
+def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None,
+                         dependents=None):
   """One readiness level per feature, positionally aligned with
   range_matching_resource_usage's range_table_specs (both follow
   feature_intervals iteration order).
@@ -277,10 +327,13 @@ def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None)
   register block and one set of stateful ALUs, so each model's levels must be
   read off a schedule built from the union; pricing a model against a private
   pipeline would understate the pressure. Defaults to feature_intervals
-  itself, which is already the merged set on the 'joint' branch."""
+  itself, which is already the merged set on the 'joint' branch.
+
+  dependents: {feature: trees reading its code}, handed to
+  register_stage_schedule (its tie order); None treats every register alike."""
   placed = register_stage_schedule(
       list(emitted_features if emitted_features is not None else feature_intervals),
-      catalog)
+      catalog, dependents=dependents)
   entries = FEATURE_REGISTER_CATALOG if catalog is None else catalog
 
   levels = []

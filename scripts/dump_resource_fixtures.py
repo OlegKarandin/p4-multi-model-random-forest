@@ -217,6 +217,8 @@ def serialize_row(row_id, group, encoding, pool, usage, range_plan, ternary_plan
         'range_blocks': pool['range_blocks'],
         'ternary_entries': pool['ternary_entries'],
         'codeword_length': pool['codeword_length'],
+        'range_dependents': (list(pool['range_dependents'])
+                             if pool.get('range_dependents') is not None else None),
     }
     outputs = {
         'usage': {
