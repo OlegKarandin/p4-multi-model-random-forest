@@ -30,8 +30,8 @@ from p4model.target import (
 from p4model import lanes
 from p4model.names import normalise_feature_name
 from p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
-                                 TaskSpec, per_task_field, placement_priorities,
-                                 range_table_priority, task_names)
+                                 TaskSpec, per_task_field, per_tree_field,
+                                 placement_priorities, range_table_priority, task_names)
 
 INFINITE = (2**16)-1
 MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
@@ -854,7 +854,9 @@ def _range_table_entries(table_name, action_name, key_field, intervals, writes=N
 def _tree_table_entries(table_name, action_name, tree_codewords, fields,
                         use_default_action_discount):
   '''One tree's classification table. fields: (key field, width) per code
-  field, in the order generate_codewords concatenated the codeword.'''
+  field, in the order generate_codewords concatenated the codeword, or
+  (key field, width, slices) for a field the key reads as slices, slices being
+  (bf_rt key name, hi, lo) per slice.'''
   # Planter-style discount: every leaf sharing this tree's majority class is
   # excluded from this tree's explicit entries and covered by ONE
   # default-action record instead. Computed once per tree, up front, so
@@ -879,10 +881,15 @@ def _tree_table_entries(table_name, action_name, tree_codewords, fields,
     # minus the `meta.` prefix).
     key_fields = {}
     bit_offset = 0
-    for field, width in fields:
-      hex_value, hex_mask = get_ternary_value_and_mask(codeword[bit_offset:bit_offset+width])
-      key_fields[field] = {"value": hex_value, "mask": hex_mask}
+    for field in fields:
+      name, width = field[0], field[1]
+      chunk = codeword[bit_offset:bit_offset+width]  # most significant bit first
       bit_offset += width
+      # A field the key reads as slices (per-tree codes, generate_per_tree_table_entries)
+      # carries (bf_rt name, hi, lo) per slice: each slice gets its own value/mask.
+      for slice_name, hi, lo in (field[2] if len(field) > 2 and field[2] else [(name, width - 1, 0)]):
+        hex_value, hex_mask = get_ternary_value_and_mask(chunk[width - 1 - hi:width - lo])
+        key_fields[slice_name] = {"value": hex_value, "mask": hex_mask}
     entries.append({
         "table_name": table_name,
         "action": action_name,
@@ -972,6 +979,106 @@ def generate_table_entries(tasks, use_default_action_discount=False, per_task_co
           "get_classification_tree_"+task.name+"_"+str(i),
           "classify_flow_codeword_"+task.name+"_"+str(i),
           codewords[i], fields, use_default_action_discount)
+  return entries
+
+
+# p4c asserts on a ternary key slice wider than 64 bits (lib/bitvec.h getrange,
+# `sz <= 64`): a wider code is keyed as several slices of at most this many bits.
+MAX_KEY_SLICE_BITS = 64
+
+
+def bfrt_key_name(expression):
+  '''bf_rt's short name of a P4 key expression, the name its add_with_<action>
+  kwargs use: bfrtcli._build_names' replaceables, then the last dotted
+  component. A slice keeps its bounds: meta.code_x[63:0] -> code_x_63_0_.'''
+  for old, new in (('$', ''), (' & ', '_'), ('-', '_'), (':', '_'), ('[', '_'),
+                   (']', '_'), ('__', '_')):
+    expression = expression.replace(old, new)
+  return expression[expression.rfind('.') + 1:]
+
+
+def per_tree_key_slices(width, pinned_width):
+  '''The (hi, lo) slices a tree key reads of one per-tree code field, lowest
+  first, or None when the key reads the whole field.
+
+  Rule A of the action-data-bus investigation (results/encoding_evidence_2026_11/
+  adb_investigation): a code wider than 8 bits is declared at its pinned
+  container width, so p4c has no spare bits to pack a narrower code into (its
+  condense step, which drags 32-bit words into the bus's 32-byte BYTE region),
+  and the key reads only the code's own `width` bits, cut into slices of at most
+  MAX_KEY_SLICE_BITS. A code of 1-8 bits, or one whose containers it fills
+  exactly, is declared and keyed whole.'''
+  if width <= 8 or pinned_width == width:
+    return None
+  return [(min(width, lo + MAX_KEY_SLICE_BITS) - 1, lo)
+          for lo in range(0, width, MAX_KEY_SLICE_BITS)]
+
+
+def per_tree_intervals(task):
+  '''{tree index: {feature: that tree's own intervals}} for one TaskSpec: the
+  generator's interval rule applied to each tree alone, features it never
+  splits left out.'''
+  return {i: {feature: intervals
+              for feature, intervals in get_feature_intervals(_Forest([tree]), task.features).items()
+              if len(intervals) >= 2}
+          for i, tree in enumerate(task.trees)}
+
+
+def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
+  '''The control-plane entries (get_table_entries' record format, installed by
+  p4/deploy_table_entries.py) of the PER-TREE program: one code field
+  code_<per_tree_field(task, i, f)> per tree and feature it splits on.
+
+  No emitter of that program exists in this generator yet. The program these
+  entries address is the one the 2026-11 investigations compile
+  (results/encoding_evidence_2026_11/: per_tree_arm ptlib.tree_program, then
+  adb_investigation padlib 'padwide_split', i.e. rule A): the per-task program
+  with each code_tk_<task>_<f> replaced by the tree codes; one range table per
+  feature over the union of the tasks' intervals (resolve_per_task_plan), its
+  action set_code_<f> taking code_<task>_<i> for every tree with a threshold on
+  f; each tree table keying its own codes, sliced by per_tree_key_slices from
+  the pins lanes.key_layout gives that tree's key.
+
+  Each code written is the interval's thermometer code in the TREE's own
+  intervals, which is what that tree's codewords, built against the same
+  intervals, expect to find. A sliced key's value and mask are cut at the same
+  bits and named as bf_rt names the slice.'''
+  task_intervals = [(task.name, task.intervals) for task in tasks]
+  by_name = {task.name: task for task in tasks}
+  own = {task.name: per_tree_intervals(task) for task in tasks}
+  table_plan, _ = resolve_per_task_plan(task_intervals)
+  entries = []
+  for index, (feature, (intervals, written)) in enumerate(table_plan.items()):
+    writes = [("code_%s_%d" % (task, i), own[task][i][feature])
+              for task, _, _ in written
+              for i in range(len(by_name[task].trees)) if feature in own[task][i]]
+    entries += _range_table_entries("table_"+str(index)+"_"+feature, "set_code_"+feature,
+                                    feature.replace(" ","_").lower()+"_val",
+                                    intervals, writes)
+  # Program order, lowest priority first, as generate_p4_program lists them.
+  for task in reversed(list(tasks)):
+    if not task.trees:
+      continue
+    if task.features is None:
+      raise ValueError(
+          "task %r has trees but no ordered training-feature-name list "
+          "(TaskSpec.features): its codewords cannot be recomputed" % task.name)
+    for i, tree in enumerate(task.trees):
+      intervals = own[task.name][i]
+      # the generator's pin rule (code_field_container_sizes): one layout per tree key
+      layout = lanes.key_layout([len(iv) - 1 for iv in intervals.values()]) if intervals else None
+      fields = []
+      for feature, iv in intervals.items():
+        field = "code_" + per_tree_field(task.name, i, feature)
+        width = len(iv) - 1
+        slices = per_tree_key_slices(width, sum(lanes.container_sizes(width, layout)))
+        fields.append((field, width, [(bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo)), hi, lo)
+                                      for hi, lo in slices] if slices else None))
+      paths = get_root_to_leaf_paths(tree_nodes_for(_Forest([tree]), task.features))
+      entries += _tree_table_entries(
+          "get_classification_tree_"+task.name+"_"+str(i),
+          "classify_flow_codeword_"+task.name+"_"+str(i),
+          generate_codewords(paths, intervals)[0], fields, use_default_action_discount)
   return entries
 
 

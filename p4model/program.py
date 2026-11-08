@@ -95,6 +95,19 @@ def per_task_field(task, feature):
   return "%s%s_%s" % (PER_TASK_FIELD_PREFIX, task, feature)
 
 
+# The per-tree code fields' resolved names: tr_<task>_<tree>_<feature>, one code per
+# tree per feature that tree splits on (results/encoding_evidence_2026_11/: no
+# program emitter yet; build_p4_script.generate_per_tree_table_entries writes the
+# entries of the per-tree program those investigations compile).
+PER_TREE_FIELD_PREFIX = "tr_"
+
+
+def per_tree_field(task, tree, feature):
+  """The resolved name of tree `tree` of `task`'s own code field on feature,
+  e.g. tr_app_0_flow_iat_max for code_tr_app_0_flow_iat_max."""
+  return "%s%s_%d_%s" % (PER_TREE_FIELD_PREFIX, task, tree, feature)
+
+
 def feature_of_per_task_field(field, task):
   """feature when `field` (with or without its code_ prefix) is task's own
   per-task code field, else None. It takes the task because task and feature
