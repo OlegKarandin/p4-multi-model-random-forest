@@ -53,16 +53,27 @@ def _parse_keys(text):
         for match in re.finditer(pattern, text):
             widths[match.group(2)] = math.ceil(int(match.group(1)) / 8)
             bits[match.group(2)] = int(match.group(1))
-    tables, current = {}, None
+    # A key may read a slice of its field (`meta.code_x[26:0]`): a code field
+    # declared at its container's full width so that p4c's action format has
+    # no padding bits to condense another code into (results/
+    # encoding_evidence_2026_11/adb_investigation). The crossbar sees the
+    # slice, so the slice width is the field's width for pricing.
+    tables, current, sliced = {}, None, {}
     for line in text.splitlines():
         opened = re.match(r"\s*table\s+(\w+)\s*\{", line)
         if opened:
             current = opened.group(1)
             tables[current] = []
             continue
-        key = re.match(r"\s*meta\.(\w+)\s*:\s*(ternary|range)\s*;", line)
+        key = re.match(r"\s*meta\.(\w+)(?:\[(\d+):(\d+)\])?\s*:\s*(ternary|range)\s*;", line)
         if key and current:
             tables[current].append(key.group(1))
+            if key.group(2) is not None:
+                width = int(key.group(2)) - int(key.group(3)) + 1
+                sliced[key.group(1)] = max(sliced.get(key.group(1), 0), width)
+    for field, width in sliced.items():
+        bits[field] = width
+        widths[field] = math.ceil(width / 8)
     return tables, widths, bits
 def _parse_sizes(text):
     """table name -> its declared `size = N`, the entry count the generator

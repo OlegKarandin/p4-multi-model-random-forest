@@ -68,6 +68,30 @@ def test_parse_program_text_reads_keys_widths_and_sizes():
     assert program.sizes == {"table_0_a": 9, "get_classification_tree_app_0": 40}
 
 
+def test_parse_program_text_prices_a_sliced_key_at_its_slice_width():
+    # A code field declared at its container's full width (so p4c's action
+    # format has no padding bits to condense another code into) is keyed on
+    # the slice holding the code; the crossbar sees the slice, so the model
+    # prices the slice width, not the declaration.
+    text = """
+    struct metadata_t {
+        bit<32> code_tr_app_0_a;
+        bit<8> code_tr_app_0_b;
+    }
+    table get_classification_tree_app_0 {
+        key = {
+            meta.code_tr_app_0_a[26:0] : ternary;
+            meta.code_tr_app_0_b : ternary;
+        }
+        size = 40;
+    }
+    """
+    program = rp.parse_program_text(text)
+    assert program.tables == {"get_classification_tree_app_0": ["code_tr_app_0_a", "code_tr_app_0_b"]}
+    assert program.bits == {"code_tr_app_0_a": 27, "code_tr_app_0_b": 8}
+    assert program.widths == {"code_tr_app_0_a": 4, "code_tr_app_0_b": 1}
+
+
 def test_declared_prices_charge_classification_tables_with_table_blocks():
     from p4gen.p4_replay import Program, declared_prices
     program = Program(
