@@ -155,6 +155,61 @@ def test_zero_threshold_classifies_identically_to_sklearn():
 
 
 # ---------------------------------------------------------------------------
+# Leaves no integer reaches
+#
+# dt_thresholds_float_to_int floors every threshold, so nested splits on one
+# feature at 5.2 and 5.4 both become "<= 5" and the branch "> 5 and <= 5" below
+# them holds no integer. generate_codewords used to write a codeword for such a
+# leaf anyway; when it equalled a reachable leaf's, the dict kept the last one,
+# and the reachable leaf's inputs got the unreachable leaf's class.
+# ---------------------------------------------------------------------------
+
+def _collapsing_forest():
+    # sklearn splits at 3.05, 5.2, 5.4 and 5.6; floored, the last three are all 5
+    X = np.array([[1.0], [5.1], [5.3], [5.5], [5.7], [9.0]] * 50)
+    y = np.array([0, 1, 0, 0, 1, 1] * 50)
+    clf = RandomForestClassifier(n_estimators=1, max_depth=4, random_state=0,
+                                 bootstrap=False).fit(X, y)
+    return bps.dt_thresholds_float_to_int(clf)
+
+
+def test_fixture_has_a_leaf_no_integer_reaches():
+    tree_nodes = {0: bps.get_nodes(_collapsing_forest().estimators_[0], ["f"])}
+    paths = bps.get_root_to_leaf_paths(tree_nodes)[0]
+    assert any(not bps.leaf_is_reachable(p["path"]) for p in paths.values())
+
+
+def test_a_leaf_no_integer_reaches_gets_no_codeword():
+    clf = _collapsing_forest()
+    tree_nodes, intervals, codewords = _parse(clf, ["f"])
+    paths = bps.get_root_to_leaf_paths(tree_nodes)[0]
+    reachable = [p for p in paths.values() if bps.leaf_is_reachable(p["path"])]
+    assert len(codewords[0]) == len(reachable)
+
+
+def test_a_leaf_no_integer_reaches_cannot_overwrite_a_reachable_one():
+    clf = _collapsing_forest()
+    _, intervals, codewords = _parse(clf, ["f"])
+    probes = np.arange(0, 12).reshape(-1, 1)
+    _assert_matches_sklearn(clf, ["f"], probes, intervals, codewords)
+
+
+@pytest.mark.parametrize("path, reachable", [
+    ([{"feature": "f", "threshold": 5, "condition": "<="},
+      {"feature": "f", "threshold": 5, "condition": ">"}], False),
+    ([{"feature": "f", "threshold": 5, "condition": "<="},
+      {"feature": "f", "threshold": 4, "condition": ">"}], True),
+    ([{"feature": "f", "threshold": 4, "condition": "<="},
+      {"feature": "f", "threshold": 5, "condition": ">"}], False),
+    ([{"feature": "f", "threshold": 5, "condition": "<="},
+      {"feature": "g", "threshold": 5, "condition": ">"}], True),
+    ([], True),
+])
+def test_leaf_is_reachable_needs_one_integer_on_every_feature(path, reachable):
+    assert bps.leaf_is_reachable(path) is reachable
+
+
+# ---------------------------------------------------------------------------
 # Regression guard for the shallow case that already worked, so a fix to
 # either defect above cannot silently break the common path.
 # ---------------------------------------------------------------------------

@@ -476,9 +476,32 @@ def get_root_to_leaf_paths(tree_nodes):
   return(paths_leaf_nodes_per_tree)
 
 
+def leaf_is_reachable(path):
+  '''True if some integer input satisfies every condition on a root-to-leaf
+  path (get_root_to_leaf_paths' steps). Thresholds are integers here
+  (dt_thresholds_float_to_int floors them), so the leaf's range on a feature is
+  (largest ">" threshold, smallest "<=" threshold], empty when the first is not
+  below the second. Flooring makes this happen: nested splits at 5.2 and 5.4
+  both become "<= 5", and the branch "> 5 and <= 5" between them holds no
+  integer. sklearn never reaches such a leaf either, since it predicts with the
+  same floored thresholds.'''
+  above, at_most = {}, {}
+  for step in path:
+    feature, threshold = step["feature"], step["threshold"]
+    if step["condition"] == "<=":
+      at_most[feature] = min(at_most.get(feature, threshold), threshold)
+    else:
+      above[feature] = max(above.get(feature, threshold), threshold)
+  return all(above[f] < at_most[f] for f in above if f in at_most)
+
+
 def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
   '''
     For each leaf node in each Decision Trees, this function generates the corresponding codeword, associated with the leaf node class label.
+
+    A leaf no integer input reaches (leaf_is_reachable) gets no codeword: its
+    codeword could equal a reachable leaf's, and the dict below would then keep
+    whichever came last.
 
     Inputs: Dictionary of dictionaries, including the path and final class of each leaf node in the Random Forest
             List of feature names used to train the RF model
@@ -496,6 +519,8 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
       codeword = []
       # Obtain features involved in path to reach leaf
       current_leaf_node = paths_leaf_nodes_per_tree[tree][leaf_node]
+      if not leaf_is_reachable(current_leaf_node["path"]):
+        continue
       features_involved = [step["feature"] for step in current_leaf_node["path"]]
 
       #Iterate over all features
@@ -543,11 +568,12 @@ def generate_codewords(paths_leaf_nodes_per_tree, feature_intervals):
           for c in code:
             codeword.append(c)
 
-      # Known open item (spec 2026-09-15 §4.4, review finding 2.2's side note):
-      # This dict is keyed by codeword string, and two leaves with the same codeword
-      # but different predicted classes silently keep the last one written. This is a
-      # generator correctness question (not a cost question) and is deliberately NOT
-      # fixed here because a partial fix would make the item look closed when it isn't.
+      # This dict is keyed by codeword string, so two leaves with one codeword keep
+      # the last one written (spec 2026-09-15 §4.4, review finding 2.2's side note).
+      # The case that happened in real forests was a leaf no integer reaches, its
+      # codeword equal to a reachable sibling's: skipped above. Two REACHABLE leaves
+      # cannot share a codeword, since the tree's own thresholds are among the
+      # intervals' bounds and some threshold separates any two leaves.
       codewords[tree][''.join(codeword)]=current_leaf_node['class']
 
   return codewords
