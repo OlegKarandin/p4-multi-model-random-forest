@@ -58,6 +58,10 @@ class CompileResult:
     tcam: Optional[int] = None
     # Combined stdout+stderr of p4c, truncated to the last 20,000 characters.
     output: str = ''
+    # manifest.json's `compilation_succeeded`; None when there is no manifest.
+    # False with 0 errors is the backend assembler refusing a program that
+    # p4c's front end accepted (set in _finish_compile, not parse_compile_logs).
+    compilation_succeeded: Optional[bool] = None
 
 
 # The four mau.resources.log columns parse_compile_logs extracts, mapped to
@@ -134,6 +138,17 @@ def parse_compile_logs(log_dir: str) -> CompileResult:
                     setattr(result, field_name, int(cell))
 
     return result
+
+
+def read_compilation_succeeded(output_dir: str) -> Optional[bool]:
+    """`compilation_succeeded` from p4c's <output_dir>/manifest.json, or None
+    when the manifest is absent, unreadable or lacks the key."""
+    try:
+        with open(os.path.join(output_dir, "manifest.json"), encoding="utf-8") as f:
+            value = json.load(f).get("compilation_succeeded")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, bool) else None
 
 
 def parse_table_entry_count(log_dir: str, table_name: str) -> Optional[int]:
@@ -424,6 +439,7 @@ def _wsl_command(p4_path, output_dir, architecture, target, include_path, p4c_pa
 
 def _finish_compile(proc, output_dir):
     result = parse_compile_logs(output_dir)
+    result.compilation_succeeded = read_compilation_succeeded(output_dir)
 
     # p4c reports its own aggregated errors/warnings count in a single
     # summary line on stdout/stderr, e.g. "0 errors, 10 warnings generated."

@@ -690,3 +690,26 @@ def test_native_route_compiles_a_prog_p4_copy_and_cleans_it_up(tmp_path, monkeyp
     assert seen["text"] == "// the generated program"
     assert not os.path.exists(seen["dir"])
     assert source.read_text() == "// the generated program"
+
+
+@pytest.mark.parametrize("text,want", [
+    ('{"compilation_succeeded": true}', True),
+    ('{"compilation_succeeded": false}', False),
+    ('{"other": 1}', None),
+    ('not json', None),
+    ('[1]', None),
+])
+def test_read_compilation_succeeded_reads_the_manifest_key(tmp_path, text, want):
+    (tmp_path / "manifest.json").write_text(text)
+    assert pc.read_compilation_succeeded(str(tmp_path)) is want
+
+
+def test_read_compilation_succeeded_is_none_without_a_manifest(tmp_path):
+    assert pc.read_compilation_succeeded(str(tmp_path)) is None
+
+
+def test_finish_compile_records_the_manifests_verdict(tmp_path):
+    (tmp_path / "manifest.json").write_text('{"compilation_succeeded": false}')
+    proc = MagicMock(stdout="0 errors, 1 warnings generated.\n", stderr="", returncode=1)
+    result = pc._finish_compile(proc, str(tmp_path))
+    assert result.errors == 0 and result.compilation_succeeded is False

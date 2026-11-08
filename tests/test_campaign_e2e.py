@@ -73,6 +73,8 @@ class ReplayingCompiler:
         self.compiled.append(row_id)
         logs = os.path.join(output_dir, "pipe", "logs")
         os.makedirs(logs)
+        with open(os.path.join(output_dir, "manifest.json"), "w", encoding="utf-8") as handle:
+            json.dump({"compilation_succeeded": True}, handle)
         if row_id == self.false_feasible_row:
             stages = 13
             resources = "| Stage Number | SRAM | Map RAM | TCAM |\n"  # never allocated

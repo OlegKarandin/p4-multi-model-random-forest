@@ -675,11 +675,45 @@ def test_an_over_stages_design_is_excluded_too(tmp_path):
     assert load_campaign(run)['row_id'].tolist() == ['joint_M035_s00_k05']
 
 
+@pytest.mark.parametrize('failure', ['assembler', 'p4c_errors'])
+def test_a_failed_compile_leaves_the_frame_and_stays_in_load_verification(
+        tmp_path, failure):
+    run = _write_run(tmp_path, [_run_row(k=5), _run_row(k=6)],
+                     [_ver('joint_M035_s00_k05', verdict='COMPILE_ERROR',
+                           unverified=True, failure=failure),
+                      _ver('joint_M035_s00_k06')])
+    assert load_campaign(run)['row_id'].tolist() == ['joint_M035_s00_k06']
+    verification = load_verification(run).set_index('row_id')
+    assert verification.loc['joint_M035_s00_k05', 'failure'] == failure
+
+
+def test_a_verification_csv_without_a_failure_column_drops_nothing(tmp_path):
+    run = _write_run(tmp_path, [_run_row(k=5)],
+                     [_ver('joint_M035_s00_k05', verdict='COMPILE_ERROR',
+                           unverified=True, failure='p4c_errors')])
+    path = os.path.join(run, 'verification.csv')
+    pd.read_csv(path, dtype=str, keep_default_na=False).drop(
+        columns=['failure']).to_csv(path, index=False)
+    assert load_campaign(run)['flagged'].tolist() == [True]
+
+
+@pytest.mark.parametrize('failure,verdict', [('p4c_timeout', 'TIMEOUT'),
+                                             ('generator_error', 'COMPILE_ERROR')])
+def test_other_unverified_rows_stay_flagged_with_model_numbers(
+        tmp_path, failure, verdict):
+    run = _write_run(tmp_path, [_run_row(k=5, stage_depth=9, blocks=30)],
+                     [_ver('joint_M035_s00_k05', verdict=verdict,
+                           unverified=True, failure=failure)])
+    row = load_campaign(run).iloc[0]
+    assert row['flagged'] and row['verdict'] == verdict
+    assert row['stage_depth'] == 9 and row['blocks'] == 30
+
+
 def test_a_compile_error_row_keeps_the_model_numbers_and_is_flagged(tmp_path):
     run = _write_run(tmp_path, [_run_row(k=5, stage_depth=9, blocks=30),
                                 _run_row(k=6)],
                      [_ver('joint_M035_s00_k05', verdict='COMPILE_ERROR',
-                           unverified=True, failure='p4c_errors'),
+                           unverified=True, failure='p4c_toolchain'),
                       _ver('joint_M035_s00_k06')])
     df = load_campaign(run).set_index('row_id')
     bad = df.loc['joint_M035_s00_k05']

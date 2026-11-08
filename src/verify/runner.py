@@ -10,6 +10,7 @@ Tarball layout (`verify/<row_id>.tar.gz`), shared by the writer and `rescore`:
     pipe/logs/<name>                 every KEPT_LOGS file p4c produced
     pipe/logs/table_placement_<N>.log  the highest-numbered placement round
     pipe/prog.bfa
+    manifest.json                    p4c's own, when it wrote one
     p4c_output.txt                   failed compiles only: p4c's captured output
 so extracting it into a directory gives `p4c_numbers(<dir>/pipe/logs)` the same
 input the original compile output did.
@@ -30,7 +31,7 @@ import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from p4gen.p4_compile import P4CompileTimeout, compile_p4
+from p4gen.p4_compile import P4CompileTimeout, compile_p4, read_compilation_succeeded
 from p4gen.p4_ground_truth import (
     committed_blocks, committed_stages_real, p4c_numbers)
 from p4gen.p4_replay import model_breakdown, parse_program
@@ -46,7 +47,9 @@ KEPT_LOGS = ('table_summary.log', 'mau.resources.log', 'phv_allocation_summary_0
 # verification.csv's columns, in order, and exactly the keys of every
 # verify/<row_id>.json (spec §6.5, plus the O3 training-path fields, `M` and
 # `failure`, the machine-readable reason behind a COMPILE_ERROR/TIMEOUT:
-# generator_error | p4c_timeout | p4c_toolchain | p4c_errors, else None).
+# generator_error | p4c_timeout | p4c_toolchain | p4c_errors | assembler, else
+# None; `assembler` is a program the backend assembler refused while p4c's front
+# end counted 0 errors, read from manifest.json's `compilation_succeeded`).
 VERIFICATION_COLUMNS = (
     'row_id', 'p4_sha256', 'M',
     'model_stage_depth', 'model_blocks', 'model_hw_feasible', 'model_budget_feasible',
@@ -60,7 +63,8 @@ VERIFICATION_COLUMNS = (
 )
 
 _FAILURE_VERDICT = {'generator_error': 'COMPILE_ERROR', 'p4c_toolchain': 'COMPILE_ERROR',
-                    'p4c_errors': 'COMPILE_ERROR', 'p4c_timeout': 'TIMEOUT'}
+                    'p4c_errors': 'COMPILE_ERROR', 'assembler': 'COMPILE_ERROR',
+                    'p4c_timeout': 'TIMEOUT'}
 _PLACEMENT_LOG = re.compile(r'^table_placement_(\d+)\.log$')
 
 
@@ -124,6 +128,9 @@ def _kept_files(output_dir):
         bfa = found[0] if len(found) == 1 else None
     if bfa is not None:
         kept.append((bfa, 'pipe/prog.bfa'))
+    manifest = os.path.join(output_dir, 'manifest.json')
+    if os.path.isfile(manifest):
+        kept.append((manifest, 'manifest.json'))
     return kept
 
 
@@ -140,14 +147,25 @@ def _write_tarball(path, output_dir, p4c_output=None):
     atomic_write_bytes(path, buffer.getvalue())
 
 
-def _p4c_from_tarball(path):
-    """P4cNumbers re-parsed from a kept tarball, or None when there is none."""
+def _read_tarball(path):
+    """(P4cNumbers, manifest's compilation_succeeded) re-parsed from a kept
+    tarball; (None, None) when there is none, and None for a tarball written
+    before manifest.json was kept."""
     if not os.path.isfile(path):
-        return None
+        return None, None
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(path) as tar:
             tar.extractall(tmp, filter='data')
-        return p4c_numbers(os.path.join(tmp, 'pipe', 'logs'))
+        return (p4c_numbers(os.path.join(tmp, 'pipe', 'logs')),
+                read_compilation_succeeded(tmp))
+
+
+def _refused_by_assembler(succeeded, p4c, errors):
+    """p4c counted no errors and its manifest says the compile failed, on a
+    program that fits the pipeline: the backend assembler refused it. Past 12
+    stages the compile fails for that reason and stays FALSE_FEASIBLE."""
+    return (succeeded is False and (errors or 0) == 0
+            and (p4c.stage_depth is None or p4c.stage_depth <= TOFINO_PIPELINE_STAGES))
 
 
 # ---------------------------------------------------------------- one row
@@ -156,7 +174,10 @@ def _p4c_from_tarball(path):
 def _compile_with_retry(compile_fn, p4_path, output_dir, timeout, retry_timeout):
     """(result, failure, message, seconds of the last attempt). One retry,
     with the long timeout, on a timeout or toolchain failure; the second
-    failure decides TIMEOUT vs COMPILE_ERROR."""
+    failure decides TIMEOUT vs COMPILE_ERROR. A compile that returns with no
+    manifest.json and no counted errors is a toolchain failure too: p4c died
+    before it could say whether it succeeded. With errors counted it stays a
+    result (a front-end error may write no manifest)."""
     for attempt, limit in enumerate((timeout, retry_timeout)):
         if os.path.exists(output_dir):  # p4c wants to create output_dir itself
             shutil.rmtree(output_dir)
@@ -168,7 +189,11 @@ def _compile_with_retry(compile_fn, p4_path, output_dir, timeout, retry_timeout)
         except RuntimeError as exc:
             failure, message = 'p4c_toolchain', str(exc)
         else:
-            return result, None, None, time.monotonic() - start
+            if ((result.errors or 0) > 0
+                    or read_compilation_succeeded(output_dir) is not None):
+                return result, None, None, time.monotonic() - start
+            failure = 'p4c_toolchain'
+            message = 'p4c wrote no manifest.json\n' + result.output
         seconds = time.monotonic() - start
     return None, failure, message, seconds
 
@@ -248,7 +273,11 @@ def verify_row(run_dir, row_id, compile_fn=None, timeout=300, retry_timeout=1800
             if failure is None and (result.errors or 0) > 0 and not os.path.isfile(
                     os.path.join(output_dir, 'pipe', 'logs', 'table_summary.log')):
                 failure, message = 'p4c_errors', result.output
-            p4c = p4c_numbers(os.path.join(output_dir, 'pipe', 'logs'))
+            p4c = (None if result is None
+                   else p4c_numbers(os.path.join(output_dir, 'pipe', 'logs')))
+            if failure is None and _refused_by_assembler(
+                    read_compilation_succeeded(output_dir), p4c, result.errors):
+                failure, message, p4c = 'assembler', result.output, None
             # No stage count at all, or errors on a program that fits in the
             # pipeline, is not a verified compile. Errors over 12 stages are
             # the expected FALSE_FEASIBLE path and stay classified.
@@ -428,8 +457,11 @@ def rescore(run_dir):
         # source's, so the source's logs are its logs.
         copied_from = old.get('copied_from') or None
         if failure == 'p4c_errors' or failure not in _FAILURE_VERDICT:
-            p4c = _p4c_from_tarball(os.path.join(
+            p4c, succeeded = _read_tarball(os.path.join(
                 paths.verify, (copied_from or row_id) + '.tar.gz'))
+            if failure is None and p4c is not None and _refused_by_assembler(
+                    succeeded, p4c, old.get('p4c_errors')):
+                failure, p4c = 'assembler', None
         else:
             p4c = None
         verdict = classify(model, p4c, _M_value(model), _FAILURE_VERDICT.get(failure))

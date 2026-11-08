@@ -4,6 +4,7 @@ Never runs real p4c: every test injects a `compile_fn` that writes log files in
 the real files' shapes (the Task 1 fixture strings) under output_dir/pipe/logs
 and returns a CompileResult."""
 import csv
+import io
 import json
 import os
 import tarfile
@@ -40,9 +41,17 @@ _TABLES = [{"table": "table_0_flow_iat_max", "kind": "range", "blocks": 1, "stag
             "stage": 7}]
 
 
-def _write_logs(output_dir, resources=_RESOURCES, summary=_SUMMARY):
+def _write_manifest(output_dir, succeeded=True):
+    """p4c's manifest.json; `compilation_succeeded` is false when the backend
+    assembler refused a program that p4c's front end accepted."""
+    with open(os.path.join(output_dir, "manifest.json"), "w") as handle:
+        json.dump({"compilation_succeeded": succeeded}, handle)
+
+
+def _write_logs(output_dir, resources=_RESOURCES, summary=_SUMMARY, succeeded=True):
     logs = os.path.join(output_dir, "pipe", "logs")
     os.makedirs(logs)
+    _write_manifest(output_dir, succeeded)
     files = {"mau.resources.log": resources, "table_summary.log": summary,
              "metrics.json": json.dumps(_METRICS),
              "phv_allocation_summary_0.log": "phv\n",
@@ -144,7 +153,7 @@ def test_a_normal_row_is_exact_kept_logs_tarred_and_merged(tmp_path, monkeypatch
     with tarfile.open(os.path.join(run_dir, "verify", "r.tar.gz")) as tar:
         names = sorted(tar.getnames())
     want = sorted(["pipe/logs/" + n for n in runner.KEPT_LOGS]
-                  + ["pipe/logs/table_placement_10.log", "pipe/prog.bfa"])
+                  + ["pipe/logs/table_placement_10.log", "pipe/prog.bfa", "manifest.json"])
     assert names == want
 
     runner.merge_verification(run_dir)
@@ -185,6 +194,7 @@ def test_a_crash_then_crash_is_a_compile_error(tmp_path):
 def test_errors_without_a_table_summary_are_a_compile_error(tmp_path):
     def failed(output_dir):
         os.makedirs(os.path.join(output_dir, "pipe", "logs"))
+        _write_manifest(output_dir)
         return CompileResult(errors=2, warnings=0, output="error: bad\n2 errors, 0 warnings generated.\n")
 
     run_dir = _run_dir(tmp_path)
@@ -193,7 +203,7 @@ def test_errors_without_a_table_summary_are_a_compile_error(tmp_path):
     assert len(fake.calls) == 1
     assert record["verdict"] == "COMPILE_ERROR" and record["failure"] == "p4c_errors"
     with tarfile.open(os.path.join(run_dir, "verify", "r.tar.gz")) as tar:
-        assert tar.getnames() == ["p4c_output.txt"]
+        assert sorted(tar.getnames()) == ["manifest.json", "p4c_output.txt"]
 
 
 def test_a_native_compile_keeps_its_row_named_bfa_as_prog_bfa(tmp_path):
@@ -246,6 +256,7 @@ def test_errors_over_12_stages_stay_false_feasible(tmp_path):
 def test_a_compile_without_a_stage_count_is_a_p4c_error(tmp_path):
     def no_summary(output_dir):
         os.makedirs(os.path.join(output_dir, "pipe", "logs"))
+        _write_manifest(output_dir)
         return CompileResult(errors=0, warnings=0, output="odd p4c output\n")
 
     run_dir = _run_dir(tmp_path)
@@ -253,6 +264,113 @@ def test_a_compile_without_a_stage_count_is_a_p4c_error(tmp_path):
     assert record["verdict"] == "COMPILE_ERROR" and record["failure"] == "p4c_errors"
     with tarfile.open(os.path.join(run_dir, "verify", "r.tar.gz")) as tar:
         assert tar.extractfile("p4c_output.txt").read().decode() == "odd p4c output\n"
+
+
+def _tar_names(run_dir, row_id):
+    with tarfile.open(os.path.join(run_dir, "verify", row_id + ".tar.gz")) as tar:
+        return tar.getnames()
+
+
+def _refused(output_dir):
+    """The backend assembler refused a program p4c's front end accepted: no
+    errors counted, a 12-stage placement logged, manifest says it failed."""
+    _write_logs(output_dir, succeeded=False)
+    return CompileResult(errors=0, warnings=0, output="assembler: cannot place\n")
+
+
+def _no_manifest(output_dir, errors=0):
+    _write_logs(output_dir)
+    os.remove(os.path.join(output_dir, "manifest.json"))
+    return CompileResult(errors=errors, warnings=0, output="no manifest\n")
+
+
+def test_a_refusal_at_12_stages_with_0_errors_is_an_assembler_compile_error(tmp_path):
+    run_dir = _run_dir(tmp_path)
+    record = runner.verify_row(run_dir, "r", compile_fn=FakeCompiler(_refused))
+    assert record["verdict"] == "COMPILE_ERROR" and record["failure"] == "assembler"
+    assert record["unverified"] is True
+    assert record["p4c_stage_depth"] is None and record["p4c_blocks"] is None
+    assert "p4c_output.txt" in _tar_names(run_dir, "r")
+    assert "manifest.json" in _tar_names(run_dir, "r")
+
+
+def test_false_at_13_stages_stays_false_feasible(tmp_path):
+    def too_deep(output_dir):
+        _write_logs(output_dir, resources="| Stage Number | SRAM | Map RAM | TCAM |\n",
+                    summary="Table allocation done 1 time(s), state = INITIAL\n"
+                            "Number of stages in table allocation: 13\n",
+                    succeeded=False)
+        return CompileResult(errors=1, warnings=0, output="error: no fit\n")
+
+    run_dir = _run_dir(tmp_path)
+    record = runner.verify_row(run_dir, "r", compile_fn=FakeCompiler(too_deep))
+    assert record["verdict"] == "FALSE_FEASIBLE" and record["p4c_stage_depth"] == 13
+    assert record["failure"] is None
+
+
+def test_no_manifest_with_no_errors_retries_as_a_toolchain_failure(tmp_path):
+    run_dir = _run_dir(tmp_path)
+    fake = FakeCompiler(_no_manifest, "ok")
+    record = runner.verify_row(run_dir, "r", compile_fn=fake)
+    assert len(fake.calls) == 2 and [c["timeout"] for c in fake.calls] == [300, 1800]
+    assert record["verdict"] == "EXACT" and record["failure"] is None
+
+
+def test_no_manifest_twice_is_a_toolchain_compile_error(tmp_path):
+    run_dir = _run_dir(tmp_path)
+    fake = FakeCompiler(_no_manifest)
+    record = runner.verify_row(run_dir, "r", compile_fn=fake)
+    assert len(fake.calls) == 2
+    assert record["verdict"] == "COMPILE_ERROR" and record["failure"] == "p4c_toolchain"
+
+
+def test_no_manifest_with_errors_stays_p4c_errors(tmp_path):
+    def front_end_error(output_dir):
+        os.makedirs(os.path.join(output_dir, "pipe", "logs"))
+        return CompileResult(errors=2, warnings=0, output="error: bad\n")
+
+    run_dir = _run_dir(tmp_path)
+    fake = FakeCompiler(front_end_error)
+    record = runner.verify_row(run_dir, "r", compile_fn=fake)
+    assert len(fake.calls) == 1
+    assert record["verdict"] == "COMPILE_ERROR" and record["failure"] == "p4c_errors"
+
+
+def test_the_tarball_keeps_the_manifest_and_rescore_agrees(tmp_path, monkeypatch):
+    run_dir = _run_dir(tmp_path)
+    runner.verify_row(run_dir, "r", compile_fn=FakeCompiler(_refused))
+    stored = _verify_json(run_dir)
+    stored["failure"] = None
+    atomic_write_text(os.path.join(run_dir, "verify", "r.json"), canonical_json(stored))
+    monkeypatch.setattr(runner, "model_breakdown",
+                        lambda program, row_id: {"stage_depth": 12, "blocks": 6,
+                                                 "tables": _TABLES})
+    runner.rescore(run_dir)
+    record = _verify_json(run_dir)
+    assert record["failure"] == "assembler" and record["verdict"] == "COMPILE_ERROR"
+    assert record["p4c_stage_depth"] is None and record["p4c_blocks"] is None
+    assert _csv_rows(run_dir)[0]["failure"] == "assembler"
+
+
+def test_rescore_of_an_old_tarball_with_no_manifest_changes_nothing(tmp_path, monkeypatch):
+    run_dir = _run_dir(tmp_path)
+    runner.verify_row(run_dir, "r", compile_fn=FakeCompiler())
+    tar_path = os.path.join(run_dir, "verify", "r.tar.gz")
+    with tarfile.open(tar_path) as tar:
+        kept = [(m, tar.extractfile(m).read()) for m in tar.getmembers()
+                if m.name != "manifest.json"]
+    assert len(kept) == len(_tar_names(run_dir, "r")) - 1
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for member, data in kept:
+            tar.addfile(member, io.BytesIO(data))
+    monkeypatch.setattr(runner, "model_breakdown",
+                        lambda program, row_id: {"stage_depth": 12, "blocks": 6,
+                                                 "tables": _TABLES})
+    before = _verify_json(run_dir)
+    runner.rescore(run_dir)
+    after = _verify_json(run_dir)
+    before.pop("verifier_git_commit"), after.pop("verifier_git_commit")
+    assert after == before and after["verdict"] == "EXACT"
 
 
 def test_a_generator_error_is_recorded_without_compiling(tmp_path):

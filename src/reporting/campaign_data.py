@@ -179,13 +179,16 @@ Compiler verification (a run; legacy loads carry NaN / '' / False here)
     verdict        str   verification.csv's verdict ('' on legacy loads).
                           Never FALSE_FEASIBLE: p4c-infeasible designs
                           (FALSE_FEASIBLE, p4c_over_stages, p4c_over_budget)
-                          are dropped, exactly as model-infeasible rows are;
-                          they remain visible through load_verification.
+                          and designs p4c would not compile (failure
+                          'assembler' or 'p4c_errors') are dropped, exactly
+                          as model-infeasible rows are; they remain visible
+                          through load_verification.
     p4c_over_budget, p4c_over_stages, unverified, model_paths_differ   bool
-    flagged        bool  True iff the row is unverified (compile error,
-                          timeout, or -- with require_verified=False -- no
-                          verification line): its stage_depth/blocks are the
-                          MODEL's. False on every legacy row.
+    flagged        bool  True iff the row is unverified (a generator or
+                          toolchain error, timeout, or -- with
+                          require_verified=False -- no verification line):
+                          its stage_depth/blocks are the MODEL's. False on
+                          every legacy row.
 
 Feasibility
     infeasible     str   always '' after load_campaign's filter. Kept
@@ -279,6 +282,9 @@ _INTEGER_KEY_COLUMNS = ['n_trees', 'max_depth', 'split', 'k']
 # p4c numbers substituted into stage_depth/blocks).
 _VERIFICATION_BOOL_COLUMNS = ('p4c_over_budget', 'p4c_over_stages', 'unverified',
                               'model_paths_differ')
+# Verifier `failure` values that mean p4c does not compile the design: O1 drops
+# them like any other p4c-infeasible design.
+_P4C_REFUSED_FAILURES = ('assembler', 'p4c_errors')
 _VERIFICATION_NUMERIC_COLUMNS = ('p4c_stage_depth', 'p4c_blocks', 'p4c_sram',
                                  'p4c_map_ram', 'p4c_phv_containers')
 # Provenance fields that must match run_manifest.json's pin.
@@ -618,27 +624,34 @@ def _join_verification(df, results_dir, require_verified):
     carried = (['row_id', 'verdict'] + list(_VERIFICATION_BOOL_COLUMNS)
                + list(_VERIFICATION_NUMERIC_COLUMNS))
     right = verification[carried].copy()
+    # A verification.csv written before `failure` existed drops nothing.
+    right['failure'] = (verification['failure'] if 'failure' in verification.columns
+                        else '')
     for col in _VERIFICATION_BOOL_COLUMNS:
         # model_paths_differ may be '' (training path absent); read as False.
         text = right[col].replace('', 'False') if col == 'model_paths_differ' \
             else right[col]
         right[col] = _parse_bool_column(text, col, 'verification.csv')
-    df = df.drop(columns=[c for c in carried if c != 'row_id' and c in df.columns])
+    df = df.drop(columns=[c for c in carried + ['failure']
+                          if c != 'row_id' and c in df.columns])
     df = df.merge(right, on='row_id', how='left', indicator='_verified')
     has_line = df.pop('_verified') == 'both'
 
     # Rows with no line (only reachable with require_verified=False) are
     # unverified: model numbers kept, verdict '', flags False, flagged True.
     df['verdict'] = df['verdict'].where(has_line, '')
+    df['failure'] = df['failure'].where(has_line, '')
     for col in _VERIFICATION_BOOL_COLUMNS:
         df[col] = df[col].where(has_line, False).astype(bool)
     for col in _VERIFICATION_NUMERIC_COLUMNS:
         df[col] = df[col].where(has_line, '')
 
-    # O1: a design p4c finds infeasible leaves the frame, exactly as a
-    # model-infeasible row does. load_verification still reports it.
+    # O1: a design p4c finds infeasible, or refuses to compile, leaves the
+    # frame, exactly as a model-infeasible row does. load_verification still
+    # reports it.
     excluded = has_line & ((df['verdict'] == 'FALSE_FEASIBLE')
-                           | df['p4c_over_stages'] | df['p4c_over_budget'])
+                           | df['p4c_over_stages'] | df['p4c_over_budget']
+                           | df['failure'].isin(_P4C_REFUSED_FAILURES))
     df, has_line = df[~excluded], has_line[~excluded]
 
     flagged = df['unverified'] | ~has_line
@@ -647,7 +660,8 @@ def _join_verification(df, results_dir, require_verified):
     df['stage_depth'] = df['p4c_stage_depth'].where(~flagged, df['model_stage_depth'])
     df['blocks'] = df['p4c_blocks'].where(~flagged, df['model_blocks'])
     df['flagged'] = flagged.astype(bool)
-    return df.drop(columns=['p4c_stage_depth', 'p4c_blocks']).reset_index(drop=True)
+    return df.drop(columns=['p4c_stage_depth', 'p4c_blocks',
+                            'failure']).reset_index(drop=True)
 
 
 def _coerce_M(series):
@@ -705,9 +719,10 @@ def load_campaign(results_dir='results', require_verified=None):
     * `stage_depth`/`blocks` move to `model_stage_depth`/`model_blocks` and
       take p4c's numbers;
     * designs p4c finds infeasible (FALSE_FEASIBLE, p4c_over_stages or
-      p4c_over_budget) are dropped (O1);
-    * unverified rows (compile error / timeout) keep the model's numbers and
-      get `flagged=True`; all others `flagged=False`.
+      p4c_over_budget) or will not compile (failure `assembler` or
+      `p4c_errors`) are dropped (O1);
+    * other unverified rows (generator or toolchain error, timeout) keep the
+      model's numbers and get `flagged=True`; all others `flagged=False`.
 
     Raises FileNotFoundError if no files match -- an empty campaign frame is
     never a useful silent result for downstream analysis.
