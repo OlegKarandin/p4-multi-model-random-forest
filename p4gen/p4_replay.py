@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 
 from p4model.packing import crossbar_stages_needed
 from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
-                                 VOTE_EPILOGUE_STAGES, feature_of_per_task_field)
+                                 VOTE_EPILOGUE_STAGES, feature_of_per_task_field,
+                                 feature_of_per_tree_field)
 from p4model.ranges import compiler_range_rows
 from p4model.registers import gated_block_interior_stages, readiness_levels_for
 from p4model import lanes
@@ -105,9 +106,29 @@ def _parse_priorities(text):
             for priority, name in _PLACEMENT_PRIORITY.findall(text)}
 
 
+# A per-tree code's pin (program.PER_TREE_ENCODING): @pa_container_size on a
+# code_tr_ field, sizes in bits, low slice first.
+_PER_TREE_PIN = re.compile(
+    r'^@pa_container_size\("ingress", "ig_md\.(code_tr_\w+)", ([\d, ]+)\)\s*$', re.M)
+
+
+def _mark_spilled(text, bits):
+    """bits with every per-tree code of 8 bits or fewer that the program pins to
+    one 16-bit container marked lanes.Spilled: the layout the pins state, which
+    per_tree.marked_key_bits marks the same way on the training side (spec
+    2026-11-06-per-tree-arm Sec 9.5). Only code_tr_ fields: every other
+    encoding's pins are lanes.key_layout's own choice, which the price already
+    makes."""
+    for field, sizes in _PER_TREE_PIN.findall(text):
+        if field in bits and sizes.strip() == '16' and bits[field] <= 8:
+            bits[field] = lanes.Spilled(bits[field])
+    return bits
+
+
 def parse_program_text(text):
     tables, widths, bits = _parse_keys(text)
-    return Program(tables, widths, bits, _parse_sizes(text), _parse_priorities(text))
+    return Program(tables, widths, _mark_spilled(text, bits), _parse_sizes(text),
+                   _parse_priorities(text))
 
 
 def parse_program(p4_path):
@@ -144,7 +165,9 @@ def table_tasks(tables):
 
     Per-task codes (program.PER_TASK_ENCODING): table_<n>_<f> writes one
     code_tk_<task>_<f> per task with a threshold on f, so a reader of any of
-    them is a reader of the table's feature."""
+    them is a reader of the table's feature. Per-tree codes
+    (program.PER_TREE_ENCODING) likewise: code_tr_<task>_<i>_<f>, one per tree
+    with a threshold on f, is read for that tree's task (code_written_by)."""
     labels, readers = {}, {}
     for name, keys in tables.items():
         match = _TREE_TASK.match(name)
@@ -172,11 +195,15 @@ def table_tasks(tables):
 
 def code_written_by(key, task):
     """The code field a range table writes for a tree of `task` keying `key`:
-    the key itself, or for a per-task code code_tk_<task>_<f>, the field
-    code_<f> that table_<n>_<f> is named after (feature_of_per_task_field).
-    The one place a new code encoding teaches the replay which range table a
-    tree key comes from (table_tasks and tree_range_reads both read it)."""
+    the key itself, or for a per-task code code_tk_<task>_<f>
+    (feature_of_per_task_field) or a per-tree code code_tr_<task>_<i>_<f>
+    (feature_of_per_tree_field), the field code_<f> that table_<n>_<f> is
+    named after. The one place a new code encoding teaches the replay which
+    range table a tree key comes from (table_tasks and tree_range_reads both
+    read it)."""
     feature = feature_of_per_task_field(key, task)
+    if feature is None:
+        feature = feature_of_per_tree_field(key, task)
     return key if feature is None else 'code_' + feature
 
 
@@ -231,6 +258,15 @@ def _label_tasks(range_task, ternary_task):
             names.add(label)
     return tuple(sorted(names))
 
+
+def _key_bits(bits, keys):
+    """One tree's key bits, sorted as per_tree.marked_key_bits sorts them (a
+    plain width ahead of a lanes.Spilled one of the same bits), so training and
+    replay hand the packer the same tuple. Bare widths sort as before."""
+    return tuple(sorted((bits[key] for key in keys),
+                        key=lambda b: (int(b), isinstance(b, lanes.Spilled))))
+
+
 def declared_prices(program):
     """The model's own per-table price for every priced table of a program
     (replay_program's pricing loop)."""
@@ -240,7 +276,7 @@ def declared_prices(program):
         if not keys or name not in sizes:
             continue
         if name.startswith('get_classification_tree'):
-            key_bits = tuple(sorted(bits[key] for key in keys))
+            key_bits = _key_bits(bits, keys)
             blocks[name] = (lanes.table_blocks(key_bits)
                             * tree_entries_to_blocks(sizes[name]))
         elif name.startswith('table_'):
@@ -320,7 +356,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             # lane leftover price instead (packing.crossbar_stages_needed).
             # Program order is kept: p4c breaks placement-priority ties by
             # taking the table listed LAST first.
-            key_bits = tuple(sorted(bits[key] for key in keys))
+            key_bits = _key_bits(bits, keys)
             ternary_specs.append((blocks[name], width))
             ternary_fields.append(fields)
             ternary_key_bits.append(key_bits)

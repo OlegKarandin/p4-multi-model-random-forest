@@ -10,7 +10,7 @@ import math
 
 from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from p4model.names import normalise_feature_name
-from p4model.program import FEATURE_VALUE_BIT_WIDTH, per_task_field
+from p4model.program import FEATURE_VALUE_BIT_WIDTH, per_task_field, per_tree_field
 from p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_count
 from p4model.target import (
     CODEWORD_KEY_OVERHEAD_BITS,
@@ -461,7 +461,7 @@ def entries_across_trees_to_blocks(entry_counts):
 
 
 def ternary_matching_resource_usage(codewords, feature_intervals,
-                                     dropped_per_tree=None):
+                                     dropped_per_tree=None, key_bits=None):
   """Returns (ternary_entries, ternary_blocks, codeword_length,
   ternary_table_specs).
 
@@ -469,6 +469,14 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   (build_p4_script.py:636-659), so ternary_table_specs is one
   (block_count, byte_width) pair per tree. All of those tables key on the
   same set of per-feature fields, so they share one byte width.
+
+  key_bits: optional, the key's field bit widths as lanes.table_blocks prices
+  them, in place of ternary_key_field_bits(feature_intervals). The per-tree
+  encoding passes per_tree.marked_key_bits, whose lanes.Spilled widths an
+  interval dict cannot carry: a narrow code pinned to a 16-bit container is
+  laid out as H, and the declared blocks the packer reads each table's row
+  count from must be priced from that layout (spec 2026-11-06-per-tree-arm
+  Sec 9.5). None prices from feature_intervals, as before.
 
   dropped_per_tree: optional sequence of ints, positionally aligned with
   `codewords`, giving how many of each tree's entries the generator folds into
@@ -516,7 +524,8 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   # table's pinned crossbar key (2026-10-04). Imported here, not at module
   # level: lanes imports this module at load time.
   from p4model.lanes import table_blocks
-  factor = table_blocks(ternary_key_field_bits(feature_intervals))
+  factor = table_blocks(ternary_key_field_bits(feature_intervals)
+                        if key_bits is None else key_bits)
   for index, tree in enumerate(codewords):
     tree_entry_count = len(codewords[tree])
     if dropped_per_tree is not None:
@@ -610,6 +619,18 @@ def per_task_key_fields(task, feature_intervals):
   ternary_key_fields uses would wrongly merge them."""
   return frozenset(
       (per_task_field(task, normalise_feature_name(feature)),
+       math.ceil(max(len(intervals) - 1, 0) / 8))
+      for feature, intervals in feature_intervals.items())
+
+
+def per_tree_key_fields(task, tree, feature_intervals):
+  """ternary_key_fields for the per-tree encoding (program.PER_TREE_ENCODING):
+  feature_intervals is tree `tree` of `task`'s OWN intervals and the field id is
+  that tree's own field name, tr_<task>_<tree>_<feature>. Every tree keys its
+  own code fields, so two trees never share one, even on identical interval
+  lists (which the (name, intervals) id of ternary_key_fields would merge)."""
+  return frozenset(
+      (per_tree_field(task, tree, normalise_feature_name(feature)),
        math.ceil(max(len(intervals) - 1, 0) / 8))
       for feature, intervals in feature_intervals.items())
 

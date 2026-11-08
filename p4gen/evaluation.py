@@ -61,6 +61,7 @@ from p4model.program import (
     DDOS_TASK,
     ENCODINGS,
     PER_TASK_ENCODING,
+    PER_TREE_ENCODING,
     SHARED_TASK,
     FEATURE_VALUE_BIT_WIDTH,
     FLOW_HASH_LEVEL,
@@ -88,6 +89,7 @@ from p4model.tables import (
     entries_across_trees_to_blocks,
     exact_match_resource_usage,
     per_task_key_fields,
+    per_tree_key_fields,
     range_deployment_overflow,
     range_key_fields_for,
     range_matching_resource_usage,
@@ -98,6 +100,7 @@ from p4model.tables import (
     codeword_fields_to_bytes_from_bits,
 )
 from p4model import tables as _tables
+from p4model.per_tree import marked_key_bits, pins_for, widths_of
 from p4model.registers import (
     _register_blocks,
     feature_readiness_level,
@@ -114,9 +117,11 @@ from p4model.catalog import (
 
 
 def ternary_matching_resource_usage(codewords, feature_intervals,
-                                    use_default_action_discount=False):
+                                    use_default_action_discount=False, key_bits=None):
   """Wrapper over p4model.tables.ternary_matching_resource_usage that owns
-  this generator's default-action POLICY.
+  this generator's default-action POLICY. key_bits is passed straight through
+  (None prices the key from feature_intervals, as before; the per-tree branch
+  of _pool_inputs passes per_tree.marked_key_bits).
 
   The model takes a per-tree count of folded entries; deciding WHICH leaves fold
   is Planter RF_EB's majority-class rule, which lives in build_p4_script beside
@@ -133,7 +138,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
         if len(codewords[tree]) > 0 else 0
         for tree in codewords]
   return _tables.ternary_matching_resource_usage(
-      codewords, feature_intervals, dropped_per_tree=dropped_per_tree)
+      codewords, feature_intervals, dropped_per_tree=dropped_per_tree, key_bits=key_bits)
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +198,13 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
 def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                  use_default_action_discount=False):
   """Fitted-forest frontend for multi_model_memory_evaluation: runs the
-  'joint'/'per_task'/'disjoint' encoding branches on both RandomForestClassifiers
-  and pools everything they produce, once converged, into a plain dict under the
-  same 15 names regardless of which branch ran.
+  'joint'/'per_task'/'per_tree'/'disjoint' encoding branches on both
+  RandomForestClassifiers and pools everything they produce, once converged,
+  into a plain dict under the same 16 names regardless of which branch ran --
+  plus, under 'per_tree' only, "tree_reads" (one list per tree of the range
+  table positions it keys, usage.tree_readiness_levels' rule E), since there a
+  tree keys only the features it splits on. 'per_tree' raises
+  p4model.errors.NoSplitTree and ActionDataTooWide (per_tree.pins_for).
 
   This is the Tier 2 ProgramSpec seam (Spec S4.5, finding F6): downstream of
   this function, p4model.usage.assemble_usage takes only this dict and is
@@ -337,6 +346,85 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     ternary_task = ([APP_TASK] * len(ternary_table_specs_app)
                     + [DDOS_TASK] * len(ternary_table_specs_ddos))
 
+  elif encoding == PER_TREE_ENCODING:
+    # The range pool is exactly PER_TASK_ENCODING's: one table per feature over
+    # the union of both forests' thresholds. Its action writes one code per TREE
+    # with a threshold on the feature, as wide as that tree's own thresholds, and
+    # each tree keys only its own codes (spec 2026-11-06-per-tree-arm Sec 9.1,
+    # 9.5): so every tree is its own key, on its own intervals, priced from the
+    # pins the generator emits -- per_tree.pins_for over every tree of both
+    # tasks at once, as generate_p4_program calls it. pins_for refuses a tree
+    # with no split (NoSplitTree, Sec 9.4) and a range table whose action
+    # writes more than the action data bus carries (ActionDataTooWide, Sec 9.3);
+    # both propagate, for the objective to treat as an infeasible trial.
+    _reject_colliding_feature_names(list(selected_features_app) + list(selected_features_ddos))
+    tree_nodes_app = tree_nodes_for(clf_app, selected_features_app)
+    tree_nodes_ddos = tree_nodes_for(clf_ddos, selected_features_ddos)
+    feature_intervals = feature_intervals_from_nodes(
+        merge_tree_nodes(tree_nodes_app, tree_nodes_ddos))
+    range_entries, range_blocks, range_table_specs = range_matching_resource_usage(feature_intervals)
+
+    # Program order: the app trees, then the ddos trees, each by index -- the
+    # order the generator lists them in and p4c's placement-priority ties read
+    # (see assemble_usage), so a first key and a later key of a shared stage
+    # are the same trees in training and in the replay.
+    trees = ([(APP_TASK, index, nodes) for index, nodes in enumerate(tree_nodes_app.values())]
+             + [(DDOS_TASK, index, nodes)
+                for index, nodes in enumerate(tree_nodes_ddos.values())])
+    # Each tree's own intervals: the generator's rule on that tree alone
+    # (build_p4_script.per_tree_intervals), features it never splits left out.
+    own = {APP_TASK: [], DDOS_TASK: []}
+    for task, _, nodes in trees:
+      own[task].append({feature: intervals
+                        for feature, intervals in feature_intervals_from_nodes({0: nodes}).items()
+                        if len(intervals) >= 2})
+    widths = widths_of(own)
+    pins, _ = pins_for(widths)
+
+    position = {feature: index for index, feature in enumerate(feature_intervals)}
+    ternary_entries, ternary_blocks, codeword_length = 0, 0, 0
+    ternary_table_specs, ternary_fields, ternary_key_bits = [], [], []
+    ternary_task, tree_reads = [], []
+    for task, index, nodes in trees:
+      intervals = own[task][index]
+      # A narrow code its pin puts in a 16-bit container is marked
+      # lanes.Spilled: the interval dict cannot say so, and the declared blocks
+      # (the row count the packer reads) must be priced from the same layout
+      # the replay reads off the program's @pa_container_size.
+      key_bits = marked_key_bits(task, index, widths[task][index], pins)
+      # ternary_matching_resource_usage reads codewords[0]: a one-tree dict.
+      entries, blocks, length, specs = ternary_matching_resource_usage(
+          generate_codewords(get_root_to_leaf_paths({0: nodes}), intervals), intervals,
+          use_default_action_discount=use_default_action_discount, key_bits=key_bits)
+      ternary_entries += entries
+      ternary_blocks += blocks
+      # Independent keys, as under 'disjoint': see ResourceUsage.codeword_length.
+      codeword_length = max(codeword_length, length)
+      ternary_table_specs += specs
+      ternary_fields.append(per_tree_key_fields(task, index, intervals))
+      ternary_key_bits.append(key_bits)
+      ternary_task.append(task)
+      # Rule E (usage.tree_readiness_levels): a tree waits for the range tables
+      # of the features it keys, which is what the replay maps from a program's
+      # keys (p4_replay.tree_range_reads).
+      tree_reads.append([position[feature] for feature in intervals])
+
+    # Readers, the register and range-pool tie orders: a feature is read by
+    # every tree with a threshold on it, whichever task.
+    dependents = {feature: sum(feature in own[task][index] for task, index, _ in trees)
+                  for feature in feature_intervals}
+    range_dependents = [dependents[feature] for feature in feature_intervals]
+    range_levels = readiness_levels_for(feature_intervals, dependents=dependents)
+    emitted_features = list(feature_intervals)
+    register_names = register_names_for(feature_intervals)
+    range_fields = range_key_fields_for(feature_intervals)
+    # A table is its readers' task, or SHARED_TASK when both tasks' trees read
+    # it -- the per-task rule, read from the trees as p4_replay.table_tasks does.
+    range_task = []
+    for feature in feature_intervals:
+      readers = {task for task, index, _ in trees if feature in own[task][index]}
+      range_task.append(next(iter(readers)) if len(readers) == 1 else SHARED_TASK)
+
   elif encoding == 'disjoint':
 
     (range_entries_app, range_blocks_app, ternary_entries_app, ternary_blocks_app,
@@ -458,7 +546,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   # ternary_blocks (the naive per-table sum each branch computed above) is
   # deliberately NOT one of the 15 keys below -- see this function's own
   # docstring.
-  return {
+  pool = {
       "range_table_specs": range_table_specs,
       "ternary_table_specs": ternary_table_specs,
       "range_levels": range_levels,
@@ -476,6 +564,12 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       "codeword_length": codeword_length,
       "range_dependents": range_dependents,
   }
+  # Only the per-tree branch, where a tree keys only some of its task's
+  # features: every other encoding's trees read all of theirs, which is what
+  # assemble_usage derives from the task labels when the key is absent.
+  if encoding == PER_TREE_ENCODING:
+    pool["tree_reads"] = tree_reads
+  return pool
 
 
 def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
