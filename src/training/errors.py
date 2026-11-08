@@ -16,9 +16,13 @@ class NoFeasibleSolution(Exception):
     (F3b).
     """
 
-    def __init__(self, k, max_blocks):
+    def __init__(self, k, max_blocks, trial_table=None):
         self.k = k
         self.max_blocks = max_blocks
+        # The search's trials table (trial_selection.trial_rows), set only for the
+        # per-tree arm: its stump count (`no_split_tree`) would otherwise be lost
+        # with the failed search. None for every other arm.
+        self.trial_table = trial_table
         super().__init__(
             'no feasible solution at k={} under max_blocks={}'.format(k, max_blocks))
 

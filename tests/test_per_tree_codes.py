@@ -1185,11 +1185,12 @@ def test_row_artifacts_of_the_arm_replay_to_the_trainings_numbers(tmp_path):
 
 def test_the_loader_refuses_alignment_on_the_arm():
   from src.reporting.campaign_data import MislabelledArtifactError, _expected_arm_slug
-  with pytest.raises(MislabelledArtifactError):
+  with pytest.raises(MislabelledArtifactError, match="alignment on the joint-tree arm"):
     _expected_arm_slug("joint-tree", True, "")
-  with pytest.raises(MislabelledArtifactError):
+  with pytest.raises(MislabelledArtifactError, match="alignment on the joint-tree arm"):
     _expected_arm_slug("joint-tree", False, "", "", True)       # a twin of it
-  with pytest.raises(MislabelledArtifactError):
+  # not an alignment refusal: "joint-tree-off" is no arm at all
+  with pytest.raises(MislabelledArtifactError, match="unrecognised value 'joint-tree-off'"):
     _expected_arm_slug("joint-tree-off", False, "")
 
 
@@ -1353,3 +1354,92 @@ def test_other_arms_trial_tables_keep_their_columns(tmp_path):
   path = ra.write_trial_table(ctx, "x_M035_s00_k01", result.trial_table)
   with open(path, encoding="utf-8", newline="") as handle:
     assert handle.readline().rstrip("\n") == header + ",no_split_tree"
+
+
+# --- hardening from the task reviews ---------------------------------------------------
+
+def _all_infeasible_elimination(tmp_path, arm, max_blocks):
+  """_run_elimination for one arm over a search that finds no feasible trial (the real
+  trainer on 400 rows: per-tree forests that small are all stumps; any other arm is starved
+  of blocks), with a row context so the run's files are written."""
+  import optuna
+  from src.training import feature_selection as fs
+  from src.training.config import TrainConfig
+  from src.training.row_artifacts import RowContext
+  from tests.test_run_elimination import FEATURE_NAMES, _splits
+  optuna.logging.set_verbosity(optuna.logging.WARNING)
+  app, ddos = _splits()
+  cfg = TrainConfig(n_trials=6, min_feasible_before_stop=3, lookback=2)
+  rows = fs._run_elimination(
+      arm=arm, split_idx=0, app=app, ddos=ddos, feature_names=list(FEATURE_NAMES),
+      max_blocks=max_blocks, cfg=cfg, row_context=RowContext(str(tmp_path), arm, 35, "abc"))
+  return rows
+
+
+def test_a_per_tree_search_with_no_feasible_trial_still_counts_its_stumps(tmp_path):
+  import csv
+  rows = _all_infeasible_elimination(tmp_path, "joint-tree", 200)
+  assert [row["infeasible"] != "" for row in rows] == [True]    # nothing feasible
+  path = tmp_path / "trials" / (rows[0]["row_id"] + ".csv")
+  assert path.is_file()
+  with open(path, encoding="utf-8", newline="") as handle:
+    table = list(csv.DictReader(handle))
+  assert len(table) == 6
+  assert {row["no_split_tree"] for row in table} == {"True"}
+  assert {row["feasible"] for row in table} == {"False"}
+
+
+def test_the_failed_per_tree_search_carries_the_table_on_the_exception():
+  from src.training.config import TrainConfig
+  from src.training.errors import NoFeasibleSolution
+  from tests.test_train_model_contract import _call
+  cfg = TrainConfig(n_trials=4, min_feasible_before_stop=3, lookback=2)
+  with pytest.raises(NoFeasibleSolution) as e:
+    _call(encoding=PER_TREE_ENCODING, cfg=cfg, max_blocks=200, n=240)
+  assert list(e.value.trial_table[0])[-1] == "no_split_tree"
+  assert all(row["no_split_tree"] for row in e.value.trial_table)
+  with pytest.raises(NoFeasibleSolution) as e:
+    _call(encoding=DISJOINT_ENCODING, cfg=cfg, max_blocks=1)
+  assert e.value.trial_table is None
+
+
+@pytest.mark.parametrize("arm", ["independent", "joint", "joint-task"])
+def test_another_arm_with_no_feasible_trial_still_writes_no_trials_file(tmp_path, arm):
+  rows = _all_infeasible_elimination(tmp_path, arm, 1)
+  assert all(row["infeasible"] != "" for row in rows)
+  assert not (tmp_path / "trials").exists() or not list((tmp_path / "trials").iterdir())
+
+
+@pytest.mark.parametrize("refusal", [ActionDataTooWide("too wide", 113),
+                                     NoSplitTree("tree app_0 has no split", "app_0")])
+def test_hardware_validation_reports_a_per_tree_refusal_as_unavailable(monkeypatch, refusal):
+  """The per-tree generator refusals are RuntimeErrors, not ValueErrors: they must degrade
+  to the 'unavailable' marker like a missing register, not crash the split."""
+  from src.training import feature_selection as fs
+
+  def refuse(*args, **kwargs):
+    raise refusal
+
+  monkeypatch.setattr(bps, "generate_P4_code", refuse)
+  handle = fs._kickoff_hardware_validation(
+      True, "unused/", 0, "joint-tree", 3, _forest(2, 1), _forest(2, 1), FEATURES, FEATURES,
+      "per_tree")
+  assert fs._is_unavailable(handle)
+  assert handle[1] == str(refusal)
+
+
+def test_the_entries_writer_refuses_what_the_program_writer_refuses():
+  """Same two refusals as the program (and the pool), raised before any entry is written."""
+  X = np.zeros((60, len(FEATURES)), dtype=int)
+  flat = bps.dt_thresholds_float_to_int(RandomForestClassifier(
+      n_estimators=2, max_depth=3, random_state=0).fit(X, np.arange(60) % 3))
+  with pytest.raises(NoSplitTree) as stump:
+    bps.generate_table_entries(_specs(flat, _forest(2, 1)), encoding=PER_TREE_ENCODING)
+  assert stump.value.args[1] == "app_0"
+  tasks = _deep_specs(n_app=20)
+  _, _, trees = bps.resolve_per_tree_plan(tasks)
+  widths = widths_of(trees)
+  with pytest.raises(ActionDataTooWide) as wide:
+    bps.generate_table_entries(tasks, encoding=PER_TREE_ENCODING)
+  assert wide.value.args[1] == max(action_bytes(widths, base_pins(widths)).values())
+  assert wide.value.args[1] > PER_TREE_MAX_ACTION_BYTES

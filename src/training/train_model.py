@@ -39,6 +39,7 @@ from p4model.target import PER_TREE_MAX_ACTION_BYTES
 from src.training.threshold_alignment import align_with_policy
 from src.training import early_stopping
 from src.training import trial_selection
+from src.training.errors import NoFeasibleSolution
 
 import optuna
 from optuna.samplers import TPESampler
@@ -277,7 +278,8 @@ def train_multi_RF_Optuna_multi_constrained(
 
     Raises NoFeasibleSolution when no trial satisfies both the block budget and
     the codeword limit -- an expected outcome at tight max_blocks, handled per-k
-    by the caller.
+    by the caller. On the per-tree arm the exception carries the search's trials
+    table (`trial_table`), so the stump count survives a search with no winner.
     """
 
     def rf_params(source, suffix):
@@ -374,7 +376,7 @@ def train_multi_RF_Optuna_multi_constrained(
             # more container bytes than the action data bus carries. Reported
             # through the crossbar attribute, as the other width refusal.
             trial.set_user_attr('crossbar_violation',
-                                max(1, e.args[1] - PER_TREE_MAX_ACTION_BYTES))
+                                float(max(1, e.args[1] - PER_TREE_MAX_ACTION_BYTES)))
             trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
@@ -510,9 +512,20 @@ def train_multi_RF_Optuna_multi_constrained(
     marks = {number: tuple(np.unpackbits(packed, count=size).astype(bool)
                            for packed, size in zip(pair, sizes))
              for number, pair in correctness.items()}
-    chosen, reference, table = trial_selection.select_tied_cheapest(
-        feasible_trials, marks, cfg.select_alpha, k=len(features_A),
-        max_blocks=max_blocks, delta_select=cfg.delta_select)
+    # no_split_tree is a per-tree column only: every other arm's trials/
+    # CSV keeps its header.
+    trial_columns = ('no_split_tree',) if encoding == PER_TREE_ENCODING else ()
+    try:
+        chosen, reference, table = trial_selection.select_tied_cheapest(
+            feasible_trials, marks, cfg.select_alpha, k=len(features_A),
+            max_blocks=max_blocks, delta_select=cfg.delta_select)
+    except NoFeasibleSolution as exc:
+        if encoding == PER_TREE_ENCODING:
+            # A search made only of stumps has no feasible trial, but its stump
+            # count is what the pilot check (spec 9.4) reads: hand the table on.
+            exc.trial_table = trial_selection.trial_rows(
+                study.trials, [], extra_attrs=trial_columns)
+        raise
     if cfg.selection_rule == 'balanced':
         chosen = reference
     best_trial = chosen
@@ -617,9 +630,6 @@ def train_multi_RF_Optuna_multi_constrained(
         ref_stage_depth=int(ref_usage.stage_depth),
         ref_acc_sel_A=reference.user_attrs['acc_app'],
         ref_acc_sel_B=reference.user_attrs['acc_ddos'],
-        # no_split_tree is a per-tree column only: every other arm's trials/
-        # CSV keeps its header.
         trial_table=trial_selection.trial_rows(
-            study.trials, table,
-            extra_attrs=('no_split_tree',) if encoding == PER_TREE_ENCODING else ()),
+            study.trials, table, extra_attrs=trial_columns),
     )

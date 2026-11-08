@@ -273,6 +273,10 @@ def verify_row(run_dir, row_id, compile_fn=None, timeout=300, retry_timeout=1800
             if failure is None and (result.errors or 0) > 0 and not os.path.isfile(
                     os.path.join(output_dir, 'pipe', 'logs', 'table_summary.log')):
                 failure, message = 'p4c_errors', result.output
+            # result is None when the compile itself failed (timeout or toolchain
+            # error). p4c is then None, as rescore already treats those rows: any
+            # partial numbers a killed compile left in its logs are deliberately
+            # not recorded, because they do not describe a finished compile.
             p4c = (None if result is None
                    else p4c_numbers(os.path.join(output_dir, 'pipe', 'logs')))
             if failure is None and _refused_by_assembler(
@@ -459,6 +463,10 @@ def rescore(run_dir):
         if failure == 'p4c_errors' or failure not in _FAILURE_VERDICT:
             p4c, succeeded = _read_tarball(os.path.join(
                 paths.verify, (copied_from or row_id) + '.tar.gz'))
+            # The stored p4c_errors count is checked as verify_row checks
+            # result.errors: an assembler refusal only counts as one when p4c
+            # itself reported no errors (otherwise the error, not the assembler,
+            # is the failure).
             if failure is None and p4c is not None and _refused_by_assembler(
                     succeeded, p4c, old.get('p4c_errors')):
                 failure, p4c = 'assembler', None

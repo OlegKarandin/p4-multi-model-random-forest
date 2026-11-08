@@ -14,6 +14,7 @@ from src.training.splits import make_task_splits
 from src.training.campaign_run import optuna_seed, row_id
 from src.training.row_artifacts import write_row_artifacts, write_trial_table
 from p4gen import p4_gen_config
+from p4model.errors import ActionDataTooWide, NoSplitTree
 
 
 # =============================================================================
@@ -147,7 +148,10 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             selected_features_app=feature_names_app,
             selected_features_ddos=feature_names_ddos,
             config=config, encoding=encoding)
-    except ValueError as e:
+    except (ValueError, ActionDataTooWide, NoSplitTree) as e:
+        # The two per-tree refusals (a RuntimeError each, p4model.errors) are
+        # caught with it, as row_artifacts._generate does: an unbuildable design
+        # is unavailable for validation, not a dead split.
         # NB: this also swallows generate_P4_code's shared-field layout-conflict
         # ValueError (build_p4_script.code_field_container_sizes); practically
         # unreachable, and it would be recorded under this 'unavailable' label.
@@ -493,6 +497,10 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
             row['compile_errors'] = None
             row['row_id'] = rid
             rows.append(row)
+            if row_context is not None and exc.trial_table is not None:
+                # Per-tree arm only (the exception carries a table for no other):
+                # the stump count of a search with no feasible trial.
+                write_trial_table(row_context, rid, exc.trial_table)
             if carried_app is None or k == 1:
                 break  # No ranking to continue from, or nothing left to drop.
             remaining_app, names_app, carried_app = _drop_least_important(
