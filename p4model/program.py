@@ -81,7 +81,11 @@ SHARED_TASK = "shared"
 JOINT_ENCODING = "joint"
 DISJOINT_ENCODING = "disjoint"
 PER_TASK_ENCODING = "per_task"
-ENCODINGS = (JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING)
+# 'per_tree' is the same one threshold table per feature, whose action writes one
+# code per TREE that splits on the feature, as wide as that tree's own thresholds;
+# each tree keys only its own codes (spec 2026-11-06-per-tree-arm-design.md Sec 9.1).
+PER_TREE_ENCODING = "per_tree"
+ENCODINGS = (JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING, PER_TREE_ENCODING)
 
 # The per-task code fields' resolved names, code_<resolved> being the metadata
 # field: tk_<task>_<feature>. The generator, the model's field identities and the
@@ -96,9 +100,9 @@ def per_task_field(task, feature):
 
 
 # The per-tree code fields' resolved names: tr_<task>_<tree>_<feature>, one code per
-# tree per feature that tree splits on (results/encoding_evidence_2026_11/: no
-# program emitter yet; build_p4_script.generate_per_tree_table_entries writes the
-# entries of the per-tree program those investigations compile).
+# tree per feature that tree splits on (PER_TREE_ENCODING). The generator, the
+# model's pin rule (per_tree.py) and the replay's reading of a program all go
+# through these two names.
 PER_TREE_FIELD_PREFIX = "tr_"
 
 
@@ -106,6 +110,17 @@ def per_tree_field(task, tree, feature):
   """The resolved name of tree `tree` of `task`'s own code field on feature,
   e.g. tr_app_0_flow_iat_max for code_tr_app_0_flow_iat_max."""
   return "%s%s_%d_%s" % (PER_TREE_FIELD_PREFIX, task, tree, feature)
+
+
+def feature_of_per_tree_field(field, task):
+  """feature when `field` (with or without its code_ prefix) is one of task's
+  per-tree code fields, else None. It takes the task because task and feature
+  names may both hold underscores and digits, so a field name alone cannot be
+  split: tr_app_0_1_f is feature 1_f of tree 0 under task app, and feature f of
+  tree 1 under task app_0."""
+  name = field[len("code_"):] if field.startswith("code_") else field
+  match = re.match(r"^%s%s_\d+_(.+)$" % (re.escape(PER_TREE_FIELD_PREFIX), re.escape(task)), name)
+  return match.group(1) if match else None
 
 
 def feature_of_per_task_field(field, task):

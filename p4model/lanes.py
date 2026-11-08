@@ -206,10 +206,45 @@ def key_layout(field_bit_widths):
   return relaxed_layout if _price_le(standalone(relaxed), plain_price) else layout
 
 
+class Spilled(int):
+  """The bit width of a field the program pins to a container wider than its
+  width rule gives (w <= 8 pinned to 16 bits, per_tree.pins_for): laid out as
+  ('H', w), not as the B that `layout` gives. An int subclass so that every
+  place that only reads the width is unchanged. It hashes and compares apart
+  from a plain width, so the packer's lru_caches keep the two prices apart;
+  `__slots__` is empty, so it pickles as a bare int subclass (training sends
+  keys to worker processes). Spec 2026-11-06-per-tree-arm-design.md Sec 9.5."""
+  __slots__ = ()
+
+  def __eq__(self, other):
+    return isinstance(other, Spilled) and int(self) == int(other)
+
+  def __ne__(self, other):
+    return not self.__eq__(other)
+
+  def __hash__(self):
+    return hash(("spilled", int(self)))
+
+
+def _spilled_layout(w):
+  return [('H', w)]
+
+
+def _has_spilled(field_bit_widths):
+  return any(isinstance(w, Spilled) for w in field_bit_widths)
+
+
 def key_bytes(field_bit_widths):
   """The byte list this model uses for a key: its fields laid out by
-  `key_layout`'s choice."""
+  `key_layout`'s choice. A Spilled field is laid out as one H slice and the
+  rest as `key_layout` chooses over the plain widths."""
   field_bit_widths = list(field_bit_widths)
+  if _has_spilled(field_bit_widths):
+    lay = key_layout([int(w) for w in field_bit_widths])
+    out = []
+    for w in field_bit_widths:
+      out += bytes_from_layout([int(w)], _spilled_layout if isinstance(w, Spilled) else lay)
+    return out
   return bytes_from_layout(field_bit_widths, key_layout(field_bit_widths))
 
 
@@ -235,7 +270,15 @@ def table_blocks(field_bit_widths):
   CrossbarKeyTooWide(message, byte_width) when the key exceeds the stage's
   TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes (checked before enumerating --
   66-72-byte keys would otherwise pay the full 1..12-block search) or when no
-  lane-legal fit exists within the crossbar."""
+  lane-legal fit exists within the crossbar.
+
+  A key holding a Spilled width takes its own path (`_spilled_table_blocks`),
+  ahead of the int() conversion below that would erase the mark. A key of bare
+  widths reaches `_table_blocks` exactly as before."""
+  field_bit_widths = list(field_bit_widths)
+  if _has_spilled(field_bit_widths):
+    return _spilled_table_blocks(
+        tuple(sorted(field_bit_widths, key=lambda w: (int(w), isinstance(w, Spilled)))))
   return _table_blocks(tuple(sorted(int(w) for w in field_bit_widths)))
 
 
@@ -254,6 +297,26 @@ def _table_blocks(widths):
     raise CrossbarKeyTooWide(
         "table key of %d crossbar bytes has no lane-legal layout in one stage's "
         "crossbar" % byte_width, byte_width)
+  return price
+
+
+@functools.lru_cache(maxsize=65536)
+def _spilled_table_blocks(widths):
+  """`_table_blocks` for a key holding a Spilled width: the lane price of its
+  byte list, whose length (a spilled field is one H byte per started byte of
+  its width, as a plain one is one B byte) is checked against the stage's
+  crossbar the same way."""
+  byte_list = key_bytes(widths)
+  if len(byte_list) > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
+    raise CrossbarKeyTooWide(
+        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
+        "compiler rejects this table rather than splitting it across stages"
+        % (len(byte_list), TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), len(byte_list))
+  price = standalone(byte_list)
+  if price is None:
+    raise CrossbarKeyTooWide(
+        "table key of %d crossbar bytes has no lane-legal layout in one stage's "
+        "crossbar" % len(byte_list), len(byte_list))
   return price
 
 

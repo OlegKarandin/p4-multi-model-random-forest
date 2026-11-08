@@ -126,3 +126,20 @@ CODEWORD_KEY_OVERHEAD_BITS = 4
 # mau/memories.h:67, mau/resource_estimate.h:32 (model_audit_2026-09-27.md
 # Appendix C).
 METER_ALUS_PER_STAGE = 4
+
+
+# The two limits of the per-tree arm (program.PER_TREE_ENCODING). Both come from
+# measurement, not from the compiler's source.
+#
+# At most this many code fields across a design keep an 8-bit @pa_container_size
+# pin; the rest are pinned to 16 bits (per_tree.pins_for). Ingress has 48 8-bit
+# PHV containers; the N8 search found a PHV failure from 49 pinned fields on and
+# no failure up to 44. A generator limit, not a model correction. Spec
+# docs/superpowers/specs/2026-11-06-per-tree-arm-design.md Sec 9.2.
+PER_TREE_MAX_PIN8_FIELDS = 44
+# One range table's action may write at most this many container bytes, the sum
+# of 4W + 2H + B over the codes it writes (per_tree.action_bytes): seven of the
+# 16-byte action RAM words. 717 compiles found no action-bus failure up to 115
+# bytes and the lowest at 116; 112 keeps 4 bytes of margin (the user's decision,
+# 2026-11-07). Spec Sec 9.3.
+PER_TREE_MAX_ACTION_BYTES = 112
