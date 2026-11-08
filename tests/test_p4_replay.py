@@ -73,23 +73,28 @@ def test_parse_program_text_prices_a_sliced_key_at_its_slice_width():
     # format has no padding bits to condense another code into) is keyed on
     # the slice holding the code; the crossbar sees the slice, so the model
     # prices the slice width, not the declaration.
+    # A field wider than 64 bits is keyed as several slices (p4c asserts on a
+    # wider one): one key entry, widths summed.
     text = """
     struct metadata_t {
         bit<32> code_tr_app_0_a;
         bit<8> code_tr_app_0_b;
+        bit<80> code_tr_app_0_c;
     }
     table get_classification_tree_app_0 {
         key = {
             meta.code_tr_app_0_a[26:0] : ternary;
             meta.code_tr_app_0_b : ternary;
+            meta.code_tr_app_0_c[63:0] : ternary;
+            meta.code_tr_app_0_c[73:64] : ternary;
         }
         size = 40;
     }
     """
     program = rp.parse_program_text(text)
-    assert program.tables == {"get_classification_tree_app_0": ["code_tr_app_0_a", "code_tr_app_0_b"]}
-    assert program.bits == {"code_tr_app_0_a": 27, "code_tr_app_0_b": 8}
-    assert program.widths == {"code_tr_app_0_a": 4, "code_tr_app_0_b": 1}
+    assert program.tables == {"get_classification_tree_app_0": ["code_tr_app_0_a", "code_tr_app_0_b", "code_tr_app_0_c"]}
+    assert program.bits == {"code_tr_app_0_a": 27, "code_tr_app_0_b": 8, "code_tr_app_0_c": 74}
+    assert program.widths == {"code_tr_app_0_a": 4, "code_tr_app_0_b": 1, "code_tr_app_0_c": 10}
 
 
 def test_declared_prices_charge_classification_tables_with_table_blocks():

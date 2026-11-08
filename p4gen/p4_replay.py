@@ -57,7 +57,9 @@ def _parse_keys(text):
     # declared at its container's full width so that p4c's action format has
     # no padding bits to condense another code into (results/
     # encoding_evidence_2026_11/adb_investigation). The crossbar sees the
-    # slice, so the slice width is the field's width for pricing.
+    # slice, so the slice width is the field's width for pricing. A field
+    # wider than 64 bits is keyed as several slices (p4c takes no wider
+    # slice): one key entry, the slices' widths summed.
     tables, current, sliced = {}, None, {}
     for line in text.splitlines():
         opened = re.match(r"\s*table\s+(\w+)\s*\{", line)
@@ -67,10 +69,11 @@ def _parse_keys(text):
             continue
         key = re.match(r"\s*meta\.(\w+)(?:\[(\d+):(\d+)\])?\s*:\s*(ternary|range)\s*;", line)
         if key and current:
-            tables[current].append(key.group(1))
+            if key.group(1) not in tables[current]:
+                tables[current].append(key.group(1))
             if key.group(2) is not None:
                 width = int(key.group(2)) - int(key.group(3)) + 1
-                sliced[key.group(1)] = max(sliced.get(key.group(1), 0), width)
+                sliced[key.group(1)] = sliced.get(key.group(1), 0) + width
     for field, width in sliced.items():
         bits[field] = width
         widths[field] = math.ceil(width / 8)
