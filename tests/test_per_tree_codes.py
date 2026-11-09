@@ -7,6 +7,7 @@ amendments of 2026-11-08 (A1: rule A, A2: one encoding argument, A3: the pin rul
 spill by range table). That the generator's per-tree text equals the investigations' harness
 byte for byte on 477 stored designs is checked outside git
 (results/encoding_evidence_2026_11/per_tree_arm/scripts/check_identity.py)."""
+import dataclasses
 import hashlib
 import json
 import os
@@ -21,9 +22,10 @@ from p4gen import build_p4_script as bps
 from p4gen.p4_replay import model_breakdown, parse_program_text
 from p4gen.switch_semantics import per_tree_class_indices, vote_winner
 from p4model import lanes
-from p4model.errors import ActionDataTooWide, CrossbarKeyTooWide, NoSplitTree
+from p4model.errors import (ActionDataTooWide, CrossbarKeyTooWide, NoSplitTree,
+                            PhvContainersExhausted)
 from p4model.lanes import Spilled
-from p4model.per_tree import (action_bytes, base_pins, marked_key_bits, pins_for,
+from p4model.per_tree import (action_bytes, base_pins, marked_key_bits, phv_demand, pins_for,
                               spill_table_fields, widths_of)
 from p4model.program import (APP_TASK, DDOS_TASK, DISJOINT_ENCODING, ENCODINGS, JOINT_ENCODING,
                              PER_TASK_ENCODING, PER_TREE_ENCODING, TaskSpec,
@@ -142,6 +144,37 @@ def test_112_action_bytes_pass_and_113_raise():
   with pytest.raises(ActionDataTooWide) as e:
     pins_for(bad)
   assert e.value.args[1] == 113
+
+
+def test_phv_demand_counts_the_programs_fields_by_container_size():
+  # app_0: f 3 bits -> one 8-bit pin, g 12 bits -> one 16-bit pin; ddos_0: f 20 bits -> 32-bit.
+  widths = _widths([{"f": 3, "g": 12}], [{"f": 20}])
+  pins, _ = pins_for(widths)
+  assert pins == {"tr_app_0_f": [8], "tr_app_0_g": [16], "tr_ddos_0_f": [32]}
+  # 8-bit: mirror_type + two class fields + one code; 16-bit: five template fields + one
+  # code + the value fields of f and g. 32-bit slices are not counted.
+  assert phv_demand(widths, pins) == {8: 4, 16: 8}
+
+
+def test_80_sixteen_bit_containers_pass_and_81_raise():
+  app = [{f"f{j:02d}": 12 for j in range(37)}]          # 37 codes + 37 value fields
+  ok = _widths(app, [{"f00": 12}])                       # + 1 code + 5 template = 80
+  pins, _ = pins_for(ok)
+  assert phv_demand(ok, pins)[16] == 80
+  bad = _widths(app, [{"f00": 12, "f01": 12}])
+  with pytest.raises(PhvContainersExhausted) as e:
+    pins_for(bad)
+  assert e.value.args[1] == 1
+
+
+def test_eight_bit_fields_beyond_the_share_count_as_sixteen_bit():
+  # 50 trees of one 3-bit code: 44 keep an 8-bit pin, the 10 ddos codes spill to 16 bits.
+  widths = _widths([{"f": 3}] * 40, [{"g": 3}] * 10)
+  pins, spilled = pins_for(widths)
+  assert len(spilled) == 10
+  # 8-bit: 1 template + 50 class fields + 40 codes = 91, 43 over the share of 48;
+  # 16-bit: 5 template + 10 spilled codes + 2 value fields + those 43 = 60.
+  assert phv_demand(widths, pins) == {8: 91, 16: 60}
 
 
 def test_action_bytes_count_every_slice_of_a_multi_container_field():
@@ -439,8 +472,13 @@ _OLD_FLAG_SHAS = {
 }
 
 
+# Every program pins meta.fwd out of PHV overlays since 2026-11-09 (build_p4_script;
+# test_every_encoding_pins_fwd_once): the frozen programs above plus that one line.
+_FWD_PIN = '@pa_no_overlay("ingress", "ig_md.fwd")\n'
+
+
 def _sha(text):
-  return hashlib.sha256(text.encode("utf-8")).hexdigest()
+  return hashlib.sha256(text.replace(_FWD_PIN, "", 1).encode("utf-8")).hexdigest()
 
 
 def _two_task(tmp_path, app, ddos, names, intervals, **kwargs):
@@ -468,6 +506,17 @@ def test_each_encoding_writes_the_program_the_old_flag_wrote(tmp_path, encoding)
   frozen = "per_task" if encoding == PER_TASK_ENCODING else "disjoint"
   assert (_sha(_program(tmp_path, tasks, "three.p4", encoding=encoding))
           == _OLD_FLAG_SHAS[(frozen, "three")])
+
+
+@pytest.mark.parametrize("encoding", [JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING,
+                                      PER_TREE_ENCODING])
+def test_every_encoding_pins_fwd_once(tmp_path, encoding):
+  app, ddos, names = _rng_design(0)
+  own = (_own(app, names), _own(ddos, names))
+  text = _two_task(tmp_path, app, ddos, names, own, encoding=encoding)
+  assert text.count(_FWD_PIN) == 1
+  # ahead of every other PHV pragma, where the 45-design pin batch put it
+  assert text.index(_FWD_PIN) < text.index("@pa_solitary")
 
 
 def test_the_default_encoding_is_joint(tmp_path):
@@ -971,6 +1020,12 @@ def test_a_tree_waits_for_the_range_tables_it_reads_as_the_replay_maps_them(tmp_
     for table in reads[name]:
       readers[table] = readers.get(table, 0) + 1
   assert pool["range_dependents"] == [readers.get(t, 0) for t in ranges]
+  # and each range table's action-data bus bytes (the range pool's per-stage bus budget)
+  from p4gen.p4_replay import range_action_bits
+  from p4model.tables import action_ram_entry_bytes
+  written = range_action_bits(program)
+  assert pool["range_action_bytes"] == [action_ram_entry_bytes(written[t]) for t in ranges]
+  assert all(b > 0 for b in pool["range_action_bytes"])
 
 
 def test_two_trees_on_identical_intervals_stay_distinct_keys():
@@ -1104,6 +1159,12 @@ def test_one_code_and_per_task_programs_replay_unchanged(tmp_path, seed):
     program = parse_program_text(_two_task(tmp_path, app, ddos, names, intervals,
                                            encoding=encoding))
     assert not any(isinstance(bits, Spilled) for bits in program.bits.values())
+    # The programs carry the meta.fwd pin since 2026-11-09, which switches the replay to
+    # p4c's chain order for the gated register blocks (test_the_fwd_pin_switches_the_
+    # register_order); read without it, everything else is the frozen replay, the
+    # range pool's action-data budget included.
+    assert program.fwd_pinned
+    program = dataclasses.replace(program, fwd_pinned=False)
     breakdown = json.dumps(model_breakdown(program), sort_keys=True)
     assert _sha(breakdown) == _OTHER_REPLAY_SHAS[(encoding, seed)], (encoding, seed)
 
@@ -1297,6 +1358,27 @@ def test_an_action_above_the_limit_is_an_infeasible_trial_with_its_overflow(monk
   assert result is not None                       # and found a feasible design
 
 
+def test_a_phv_refusal_is_an_infeasible_trial_with_its_overflow(monkeypatch):
+  from src.training import early_stopping
+
+  def replacement(real, call):
+    if call == 0:
+      def refuse(*args, **kwargs):
+        raise PhvContainersExhausted("too many 16-bit fields", 4)
+      return refuse
+    return real
+
+  trials, result = _search(monkeypatch, replacement)
+  first = trials[0]
+  assert first.user_attrs["crossbar_violation"] == 4.0
+  for attr in ("codeword_violation", "blocks_violation", "stages_violation"):
+    assert first.user_attrs[attr] == 0.0
+  assert first.values == [-1.0, -1.0, float("inf")]
+  assert not early_stopping.is_feasible(first)
+  assert len(trials) > 1                          # the search continued
+  assert result is not None                       # and found a feasible design
+
+
 def test_an_action_overflow_is_floored_at_one(monkeypatch):
   def replacement(real, call):
     def refuse(*args, **kwargs):
@@ -1411,7 +1493,8 @@ def test_another_arm_with_no_feasible_trial_still_writes_no_trials_file(tmp_path
 
 
 @pytest.mark.parametrize("refusal", [ActionDataTooWide("too wide", 113),
-                                     NoSplitTree("tree app_0 has no split", "app_0")])
+                                     NoSplitTree("tree app_0 has no split", "app_0"),
+                                     PhvContainersExhausted("too many 16-bit fields", 4)])
 def test_hardware_validation_reports_a_per_tree_refusal_as_unavailable(monkeypatch, refusal):
   """The per-tree generator refusals are RuntimeErrors, not ValueErrors: they must degrade
   to the 'unavailable' marker like a missing register, not crash the split."""

@@ -1951,6 +1951,17 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # value fields, codeword fields), so it is opened here rather than beside
   # the first @pa_container_size that used to be its only writer.
   phv_pragmas = ""
+  # meta.fwd out of PHV overlays (2026-11-09). p4c otherwise put the 1-bit
+  # flag in a 16-bit container overlaid with a bwd register's value field (119
+  # of the 272 per-tree pilot compiles) and then held every bwd register
+  # behind the `if (meta.fwd == 1)` gateway (ANTI_NEXT_TABLE_METADATA, an edge
+  # the program does not contain). With the pin, p4c orders the two gated
+  # blocks by their chains, which register_stage_schedule follows. Measured
+  # on the 272 pilot designs: p4c's stage depth the same on 267 of the 268
+  # that compiled both ways and one stage lower on one, blocks the same on
+  # 269 of 271 (+2 on two); PHV containers unchanged on the 45 checked. Report
+  # results/encoding_evidence_2026_11/model3/report.md, "I1b follow-up".
+  phv_pragmas += '@pa_no_overlay("ingress", "ig_md.fwd")\n'
   for task in program_tasks:
     name, bits = task.name, bit_per_classes[task.name]
     if n_trees[name] > 0:

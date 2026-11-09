@@ -275,11 +275,15 @@ def assemble_usage(pool):
   # one more trees read first, then the later-listed one -- p4c's
   # DOWNWARD_TD then DEFAULT (crossbar_stages_needed's table_dependents). A
   # pool serialized before the key existed keeps the old first-listed order.
+  # The range tables sharing a stage also share its action data bus
+  # (2026-11-09, crossbar_stages_needed's action_bytes); a pool serialized
+  # before the key existed is placed without that budget.
   range_plan = crossbar_stages_needed(range_table_specs,
                                       readiness_levels=range_levels,
                                       key_fields=range_fields,
                                       unavailable_stages=interior_stages,
-                                      table_dependents=pool.get("range_dependents"))
+                                      table_dependents=pool.get("range_dependents"),
+                                      action_bytes=pool.get("range_action_bytes"))
   # Per-task tree readiness (audit C1): a tree waits for the range tables of
   # ITS OWN task -- the ones writing the code_<feature> fields it keys on --
   # plus any SHARED_TASK table, never for the other task's. Under 'joint'

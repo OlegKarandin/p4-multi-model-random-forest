@@ -103,7 +103,10 @@ def test_gated_block_interior_stages_still_derives_from_emitted_features(row_id,
     # The fixture stores interior_stages as an INPUT (assemble_usage takes it
     # ready-made), so without this the registers.py schedule would go
     # unexercised by the golden replay. Deriving it here pins that half too.
-    derived = gated_block_interior_stages(row["inputs"]["emitted_features"])
+    # The calibration programs predate the meta.fwd pin (2026-11-09), so their
+    # gated blocks run in emission order (register_stage_schedule's fwd_pinned).
+    derived = gated_block_interior_stages(row["inputs"]["emitted_features"],
+                                          fwd_pinned=False)
     assert sorted(derived) == row["inputs"]["interior_stages"], row_id
 
 

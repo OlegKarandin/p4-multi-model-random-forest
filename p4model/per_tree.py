@@ -15,9 +15,10 @@ field being code_<resolved>."""
 import itertools
 
 from p4model import lanes
-from p4model.errors import ActionDataTooWide, NoSplitTree
+from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
 from p4model.program import per_tree_field
-from p4model.target import PER_TREE_MAX_ACTION_BYTES, PER_TREE_MAX_PIN8_FIELDS
+from p4model.target import (PER_TREE_MAX_ACTION_BYTES, PER_TREE_MAX_PIN8_FIELDS,
+                            PHV_INGRESS_CONTAINERS, PHV_TEMPLATE_FIELDS)
 
 # spill_table_fields enumerates feature subsets; the arm's designs have at most
 # 17 selected features.
@@ -96,7 +97,9 @@ def pins_for(widths):
   Raises NoSplitTree(message, "<task>_<tree>") for a tree with no code field
   (spec 9.4), then ActionDataTooWide(message, bytes) when a feature's range
   table would write more than target.PER_TREE_MAX_ACTION_BYTES (spec 9.3; the
-  largest such feature, counted after the spill)."""
+  largest such feature, counted after the spill), then
+  PhvContainersExhausted(message, containers over) when phv_demand's 16-bit
+  count passes the ingress share."""
   for task, trees in widths.items():
     for index, tree in enumerate(trees):
       if not tree:
@@ -113,7 +116,39 @@ def pins_for(widths):
         "the range table of %s writes %d container bytes; the action data bus "
         "carries at most %d" % (feature, per_feature[feature], PER_TREE_MAX_ACTION_BYTES),
         per_feature[feature])
+  need16 = phv_demand(widths, pins)[16]
+  if need16 > PHV_INGRESS_CONTAINERS[16]:
+    raise PhvContainersExhausted(
+        "the design needs %d 16-bit PHV containers; ingress has %d"
+        % (need16, PHV_INGRESS_CONTAINERS[16]), need16 - PHV_INGRESS_CONTAINERS[16])
   return pins, spilled
+
+
+def phv_demand(widths, pins):
+  """{container bits: ingress containers the program needs} for 8 and 16, every
+  field counted from the program the generator writes for these pins:
+
+  - each per-tree code takes one container per pinned slice (its
+    @pa_container_size sizes, which are also @pa_solitary);
+  - each feature with a code has one value field, pinned to 16 bits;
+  - each tree has one class field (class_tree_<task>_<i>, @pa_solitary), a 1-
+    or 2-bit field that takes a whole 8-bit container;
+  - the template's own fields of target.PHV_TEMPLATE_FIELDS.
+
+  8-bit fields beyond the 8-bit share are counted at 16 bits: when the 8-bit
+  containers are full, p4c moves them to 16-bit ones (class fields: 151 of the
+  163 that left an 8-bit container in the pilot went to a 16-bit one)."""
+  need = {8: len(PHV_TEMPLATE_FIELDS[8]), 16: len(PHV_TEMPLATE_FIELDS[16])}
+  for task, trees in widths.items():
+    for index, tree in enumerate(trees):
+      need[8] += 1                                    # class_tree_<task>_<index>
+      for feature in tree:
+        for bits in pins[per_tree_field(task, index, feature)]:
+          if bits in need:
+            need[bits] += 1
+  need[16] += len({feature for trees in widths.values() for tree in trees for feature in tree})
+  need[16] += max(0, need[8] - PHV_INGRESS_CONTAINERS[8])
+  return need
 
 
 def action_bytes(widths, pins):

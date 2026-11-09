@@ -65,7 +65,10 @@ def test_register_schedule_follows_p4cs_committed_stages():
         if name.startswith('table_') and keys and keys[0][:-len('_val')] not in features:
             features.append(keys[0][:-len('_val')])
     assert dependents['bwd_iat_max'] == 7 and dependents['bwd_packet_length_min'] == 3
-    placed = registers.register_stage_schedule(features, dependents=dependents)
+    # compiled before the meta.fwd pin (2026-11-09): the gated blocks in emission order
+    assert not program.fwd_pinned
+    placed = registers.register_stage_schedule(features, dependents=dependents,
+                                               fwd_pinned=program.fwd_pinned)
     p4c = {'fwd_packet_length_min': 4, 'fwd_packet_length_max': 5, 'bwd_packet_length_mean': 5, 'bwd_iat_max': 6,
            'bwd_iat_min': 6, 'bwd_packet_length_max': 6, 'bwd_packet_length_min': 7}
     assert {feature: placed[feature] for feature in p4c} == p4c  # register base names; p4c's tables add _reg

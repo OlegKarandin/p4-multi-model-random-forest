@@ -17,6 +17,12 @@ class ActionDataTooWide(RuntimeError):
   action_bytes)."""
 
 
+class PhvContainersExhausted(RuntimeError):
+  """A per-tree design needs more 16-bit PHV containers than ingress has
+  (target.PHV_INGRESS_CONTAINERS; per_tree.phv_demand). args = (message,
+  containers over the share)."""
+
+
 class NoSplitTree(RuntimeError):
   """A tree with no threshold has no key field, so its table would have no key
   (spec 9.4). args = (message, tree label)."""

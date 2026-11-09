@@ -2202,7 +2202,10 @@ def test_generate_P4_code_every_solitary_field_gets_pa_no_overlay_next_to_it(tmp
   assert any(f.startswith("code_") for f in solitary)
   # Every solitary field -- class_tree_* (C5) and, since spec 2026-09-29,
   # code_* -- gets @pa_no_overlay: no more, no fewer, never duplicated (a
-  # duplicate pragma is a p4c error).
+  # duplicate pragma is a p4c error). Plus meta.fwd (2026-11-09), pinned out
+  # of overlays without @pa_solitary, the first PHV pragma of the program.
+  assert no_overlay_list[0] == "fwd" and "fwd" not in solitary
+  no_overlay_list = no_overlay_list[1:]
   assert set(no_overlay_list) == solitary
   assert len(no_overlay_list) == len(set(no_overlay_list))
 

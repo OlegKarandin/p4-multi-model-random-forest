@@ -1088,12 +1088,18 @@ def test_readiness_levels_for_real_dataset_feature_names():
     `if (meta.fwd == 1) { ... }` before `if (meta.fwd == 0) { ... }`, and
     p4c's placer cannot reach the second block until the first is fully
     placed (see register_stage_schedule's per-block floor). Chain depth alone
-    would report 6 for both."""
+    would report 6 for both.
+
+    With the meta.fwd pin (every program since 2026-11-09) p4c takes the
+    block with the deeper chain first; here the two tie (two registers each),
+    so the order stays fwd then bwd. Without the pin (fwd_pinned=False) it is
+    emission order whatever the chains."""
     feature_intervals = {
         "Fwd.IAT.Max": [(0, 10), (11, 65535)],
         "Flow.IAT.Max": [(0, 20), (21, 65535)],
         "Bwd.IAT.Min": [(0, 30), (31, 65535)],
     }
+    assert ev.readiness_levels_for(feature_intervals, fwd_pinned=False) == [6, 5, 7]
     assert ev.readiness_levels_for(feature_intervals) == [6, 5, 7]
 
 
@@ -1636,15 +1642,17 @@ def test_readiness_levels_schedule_both_models_registers_on_one_pipeline():
     # purpose: `if (meta.fwd == 0)` is emitted after `if (meta.fwd == 1)`, so
     # the other model's registers push this one's whole block later, which is
     # ALU pressure and control-flow order compounding rather than either
-    # alone.
+    # alone. That emission order is a program without the meta.fwd pin
+    # (fwd_pinned=False); with the pin the gated block with the deeper chain
+    # goes first.
     app = {"bwd_iat_max": [(0, 5)], "bwd_iat_mean": [(0, 5)]}
     ddos = {"fwd_iat_max": [(0, 5)], "fwd_iat_min": [(0, 5)],
             "fwd_iat_mean": [(0, 5)], "fwd_packet_length_max": [(0, 5)],
             "fwd_packet_length_min": [(0, 5)], "fwd_packet_length_mean": [(0, 5)]}
     union = list(app) + list(ddos)
 
-    alone = ev.readiness_levels_for(app)
-    together = ev.readiness_levels_for(app, emitted_features=union)
+    alone = ev.readiness_levels_for(app, fwd_pinned=False)
+    together = ev.readiness_levels_for(app, emitted_features=union, fwd_pinned=False)
 
     assert len(together) == len(app)
     assert max(together) > max(alone)
@@ -1898,6 +1906,9 @@ POOL_KEYS = {
     # 2026-11-08: trees reading each range table, the range pool's p4c tie
     # order (crossbar_stages_needed table_dependents).
     "range_dependents",
+    # 2026-11-09: each range table's action-data bus bytes, the range pool's
+    # per-stage bus budget (crossbar_stages_needed action_bytes).
+    "range_action_bytes",
 }
 
 

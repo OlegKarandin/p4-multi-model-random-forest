@@ -137,9 +137,46 @@ METER_ALUS_PER_STAGE = 4
 # no failure up to 44. A generator limit, not a model correction. Spec
 # docs/superpowers/specs/2026-11-06-per-tree-arm-design.md Sec 9.2.
 PER_TREE_MAX_PIN8_FIELDS = 44
-# One range table's action may write at most this many container bytes, the sum
-# of 4W + 2H + B over the codes it writes (per_tree.action_bytes): seven of the
-# 16-byte action RAM words. 717 compiles found no action-bus failure up to 115
-# bytes and the lowest at 116; 112 keeps 4 bytes of margin (the user's decision,
-# 2026-11-07). Spec Sec 9.3.
-PER_TREE_MAX_ACTION_BYTES = 112
+
+# The action data bus: what a stage's match tables hand their actions. 128 bytes
+# (ADB_BYTES), fed from 16-byte action RAM words (BYTES_PER_RAM); p4c's
+# mau/tofino/action_data_bus.h. Where p4c puts each table's words on the bus
+# is its allocator's choice, so the model counts no positions: it lets action
+# data use the bus less one RAM word, ACTION_DATA_BUS_BUDGET. Evidence: one
+# table alone, 717 compiles, no bus failure up to 115 bytes and the lowest at
+# 116; range tables sharing a stage (per-tree pilot, campaign_2026_11e), every
+# budget from 105 to 127 bytes gives p4c's stage depth on all 128 k<=8 designs,
+# the whole bus leaves 9 under-prices. An exact count of the bytes used cannot
+# do better: p4c refused stages holding 56-96 real bytes, and 8 of 211 field
+# mixes compiled in one program and failed in another. Report
+# results/encoding_evidence_2026_11/model3/report.md, I1a and "Bus limit".
+ACTION_DATA_BUS_BYTES = 128
+ACTION_RAM_WORD_BYTES = 16
+ACTION_DATA_BUS_BUDGET = ACTION_DATA_BUS_BYTES - ACTION_RAM_WORD_BYTES
+# One range table's action may write at most the bus budget in container
+# bytes, the sum of 4W + 2H + B over the codes it writes (per_tree.action_bytes).
+# Spec Sec 9.3. The range tables sharing a stage are held to the same budget by
+# packing.crossbar_stages_needed (action_bytes).
+PER_TREE_MAX_ACTION_BYTES = ACTION_DATA_BUS_BUDGET
+
+# The ingress PHV share, in containers per size (bits). Tofino 1 has 64 8-bit,
+# 96 16-bit and 64 32-bit normal containers in groups of 16; p4c gave ingress 3
+# of the 4 8-bit groups and 5 of the 6 16-bit groups in all 272 compiles of the
+# per-tree pilot (campaign_2026_11e, phv_allocation_summary_0.log), and the four
+# PHV failures there are the designs whose 16-bit demand passes 80. 32-bit is
+# not listed: no design came near its share (largest use 47 of 64). Report
+# results/encoding_evidence_2026_11/model3/report.md, I4.
+PHV_INGRESS_CONTAINERS = {8: 48, 16: 80}
+# The template's own fields that take a whole container of that size in every
+# compile: p4c placed each of them in a normal container of that size in all
+# 268 successful pilot compiles, and the 16-bit ones are what stays unallocated
+# when the 16-bit share runs out (p4c's error for joint-tree_M055_s00_k12 lists
+# $hash_field_argument1, hdr.tcp.src_port and hdr.tcp.dst_port). Every other
+# template field moved between sizes or shared a container with a design
+# field, so it is not counted. $hash_field_argument1 is p4c's name for the
+# 16-bit operand of the flow hash. per_tree.phv_demand counts these.
+PHV_TEMPLATE_FIELDS = {
+    8: ('ig_intr_md_for_dprsr.mirror_type',),
+    16: ('ig_intr_md.ingress_port', 'ig_intr_md_for_tm.ucast_egress_port',
+         'hdr.tcp.src_port', 'hdr.tcp.dst_port', '$hash_field_argument1'),
+}

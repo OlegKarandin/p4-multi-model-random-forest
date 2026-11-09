@@ -11,6 +11,7 @@
 
 const bit<32> MAX_NUM_FLOWS = 4096;
 
+@pa_no_overlay("ingress", "ig_md.fwd")
 @pa_solitary("ingress", "ig_md.class_tree_app_0")
 @pa_no_overlay("ingress", "ig_md.class_tree_app_0")
 @pa_solitary("ingress", "ig_md.class_tree_app_1")

@@ -11,8 +11,10 @@ Three constraints drive the schedule, and none of them is a capacity limit:
   * Registers are emitted unconditional -> `if (meta.fwd == 1)` ->
     `if (meta.fwd == 0)` (REGISTER_BLOCK_ORDER), and p4c's placer has one
     work-list cursor, so each block is floored at the last stage the
-    previous one used. A bwd-gated feature therefore prices one stage later
-    than the symmetric fwd-gated one.
+    previous one used. In a program that pins meta.fwd (every one since
+    2026-11-09) the gated block with the deeper chain goes first, ties in
+    that order (register_stage_schedule), so on a tie a bwd-gated feature
+    still prices one stage later than the symmetric fwd-gated one.
   * A stage the cursor spends fully INTERIOR to a gated block can hold no
     table from the outer sequence (`gated_block_interior_stages`): the
     cursor is not "inside" anything while placing the outer sequence's
@@ -112,7 +114,7 @@ def _register_blocks(features, catalog):
 
 def register_stage_schedule(features, catalog=None,
                             alus_per_stage=METER_ALUS_PER_STAGE,
-                            dependents=None):
+                            dependents=None, fwd_pinned=True):
   """Register base name -> the pipeline stage its RegisterAction runs in, for
   the whole set of features whose registers the generator will emit.
 
@@ -134,6 +136,15 @@ def register_stage_schedule(features, catalog=None,
   low-level register take a stage p4c gives to a ready higher-level one with
   more dependents. The old docstring paragraphs below describe the floor and
   the ALU cap, both unchanged.
+
+  fwd_pinned (2026-11-09): whether the program pins meta.fwd out of PHV
+  overlays, which every program the generator writes since then does. True:
+  the gated block with the deeper chain goes first, ties fwd then bwd
+  (Pass 4). False, for a
+  program generated before the pin (p4_replay reads which): emission order,
+  fwd then bwd -- there p4c's order follows an overlay edge the model cannot
+  see, and taking p4c's chain order anyway cost the 73-design calibration
+  archive 6 stage misses.
 
   feature_readiness_level models a register chain's DEPTH -- how many stages
   a single feature's registers must run back to back. This models the
@@ -206,7 +217,7 @@ def register_stage_schedule(features, catalog=None,
     if parent is not None:
       height[parent] = max(height[parent], height[name] + 1)
 
-  # Pass 4: list schedule, one block at a time in emission order, one STAGE at
+  # Pass 4: list schedule, one block at a time (the order below), one STAGE at
   # a time inside a block. A register is ready in a stage once its level is
   # reached and its predecessor ran in an EARLIER stage; the ready ones take
   # the stage's free ALUs in p4c's order (docstring head): -height, -trees
@@ -230,8 +241,29 @@ def register_stage_schedule(features, catalog=None,
             -max(positions, default=-1),
             name)
 
+  # Which gated block the cursor enters first (2026-11-09): the one whose
+  # deepest register chain is longer -- p4c's is_better ("longer tail chain")
+  # between the two gated blocks' first tables, read in its placement log --
+  # ties in emission order, fwd then bwd. Both blocks are candidates at once
+  # only because the generator pins ig_md.fwd out of PHV overlays
+  # (@pa_no_overlay): an overlay of fwd with a bwd register's value makes p4c
+  # add an edge holding the bwd block behind the fwd gateway
+  # (table_injected_deps.cpp, ANTI_NEXT_TABLE_METADATA), in 119 of the 272
+  # per-tree pilot compiles. With the pin, this order gives p4c's stage depth
+  # on all 272 recompiled pilot designs; ties to bwd instead gave 15 stage
+  # over-prices and 1 under at k>=9, emission order alone 3 under and 1 over
+  # (report results/encoding_evidence_2026_11/model3/report.md, "I1b
+  # follow-up"). The unconditional registers come first as before: they are
+  # the outer sequence.
+  block_height = {block: max((height[name] for name, owner in gate.items()
+                              if owner == block), default=-1)
+                  for block in REGISTER_BLOCK_ORDER}
+  gated = [block for block in REGISTER_BLOCK_ORDER if block is not None]
+  if fwd_pinned:
+    gated.sort(key=lambda block: (-block_height[block],
+                                  REGISTER_BLOCK_ORDER.index(block)))
   placed, load, floor = {}, collections.Counter(), 0
-  for block in REGISTER_BLOCK_ORDER:
+  for block in [None] + gated:
     names = [name for name, owner in gate.items() if owner == block]
     if not names:
       continue
@@ -260,7 +292,7 @@ def register_stage_schedule(features, catalog=None,
 
 def gated_block_interior_stages(features, catalog=None,
                                 alus_per_stage=METER_ALUS_PER_STAGE,
-                                dependents=None):
+                                dependents=None, fwd_pinned=True):
   """The stage indices no match table can be placed in, because the placer
   spends the whole of each of them inside a gated register block.
 
@@ -295,7 +327,7 @@ def gated_block_interior_stages(features, catalog=None,
 
   gate, _ = _register_blocks(features, catalog)
   placed = register_stage_schedule(features, catalog, alus_per_stage,
-                                   dependents=dependents)
+                                   dependents=dependents, fwd_pinned=fwd_pinned)
 
   interior = set()
   for block in REGISTER_BLOCK_ORDER:
@@ -310,7 +342,7 @@ def gated_block_interior_stages(features, catalog=None,
 
 
 def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None,
-                         dependents=None):
+                         dependents=None, fwd_pinned=True):
   """One readiness level per feature, positionally aligned with
   range_matching_resource_usage's range_table_specs (both follow
   feature_intervals iteration order).
@@ -330,10 +362,11 @@ def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None,
   itself, which is already the merged set on the 'joint' branch.
 
   dependents: {feature: trees reading its code}, handed to
-  register_stage_schedule (its tie order); None treats every register alike."""
+  register_stage_schedule (its tie order); None treats every register alike.
+  fwd_pinned: register_stage_schedule's, the gated blocks' order."""
   placed = register_stage_schedule(
       list(emitted_features if emitted_features is not None else feature_intervals),
-      catalog, dependents=dependents)
+      catalog, dependents=dependents, fwd_pinned=fwd_pinned)
   entries = FEATURE_REGISTER_CATALOG if catalog is None else catalog
 
   levels = []

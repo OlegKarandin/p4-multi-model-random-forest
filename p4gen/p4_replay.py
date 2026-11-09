@@ -15,7 +15,7 @@ from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
 from p4model.ranges import compiler_range_rows
 from p4model.registers import gated_block_interior_stages, readiness_levels_for
 from p4model import lanes
-from p4model.tables import tree_entries_to_blocks
+from p4model.tables import action_ram_entry_bytes, tree_entries_to_blocks
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 from p4model.usage import tree_readiness_levels
 
@@ -25,12 +25,14 @@ class Program:
     """One parsed generated program: tables (name -> key fields), widths /
     bits (field -> crossbar bytes / declared bits), sizes (table -> declared
     entries), priorities (table -> its @placement_priority, for every table
-    that carries one)."""
+    that carries one), fwd_pinned (the program pins meta.fwd out of PHV
+    overlays, _FWD_PIN: the register blocks' order, register_stage_schedule)."""
     tables: dict
     widths: dict
     bits: dict
     sizes: dict
     priorities: dict = field(default_factory=dict)
+    fwd_pinned: bool = False
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -125,10 +127,14 @@ def _mark_spilled(text, bits):
     return bits
 
 
+# The generator's meta.fwd pin (build_p4_script, every program since 2026-11-09).
+_FWD_PIN = re.compile(r'^@pa_no_overlay\("ingress",\s*"ig_md\.fwd"\)\s*$', re.M)
+
+
 def parse_program_text(text):
     tables, widths, bits = _parse_keys(text)
     return Program(tables, widths, _mark_spilled(text, bits), _parse_sizes(text),
-                   _parse_priorities(text))
+                   _parse_priorities(text), bool(_FWD_PIN.search(text)))
 
 
 def parse_program(p4_path):
@@ -234,6 +240,29 @@ def tree_range_reads(tables):
     return reads
 
 
+def range_action_bits(program):
+    """{range table name: bits its action writes}: the code fields the trees
+    read from it (code_written_by), at their keyed widths -- what
+    tables.action_ram_entry_bytes turns into the table's action-data bus bytes,
+    as evaluation._pool_inputs does from the forests. A sliced key counts its
+    slices: rule A declares a wide code at its containers' width, but only the
+    keyed bits carry data."""
+    tables, bits = program.tables, program.bits
+    written = {}
+    for name, keys in tables.items():
+        match = _TREE_TASK.match(name)
+        if match:
+            for key in keys:
+                written.setdefault(code_written_by(key, match.group(1)), set()).add(key)
+    action_bits = {}
+    for name in tables:
+        match = _RANGE_TABLE_CODE.match(name)
+        if match:
+            action_bits[name] = sum(int(bits[field])
+                                    for field in written.get('code_' + match.group(1), ()))
+    return action_bits
+
+
 def _tree_priority(program, name, task):
     """A tree table's @placement_priority: the pragma the program carries, or,
     for a program generated before the pragma existed, the two-task constant
@@ -319,7 +348,8 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     dependents = feature_readers if reads is not None else None
     if readiness_levels is None:
         levels = dict(zip(row_features, readiness_levels_for(
-            row_features, dependents=dependents)))
+            row_features, dependents=dependents,
+            fwd_pinned=program.fwd_pinned)))
     else:
         missing = [f for f in row_features if f not in readiness_levels]
         if missing:
@@ -330,9 +360,11 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         levels = readiness_levels
     # Mechanism B: stages the placer spends wholly inside a gated register
     # block hold no table from the outer sequence, however empty they are.
-    interior = gated_block_interior_stages(row_features, dependents=dependents)
+    interior = gated_block_interior_stages(row_features, dependents=dependents,
+                                           fwd_pinned=program.fwd_pinned)
 
     tasks = table_tasks(tables)
+    bits_written = range_action_bits(program)
     range_specs, range_fields, range_levels, range_task = [], [], [], []
     range_names, ternary_names = [], []
     ternary_specs, ternary_fields, ternary_key_bits, ternary_task = [], [], [], []
@@ -367,7 +399,9 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         range_specs, readiness_levels=range_levels, key_fields=range_fields,
         unavailable_stages=interior,
         table_dependents=([table_readers.get(name, 0) for name in range_names]
-                          if reads is not None else None))
+                          if reads is not None else None),
+        action_bytes=[action_ram_entry_bytes(bits_written[name])
+                      for name in range_names])
     position = {name: index for index, name in enumerate(range_names)}
     tree_reads = None
     if reads is not None:

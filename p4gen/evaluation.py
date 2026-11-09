@@ -83,6 +83,7 @@ from p4model.ranges import (
 )
 from p4model.lanes import table_blocks
 from p4model.tables import (
+    action_ram_entry_bytes,
     codeword_bits_to_blocks,
     codeword_bytes_to_blocks,
     codeword_to_blocks,
@@ -92,6 +93,7 @@ from p4model.tables import (
     per_tree_key_fields,
     range_deployment_overflow,
     range_key_fields_for,
+    range_action_bytes_for,
     range_matching_resource_usage,
     ternary_key_fields,
     ternary_key_field_bits,
@@ -204,7 +206,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   plus, under 'per_tree' only, "tree_reads" (one list per tree of the range
   table positions it keys, usage.tree_readiness_levels' rule E), since there a
   tree keys only the features it splits on. 'per_tree' raises
-  p4model.errors.NoSplitTree and ActionDataTooWide (per_tree.pins_for).
+  p4model.errors.NoSplitTree, ActionDataTooWide and PhvContainersExhausted
+  (per_tree.pins_for).
 
   This is the Tier 2 ProgramSpec seam (Spec S4.5, finding F6): downstream of
   this function, p4model.usage.assemble_usage takes only this dict and is
@@ -289,6 +292,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     range_task = [SHARED_TASK] * len(range_table_specs)
     ternary_task = ([APP_TASK] * len(tree_nodes_app)
                     + [DDOS_TASK] * len(tree_nodes_ddos))
+    range_action_bytes = range_action_bytes_for(feature_intervals)
 
   elif encoding == PER_TASK_ENCODING:
     # The range pool is exactly 'joint''s: one table per feature over the union
@@ -345,6 +349,13 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
                   for feature in feature_intervals]
     ternary_task = ([APP_TASK] * len(ternary_table_specs_app)
                     + [DDOS_TASK] * len(ternary_table_specs_ddos))
+    # A table's action writes the code of each task with a threshold on it.
+    range_action_bytes = [
+        action_ram_entry_bytes(sum(max(len(task_intervals[feature]) - 1, 0)
+                                   for task_intervals in (feature_intervals_app,
+                                                          feature_intervals_ddos)
+                                   if feature in task_intervals))
+        for feature in feature_intervals]
 
   elif encoding == PER_TREE_ENCODING:
     # The range pool is exactly PER_TASK_ENCODING's: one table per feature over
@@ -355,8 +366,10 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # pins the generator emits -- per_tree.pins_for over every tree of both
     # tasks at once, as generate_p4_program calls it. pins_for refuses a tree
     # with no split (NoSplitTree, Sec 9.4) and a range table whose action
-    # writes more than the action data bus carries (ActionDataTooWide, Sec 9.3);
-    # both propagate, for the objective to treat as an infeasible trial.
+    # writes more than the action data bus carries (ActionDataTooWide, Sec 9.3)
+    # and a design needing more 16-bit PHV containers than ingress has
+    # (PhvContainersExhausted); all propagate, for the objective to treat as an
+    # infeasible trial.
     _reject_colliding_feature_names(list(selected_features_app) + list(selected_features_ddos))
     tree_nodes_app = tree_nodes_for(clf_app, selected_features_app)
     tree_nodes_ddos = tree_nodes_for(clf_ddos, selected_features_ddos)
@@ -424,6 +437,12 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     for feature in feature_intervals:
       readers = {task for task, index, _ in trees if feature in own[task][index]}
       range_task.append(next(iter(readers)) if len(readers) == 1 else SHARED_TASK)
+    # A table's action writes one code per tree with a threshold on its
+    # feature, each as wide as that tree's own thresholds need.
+    range_action_bytes = [
+        action_ram_entry_bytes(sum(widths[task][index].get(feature, 0)
+                                   for task, index, _ in trees))
+        for feature in feature_intervals]
 
   elif encoding == 'disjoint':
 
@@ -510,6 +529,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     range_fields = (
         range_key_fields_for(feature_intervals_app) +
         range_key_fields_for(ddos_only_intervals))
+    range_action_bytes = (range_action_bytes_for(feature_intervals_app)
+                          + range_action_bytes_for(ddos_only_intervals))
     ternary_fields = (
         [ternary_key_fields(feature_intervals_app)] * len(ternary_table_specs_app) +
         [ternary_key_fields(feature_intervals_ddos)] * len(ternary_table_specs_ddos))
@@ -563,6 +584,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       "ternary_entries": ternary_entries,
       "codeword_length": codeword_length,
       "range_dependents": range_dependents,
+      "range_action_bytes": range_action_bytes,
   }
   # Only the per-tree branch, where a tree keys only some of its task's
   # features: every other encoding's trees read all of theirs, which is what
