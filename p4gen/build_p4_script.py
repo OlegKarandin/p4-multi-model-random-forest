@@ -28,7 +28,7 @@ from p4model.target import (
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
-from p4model import lanes, packed, per_tree
+from p4model import lanes, packed
 from p4model.names import normalise_feature_name
 from p4model.program import (APP_TASK, DDOS_TASK, ENCODINGS, JOINT_ENCODING,
                                  PER_TASK_ENCODING, PER_TREE_ENCODING, PLACEMENT_PRIORITY,
@@ -824,14 +824,20 @@ def _per_task_code(interval, own_intervals):
       interval, own_intervals[-1]))
 
 
-def _range_table_entries(table_name, action_name, key_field, intervals, writes=None):
+def _range_table_entries(table_name, action_name, key_field, intervals, writes=None,
+                         value_of=None):
   '''One feature's range table: one entry per interval, highest interval
   first, each writing that interval's thermometer code. writes: None for a
   table writing one code (parameter `code`), or (action parameter, the task's
-  own intervals) per code a per-task table writes (resolve_per_task_plan).'''
+  own intervals) per code a per-task table writes (resolve_per_task_plan).
+  value_of: None, or interval -> the one value parameter `code` carries
+  instead of the interval's code (the packed per-tree field, whose action
+  writes every tree's code at once: generate_per_tree_table_entries).'''
   entries = []
   for idx, interval in enumerate(intervals[::-1]):
-    if writes is None:
+    if value_of is not None:
+      params = {"code": str(value_of(interval))}
+    elif writes is None:
       # `code` is the literal parameter name of every single-code set_code_*
       # action (resources/action.p4).
       code = thermometer_code(len(intervals), len(intervals) - 1 - idx)
@@ -857,8 +863,9 @@ def _tree_table_entries(table_name, action_name, tree_codewords, fields,
                         use_default_action_discount):
   '''One tree's classification table. fields: (key field, width) per code
   field, in the order generate_codewords concatenated the codeword, or
-  (key field, width, slices) for a field the key reads as slices, slices being
-  (bf_rt key name, hi, lo) per slice.'''
+  (key field, width, slices) for a code the key reads as slices, slices being
+  (bf_rt key name, hi, lo) per slice, hi and lo bit positions in the CODE
+  (bit 0 its least significant bit), whatever the field it sits in.'''
   # Planter-style discount: every leaf sharing this tree's majority class is
   # excluded from this tree's explicit entries and covered by ONE
   # default-action record instead. Computed once per tree, up front, so
@@ -887,7 +894,7 @@ def _tree_table_entries(table_name, action_name, tree_codewords, fields,
       name, width = field[0], field[1]
       chunk = codeword[bit_offset:bit_offset+width]  # most significant bit first
       bit_offset += width
-      # A field the key reads as slices (per-tree codes, generate_per_tree_table_entries)
+      # A code the key reads as slices (packed per-tree codes, generate_per_tree_table_entries)
       # carries (bf_rt name, hi, lo) per slice: each slice gets its own value/mask.
       for slice_name, hi, lo in (field[2] if len(field) > 2 and field[2] else [(name, width - 1, 0)]):
         hex_value, hex_mask = get_ternary_value_and_mask(chunk[width - 1 - hi:width - lo])
@@ -1095,39 +1102,40 @@ def per_tree_layout(table_plan, tree_intervals, tasks):
 
 def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
   '''The control-plane entries (get_table_entries' record format, installed by
-  p4/deploy_table_entries.py) of the PER-FIELD per-tree program: one code field
-  code_<per_tree_field(task, i, f)> per tree and feature it splits on.
+  p4/deploy_table_entries.py) of the packed per-tree program generate_p4_program
+  emits under PER_TREE_ENCODING (spec 2026-11-11-packed-codes-stage-pin Sec 3.1,
+  3.2, 8): one field meta.code_pk_<f> per feature, every tree's code on f at its
+  byte offset in it, from the same per_tree_layout the program is written from.
 
-  NOT the program generate_p4_program now emits under PER_TREE_ENCODING (one
-  packed field code_pk_<f> per feature, spec 2026-11-11 Sec 3.1): these entries
-  address the earlier per-field program, the 2026-11 investigations' compiled
-  programs (results/encoding_evidence_2026_11/: per_tree_arm ptlib.tree_program,
-  then adb_investigation padlib 'padwide_split', i.e. rule A): the per-task program
-  with each code_tk_<task>_<f> replaced by the tree codes; one range table per
-  feature over the union of the tasks' intervals (resolve_per_task_plan), its
-  action set_code_<f> taking code_<task>_<i> for every tree with a threshold on
-  f; each tree table keying its own codes, sliced by rule A from the pins
-  per_tree.pins_for gives every code field. It also refuses what that program
-  refuses: a tree with no split (NoSplitTree) and a feature whose range table
-  writes more action data than the bus carries (ActionDataTooWide).
+  Range table table_<index>_<f> (resolve_per_tree_plan's table_plan, over the
+  union of the tasks' intervals): its action set_code_<f> takes ONE parameter
+  `code`, the whole field: per interval, each tree's thermometer code of that
+  interval in the TREE's own intervals (which is what that tree's codewords,
+  built against the same intervals, expect to find), shifted to the tree's byte
+  offset (packed.range_value). Bits no tree owns are 0.
 
-  Each code written is the interval's thermometer code in the TREE's own
-  intervals, which is what that tree's codewords, built against the same
-  intervals, expect to find. A sliced key's value and mask are cut at the same
-  bits and named as bf_rt names the slice.'''
-  task_intervals = [(task.name, task.intervals) for task in tasks]
-  by_name = {task.name: task for task in tasks}
-  own = {task.name: per_tree_intervals(task) for task in tasks}
-  pins, _ = per_tree.pins_for(per_tree.widths_of(own))
-  table_plan, _ = resolve_per_task_plan(task_intervals)
+  Tree table get_classification_tree_<task>_<i>: one key field per slice of each
+  of its own codes (packed.key_slices, at most 64 bits each), named as bf_rt names
+  `meta.code_pk_<f>[hi:lo]` (bfrt_key_name, e.g. code_pk_flow_iat_max_19_8_);
+  each slice's value and mask are the codeword's bits hi..lo, counted from the
+  code's own bit 0 (field bit - 8 * offset). Keys in the program's order: the
+  tree's features in table_plan order (both sorted by name).
+
+  Refuses what the program refuses, before any entry is written: per_tree_layout's
+  NoSplitTree, ActionDataTooWide, PhvContainersExhausted and ValueError.'''
+  table_plan, _, own = resolve_per_tree_plan(tasks)
+  layout = per_tree_layout(table_plan, own, tasks)
   entries = []
-  for index, (feature, (intervals, written)) in enumerate(table_plan.items()):
-    writes = [("code_%s_%d" % (task, i), own[task][i][feature])
-              for task, _, _ in written
-              for i in range(len(by_name[task].trees)) if feature in own[task][i]]
+  for index, feature in enumerate(table_plan):
+    trees = [(task, i) for task, i, f in layout.place if f == feature]
+
+    def value_of(interval, feature=feature, trees=trees):
+      return packed.range_value(layout, feature, {
+          (task, i): int(_per_task_code(interval, own[task][i][feature]), 2)
+          for task, i in trees})
     entries += _range_table_entries("table_"+str(index)+"_"+feature, "set_code_"+feature,
                                     feature.replace(" ","_").lower()+"_val",
-                                    intervals, writes)
+                                    table_plan[feature][0], value_of=value_of)
   # Program order, lowest priority first, as generate_p4_program lists them.
   for task in reversed(list(tasks)):
     if not task.trees:
@@ -1140,16 +1148,11 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
       intervals = own[task.name][i]
       fields = []
       for feature, iv in intervals.items():
-        field = "code_" + per_tree_field(task.name, i, feature)
-        width = len(iv) - 1
-        # Rule A of the per-field program: a code over 8 bits that does not
-        # fill its pinned containers is keyed as slices of its own bits.
-        pinned = sum(pins[per_tree_field(task.name, i, feature)])
-        slices = (None if width <= 8 or pinned == width
-                  else [(min(width, lo + MAX_KEY_SLICE_BITS) - 1, lo)
-                        for lo in range(0, width, MAX_KEY_SLICE_BITS)])
-        fields.append((field, width, [(bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo)), hi, lo)
-                                      for hi, lo in slices] if slices else None))
+        field, base = "code_" + packed_field(feature), 8 * layout.place[(task.name, i, feature)][0]
+        fields.append((field, len(iv) - 1,
+                       [(bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo)),
+                         hi - base, lo - base)
+                        for hi, lo in packed.key_slices(layout, task.name, i, feature)]))
       paths = get_root_to_leaf_paths(tree_nodes_for(_Forest([tree]), task.features))
       entries += _tree_table_entries(
           "get_classification_tree_"+task.name+"_"+str(i),
