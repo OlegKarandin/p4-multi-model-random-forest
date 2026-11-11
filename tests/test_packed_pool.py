@@ -3,12 +3,30 @@
 packed.layout_for, its table is charged its stand-alone price, and the tables the
 12-group rule moved are the ones the generator pins."""
 from p4gen import evaluation
-from p4model import lanes, packing
-from p4model.program import (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING,
+import pytest
+
+from p4model import lanes, packed, packing, tables
+from p4model.errors import CrossbarKeyTooWide
+from p4model.program import (APP_TASK, DDOS_TASK, DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING,
                              PER_TREE_ENCODING)
 from p4model.usage import assemble_usage, moved_table_stages
 
 from tests.test_per_task_codes import _rng_design
+
+
+def _features(app, ddos, names):
+  merged = evaluation.merge_tree_nodes(evaluation.tree_nodes_for(app, names),
+                                       evaluation.tree_nodes_for(ddos, names))
+  return list(evaluation.feature_intervals_from_nodes(merged))
+
+
+def _layout(app, ddos, names):
+  own = {task: [{f: i for f, i in evaluation.feature_intervals_from_nodes({0: nodes}).items()
+                 if len(i) >= 2}
+                for nodes in evaluation.tree_nodes_for(clf, names).values()]
+         for task, clf in ((APP_TASK, app), (DDOS_TASK, ddos))}
+  return packed.layout_for(packed.widths_of(own), _features(app, ddos, names),
+                           [APP_TASK, DDOS_TASK])
 
 
 def test_the_per_tree_pool_carries_each_trees_key_bytes_and_stand_alone_blocks():
@@ -19,6 +37,15 @@ def test_the_per_tree_pool_carries_each_trees_key_bytes_and_stand_alone_blocks()
           == len(app.estimators_) + len(ddos.estimators_))
   for key, (blocks, width) in zip(pool["ternary_key_bytes"], pool["ternary_table_specs"]):
     assert width == len(key) and blocks % lanes.standalone(list(key)) == 0
+  # blocks == stand-alone price * row blocks of the tree's entries
+  entries = [evaluation.ternary_matching_resource_usage(
+                 evaluation.generate_codewords(evaluation.get_root_to_leaf_paths({0: nodes}), iv), iv)[0]
+             for clf, selected in ((app, names), (ddos, names))
+             for nodes in evaluation.tree_nodes_for(clf, selected).values()
+             for iv in [{f: i for f, i in evaluation.feature_intervals_from_nodes({0: nodes}).items()
+                         if len(i) >= 2}]]
+  for key, (blocks, _), count in zip(pool["ternary_key_bytes"], pool["ternary_table_specs"], entries):
+    assert blocks == lanes.standalone(list(key)) * tables.tree_entries_to_blocks(count)
 
 
 def test_usage_charges_the_sum_of_the_tables_own_blocks():
@@ -40,13 +67,37 @@ def test_stage_pins_name_exactly_the_moved_tables(monkeypatch):
   moved = moved_table_stages(plan)
   assert sorted(pins.values()) == sorted(moved.values())
   assert len(pins) == len(moved) and set(moved) == set(plan.moved)
+  seen = {}
+  for idx, task in enumerate(pool["ternary_task"]):
+    ordinal = seen[task] = seen.get(task, -1) + 1
+    if idx in moved:
+      assert pins["get_classification_tree_%s_%d" % (task, ordinal)] == moved[idx]
+
+
+def test_a_key_the_old_unpacked_layout_cannot_place_is_priced_not_refused(monkeypatch):
+  # Construction: make the OLD pricing (lanes.table_blocks of the unpacked key, which
+  # p4model.tables.ternary_matching_resource_usage calls) raise CrossbarKeyTooWide, as
+  # it does for an unpacked layout with no lane fit; the packed key is untouched.
+  def refuse(_bits):
+    raise CrossbarKeyTooWide("no lane fit in the old layout", 1)
+  monkeypatch.setattr(lanes, "table_blocks", refuse)
+  app, ddos, names = _rng_design(3)
+  iv = evaluation.feature_intervals_from_nodes(
+      {0: next(iter(evaluation.tree_nodes_for(app, names).values()))})
+  with pytest.raises(CrossbarKeyTooWide):
+    evaluation.ternary_matching_resource_usage(
+        evaluation.generate_codewords(evaluation.get_root_to_leaf_paths(
+            {0: next(iter(evaluation.tree_nodes_for(app, names).values()))}), iv), iv)
+  pool = evaluation._pool_inputs(app, ddos, names, names, PER_TREE_ENCODING)
+  assert len(pool["ternary_table_specs"]) == len(app.estimators_) + len(ddos.estimators_)
 
 
 def test_the_range_pool_prices_the_packed_fields_bus_bytes():
   app, ddos, names = _rng_design(3)
   pool = evaluation._pool_inputs(app, ddos, names, names, PER_TREE_ENCODING)
-  assert len(pool["range_action_bytes"]) == len(pool["range_table_specs"])
-  assert all(b >= 1 for b in pool["range_action_bytes"])
+  layout = _layout(app, ddos, names)
+  assert pool["range_action_bytes"] == [packed.bus_bytes(layout, feature)
+                                        for feature in _features(app, ddos, names)]
 
 
 def test_the_other_encodings_pools_are_untouched():

@@ -50,6 +50,8 @@ from p4model.usage import ResourceUsage, assemble_usage, moved_table_stages
 from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from p4model.target import (
     CODEWORD_KEY_OVERHEAD_BITS,
+    MAX_CODEWORD_LENGTH,
+    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     MAX_RANGE_KEY_BITS,
     METER_ALUS_PER_STAGE,
     RANGE_WORST_CASE_ENTRY_FRACTION,
@@ -89,7 +91,6 @@ from p4model.tables import (
     entries_across_trees_to_blocks,
     exact_match_resource_usage,
     per_task_key_fields,
-    per_tree_key_fields,
     range_deployment_overflow,
     range_key_fields_for,
     range_action_bytes_for,
@@ -196,13 +197,34 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
           range_table_specs, ternary_table_specs)
 
 
+def _packed_tree_entries(codewords, key, use_default_action_discount):
+  """(entries, codeword length) of ONE packed tree's table, from its one-tree
+  codeword dict, WITHOUT p4model.tables' block pricing: that prices the OLD
+  unpacked layout (lanes.table_blocks of ternary_key_field_bits) and would refuse
+  a design for a key the program never emits. The refusals kept are the packed
+  key's own: a codeword over MAX_CODEWORD_LENGTH bits, and a key over the
+  stage's crossbar bytes (len(key), the packed byte count). The packer adds the
+  lane-fit refusal on the packed key (CrossbarKeyTooWide)."""
+  entries = len(codewords[0])
+  if use_default_action_discount and entries > 0:
+    entries -= len(most_common_class_and_dropped_codewords(codewords[0])[1])
+  length = len(next(iter(codewords[0].items()))[0])
+  if length > MAX_CODEWORD_LENGTH:
+    raise CodewordTooLong("Codewords are too long", length)
+  if len(key) > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
+    raise CrossbarKeyTooWide(
+        "table key is %d crossbar bytes; no stage supplies more than %d"
+        % (len(key), TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), len(key))
+  return entries, length
+
+
 def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                  use_default_action_discount=False):
   """Fitted-forest frontend for multi_model_memory_evaluation: runs the
   'joint'/'per_task'/'per_tree'/'disjoint' encoding branches on both
   RandomForestClassifiers and pools everything they produce, once converged,
   into a plain dict under the same 16 names regardless of which branch ran --
-  plus, under 'per_tree' only, "tree_reads" (one list per tree of the range
+  plus (per_tree adds two more, below), under 'per_tree' only, "tree_reads" (one list per tree of the range
   table positions it keys, usage.tree_readiness_levels' rule E), since there a
   tree keys only the features it splits on, and "ternary_key_bytes" (one
   packed.key_bytes tuple per tree; ternary_fields and ternary_key_bits are None
@@ -401,13 +423,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     for task, index, nodes in trees:
       intervals = own[task][index]
       key = packed.key_bytes(layout, task, index)
-      # ternary_matching_resource_usage reads codewords[0]: a one-tree dict. Only
-      # its entry count and codeword length are used; the table's blocks are the
-      # key's stand-alone price below (it still refuses a key over the stage's
-      # crossbar bytes).
-      entries, _, length, _ = ternary_matching_resource_usage(
-          generate_codewords(get_root_to_leaf_paths({0: nodes}), intervals), intervals,
-          use_default_action_discount=use_default_action_discount)
+      entries, length = _packed_tree_entries(
+          generate_codewords(get_root_to_leaf_paths({0: nodes}), intervals), key,
+          use_default_action_discount)
       ternary_entries += entries
       # Independent keys, as under 'disjoint': see ResourceUsage.codeword_length.
       codeword_length = max(codeword_length, length)
