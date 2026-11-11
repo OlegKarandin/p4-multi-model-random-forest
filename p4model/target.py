@@ -162,24 +162,29 @@ ACTION_DATA_BUS_BUDGET = ACTION_DATA_BUS_BYTES - ACTION_RAM_WORD_BYTES
 # packing.crossbar_stages_needed (action_bytes).
 PER_TREE_MAX_ACTION_BYTES = ACTION_DATA_BUS_BUDGET
 
-# The ingress PHV share, in containers per size (bits). Tofino 1 has 64 8-bit,
-# 96 16-bit and 64 32-bit normal containers in groups of 16; p4c gave ingress 3
-# of the 4 8-bit groups and 5 of the 6 16-bit groups in all 272 compiles of the
-# per-tree pilot (campaign_2026_11e, phv_allocation_summary_0.log), and the four
-# PHV failures there are the designs whose 16-bit demand passes 80. 32-bit is
-# not listed: no design came near its share (largest use 47 of 64). Report
-# results/encoding_evidence_2026_11/model3/report.md, I4.
-PHV_INGRESS_CONTAINERS = {8: 48, 16: 80}
-# The template's own fields that take a whole container of that size in every
-# compile: p4c placed each of them in a normal container of that size in all
-# 268 successful pilot compiles, and the 16-bit ones are what stays unallocated
-# when the 16-bit share runs out (p4c's error for joint-tree_M055_s00_k12 lists
-# $hash_field_argument1, hdr.tcp.src_port and hdr.tcp.dst_port). Every other
-# template field moved between sizes or shared a container with a design
-# field, so it is not counted. $hash_field_argument1 is p4c's name for the
-# 16-bit operand of the flow hash. per_tree.phv_demand counts these.
+# Ingress PHV containers per size (bits): 4 / 6 / 4 groups of 16 containers of 8 / 16 / 32
+# bits, one group of each size egress-only (phv/phv_spec.cpp:383-429), so 48 / 80 / 48.
+# Spec docs/superpowers/specs/2026-11-11-packed-codes-stage-pin-design.md Sec 7 (the 32-bit
+# entry is new there; the per-tree pilot never came near it).
+PHV_INGRESS_CONTAINERS = {8: 48, 16: 80, 32: 48}
+# The program's own fields that take a whole container of that size, in every compile
+# (spec Sec 3.3, MEASURED on the 68 packed compiles of model4: 32-bit used 3 or 5 by the
+# program, never more; 16-bit 6 to 22 = k + 5 at most; 8-bit 6 to 15). The 16-bit lists
+# stand for the 5 fixed fields; the packed layout adds one more per selected feature
+# (the range table's value field) and one 8-bit class field per tree (packed.budgets).
+# $hash_field_argument1 is p4c's name for the 16-bit operand of the flow hash.
 PHV_TEMPLATE_FIELDS = {
-    8: ('ig_intr_md_for_dprsr.mirror_type',),
+    8: ('ig_intr_md_for_dprsr.mirror_type', 'bypass_egress', 'hdr.ipv4.protocol',
+        'header-valid bits'),
     16: ('ig_intr_md.ingress_port', 'ig_intr_md_for_tm.ucast_egress_port',
          'hdr.tcp.src_port', 'hdr.tcp.dst_port', '$hash_field_argument1'),
+    32: ('hdr.ipv4.src_addr', 'hdr.ipv4.dst_addr', 'hash operand', 'ig_md.flow_hash',
+         'a temporary'),
 }
+# Words the action data bus carries: 128 bytes of 16-byte action RAM words. A packed code
+# field's range-table action may write at most this many (spec Sec 6 rule 3).
+ACTION_DATA_BUS_WORDS = ACTION_DATA_BUS_BYTES // ACTION_RAM_WORD_BYTES
+# p4c asserts on a ternary key slice wider than 64 bits (lib/bitvec.h getrange, `sz <= 64`):
+# a wider code is keyed as several slices of at most this many bits (moved here from
+# p4gen/build_p4_script.py).
+MAX_KEY_SLICE_BITS = 64

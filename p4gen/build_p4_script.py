@@ -19,6 +19,7 @@ from p4gen import switch_semantics
 # stays greppable.
 from p4model.target import (
     MAX_CODEWORD_LENGTH,
+    MAX_KEY_SLICE_BITS,
     TCAM_BLOCK_KEY_LENGTH,
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
@@ -994,9 +995,7 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
   return entries
 
 
-# p4c asserts on a ternary key slice wider than 64 bits (lib/bitvec.h getrange,
-# `sz <= 64`): a wider code is keyed as several slices of at most this many bits.
-MAX_KEY_SLICE_BITS = 64
+# MAX_KEY_SLICE_BITS (64) lives in p4model.target: p4c asserts on a wider ternary key slice.
 
 
 def bfrt_key_name(expression):

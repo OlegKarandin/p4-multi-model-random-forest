@@ -12,15 +12,16 @@ class CrossbarKeyTooWide(RuntimeError):
 
 
 class ActionDataTooWide(RuntimeError):
-  """One range table's action writes more container bytes than the action data
-  bus carries (target.PER_TREE_MAX_ACTION_BYTES; spec 9.3). args = (message,
-  action_bytes)."""
+  """A packed code field needs more bus bytes than the action data bus carries
+  (target.ACTION_DATA_BUS_BYTES = 128): the range table that writes it would put
+  more than 8 action-RAM words on the bus (packed.layout_for; spec 2026-11-11
+  Sec 3.2/6). args = (message, field bytes)."""
 
 
 class PhvContainersExhausted(RuntimeError):
-  """A per-tree design needs more 16-bit PHV containers than ingress has
-  (target.PHV_INGRESS_CONTAINERS; per_tree.phv_demand). args = (message,
-  containers over the share)."""
+  """No PHV container of any size is left for a packed code field: its budgets
+  (packed.budgets, from target.PHV_INGRESS_CONTAINERS) are used up in 32, 16 and 8
+  bits alike. args = (message, containers short)."""
 
 
 class NoSplitTree(RuntimeError):

@@ -161,7 +161,9 @@ def phv_demand(widths, pins):
   8-bit fields beyond the 8-bit share are counted at 16 bits: when the 8-bit
   containers are full, p4c moves them to 16-bit ones (class fields: 151 of the
   163 that left an 8-bit container in the pilot went to a 16-bit one)."""
-  need = {8: len(PHV_TEMPLATE_FIELDS[8]), 16: len(PHV_TEMPLATE_FIELDS[16])}
+  # the per-tree model's own 8-bit count (1: mirror_type); target's list is now the packed
+  # layout's 4 (spec 2026-11-11 Sec 3.3). This function goes in Task 8.
+  need = {8: 1, 16: len(PHV_TEMPLATE_FIELDS[16])}
   for task, trees in widths.items():
     for index, tree in enumerate(trees):
       need[8] += 1                                    # class_tree_<task>_<index>
