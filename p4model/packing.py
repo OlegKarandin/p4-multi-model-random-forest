@@ -14,7 +14,12 @@ pool the placement and the charge are computed together, by an ORDERED stage
 simulation (crossbar_stages_needed's key_field_bits and placement_priority;
 audit C5): tables are placed in the order p4c's placer takes them, which the
 generator pins with @placement_priority, and every stage is priced key by key
-in that order with lanes.py."""
+in that order with lanes.py.
+
+Packed codes (key_bytes, spec 2026-11-11 Sec 4-5) keep that order but price
+every tree key stand-alone and refuse a stage whose tree keys would need more
+than 12 crossbar groups; the tables that refusal moves are reported, so the
+generator can pin them."""
 import functools
 import math
 from dataclasses import dataclass
@@ -95,6 +100,14 @@ class StagePlan:
                          # later key's lane price included) in the ordered
                          # simulation. sum(table_blocks) == blocks. What model.json's
                          # per-table list reports (spec 2026-09-29 §5.3).
+  moved: tuple = ()      # key_bytes mode only (packed codes, spec 2026-11-11 Sec 4.3):
+                         # sorted indices of tables that, at some stage, fitted every
+                         # condition except the 12-group rule and were placed whole (one
+                         # unit) in a later stage -- the tables the generator pins with
+                         # @stage(table_stages[i]). Empty in every other mode.
+  unpinnable: tuple = ()  # the same as `moved` for tables placed as SEVERAL units (more
+                         # than one stage's 24 blocks): no single @stage pin names where
+                         # they went. Empty in every other mode.
 
   def __int__(self):     # transitional: `stages` is still the occupancy count
     return self.occupied
@@ -323,20 +336,31 @@ def _classification_units(table_specs, key_fields, key_field_bits, levels,
               else frozenset({(("<private>", idx), byte_width)}))
     bits = tuple(key_field_bits[idx])
     per_row = max(1, lanes.table_blocks(bits))
-    rows = max(1, math.ceil(block_count / per_row))
-    rows_per_chunk = max(1, TCAM_BLOCKS_PER_STAGE // per_row)
-    remaining_blocks, remaining_rows, chunk = block_count, rows, 0
-    while True:
-      chunk_rows = min(remaining_rows, rows_per_chunk)
-      chunk_blocks = (remaining_blocks if chunk_rows == remaining_rows
-                      else min(remaining_blocks, per_row * chunk_rows))
-      units.append(_Unit(idx, chunk, chunk_blocks, chunk_rows, byte_width,
-                         fields, bits, levels[idx], priorities[idx]))
-      remaining_blocks -= chunk_blocks
-      remaining_rows -= chunk_rows
-      chunk += 1
-      if remaining_rows <= 0:
-        break
+    units.extend(_row_chunks(idx, block_count, byte_width, per_row, fields,
+                             bits, levels[idx], priorities[idx]))
+  return units
+
+
+def _row_chunks(idx, block_count, byte_width, per_row, fields, bits, level,
+                priority):
+  """One table's _Units: the whole table, or -- charged more than one stage's
+  TCAM_BLOCKS_PER_STAGE -- chunks of whole 512-row words (per_row blocks
+  each) that each fit a stage; every chunk keeps the full key."""
+  units = []
+  rows = max(1, math.ceil(block_count / per_row))
+  rows_per_chunk = max(1, TCAM_BLOCKS_PER_STAGE // per_row)
+  remaining_blocks, remaining_rows, chunk = block_count, rows, 0
+  while True:
+    chunk_rows = min(remaining_rows, rows_per_chunk)
+    chunk_blocks = (remaining_blocks if chunk_rows == remaining_rows
+                    else min(remaining_blocks, per_row * chunk_rows))
+    units.append(_Unit(idx, chunk, chunk_blocks, chunk_rows, byte_width,
+                       fields, bits, level, priority))
+    remaining_blocks -= chunk_blocks
+    remaining_rows -= chunk_rows
+    chunk += 1
+    if remaining_rows <= 0:
+      break
   return units
 
 
@@ -395,6 +419,16 @@ def _ordered_stage_simulation(table_specs, key_fields, key_field_bits, levels,
   Returns ({stage index: [(unit, charge), ...]}, {table_idx: latest stage})."""
   units = _classification_units(table_specs, key_fields, key_field_bits,
                                 levels, priorities)
+  return _place_in_order(
+      units, lambda here, unit, seed: _stage_charges(here + [unit], seed),
+      unavailable_stages, seed_at, last_seed)
+
+
+def _place_in_order(units, admit, unavailable_stages, seed_at, last_seed):
+  """The ordered placement loop shared by both classification modes:
+  _ordered_stage_simulation (key_field_bits) and _packed_stage_simulation
+  (key_bytes). `admit(here, unit, seed)` returns the charges of `here + [unit]`
+  in placement order, or None when the stage refuses the unit."""
   remaining = sorted(units, key=lambda u: (-u.priority, -u.table_idx, u.chunk))
   if not remaining:
     return {}, {}
@@ -418,7 +452,7 @@ def _ordered_stage_simulation(table_specs, key_fields, key_field_bits, levels,
     for unit in remaining:
       if unit.level > stage:
         continue
-      charged = _stage_charges(here + [unit], seed)
+      charged = admit(here, unit, seed)
       if charged is not None:
         placed[stage] = here + [unit]
         charges[stage] = charged
@@ -435,10 +469,110 @@ def _ordered_stage_simulation(table_specs, key_fields, key_field_bits, levels,
           table_stages)
 
 
+# --------------------------------------------------------------------------
+# The packed classification pool: keys with a known layout (spec 2026-11-11)
+# --------------------------------------------------------------------------
+
+@functools.lru_cache(maxsize=4096)
+def _standalone_groups(key):
+  """lanes.standalone of one key byte tuple, memoised: a packed tree key's
+  price per 512-row word, and the crossbar groups it needs in a stage."""
+  return lanes.standalone(list(key))
+
+
+def _packed_units(table_specs, key_fields, key_bytes, levels, priorities):
+  """table_specs -> _Units for keys whose bytes are known (packed.key_bytes).
+  A table's rows are its blocks / lanes.standalone of its key, rounded up;
+  chunked as _classification_units does. A key with no lane fit in 12 groups
+  cannot be placed by any stage and is refused here, as CrossbarKeyTooWide."""
+  units = []
+  for idx, (block_count, byte_width) in enumerate(table_specs):
+    _stage_shards(block_count, byte_width)   # raises for an impossible key
+    key = tuple(key_bytes[idx])
+    per_row = _standalone_groups(key)
+    if per_row is None:
+      raise CrossbarKeyTooWide(
+          "table %d's key of %d bytes has no lane fit in %d crossbar groups"
+          % (idx, len(key), TERNARY_CROSSBAR_GROUPS_PER_STAGE), byte_width)
+    fields = (key_fields[idx] if key_fields is not None
+              else frozenset({(("<private>", idx), byte_width)}))
+    units.extend(_row_chunks(idx, block_count, byte_width, per_row, fields,
+                             key, levels[idx], priorities[idx]))
+  return units
+
+
+def _packed_stage_test(units, seed):
+  """The stage test of the packed pool (spec 2026-11-11 Sec 5 rule 2): the
+  charges of `units` (this pool's, in placement order) in one stage holding
+  `seed`, or None when refused, and whether the 12-group rule ALONE refused it.
+
+  Every unit is charged its own blocks -- the stand-alone price, wherever it
+  sits (Sec 5 rule 1): with packed codes the first key of a stage is at its
+  stand-alone price in 117/117 probe stages, and a later key pays more almost
+  only when the stage's tree keys need 12 or more groups (Sec 4.1, the model4
+  probe, results/encoding_evidence_2026_11/model4/). That squeeze is not
+  priced; it is prevented. A stage admits when all of these hold:
+    * at most TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE tables, seed included;
+    * at most TERNARY_CROSSBAR_STAGE_BYTES bytes of distinct key fields;
+    * the blocks, seed shards included, pack 12x2 (fits_two_columns);
+    * the GROUP RULE (Sec 4.2): lanes.standalone of each tree table's key
+      (once per table, whatever its units), plus ceil(2 * seed.tables / 5)
+      for the seed's range tables (a 2-byte key each, 5 slots a group), at
+      most TERNARY_CROSSBAR_GROUPS_PER_STAGE (12, the groups a stage has).
+      Read at call time, so a test can patch it. A stage holding nothing
+      else -- no unit of this pool, no seed -- admits any single unit, so
+      the placement always ends (a key over 12 groups is refused earlier,
+      by _packed_units).
+  Returns (charges or None, refused by the group rule alone)."""
+  tables_ok = (len(units) + seed.tables
+               <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
+  present = frozenset().union(*(unit.fields for unit in units)) | seed.fields
+  bytes_ok = (sum(field_bytes for _, field_bytes in present)
+              <= TERNARY_CROSSBAR_STAGE_BYTES)
+  charges = [unit.blocks for unit in units]
+  columns_ok = fits_two_columns(
+      list(seed.blocks) + [width for charge in charges
+                           for width, _ in _stage_shards(charge, 1)])
+  alone = (len(units) == 1 and seed.tables == 0 and not seed.blocks
+           and not seed.fields)
+  keys = {unit.table_idx: unit.bits for unit in units}
+  groups = (sum(_standalone_groups(key) for key in keys.values())
+            + -(-2 * seed.tables // 5))
+  groups_ok = alone or groups <= TERNARY_CROSSBAR_GROUPS_PER_STAGE
+  others_ok = tables_ok and bytes_ok and columns_ok
+  if others_ok and groups_ok:
+    return charges, False
+  return None, others_ok
+
+
+def _packed_stage_simulation(table_specs, key_fields, key_bytes, levels,
+                             priorities, unavailable_stages, seed_at,
+                             last_seed):
+  """The packed pool's placement: _ordered_stage_simulation's order and
+  unavailable_stages, with _packed_stage_test as the stage test (spec
+  2026-11-11 Sec 5 rule 2). Also returns the indices of the tables the group
+  rule alone kept out of some stage they were tried in (Sec 4.3: the MOVED
+  tables, once split by unit count). A unit is tried only where it is ready
+  and the stage is available, so 'kept out' always means a later stage."""
+  units = _packed_units(table_specs, key_fields, key_bytes, levels, priorities)
+  kept_out = set()
+
+  def admit(here, unit, seed):
+    charges, groups_only = _packed_stage_test(here + [unit], seed)
+    if groups_only:
+      kept_out.add(unit.table_idx)
+    return charges
+
+  by_index, table_stages = _place_in_order(units, admit, unavailable_stages,
+                                           seed_at, last_seed)
+  return by_index, table_stages, kept_out, units
+
+
 def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                            unavailable_stages=frozenset(), key_field_bits=None,
                            seed_stages=(), placement_priority=None,
-                           table_dependents=None, action_bytes=None):
+                           table_dependents=None, action_bytes=None,
+                           key_bytes=None):
   """Packs independent match tables into pipeline stages under every
   per-stage hardware limit simultaneously, and returns a StagePlan
   describing where the tables landed (not just how many stages that took).
@@ -569,7 +703,43 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   compiles (results/compiler_calibration_pinned/): stage_depth 42/43 (the
   miss, independent_high_sd12, is the one design where the pragma itself
   cost p4c a stage) and blocks 38/38.
+
+  THE PACKED CLASSIFICATION POOL (key_bytes given: one lanes.py byte-list
+  tuple per table, packed.key_bytes -- spec
+  docs/superpowers/specs/2026-11-11-packed-codes-stage-pin-design.md Sec 4.2,
+  4.3, Sec 5 rules 1-2) is placed in the same order as the ordered stage
+  simulation, with unavailable_stages honoured the same way, but priced and
+  admitted differently (_packed_stage_test): every table is charged its
+  table_specs blocks whatever its position (its key's stand-alone price), and
+  a stage admits a table only while its tree keys need at most
+  TERNARY_CROSSBAR_GROUPS_PER_STAGE (12) groups between them, the seed's
+  range tables counting ceil(2 * tables / 5). Evidence, the model4 probe
+  (Sec 4.1, results/encoding_evidence_2026_11/model4/): the first key of a
+  stage is at its stand-alone price in 117/117 stages, and a later key pays
+  more almost only past 12 groups, where p4c's squeeze is not predictable --
+  so the model prevents it instead, and the generator pins the tables the
+  rule moved. StagePlan.moved / unpinnable report them. Needs
+  readiness_levels; refuses key_field_bits, table_dependents and
+  action_bytes.
   """
+  if key_bytes is not None:
+    if key_field_bits is not None:
+      raise ValueError(
+          "crossbar_stages_needed: key_bytes and key_field_bits both describe "
+          "the classification keys; pass one (key_bytes for packed codes)")
+    if readiness_levels is None:
+      raise ValueError(
+          "crossbar_stages_needed: key_bytes places tables at absolute stage "
+          "indices, which needs readiness_levels")
+    if len(key_bytes) != len(table_specs):
+      raise ValueError(
+          "crossbar_stages_needed: got %d key_bytes for %d table_specs; the "
+          "two must be positionally aligned, one byte list per table"
+          % (len(key_bytes), len(table_specs)))
+    if table_dependents is not None or action_bytes is not None:
+      raise ValueError(
+          "crossbar_stages_needed: table_dependents and action_bytes belong to "
+          "the range pool's declared-price placement, not the packed pool")
   if key_fields is not None:
     if len(key_fields) != len(table_specs):
       raise ValueError(
@@ -613,10 +783,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
           "the two must be positionally aligned"
           % (len(action_bytes), len(table_specs)))
   if placement_priority is not None:
-    if key_field_bits is None:
+    if key_field_bits is None and key_bytes is None:
       raise ValueError(
           "crossbar_stages_needed: placement_priority orders the "
-          "classification pool's stage simulation, which needs key_field_bits")
+          "classification pool's stage simulation, which needs key_field_bits "
+          "or key_bytes")
     if len(placement_priority) != len(table_specs):
       raise ValueError(
           "crossbar_stages_needed: got %d placement_priority entries for %d "
@@ -641,7 +812,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     return seeds.get(index) or StageLoad(index=index, blocks=(),
                                          fields=frozenset(), tables=0)
 
-  def plan(loads, table_stages, table_blocks):
+  def plan(loads, table_stages, table_blocks, moved=(), unpinnable=()):
     loads = sorted(loads, key=lambda load: load.index)
     return StagePlan(occupied=len(loads),
                      depth=(loads[-1].index + 1) if loads else 0,
@@ -651,7 +822,38 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                                         for idx in range(len(table_specs))),
                      stage_loads=tuple(loads),
                      table_blocks=tuple(table_blocks.get(idx, 0)
-                                        for idx in range(len(table_specs))))
+                                        for idx in range(len(table_specs))),
+                     moved=tuple(moved), unpinnable=tuple(unpinnable))
+
+  def unit_plan(by_index, table_stages, moved=(), unpinnable=()):
+    # A classification placement ({stage: [(unit, charge), ...]}) as a StagePlan.
+    charged = {}
+    for placed in by_index.values():
+      for unit, charge in placed:
+        charged[unit.table_idx] = charged.get(unit.table_idx, 0) + charge
+    loads = []
+    for index, placed in by_index.items():
+      loads.append(StageLoad(
+          index=index,
+          blocks=tuple(width for _, charge in placed
+                       for width, _ in _stage_shards(charge, 1)),
+          fields=frozenset().union(*(unit.fields for unit, _ in placed)),
+          tables=len(placed)))
+    return plan(loads, table_stages, charged, moved, unpinnable)
+
+  if key_bytes is not None:
+    priorities = (list(placement_priority) if placement_priority is not None
+                  else [0] * len(table_specs))
+    by_index, table_stages, kept_out, units = _packed_stage_simulation(
+        table_specs, key_fields, key_bytes, list(readiness_levels), priorities,
+        frozenset(unavailable_stages), seed_at, max(seeds, default=0))
+    unit_count = {}
+    for unit in units:
+      unit_count[unit.table_idx] = unit_count.get(unit.table_idx, 0) + 1
+    return unit_plan(
+        by_index, table_stages,
+        moved=sorted(idx for idx in kept_out if unit_count[idx] == 1),
+        unpinnable=sorted(idx for idx in kept_out if unit_count[idx] > 1))
 
   distinct_keys = {key_fields[idx] if key_fields is not None
                    else ("<private>", idx) for idx in range(len(table_specs))}
@@ -666,19 +868,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
         table_specs, key_fields, key_field_bits, levels, priorities,
         frozenset(unavailable_stages) if readiness_levels is not None
         else frozenset(), seed_at, max(seeds, default=0))
-    charged = {}
-    for placed in by_index.values():
-      for unit, charge in placed:
-        charged[unit.table_idx] = charged.get(unit.table_idx, 0) + charge
-    loads = []
-    for index, placed in by_index.items():
-      loads.append(StageLoad(
-          index=index,
-          blocks=tuple(width for _, charge in placed
-                       for width, _ in _stage_shards(charge, 1)),
-          fields=frozenset().union(*(unit.fields for unit, _ in placed)),
-          tables=len(placed)))
-    return plan(loads, table_stages, charged)
+    return unit_plan(by_index, table_stages)
 
   # ---- the range pool, and a single-key classification pool (see the
   # docstring): every table charged its declared blocks, placed as before C5.
