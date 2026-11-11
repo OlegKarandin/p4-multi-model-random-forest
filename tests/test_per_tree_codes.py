@@ -607,15 +607,63 @@ def test_the_row_writer_pins_the_moved_tables_and_records_them(tmp_path, monkeyp
   assert (model["stage_depth"], model["blocks"]) == (usage.stage_depth, usage.blocks)
   stored = json.loads((tmp_path / "designs" / (row + ".model.json")).read_text(encoding="utf-8"))
   assert stored["stage_pins"] == model["stage_pins"]
+  # each pinned table's first-refusal stage is recorded beside its pin, at least one stage earlier
+  refusal = stored["stage_pin_first_refusal"]
+  assert set(refusal) == set(model["stage_pins"])
+  assert all(refusal[name] < model["stage_pins"][name] for name in refusal)
+  assert stored["unpinnable_tables"] == []
+
+
+def test_the_row_writer_records_unpinnable_tables(tmp_path, monkeypatch):
+  """Plan Review Focus 3: a moved table placed as several units gets no pin and is reported in
+  model.json's unpinnable_tables. Construction: the real placement with one table reported
+  unpinnable (tests/test_packed_placement.py builds such a table at the packer level)."""
+  from p4gen import evaluation
+  from src.training import row_artifacts as ra
+  real = ra.tree_stage_placement
+
+  def with_unpinnable(*args, **kwargs):
+    return real(*args, **kwargs)._replace(unpinnable=["get_classification_tree_ddos_0"])
+
+  monkeypatch.setattr(ra, "tree_stage_placement", with_unpinnable)
+  app, ddos, names = _rng_design(3)
+  usage = _evaluate(app, ddos, names)
+  ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
+  row = "joint-tree_M035_s00_k05"
+  model = ra.write_row_artifacts(ctx, row, app, ddos, names, names, PER_TREE_ENCODING, usage)
+  stored = json.loads((tmp_path / "designs" / (row + ".model.json")).read_text(encoding="utf-8"))
+  assert stored["unpinnable_tables"] == model["unpinnable_tables"] == ["get_classification_tree_ddos_0"]
+  assert isinstance(evaluation.tree_stage_placement(app, ddos, names, names, PER_TREE_ENCODING),
+                    evaluation.TreeStagePlacement)
+
+
+@pytest.mark.parametrize("error", ["CodewordTooLong", "CrossbarKeyTooWide"])
+def test_a_pricing_refusal_while_pinning_is_a_generator_error_row(tmp_path, monkeypatch, error):
+  """Defensive (unreachable today: training refuses these designs before selection)."""
+  from p4model import errors
+  from src.training import row_artifacts as ra
+
+  def refuse(*args, **kwargs):
+    raise getattr(errors, error)("refused for the test", 99)
+
+  monkeypatch.setattr(ra, "tree_stage_placement", refuse)
+  app, ddos, names = _rng_design(3)
+  row, model = _generator_error_row(tmp_path, app, ddos, names)
+  assert "refused for the test" in model["generator_error"]
+  assert model["stage_pins"] is None and model["unpinnable_tables"] is None
+  assert model["stage_pin_first_refusal"] is None
+  assert not (tmp_path / "designs" / (row + ".p4")).exists()
 
 
 def test_unpinned_moved_tables_make_the_model_paths_differ(tmp_path, monkeypatch):
   """A program missing the pins its own placement calls for prices the same totals here,
   but p4c would not place it as the model did: model_paths_differ says so."""
+  from p4gen import evaluation
   from p4model import packing
   from src.training import row_artifacts as ra
   monkeypatch.setattr(packing, "TERNARY_CROSSBAR_GROUPS_PER_STAGE", 1)
-  monkeypatch.setattr(ra, "tree_stage_pins", lambda *args, **kwargs: {})
+  monkeypatch.setattr(ra, "tree_stage_placement",
+                      lambda *args, **kwargs: evaluation.TreeStagePlacement({}, {}, []))
   app, ddos, names = _rng_design(3)
   usage = _evaluate(app, ddos, names)
   ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
@@ -636,6 +684,7 @@ def test_other_arms_rows_record_no_pins(tmp_path, encoding):
   model = ra.write_row_artifacts(ctx, "x_M035_s00_k05", app, ddos, FEATURES, FEATURES,
                                  encoding, usage)
   assert model["stage_pins"] == {} and model["model_paths_differ"] is False
+  assert model["stage_pin_first_refusal"] == {} and model["unpinnable_tables"] == []
   assert "@stage(" not in (tmp_path / "designs" / "x_M035_s00_k05.p4").read_text(encoding="utf-8")
 
 
@@ -685,6 +734,7 @@ def test_a_field_wider_than_the_bus_is_recorded_as_a_generator_error_not_a_crash
   assert "action data bus" in model["generator_error"]
   assert model["stage_depth"] is None and model["blocks"] is None
   assert model["stage_pins"] is None
+  assert model["stage_pin_first_refusal"] is None and model["unpinnable_tables"] is None
   assert model["hw_feasible"] is False and model["budget_feasible"] is False
   assert (tmp_path / "designs" / (row + ".generator_error.txt")).read_text() == \
       model["generator_error"]

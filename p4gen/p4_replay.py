@@ -235,7 +235,11 @@ def code_written_by(key, task):
     2026-11-11 Sec 3.1; build_p4_script names its range table table_<n>_<f>),
     the field code_<f> that table_<n>_<f> is named after. The one place a new
     code encoding teaches the replay which range table a tree key comes from
-    (table_tasks and tree_range_reads both read it)."""
+    (table_tasks and tree_range_reads both read it). An archived code_tr_
+    program (generated before 2026-11-11) is mapped here but no longer priced
+    as it was generated -- its spill pins read as plain bytes -- so rescoring
+    a pre-2026-11-11 per-tree run (campaign_2026_11e, heldout6) with this code
+    can shift its numbers."""
     feature = feature_of_per_task_field(key, task)
     if feature is None:
         feature = feature_of_per_tree_field(key, task)

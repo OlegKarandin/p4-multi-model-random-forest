@@ -21,7 +21,9 @@ class ActionDataTooWide(RuntimeError):
 class PhvContainersExhausted(RuntimeError):
   """No PHV container of any size is left for a packed code field: its budgets
   (packed.budgets, from target.PHV_INGRESS_CONTAINERS) are used up in 32, 16 and 8
-  bits alike. args = (message, containers short)."""
+  bits alike. args = (message, 1): the second arg is always 1, a flag that the
+  layout ran out, not a shortfall count -- packed.layout_for stops at the first
+  field it cannot place, so how many more it would need is never computed."""
 
 
 class NoSplitTree(RuntimeError):

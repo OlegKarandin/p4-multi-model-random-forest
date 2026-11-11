@@ -346,6 +346,28 @@ def test_kickoff_hardware_validation_uncatalogued_feature_returns_unavailable(tm
     assert "f0" in handle[1] or "f1" in handle[1]
 
 
+def test_kickoff_hardware_validation_passes_the_per_tree_stage_pins(tmp_path):
+    # Spec 2026-11-11 Sec 4.3/4.5: the validated per_tree program carries the @stage pins of
+    # the tables the model's placement moved, computed as row_artifacts._generate computes
+    # them (evaluation.tree_stage_pins on the same forests, names and discount flag).
+    from p4gen import p4_gen_config
+    X = np.random.RandomState(0).randint(0, 65535, size=(60, 2))
+    clf_app = _fit_tiny_rf(X, np.random.RandomState(0).randint(0, 3, size=60), seed=0)
+    clf_ddos = _fit_tiny_rf(X, np.random.RandomState(1).choice([-1, 1], size=60), seed=1)
+    names = ["flow_iat_max", "fwd_iat_max"]
+    pins = {"get_classification_tree_app_0": 9}
+    config = p4_gen_config.P4GenConfig(use_default_action_discount=True)
+    with patch("p4gen.evaluation.tree_stage_pins", return_value=pins) as mock_pins,          patch("p4gen.build_p4_script.generate_P4_code", return_value="x.p4") as mock_generate,          patch("p4gen.p4_compile.compile_p4_async", return_value="future") as mock_compile:
+        handle = fs._kickoff_hardware_validation(
+            True, str(tmp_path) + "/", 0, 'multi', 2,
+            clf_app, clf_ddos, names, names, 'per_tree', config=config)
+    assert handle == "future" and mock_compile.call_count == 1
+    mock_pins.assert_called_once_with(clf_app, clf_ddos, names, names, 'per_tree',
+                                      use_default_action_discount=True)
+    assert mock_generate.call_args.kwargs["stage_pins"] == pins
+    assert mock_generate.call_args.kwargs["encoding"] == 'per_tree'
+
+
 def test_join_pending_compile_unavailable_leaves_stages_and_tcam_none():
     # Direct unit test of _join_pending_compile's F2 branch: an
     # ('unavailable', reason) handle must not be treated as a real Future

@@ -109,6 +109,13 @@ class StagePlan:
   unpinnable: tuple = ()  # the same as `moved` for tables placed as SEVERAL units (more
                          # than one stage's 24 blocks): no single @stage pin names where
                          # they went. Empty in every other mode.
+  first_refused: tuple = ()  # key_bytes mode only: one (table index, stage) pair per
+                         # `moved` entry, in the same order -- the FIRST stage the 12-group
+                         # rule alone refused that table. Spec 2026-11-11 Sec 4.3's safety
+                         # argument reads a pin as one stage past this; a fuzz of the
+                         # review (2026-11-11) found 26% of moved tables pinned 2-3 stages
+                         # later (refused again, or kept out by another limit, on the way),
+                         # so the gap is recorded rather than assumed. Empty otherwise.
 
   def __int__(self):     # transitional: `stages` is still the occupancy count
     return self.occupied
@@ -421,15 +428,16 @@ def _ordered_stage_simulation(table_specs, key_fields, key_field_bits, levels,
   units = _classification_units(table_specs, key_fields, key_field_bits,
                                 levels, priorities)
   return _place_in_order(
-      units, lambda here, unit, seed: _stage_charges(here + [unit], seed),
+      units, lambda here, unit, seed, stage: _stage_charges(here + [unit], seed),
       unavailable_stages, seed_at, last_seed)
 
 
 def _place_in_order(units, admit, unavailable_stages, seed_at, last_seed):
   """The ordered placement loop shared by both classification modes:
   _ordered_stage_simulation (key_field_bits) and _packed_stage_simulation
-  (key_bytes). `admit(here, unit, seed)` returns the charges of `here + [unit]`
-  in placement order, or None when the stage refuses the unit."""
+  (key_bytes). `admit(here, unit, seed, stage)` returns the charges of
+  `here + [unit]` in placement order, or None when stage `stage` refuses the
+  unit."""
   remaining = sorted(units, key=lambda u: (-u.priority, -u.table_idx, u.chunk))
   if not remaining:
     return {}, {}
@@ -453,7 +461,7 @@ def _place_in_order(units, admit, unavailable_stages, seed_at, last_seed):
     for unit in remaining:
       if unit.level > stage:
         continue
-      charged = admit(here, unit, seed)
+      charged = admit(here, unit, seed, stage)
       if charged is not None:
         placed[stage] = here + [unit]
         charges[stage] = charged
@@ -553,15 +561,17 @@ def _packed_stage_simulation(table_specs, key_fields, key_bytes, levels,
   unavailable_stages, with _packed_stage_test as the stage test (spec
   2026-11-11 Sec 5 rule 2). Also returns the indices of the tables the group
   rule alone kept out of some stage they were tried in (Sec 4.3: the MOVED
-  tables, once split by unit count). A unit is tried only where it is ready
-  and the stage is available, so 'kept out' always means a later stage."""
+  tables, once split by unit count), as {table index: the first such stage}.
+  A unit is tried only where it is ready and the stage is available, so 'kept
+  out' always means a later stage: a stage's group count only grows as units
+  join it, so a unit the rule refused there is never admitted there after."""
   units = _packed_units(table_specs, key_fields, key_bytes, levels, priorities)
-  kept_out = set()
+  kept_out = {}
 
-  def admit(here, unit, seed):
+  def admit(here, unit, seed, stage):
     charges, groups_only = _packed_stage_test(here + [unit], seed)
     if groups_only:
-      kept_out.add(unit.table_idx)
+      kept_out.setdefault(unit.table_idx, stage)
     return charges
 
   by_index, table_stages = _place_in_order(units, admit, unavailable_stages,
@@ -719,7 +729,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   stage is at its stand-alone price in 117/117 stages, and a later key pays
   more almost only past 12 groups, where p4c's squeeze is not predictable --
   so the model prevents it instead, and the generator pins the tables the
-  rule moved. StagePlan.moved / unpinnable report them. Needs
+  rule moved. StagePlan.moved / unpinnable report them, and
+  StagePlan.first_refused the stage the rule first refused each moved one. Needs
   readiness_levels; refuses key_field_bits, table_dependents and
   action_bytes.
   """
@@ -813,7 +824,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     return seeds.get(index) or StageLoad(index=index, blocks=(),
                                          fields=frozenset(), tables=0)
 
-  def plan(loads, table_stages, table_blocks, moved=(), unpinnable=()):
+  def plan(loads, table_stages, table_blocks, moved=(), unpinnable=(),
+           first_refused=()):
     loads = sorted(loads, key=lambda load: load.index)
     return StagePlan(occupied=len(loads),
                      depth=(loads[-1].index + 1) if loads else 0,
@@ -824,9 +836,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                      stage_loads=tuple(loads),
                      table_blocks=tuple(table_blocks.get(idx, 0)
                                         for idx in range(len(table_specs))),
-                     moved=tuple(moved), unpinnable=tuple(unpinnable))
+                     moved=tuple(moved), unpinnable=tuple(unpinnable),
+                     first_refused=tuple(first_refused))
 
-  def unit_plan(by_index, table_stages, moved=(), unpinnable=()):
+  def unit_plan(by_index, table_stages, moved=(), unpinnable=(),
+                first_refused=()):
     # A classification placement ({stage: [(unit, charge), ...]}) as a StagePlan.
     charged = {}
     for placed in by_index.values():
@@ -840,7 +854,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                        for width, _ in _stage_shards(charge, 1)),
           fields=frozenset().union(*(unit.fields for unit, _ in placed)),
           tables=len(placed)))
-    return plan(loads, table_stages, charged, moved, unpinnable)
+    return plan(loads, table_stages, charged, moved, unpinnable, first_refused)
 
   if key_bytes is not None:
     priorities = (list(placement_priority) if placement_priority is not None
@@ -851,10 +865,11 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     unit_count = {}
     for unit in units:
       unit_count[unit.table_idx] = unit_count.get(unit.table_idx, 0) + 1
+    moved = sorted(idx for idx in kept_out if unit_count[idx] == 1)
     return unit_plan(
-        by_index, table_stages,
-        moved=sorted(idx for idx in kept_out if unit_count[idx] == 1),
-        unpinnable=sorted(idx for idx in kept_out if unit_count[idx] > 1))
+        by_index, table_stages, moved=moved,
+        unpinnable=sorted(idx for idx in kept_out if unit_count[idx] > 1),
+        first_refused=[(idx, kept_out[idx]) for idx in moved])
 
   distinct_keys = {key_fields[idx] if key_fields is not None
                    else ("<private>", idx) for idx in range(len(table_specs))}
@@ -886,7 +901,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                width / TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
                1 / TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
-  def bus_bytes(table_idx):
+  def bus_words(table_idx):
     # whole action RAM words: the bus is fed in 16-byte words
     return (-(-action_bytes[table_idx] // ACTION_RAM_WORD_BYTES)
             if action_bytes is not None else 0)
@@ -902,12 +917,12 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
             <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
             and fits_two_columns(list(seed.blocks) + stage[1] + [blocks])
             and (not stage[1]
-                 or stage[3] + bus_bytes(table_idx) <= ACTION_DATA_BUS_WORDS))
+                 or stage[3] + bus_words(table_idx) <= ACTION_DATA_BUS_WORDS))
 
   def place(stage, blocks, fields, table_idx):
     stage[0] |= fields
     stage[1].append(blocks)
-    stage[3] += bus_bytes(table_idx)
+    stage[3] += bus_words(table_idx)
 
   def empty(seed):
     return [set(), [], seed, 0]

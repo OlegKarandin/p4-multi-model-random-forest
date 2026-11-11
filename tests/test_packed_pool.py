@@ -72,6 +72,31 @@ def test_stage_pins_name_exactly_the_moved_tables(monkeypatch):
     ordinal = seen[task] = seen.get(task, -1) + 1
     if idx in moved:
       assert pins["get_classification_tree_%s_%d" % (task, ordinal)] == moved[idx]
+  # tree_stage_placement: the same pins, each pinned table's first refusal (one stage or more
+  # before its pin), and no unpinnable table in this design
+  placement = evaluation.tree_stage_placement(app, ddos, names, names, PER_TREE_ENCODING)
+  assert placement.pins == pins and placement.unpinnable == []
+  assert set(placement.first_refusal) == set(pins)
+  assert all(placement.first_refusal[name] < pins[name] for name in pins)
+  assert sorted(placement.first_refusal.values()) == sorted(s for _, s in plan.first_refused)
+  assert evaluation.tree_stage_placement(app, ddos, names, names, PER_TASK_ENCODING) == ({}, {}, [])
+
+
+def test_tree_stage_placement_names_the_unpinnable_tables(monkeypatch):
+  # Construction: the real plan with index 0 (the first app tree) reported unpinnable, as a table
+  # moved and placed as several units would be (tests/test_packed_placement.py builds one).
+  import dataclasses
+  real = evaluation.assemble_usage
+
+  def with_unpinnable(pool):
+    usage, range_plan, ternary_plan = real(pool)
+    return usage, range_plan, dataclasses.replace(ternary_plan, unpinnable=(0,))
+
+  monkeypatch.setattr(evaluation, "assemble_usage", with_unpinnable)
+  app, ddos, names = _rng_design(3)
+  placement = evaluation.tree_stage_placement(app, ddos, names, names, PER_TREE_ENCODING)
+  assert placement.unpinnable == ["get_classification_tree_app_0"]
+  assert "get_classification_tree_app_0" not in placement.pins
 
 
 def test_a_key_the_old_unpacked_layout_cannot_place_is_priced_not_refused(monkeypatch):

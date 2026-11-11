@@ -106,7 +106,9 @@ def per_task_field(task, feature):
 # that tree splits on. The generator now writes one packed field code_pk_<feature>
 # per feature instead (build_p4_script.packed_field); the replay still reads the
 # old names (p4_replay.code_written_by), so an archived per-tree program keeps
-# mapping each tree key to its range table.
+# mapping each tree key to its range table. Mapped, but no longer priced as it was
+# generated: its spill pins read as plain bytes, so rescoring a pre-2026-11-11
+# per-tree run (campaign_2026_11e, heldout6) with this code can shift its numbers.
 PER_TREE_FIELD_PREFIX = "tr_"
 
 

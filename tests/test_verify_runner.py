@@ -353,6 +353,21 @@ def test_the_tarball_keeps_the_manifest_and_rescore_agrees(tmp_path, monkeypatch
     assert _csv_rows(run_dir)[0]["failure"] == "assembler"
 
 
+def test_a_rescored_program_whose_pins_disagree_with_its_placement_differs(tmp_path, monkeypatch):
+    # The replay prices the training's own totals, but the program's @stage lines are not the
+    # tables its placement moves (stage_pins_consistent False): p4c would place it otherwise.
+    run_dir = _run_dir(tmp_path)
+    monkeypatch.setattr(runner, "parse_program", lambda path: "program")
+    for consistent, differs in ((True, False), (False, True)):
+        monkeypatch.setattr(runner, "model_breakdown",
+                            lambda program, row_id, c=consistent: {
+                                "stage_depth": 12, "blocks": 6, "tables": _TABLES,
+                                "stage_pins_consistent": c})
+        model = runner._rescored_model(run_paths(run_dir), "r", _model("r"))
+        assert model["model_paths_differ"] is differs
+        assert (model["stage_depth"], model["blocks"]) == (12, 6)
+
+
 def test_rescore_of_an_old_tarball_with_no_manifest_changes_nothing(tmp_path, monkeypatch):
     run_dir = _run_dir(tmp_path)
     runner.verify_row(run_dir, "r", compile_fn=FakeCompiler())

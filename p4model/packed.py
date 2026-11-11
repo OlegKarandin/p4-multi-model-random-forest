@@ -66,7 +66,9 @@ def layout_for(widths, features, task_order):
   """The packed layout (spec Sec 3.2). Features in `features` order that have a
   code; within a feature the codes in task_order, then tree index.
   Raises NoSplitTree (a tree without a code), ActionDataTooWide (a field over
-  the bus's 128 bytes) or PhvContainersExhausted (no container of any size left)."""
+  the bus's 128 bytes) or PhvContainersExhausted (no container of any size left;
+  its second arg is 1, a flag that the layout ran out, not how many containers
+  it was short -- the layout stops at the first field it cannot place)."""
   for task in task_order:
     for index, tree in enumerate(widths.get(task, [])):
       if not tree:
