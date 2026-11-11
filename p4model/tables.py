@@ -199,32 +199,12 @@ def ternary_key_field_bits(feature_intervals):
                       for intervals in feature_intervals.values()))
 
 
-def action_ram_entry_bytes(bits):
-  """The action-data bytes a range table puts on the action data bus when its
-  action writes codes of `bits` bits in total: the bits packed into whole
-  bytes, as one action RAM entry -- 1, 2, 4, 8 or 16 bytes, and above 16 a
-  whole number of 16-byte RAM words (target.ACTION_RAM_WORD_BYTES).
-  packing.crossbar_stages_needed holds a stage's range tables to
-  target.ACTION_DATA_BUS_BUDGET of these.
-
-  Measured against p4c's own `adb:` figure for all 2,278 range tables of the
-  per-tree pilot (campaign_2026_11e, table_placement log): equal on 1,797,
-  never above, below on 481 tables of at most 8 bytes, where p4c packs narrow
-  codes less tightly than their bit sum (report
-  results/encoding_evidence_2026_11/model3/report.md, I1a)."""
-  data = -(-bits // 8)
-  if data <= 0:
-    return 0
-  if data > ACTION_RAM_WORD_BYTES:
-    return -(-data // ACTION_RAM_WORD_BYTES) * ACTION_RAM_WORD_BYTES
-  return 1 << (data - 1).bit_length()
-
-
 def range_action_bytes_for(feature_intervals):
-  """action_ram_entry_bytes per range table, one per feature in
+  """Plain action-data bytes per range table, ceil(bits / 8), one per feature in
   feature_intervals' order, for a table writing the one `code_<feature>`
-  field of `len(intervals) - 1` bits (ternary_key_field_bits' width)."""
-  return [action_ram_entry_bytes(max(len(intervals) - 1, 0))
+  field of `len(intervals) - 1` bits (ternary_key_field_bits' width).
+  packing.crossbar_stages_needed turns them into whole 16-byte bus words."""
+  return [-(-max(len(intervals) - 1, 0) // 8)
           for intervals in feature_intervals.values()]
 
 

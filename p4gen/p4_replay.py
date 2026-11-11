@@ -15,7 +15,7 @@ from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
 from p4model.ranges import compiler_range_rows
 from p4model.registers import gated_block_interior_stages, readiness_levels_for
 from p4model import lanes
-from p4model.tables import action_ram_entry_bytes, tree_entries_to_blocks
+from p4model.tables import tree_entries_to_blocks
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 from p4model.usage import tree_readiness_levels
 
@@ -243,7 +243,7 @@ def tree_range_reads(tables):
 def range_action_bits(program):
     """{range table name: bits its action writes}: the code fields the trees
     read from it (code_written_by), at their keyed widths -- what
-    tables.action_ram_entry_bytes turns into the table's action-data bus bytes,
+    ceil(bits / 8) turns into the table's action-data bus bytes,
     as evaluation._pool_inputs does from the forests. A sliced key counts its
     slices: rule A declares a wide code at its containers' width, but only the
     keyed bits carry data."""
@@ -400,7 +400,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         unavailable_stages=interior,
         table_dependents=([table_readers.get(name, 0) for name in range_names]
                           if reads is not None else None),
-        action_bytes=[action_ram_entry_bytes(bits_written[name])
+        action_bytes=[-(-bits_written[name] // 8)
                       for name in range_names])
     position = {name: index for index, name in enumerate(range_names)}
     tree_reads = None

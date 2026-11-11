@@ -144,23 +144,16 @@ PER_TREE_MAX_PIN8_FIELDS = 44
 # The action data bus: what a stage's match tables hand their actions. 128 bytes
 # (ADB_BYTES), fed from 16-byte action RAM words (BYTES_PER_RAM); p4c's
 # mau/tofino/action_data_bus.h. Where p4c puts each table's words on the bus
-# is its allocator's choice, so the model counts no positions: it lets action
-# data use the bus less one RAM word, ACTION_DATA_BUS_BUDGET. Evidence: one
-# table alone, 717 compiles, no bus failure up to 115 bytes and the lowest at
-# 116; range tables sharing a stage (per-tree pilot, campaign_2026_11e), every
-# budget from 105 to 127 bytes gives p4c's stage depth on all 128 k<=8 designs,
-# the whole bus leaves 9 under-prices. An exact count of the bytes used cannot
-# do better: p4c refused stages holding 56-96 real bytes, and 8 of 211 field
-# mixes compiled in one program and failed in another. Report
-# results/encoding_evidence_2026_11/model3/report.md, I1a and "Bus limit".
+# is its allocator's choice, so the model counts no positions: each range table
+# takes whole RAM words and the tables sharing a stage take at most
+# ACTION_DATA_BUS_WORDS of them (packing.crossbar_stages_needed). Evidence:
+# spec 2026-11-11-packed-codes-stage-pin Sec 6 and the model4 probes
+# bus_packed.py / bus_bytes.py.
 ACTION_DATA_BUS_BYTES = 128
 ACTION_RAM_WORD_BYTES = 16
-ACTION_DATA_BUS_BUDGET = ACTION_DATA_BUS_BYTES - ACTION_RAM_WORD_BYTES
-# One range table's action may write at most the bus budget in container
-# bytes, the sum of 4W + 2H + B over the codes it writes (per_tree.action_bytes).
-# Spec Sec 9.3. The range tables sharing a stage are held to the same budget by
-# packing.crossbar_stages_needed (action_bytes).
-PER_TREE_MAX_ACTION_BYTES = ACTION_DATA_BUS_BUDGET
+# One range table's action may write at most 112 container bytes, the sum of
+# 4W + 2H + B over the codes it writes (per_tree.action_bytes).
+PER_TREE_MAX_ACTION_BYTES = 112  # old per-tree path, removed in Task 8
 
 # Ingress PHV containers per size (bits): 4 / 6 / 4 groups of 16 containers of 8 / 16 / 32
 # bits, one group of each size egress-only (phv/phv_spec.cpp:383-429), so 48 / 80 / 48.

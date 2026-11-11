@@ -83,7 +83,6 @@ from p4model.ranges import (
 )
 from p4model.lanes import table_blocks
 from p4model.tables import (
-    action_ram_entry_bytes,
     codeword_bits_to_blocks,
     codeword_bytes_to_blocks,
     codeword_to_blocks,
@@ -351,10 +350,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
                     + [DDOS_TASK] * len(ternary_table_specs_ddos))
     # A table's action writes the code of each task with a threshold on it.
     range_action_bytes = [
-        action_ram_entry_bytes(sum(max(len(task_intervals[feature]) - 1, 0)
-                                   for task_intervals in (feature_intervals_app,
-                                                          feature_intervals_ddos)
-                                   if feature in task_intervals))
+        -(-sum(max(len(task_intervals[feature]) - 1, 0)
+               for task_intervals in (feature_intervals_app, feature_intervals_ddos)
+               if feature in task_intervals) // 8)
         for feature in feature_intervals]
 
   elif encoding == PER_TREE_ENCODING:
@@ -440,8 +438,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # A table's action writes one code per tree with a threshold on its
     # feature, each as wide as that tree's own thresholds need.
     range_action_bytes = [
-        action_ram_entry_bytes(sum(widths[task][index].get(feature, 0)
-                                   for task, index, _ in trees))
+        -(-sum(widths[task][index].get(feature, 0)
+               for task, index, _ in trees) // 8)
         for feature in feature_intervals]
 
   elif encoding == 'disjoint':

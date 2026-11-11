@@ -12,22 +12,26 @@ from p4model.packing import crossbar_stages_needed
 from p4model.program import (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING,
                              PER_TREE_ENCODING)
 from p4model.registers import register_stage_schedule
-from p4model.tables import action_ram_entry_bytes
-from p4model.target import (ACTION_DATA_BUS_BUDGET, ACTION_DATA_BUS_BYTES,
-                            ACTION_RAM_WORD_BYTES, PER_TREE_MAX_ACTION_BYTES)
+from p4model import target
 from tests.test_per_task_codes import _own, _rng_design
 
 
-def test_the_budget_is_the_bus_less_one_ram_word():
-  assert (ACTION_DATA_BUS_BYTES, ACTION_RAM_WORD_BYTES) == (128, 16)
-  assert ACTION_DATA_BUS_BUDGET == 112 == PER_TREE_MAX_ACTION_BYTES
+def test_the_bus_is_eight_words_of_sixteen_bytes():
+  assert target.ACTION_DATA_BUS_WORDS == 8 and not hasattr(target, "ACTION_DATA_BUS_BUDGET")
 
 
-@pytest.mark.parametrize("bits,entry", [
-    (0, 0), (1, 1), (8, 1), (9, 2), (16, 2), (17, 4), (32, 4), (33, 8), (64, 8),
-    (65, 16), (128, 16), (129, 32), (256, 32), (257, 48), (600, 80)])
-def test_an_action_ram_entry_is_a_power_of_two_bytes_then_whole_words(bits, entry):
-  assert action_ram_entry_bytes(bits) == entry
+@pytest.mark.parametrize("bytes_per_table, stages", [
+    ([64, 64], 1),          # 4 + 4 words
+    ([48, 48, 32], 1),      # 3 + 3 + 2
+    ([48, 48, 48], 2),      # 9 words
+    ([63, 62, 53], 2),      # 4 + 4 + 4: the pilot's M075_s03_k03
+    ([1] * 8, 1),           # eight small tables: one word each
+])
+def test_range_tables_share_a_stage_up_to_eight_words(bytes_per_table, stages):
+  specs = [(1, 2)] * len(bytes_per_table)
+  plan = crossbar_stages_needed(specs, readiness_levels=[5] * len(specs),
+                                action_bytes=bytes_per_table)
+  assert plan.occupied == stages
 
 
 def _range_pool(action_bytes, level=4):
@@ -35,19 +39,6 @@ def _range_pool(action_bytes, level=4):
   return crossbar_stages_needed([(1, 2)] * n, readiness_levels=[level] * n,
                                 key_fields=[frozenset({(("val", i), 2)}) for i in range(n)],
                                 action_bytes=action_bytes)
-
-
-def test_range_tables_share_a_stage_up_to_the_bus_budget():
-  # M075_s03_k03's stage 5 in p4c: 64 + 80 bytes refused, three stages
-  assert _range_pool([64, 80]).table_stages == (4, 5)
-  assert _range_pool([64, 80, 80]).table_stages == (4, 5, 6)
-  # 112 is allowed, one byte more is not
-  assert _range_pool([64, 48]).table_stages == (4, 4)
-  assert _range_pool([64, 32, 16, 1]).table_stages == (4, 4, 4, 5)
-  # without the budget, the old placement: everything in one stage
-  plan = crossbar_stages_needed([(1, 2)] * 2, readiness_levels=[4, 4],
-                                key_fields=[frozenset({(("val", i), 2)}) for i in range(2)])
-  assert plan.table_stages == (4, 4)
 
 
 def test_a_table_alone_always_takes_an_empty_stage():
@@ -103,7 +94,7 @@ def test_training_and_replay_give_each_range_table_the_same_bus_bytes(tmp_path, 
   written = range_action_bits(program)
   ranges = [name for name, keys in program.tables.items() if name.startswith("table_") and keys]
   assert sorted(pool["range_action_bytes"]) == sorted(
-      action_ram_entry_bytes(written[name]) for name in ranges)
+      -(-written[name] // 8) for name in ranges)
 
 
 # --- the gated register blocks' order -------------------------------------------------

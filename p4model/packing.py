@@ -27,7 +27,8 @@ from dataclasses import dataclass
 from p4model import lanes
 from p4model.errors import CrossbarKeyTooWide
 from p4model.target import (
-    ACTION_DATA_BUS_BUDGET,
+    ACTION_DATA_BUS_WORDS,
+    ACTION_RAM_WORD_BYTES,
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
     TCAM_ROWS_PER_STAGE,
@@ -645,15 +646,14 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   placement below; a classification pool (key_field_bits) refuses it.
 
   action_bytes (2026-11-09, the range pool): one int per table, the bytes
-  its action puts on the action data bus (tables.action_ram_entry_bytes).
-  Given, the tables sharing a stage carry at most
-  target.ACTION_DATA_BUS_BUDGET bytes between them -- the 128-byte bus less
-  one 16-byte action RAM word; a table alone always takes an empty stage (its
-  own limit is per_tree.pins_for's). p4c refuses a range table a stage whose
-  bus it cannot fit ("could not fit in within the action data bus"): 12 of
-  the 128 k<=8 per-tree pilot designs were under-priced by a stage without
-  this, none with it (report results/encoding_evidence_2026_11/model3/
-  report.md, I1a). Only for the declared-price placement below.
+  its action puts on the action data bus (plain bytes, ceil(bits / 8)).
+  Given, the tables sharing a stage take at most target.ACTION_DATA_BUS_WORDS
+  (8) action RAM words between them, each table rounded up to whole 16-byte
+  words: sum(ceil(bytes / 16)) <= 8 (spec 2026-11-11-packed-codes-stage-pin
+  Sec 6, model4 probes bus_packed.py / bus_bytes.py); a table alone always
+  takes an empty stage (its own limit is per_tree.pins_for's). p4c refuses a
+  range table a stage whose bus it cannot fit ("could not fit in within the
+  action data bus"). Only for the declared-price placement below.
 
   THE CLASSIFICATION POOL (key_field_bits given: one tuple of key-field BIT
   widths per table) is placed by an ORDERED STAGE SIMULATION (audit C5,
@@ -886,11 +886,13 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                1 / TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
   def bus_bytes(table_idx):
-    return action_bytes[table_idx] if action_bytes is not None else 0
+    # whole action RAM words: the bus is fed in 16-byte words
+    return (-(-action_bytes[table_idx] // ACTION_RAM_WORD_BYTES)
+            if action_bytes is not None else 0)
 
   def fits(stage, blocks, fields, table_idx):
     # stage: [fields present, shard blocks in placement order, seed,
-    #         action-data bus bytes]
+    #         action-data bus words]
     seed = stage[2]
     present = stage[0] | fields | seed.fields
     return (sum(field_bytes for _, field_bytes in present)
@@ -899,7 +901,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
             <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
             and fits_two_columns(list(seed.blocks) + stage[1] + [blocks])
             and (not stage[1]
-                 or stage[3] + bus_bytes(table_idx) <= ACTION_DATA_BUS_BUDGET))
+                 or stage[3] + bus_bytes(table_idx) <= ACTION_DATA_BUS_WORDS))
 
   def place(stage, blocks, fields, table_idx):
     stage[0] |= fields

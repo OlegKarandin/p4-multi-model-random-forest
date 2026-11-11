@@ -1052,9 +1052,8 @@ def test_a_tree_waits_for_the_range_tables_it_reads_as_the_replay_maps_them(tmp_
   assert pool["range_dependents"] == [readers.get(t, 0) for t in ranges]
   # and each range table's action-data bus bytes (the range pool's per-stage bus budget)
   from p4gen.p4_replay import range_action_bits
-  from p4model.tables import action_ram_entry_bytes
   written = range_action_bits(program)
-  assert pool["range_action_bytes"] == [action_ram_entry_bytes(written[t]) for t in ranges]
+  assert pool["range_action_bytes"] == [-(-written[t] // 8) for t in ranges]
   assert all(b > 0 for b in pool["range_action_bytes"])
 
 
