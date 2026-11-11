@@ -212,6 +212,13 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
   return levels
 
 
+def moved_table_stages(plan):
+  """{table index: stage} for the tables the 12-group rule moved (StagePlan.moved):
+  the stages the generator pins with @stage (spec 2026-11-11 Sec 4.3). Stages are
+  the plan's 0-based absolute pipeline stages, which are p4c's own numbering."""
+  return {idx: plan.table_stages[idx] for idx in plan.moved}
+
+
 def assemble_usage(pool):
   """Pack both pools and assemble the ResourceUsage.
 
@@ -232,6 +239,11 @@ def assemble_usage(pool):
   range_fields = pool["range_fields"]
   ternary_fields = pool["ternary_fields"]
   ternary_key_bits = pool["ternary_key_bits"]
+  # Packed codes (per_tree): each tree's key bytes come from the layout, so the
+  # classification pool is placed by key_bytes and the 12-group rule, not by
+  # key_field_bits (packing.crossbar_stages_needed). Packed trees never share
+  # crossbar bytes, so no key_fields (private placeholders) either.
+  ternary_key_bytes = pool.get("ternary_key_bytes")
   interior_stages = pool["interior_stages"]
   register_names = pool["register_names"]
   range_entries = pool["range_entries"]
@@ -317,7 +329,8 @@ def assemble_usage(pool):
       readiness_levels=ternary_levels,
       key_fields=ternary_fields,
       unavailable_stages=interior_stages,
-      key_field_bits=ternary_key_bits,
+      key_field_bits=None if ternary_key_bytes is not None else ternary_key_bits,
+      key_bytes=ternary_key_bytes,
       seed_stages=range_plan.stage_loads,
       placement_priority=[PLACEMENT_PRIORITY[task] for task in ternary_task])
 
