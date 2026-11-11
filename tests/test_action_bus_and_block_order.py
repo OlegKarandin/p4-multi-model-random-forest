@@ -7,7 +7,7 @@ import pytest
 
 from p4gen import build_p4_script as bps
 from p4gen import evaluation as ev
-from p4gen.p4_replay import model_breakdown, parse_program_text, range_action_bits
+from p4gen.p4_replay import model_breakdown, parse_program_text, range_action_bytes
 from p4model.packing import crossbar_stages_needed
 from p4model.program import (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING,
                              PER_TREE_ENCODING)
@@ -65,12 +65,12 @@ def test_the_replay_counts_the_keyed_bits_each_range_table_writes(tmp_path):
                               encoding=PER_TASK_ENCODING)
   with open(path, encoding="utf-8") as handle:
     program = parse_program_text(handle.read())
-  written = range_action_bits(program)
-  for name, bits in written.items():
+  written = range_action_bytes(program)
+  for name, action_bytes in written.items():
     feature = name.split("_", 2)[2]
     expected = sum(program.bits[field] for field in program.bits
                    if field in ("code_tk_app_" + feature, "code_tk_ddos_" + feature))
-    assert bits == expected > 0, name
+    assert expected > 0 and action_bytes == -(-expected // 8), name
 
 
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING,
@@ -91,10 +91,9 @@ def test_training_and_replay_give_each_range_table_the_same_bus_bytes(tmp_path, 
   with open(path, encoding="utf-8") as handle:
     program = parse_program_text(handle.read())
   pool = ev._pool_inputs(app, ddos, names, names, encoding)
-  written = range_action_bits(program)
+  written = range_action_bytes(program)
   ranges = [name for name, keys in program.tables.items() if name.startswith("table_") and keys]
-  assert sorted(pool["range_action_bytes"]) == sorted(
-      -(-written[name] // 8) for name in ranges)
+  assert sorted(pool["range_action_bytes"]) == sorted(written[name] for name in ranges)
 
 
 # --- the gated register blocks' order -------------------------------------------------

@@ -8,13 +8,14 @@ import re
 from collections import namedtuple
 from dataclasses import dataclass, field
 
+from p4model.errors import CrossbarKeyTooWide
 from p4model.packing import crossbar_stages_needed
 from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
                                  VOTE_EPILOGUE_STAGES, feature_of_per_task_field,
                                  feature_of_per_tree_field)
 from p4model.ranges import compiler_range_rows
 from p4model.registers import gated_block_interior_stages, readiness_levels_for
-from p4model import lanes
+from p4model import lanes, packed
 from p4model.tables import tree_entries_to_blocks
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 from p4model.usage import tree_readiness_levels
@@ -26,22 +27,44 @@ class Program:
     bits (field -> crossbar bytes / declared bits), sizes (table -> declared
     entries), priorities (table -> its @placement_priority, for every table
     that carries one), fwd_pinned (the program pins meta.fwd out of PHV
-    overlays, _FWD_PIN: the register blocks' order, register_stage_schedule)."""
+    overlays, _FWD_PIN: the register blocks' order, register_stage_schedule).
+
+    A packed per-tree program (spec 2026-11-11-packed-codes-stage-pin Sec 3.1,
+    4.3) fills three more: containers (code_pk_<f> -> its @pa_container_size
+    sizes in bits, low container first), key_slices ((table, field) ->
+    [(hi, lo)], each `meta.<field>[hi:lo]` key line of that table in program
+    order; every sliced key of any program is recorded) and stage_pins (table
+    -> the n of the @stage(n) line above it). The first and last are empty for
+    every other program."""
     tables: dict
     widths: dict
     bits: dict
     sizes: dict
     priorities: dict = field(default_factory=dict)
     fwd_pinned: bool = False
+    containers: dict = field(default_factory=dict)
+    key_slices: dict = field(default_factory=dict)
+    stage_pins: dict = field(default_factory=dict)
 
 
+# stage_pins_consistent: the program's @stage lines are exactly the tables the
+# replay's own packed placement moved, at the stages it put them (always True
+# for a program that is not packed). Defaulted, so a caller building one by
+# position keeps working.
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
-                                        'range_names ternary_names')
+                                        'range_names ternary_names '
+                                        'stage_pins_consistent',
+                         defaults=(True,))
+
+# The packed per-tree code field of feature f (build_p4_script.packed_field):
+# meta.code_pk_<f>, written whole by range table table_<n>_<f>.
+_PACKED_FIELD = 'code_pk_'
 
 
 def _parse_keys(text):
     """(table name -> [match key field names], field -> byte width,
-    field -> BIT width) for one generated program.
+    field -> BIT width, (table, field) -> [(hi, lo)] key slices) for one
+    generated program.
 
     The widths come from the metadata declarations (`bit<N> code_<f>;` /
     `bit<N> <f>_val;`), byte-rounded per FIELD because that is how the ternary
@@ -63,7 +86,11 @@ def _parse_keys(text):
     # slice, so the slice width is the field's width for pricing. A field
     # wider than 64 bits is keyed as several slices (p4c takes no wider
     # slice): one key entry, the slices' widths summed.
-    tables, current, sliced = {}, None, {}
+    # A packed field (code_pk_<f>) is the exception: every tree keys its OWN
+    # slices of it, so its slices are no one key's width; they are kept per
+    # (table, field) instead (tree_key_bytes) and its declared bits stay the
+    # field's container bits.
+    tables, current, sliced, slices = {}, None, {}, {}
     for line in text.splitlines():
         opened = re.match(r"\s*table\s+(\w+)\s*\{", line)
         if opened:
@@ -75,12 +102,14 @@ def _parse_keys(text):
             if key.group(1) not in tables[current]:
                 tables[current].append(key.group(1))
             if key.group(2) is not None:
-                width = int(key.group(2)) - int(key.group(3)) + 1
-                sliced[key.group(1)] = sliced.get(key.group(1), 0) + width
+                hi, lo = int(key.group(2)), int(key.group(3))
+                slices.setdefault((current, key.group(1)), []).append((hi, lo))
+                if not key.group(1).startswith(_PACKED_FIELD):
+                    sliced[key.group(1)] = sliced.get(key.group(1), 0) + hi - lo + 1
     for field, width in sliced.items():
         bits[field] = width
         widths[field] = math.ceil(width / 8)
-    return tables, widths, bits
+    return tables, widths, bits, slices
 def _parse_sizes(text):
     """table name -> its declared `size = N`, the entry count the generator
     writes per table (build_p4_script: real per-tree and per-feature sizes)."""
@@ -131,10 +160,27 @@ def _mark_spilled(text, bits):
 _FWD_PIN = re.compile(r'^@pa_no_overlay\("ingress",\s*"ig_md\.fwd"\)\s*$', re.M)
 
 
+# A packed code field's container pin (build_p4_script, spec 2026-11-11 Sec 3.1):
+# sizes in bits, low container first -- packed.Layout.containers' own form.
+_PACKED_CONTAINERS = re.compile(
+    r'^@pa_container_size\("ingress", "ig_md\.(%s\w+)", ([\d, ]+)\)\s*$'
+    % _PACKED_FIELD, re.M)
+
+# @stage(n) above a table, other pragmas (its @placement_priority) between it
+# and the table (build_p4_script, spec 2026-11-11 Sec 4.3).
+_STAGE_PIN = re.compile(r'@stage\((\d+)\)\s*\n(?:\s*@\w+\([^)\n]*\)\s*\n)*'
+                        r'\s*table\s+(\w+)\s*\{')
+
+
 def parse_program_text(text):
-    tables, widths, bits = _parse_keys(text)
+    tables, widths, bits, slices = _parse_keys(text)
     return Program(tables, widths, _mark_spilled(text, bits), _parse_sizes(text),
-                   _parse_priorities(text), bool(_FWD_PIN.search(text)))
+                   _parse_priorities(text), bool(_FWD_PIN.search(text)),
+                   containers={name: tuple(int(size) for size in sizes.split(','))
+                               for name, sizes in _PACKED_CONTAINERS.findall(text)},
+                   key_slices=slices,
+                   stage_pins={name: int(stage)
+                               for stage, name in _STAGE_PIN.findall(text)})
 
 
 def parse_program(p4_path):
@@ -172,8 +218,9 @@ def table_tasks(tables):
     Per-task codes (program.PER_TASK_ENCODING): table_<n>_<f> writes one
     code_tk_<task>_<f> per task with a threshold on f, so a reader of any of
     them is a reader of the table's feature. Per-tree codes
-    (program.PER_TREE_ENCODING) likewise: code_tr_<task>_<i>_<f>, one per tree
-    with a threshold on f, is read for that tree's task (code_written_by)."""
+    (program.PER_TREE_ENCODING) likewise: the packed field code_pk_<f>, or an
+    older program's code_tr_<task>_<i>_<f>, is read for the keying tree's task
+    (code_written_by)."""
     labels, readers = {}, {}
     for name, keys in tables.items():
         match = _TREE_TASK.match(name)
@@ -202,14 +249,17 @@ def table_tasks(tables):
 def code_written_by(key, task):
     """The code field a range table writes for a tree of `task` keying `key`:
     the key itself, or for a per-task code code_tk_<task>_<f>
-    (feature_of_per_task_field) or a per-tree code code_tr_<task>_<i>_<f>
-    (feature_of_per_tree_field), the field code_<f> that table_<n>_<f> is
-    named after. The one place a new code encoding teaches the replay which
-    range table a tree key comes from (table_tasks and tree_range_reads both
-    read it)."""
+    (feature_of_per_task_field), a per-tree code code_tr_<task>_<i>_<f>
+    (feature_of_per_tree_field) or a packed field code_pk_<f> (spec
+    2026-11-11 Sec 3.1; build_p4_script names its range table table_<n>_<f>),
+    the field code_<f> that table_<n>_<f> is named after. The one place a new
+    code encoding teaches the replay which range table a tree key comes from
+    (table_tasks and tree_range_reads both read it)."""
     feature = feature_of_per_task_field(key, task)
     if feature is None:
         feature = feature_of_per_tree_field(key, task)
+    if feature is None and key.startswith(_PACKED_FIELD):
+        feature = key[len(_PACKED_FIELD):]
     return key if feature is None else 'code_' + feature
 
 
@@ -240,27 +290,81 @@ def tree_range_reads(tables):
     return reads
 
 
-def range_action_bits(program):
-    """{range table name: bits its action writes}: the code fields the trees
-    read from it (code_written_by), at their keyed widths -- what
-    ceil(bits / 8) turns into the table's action-data bus bytes,
-    as evaluation._pool_inputs does from the forests. A sliced key counts its
-    slices: rule A declares a wide code at its containers' width, but only the
-    keyed bits carry data."""
-    tables, bits = program.tables, program.bits
+def is_packed(program):
+    """Whether `program` is a packed per-tree program: some classification
+    tree keys a code_pk_ field (spec 2026-11-11 Sec 3.1)."""
+    return any(key.startswith(_PACKED_FIELD)
+               for name, keys in program.tables.items() if _TREE_TASK.match(name)
+               for key in keys)
+
+
+def range_action_bytes(program):
+    """{range table name: action-data bus bytes its action writes}, plain
+    bytes (the range pool counts them in 16-byte words itself, packing.
+    crossbar_stages_needed's action_bytes): the code fields the trees read
+    from it (code_written_by). A packed field is written whole, so it counts
+    its container bytes, from its @pa_container_size pin -- packed.bus_bytes,
+    what evaluation._pool_inputs charges (spec 2026-11-11 Sec 5 rule 3). Any
+    other code counts its keyed bits, ceil(bits / 8) over the table's codes
+    together, as evaluation._pool_inputs does from the forests; a sliced key
+    counts its slices: rule A declares a wide code at its containers' width,
+    but only the keyed bits carry data."""
+    tables, bits, containers = program.tables, program.bits, program.containers
     written = {}
     for name, keys in tables.items():
         match = _TREE_TASK.match(name)
         if match:
             for key in keys:
                 written.setdefault(code_written_by(key, match.group(1)), set()).add(key)
-    action_bits = {}
+    action_bytes = {}
     for name in tables:
         match = _RANGE_TABLE_CODE.match(name)
         if match:
-            action_bits[name] = sum(int(bits[field])
-                                    for field in written.get('code_' + match.group(1), ()))
-    return action_bits
+            fields = written.get('code_' + match.group(1), ())
+            whole = sum(sum(containers[field]) // 8
+                        for field in fields if field in containers)
+            keyed = sum(int(bits[field]) for field in fields if field not in containers)
+            action_bytes[name] = whole + -(-keyed // 8)
+    return action_bytes
+
+
+def tree_key_bytes(program, table):
+    """One packed tree table's key as lanes.py byte tuples, in packed.key_bytes'
+    format and order, rebuilt from the program text alone (spec 2026-11-11
+    Sec 3.1, 3.2, 8): each code_pk_<f> key's slices give the code's byte
+    offset (its lowest bit / 8) and live bits (the slices' widths summed), the
+    field's @pa_container_size pin gives its containers, and packed.key_bytes
+    reads the Layout those make -- the function the training pool prices
+    from, so the two read one rule. Raises ValueError for a key a packed
+    program cannot carry: a field with no container pin or no slice, slices
+    that are not one contiguous run from a byte boundary, or a code running
+    past its field's containers."""
+    match = _TREE_TASK.match(table)
+    if match is None:
+        raise ValueError('%s is not a classification tree table' % table)
+    task, tree = match.group(1), int(match.group(2))
+    containers, place = {}, {}
+    for key in program.tables[table]:
+        if not key.startswith(_PACKED_FIELD) or key not in program.containers:
+            raise ValueError('%s keys %s, which is not a packed code field with a '
+                             '@pa_container_size pin' % (table, key))
+        runs = sorted(program.key_slices.get((table, key), ()), key=lambda run: run[1])
+        if not runs:
+            raise ValueError('%s keys all of %s; a packed tree keys slices of it'
+                             % (table, key))
+        low = runs[0][1]
+        for (hi, _), (_, next_lo) in zip(runs, runs[1:]):
+            if next_lo != hi + 1:
+                raise ValueError('%s: the slices of %s are not one contiguous run'
+                                 % (table, key))
+        width = runs[-1][0] - low + 1
+        if low % 8 or low // 8 + -(-width // 8) > sum(program.containers[key]) // 8:
+            raise ValueError("%s: %s[%d:%d] does not sit on whole bytes of the "
+                             "field's containers" % (table, key, runs[-1][0], low))
+        feature = key[len(_PACKED_FIELD):]
+        containers[feature] = program.containers[key]
+        place[(task, tree, feature)] = (low // 8, width)
+    return packed.key_bytes(packed.Layout(containers, place), task, tree)
 
 
 def _tree_priority(program, name, task):
@@ -296,18 +400,35 @@ def _key_bits(bits, keys):
                         key=lambda b: (int(b), isinstance(b, lanes.Spilled))))
 
 
+def _packed_price(program, name):
+    """A packed tree table's price per 512-row block of entries: its key's
+    stand-alone price (spec 2026-11-11 Sec 5 rule 1), as evaluation._pool_inputs
+    charges it, and CrossbarKeyTooWide where training raises it (no lane fit)."""
+    key = tree_key_bytes(program, name)
+    price = lanes.standalone(list(key))
+    if price is None:
+        raise CrossbarKeyTooWide(
+            "%s's key of %d bytes has no lane fit in a stage's crossbar groups"
+            % (name, len(key)), len(key))
+    return price
+
+
 def declared_prices(program):
     """The model's own per-table price for every priced table of a program
-    (replay_program's pricing loop)."""
+    (replay_program's pricing loop). A tree of a packed program (is_packed)
+    costs lanes.standalone of its tree_key_bytes, any other tree
+    lanes.table_blocks of its key bits; either times tree_entries_to_blocks
+    of its declared size."""
     tables, bits, sizes = program.tables, program.bits, program.sizes
+    packed_program = is_packed(program)
     blocks = {}
     for name, keys in tables.items():
         if not keys or name not in sizes:
             continue
         if name.startswith('get_classification_tree'):
-            key_bits = _key_bits(bits, keys)
-            blocks[name] = (lanes.table_blocks(key_bits)
-                            * tree_entries_to_blocks(sizes[name]))
+            per_row = (_packed_price(program, name) if packed_program
+                       else lanes.table_blocks(_key_bits(bits, keys)))
+            blocks[name] = per_row * tree_entries_to_blocks(sizes[name])
         elif name.startswith('table_'):
             blocks[name] = -(-compiler_range_rows(sizes[name])
                              // TERNARY_MATCHING_ENTRIES_PER_BLOCK)
@@ -364,12 +485,25 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
                                            fwd_pinned=program.fwd_pinned)
 
     tasks = table_tasks(tables)
-    bits_written = range_action_bits(program)
+    bytes_written = range_action_bytes(program)
+    packed_program = is_packed(program)
     range_specs, range_fields, range_levels, range_task = [], [], [], []
     range_names, ternary_names = [], []
     ternary_specs, ternary_fields, ternary_key_bits, ternary_task = [], [], [], []
+    ternary_key_bytes = []
     for name, keys in tables.items():
         if name not in blocks or not keys:
+            continue
+        if packed_program and name.startswith('get_classification_tree'):
+            # A packed tree (spec 2026-11-11 Sec 5 rules 1-2), as
+            # evaluation._pool_inputs hands it to the packer: its key's bytes,
+            # width len(key), and a private field (packed trees never share
+            # crossbar bytes: each keys its own slices).
+            key = tree_key_bytes(program, name)
+            ternary_specs.append((blocks[name], len(key)))
+            ternary_key_bytes.append(key)
+            ternary_task.append(tasks[name])
+            ternary_names.append(name)
             continue
         fields = frozenset((key, widths[key]) for key in keys)
         width = sum(field_bytes for _, field_bytes in fields)
@@ -400,8 +534,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         unavailable_stages=interior,
         table_dependents=([table_readers.get(name, 0) for name in range_names]
                           if reads is not None else None),
-        action_bytes=[-(-bits_written[name] // 8)
-                      for name in range_names])
+        action_bytes=[bytes_written[name] for name in range_names])
     position = {name: index for index, name in enumerate(range_names)}
     tree_reads = None
     if reads is not None:
@@ -416,21 +549,51 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     # which decides both WHERE trees land and what a tree behind a different
     # key in its stage pays -- so they matter even when the block counts are
     # p4c's own.
-    ternary_plan = crossbar_stages_needed(
-        ternary_specs,
-        readiness_levels=tree_readiness_levels(
-            range_plan.table_stages, range_task, ternary_task,
-            tasks=_label_tasks(range_task, ternary_task),
-            tree_reads=tree_reads),
-        key_fields=ternary_fields, unavailable_stages=interior,
-        key_field_bits=ternary_key_bits,
-        seed_stages=range_plan.stage_loads,
-        placement_priority=[_tree_priority(program, name, task)
-                            for name, task in zip(ternary_names, ternary_task)])
+    ternary_levels = tree_readiness_levels(
+        range_plan.table_stages, range_task, ternary_task,
+        tasks=_label_tasks(range_task, ternary_task),
+        tree_reads=tree_reads)
+    priorities = [_tree_priority(program, name, task)
+                  for name, task in zip(ternary_names, ternary_task)]
+    if not packed_program:
+        ternary_plan = crossbar_stages_needed(
+            ternary_specs, readiness_levels=ternary_levels,
+            key_fields=ternary_fields, unavailable_stages=interior,
+            key_field_bits=ternary_key_bits,
+            seed_stages=range_plan.stage_loads,
+            placement_priority=priorities)
+        predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
+        return ReplayPlans(predicted, range_plan, ternary_plan, range_names,
+                           ternary_names)
 
+    # The packed pool (spec 2026-11-11 Sec 4.3, 4.5, Sec 5 rule 2): placed by
+    # key_bytes and the 12-group rule exactly as usage.assemble_usage places
+    # it, which also gives the replay its OWN moved set (StagePlan.moved, at
+    # usage.moved_table_stages' stages). The program's @stage lines must be
+    # exactly that set, or the program and the model disagree on where the
+    # trees go: stage_pins_consistent says which.
+    def place(levels):
+        return crossbar_stages_needed(
+            ternary_specs, readiness_levels=levels, unavailable_stages=interior,
+            key_bytes=ternary_key_bytes, seed_stages=range_plan.stage_loads,
+            placement_priority=priorities)
+
+    ternary_plan = place(ternary_levels)
+    moved = {ternary_names[idx]: ternary_plan.table_stages[idx]
+             for idx in ternary_plan.moved}
+    consistent = program.stage_pins == moved
+    if program.stage_pins:
+        # A pin is p4c's EARLIEST stage for its table (mau/table_placement.cpp:
+        # 2645, spec Sec 4.3), so the program is priced with each pin as a
+        # floor on that table's readiness. When the pins are the moved set this
+        # is the plan above unchanged (a moved table was refused in every
+        # stage before its pin, and a refusal changes nothing else); when they
+        # are not, it is what the program would cost, flagged inconsistent.
+        ternary_plan = place([max(level, program.stage_pins.get(name, level))
+                              for name, level in zip(ternary_names, ternary_levels)])
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
     return ReplayPlans(predicted, range_plan, ternary_plan, range_names,
-                       ternary_names)
+                       ternary_names, consistent)
 
 
 def model_breakdown(program, row_id=''):
@@ -438,7 +601,10 @@ def model_breakdown(program, row_id=''):
     the program's own table names -- so spec sec 6.3's per-table comparison with
     p4c's mau.resources.log is a name join, not a mapping. The model side of
     every campaign verdict (plan O3): the path the 60/60 calibration gate
-    validates, and the one --rescore reruns from a saved program."""
+    validates, and the one --rescore reruns from a saved program.
+    stage_pins_consistent: False when a packed program's @stage lines are not
+    the tables the replay's own placement moved (ReplayPlans), True otherwise
+    -- including every program that is not packed."""
     plans = replay_plans(row_id, program, declared_prices(program))
     tables = []
     for kind, plan, names in (('range', plans.range_plan, plans.range_names),
@@ -449,4 +615,5 @@ def model_breakdown(program, row_id=''):
     tables.sort(key=lambda t: (t['stage'], t['table']))
     return {'stage_depth': int(plans.stage_depth),
             'blocks': int(plans.range_plan.blocks + plans.ternary_plan.blocks),
-            'tables': tables}
+            'tables': tables,
+            'stage_pins_consistent': bool(plans.stage_pins_consistent)}

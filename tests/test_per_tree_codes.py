@@ -1037,7 +1037,10 @@ def test_one_code_and_per_task_programs_replay_unchanged(tmp_path, seed):
     # range pool's action-data budget included.
     assert program.fwd_pinned
     program = dataclasses.replace(program, fwd_pinned=False)
-    breakdown = json.dumps(model_breakdown(program), sort_keys=True)
+    breakdown = model_breakdown(program)
+    # The packed-codes replay (2026-11-11) added this key; the hashes predate it.
+    assert breakdown.pop("stage_pins_consistent") is True
+    breakdown = json.dumps(breakdown, sort_keys=True)
     assert _sha(breakdown) == _OTHER_REPLAY_SHAS[(encoding, seed)], (encoding, seed)
 
 
