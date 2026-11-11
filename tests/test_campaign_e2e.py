@@ -298,7 +298,7 @@ def test_the_per_tree_arm_trains_verifies_and_renders_without_twins(tmp_path, mo
     assert set(feasible.loc[feasible["row_id"].isin(per_tree), "alignment_enabled"]) == {"False"}
     for row_id in per_tree:
         with open(os.path.join(run_dir, "designs", row_id + ".p4"), encoding="utf-8") as handle:
-            assert "code_tr_" in handle.read()
+            assert "code_pk_" in handle.read()
         with open(os.path.join(run_dir, "designs", row_id + ".model.json"),
                   encoding="utf-8") as handle:
             assert json.load(handle)["model_paths_differ"] is False
