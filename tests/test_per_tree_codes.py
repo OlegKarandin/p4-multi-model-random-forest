@@ -25,8 +25,8 @@ from p4model import lanes
 from p4model.errors import (ActionDataTooWide, CrossbarKeyTooWide, NoSplitTree,
                             PhvContainersExhausted)
 from p4model.lanes import Spilled
-from p4model.per_tree import (action_bytes, base_pins, marked_key_bits, phv_demand, pins_for,
-                              spill_table_fields, widths_of)
+from p4model.per_tree import (action_bytes, base_pins, code_slices8, marked_key_bits, phv_demand,
+                              pins_for, spill_table_fields, widths_of)
 from p4model.program import (APP_TASK, DDOS_TASK, DISJOINT_ENCODING, ENCODINGS, JOINT_ENCODING,
                              PER_TASK_ENCODING, PER_TREE_ENCODING, TaskSpec,
                              feature_of_per_tree_field, per_tree_field)
@@ -127,6 +127,36 @@ def test_the_spill_leaves_wider_fields_and_other_features_alone():
   # 6 narrow codes, 5 allowed: f (3 codes) is the smallest total at or above 1
   assert spill_table_fields(widths, pins, 5) == [per_tree_field("app", i, "f") for i in range(3)]
   assert pins[per_tree_field("app", 0, "g")] == [16]       # a 12-bit field is H already, never 'narrow'
+
+
+def test_eight_bit_slices_of_wide_codes_count_toward_the_cap_but_never_spill():
+  # heldout6 joint-tree_M055_s04_k10's shape: 40 narrow codes on f, then 5 trees whose
+  # 33-bit code on w is pinned [8, 32]: 45 eight-bit slices, one over the 44 cap
+  widths = _widths([{"f": 3}] * 40 + [{"w": 33}] * 5)
+  pins = base_pins(widths)
+  assert pins[per_tree_field("app", 40, "w")] == [8, 32]
+  assert code_slices8(widths, pins) == 45
+  # only narrow codes move, and a feature moves whole: all 40 codes of f
+  assert spill_table_fields(widths, pins, 44) == [per_tree_field("app", i, "f") for i in range(40)]
+  pins, spilled = pins_for(widths)
+  assert len(spilled) == 40 and code_slices8(widths, pins) == 5
+  assert all(pins[per_tree_field("app", i, "w")] == [8, 32] for i in range(40, 45))
+  # 44 slices in all: nothing moves
+  assert pins_for(_widths([{"f": 3}] * 39 + [{"w": 33}] * 5))[1] == []
+
+
+def test_eight_bit_slices_left_after_the_spill_beyond_the_share_raise():
+  # 49 wide codes pinned [8, 32] over 7 features: no narrow code to move, 49 > 48
+  widths = _widths([{f"w{i % 7}": 33} for i in range(49)])
+  assert code_slices8(widths, base_pins(widths)) == 49
+  with pytest.raises(PhvContainersExhausted) as e:
+    pins_for(widths)
+  assert e.value.args[1] == 1
+  # 48 such slices plus narrow codes: the narrow ones all move, the 48 slices stay
+  widths = _widths([{f"w{i % 7}": 33} for i in range(48)] + [{"f": 3}] * 2)
+  pins, spilled = pins_for(widths)
+  assert spilled == [per_tree_field("app", i, "f") for i in (48, 49)]
+  assert code_slices8(widths, pins) == 48
 
 
 def test_too_many_features_to_enumerate_raises():

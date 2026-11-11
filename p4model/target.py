@@ -131,11 +131,14 @@ METER_ALUS_PER_STAGE = 4
 # The two limits of the per-tree arm (program.PER_TREE_ENCODING). Both come from
 # measurement, not from the compiler's source.
 #
-# At most this many code fields across a design keep an 8-bit @pa_container_size
-# pin; the rest are pinned to 16 bits (per_tree.pins_for). Ingress has 48 8-bit
+# At most this many 8-bit slices of code pins across a design (narrow [8] codes
+# and the 8-bit slices of multi-container codes such as [8, 32]); narrow codes
+# beyond it are pinned to 16 bits (per_tree.pins_for). Ingress has 48 8-bit
 # PHV containers; the N8 search found a PHV failure from 49 pinned fields on and
-# no failure up to 44. A generator limit, not a model correction. Spec
-# docs/superpowers/specs/2026-11-06-per-tree-arm-design.md Sec 9.2.
+# no failure up to 44, and 4,525 compiles on disk failed from 49 8-bit slices
+# on (results/encoding_evidence_2026_11/model3/phv8/). A generator limit, not a
+# model correction. Spec docs/superpowers/specs/2026-11-06-per-tree-arm-design.md
+# Sec 9.2; slices counted since 2026-11-11.
 PER_TREE_MAX_PIN8_FIELDS = 44
 
 # The action data bus: what a stage's match tables hand their actions. 128 bytes

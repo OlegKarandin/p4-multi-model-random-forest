@@ -52,13 +52,26 @@ def base_pins(widths):
   return pins
 
 
+def code_slices8(widths, pins):
+  """8-bit PHV containers the code pins take: every 8 in a code's container
+  sizes, the narrow codes ([8]) and the 8-bit slices of multi-container codes
+  ([8, 32], [16, 8], ...) alike. @pa_container_size is a hard requirement in
+  p4c, so each such slice needs an 8-bit container of its own."""
+  return sum(pins[per_tree_field(task, index, feature)].count(8)
+             for task, trees in widths.items()
+             for index, tree in enumerate(trees) for feature in tree)
+
+
 def spill_table_fields(widths, pins, max_pin8):
   """The resolved fields that move from an 8-bit to a 16-bit pin (spec Sec 7):
   at a spill, ALL narrow codes (those pinned [8]) of a feature move together,
   so one range table's action never writes through both 8-bit and 16-bit
-  action-data slots. need = narrow fields beyond `max_pin8`; the features moved
-  are the set with the smallest total of narrow codes at or above need, then
-  the fewest features, then alphabetical. The list is in a fixed order: chosen
+  action-data slots. need = 8-bit code slices (code_slices8) beyond
+  `max_pin8`; only narrow codes can move, so the 8-bit slices of
+  multi-container codes count toward the need but never spill. The features
+  moved are the set with the smallest total of narrow codes at or above need,
+  then the fewest features, then alphabetical; when the narrow codes cannot
+  cover the need, all of them move. The list is in a fixed order: chosen
   features alphabetical, within one tasks alphabetical, trees ascending.
 
   The subsets are enumerated, but not blindly: the target total is found first
@@ -71,10 +84,13 @@ def spill_table_fields(widths, pins, max_pin8):
         name = per_tree_field(task, index, feature)
         if pins[name] == [8]:
           narrow.setdefault(feature, []).append(name)
-  need = sum(len(names) for names in narrow.values()) - max_pin8
+  available = sum(len(names) for names in narrow.values())
+  need = min(code_slices8(widths, pins) - max_pin8, available)
   if need <= 0:
     return []
   features = sorted(narrow)
+  if need == available:
+    return [name for f in features for name in narrow[f]]
   if len(features) > _MAX_SPILL_FEATURES:
     raise ValueError("too many features to enumerate a spill: %d" % len(features))
   totals = {0}
@@ -91,15 +107,17 @@ def spill_table_fields(widths, pins, max_pin8):
 def pins_for(widths):
   """(pins, spilled): {resolved field: container sizes in bits} for every code
   field of the design, and the resolved fields spilled from [8] to [16], in
-  spill_table_fields' order. At most target.PER_TREE_MAX_PIN8_FIELDS fields keep
-  an 8-bit pin.
+  spill_table_fields' order. The code pins keep at most
+  target.PER_TREE_MAX_PIN8_FIELDS 8-bit slices (code_slices8) whenever the
+  narrow codes can absorb the spill.
 
   Raises NoSplitTree(message, "<task>_<tree>") for a tree with no code field
   (spec 9.4), then ActionDataTooWide(message, bytes) when a feature's range
   table would write more than target.PER_TREE_MAX_ACTION_BYTES (spec 9.3; the
   largest such feature, counted after the spill), then
-  PhvContainersExhausted(message, containers over) when phv_demand's 16-bit
-  count passes the ingress share."""
+  PhvContainersExhausted(message, containers over) when the 8-bit code slices
+  left after the spill pass the ingress 8-bit share (only multi-container codes
+  remain then), or phv_demand's 16-bit count passes the 16-bit share."""
   for task, trees in widths.items():
     for index, tree in enumerate(trees):
       if not tree:
@@ -116,6 +134,11 @@ def pins_for(widths):
         "the range table of %s writes %d container bytes; the action data bus "
         "carries at most %d" % (feature, per_feature[feature], PER_TREE_MAX_ACTION_BYTES),
         per_feature[feature])
+  slices8 = code_slices8(widths, pins)
+  if slices8 > PHV_INGRESS_CONTAINERS[8]:
+    raise PhvContainersExhausted(
+        "the code pins need %d 8-bit PHV containers after the spill; ingress has %d"
+        % (slices8, PHV_INGRESS_CONTAINERS[8]), slices8 - PHV_INGRESS_CONTAINERS[8])
   need16 = phv_demand(widths, pins)[16]
   if need16 > PHV_INGRESS_CONTAINERS[16]:
     raise PhvContainersExhausted(
