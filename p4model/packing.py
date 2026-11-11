@@ -651,7 +651,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   (8) action RAM words between them, each table rounded up to whole 16-byte
   words: sum(ceil(bytes / 16)) <= 8 (spec 2026-11-11-packed-codes-stage-pin
   Sec 6, model4 probes bus_packed.py / bus_bytes.py); a table alone always
-  takes an empty stage (its own limit is per_tree.pins_for's). p4c refuses a
+  takes an empty stage (a packed field over the bus is refused by
+  packed.layout_for). p4c refuses a
   range table a stage whose bus it cannot fit ("could not fit in within the
   action data bus"). Only for the declared-price placement below.
 

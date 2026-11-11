@@ -119,11 +119,9 @@ from p4model.catalog import (
 
 
 def ternary_matching_resource_usage(codewords, feature_intervals,
-                                    use_default_action_discount=False, key_bits=None):
+                                    use_default_action_discount=False):
   """Wrapper over p4model.tables.ternary_matching_resource_usage that owns
-  this generator's default-action POLICY. key_bits is passed straight through
-  (None prices the key from feature_intervals, as before; the per-tree branch
-  of _pool_inputs passes per_tree.marked_key_bits).
+  this generator's default-action POLICY.
 
   The model takes a per-tree count of folded entries; deciding WHICH leaves fold
   is Planter RF_EB's majority-class rule, which lives in build_p4_script beside
@@ -140,7 +138,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
         if len(codewords[tree]) > 0 else 0
         for tree in codewords]
   return _tables.ternary_matching_resource_usage(
-      codewords, feature_intervals, dropped_per_tree=dropped_per_tree, key_bits=key_bits)
+      codewords, feature_intervals, dropped_per_tree=dropped_per_tree)
 
 
 # ---------------------------------------------------------------------------

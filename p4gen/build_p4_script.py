@@ -32,7 +32,7 @@ from p4model import lanes, packed
 from p4model.names import normalise_feature_name
 from p4model.program import (APP_TASK, DDOS_TASK, ENCODINGS, JOINT_ENCODING,
                                  PER_TASK_ENCODING, PER_TREE_ENCODING, PLACEMENT_PRIORITY,
-                                 TaskSpec, per_task_field, per_tree_field,
+                                 TaskSpec, per_task_field,
                                  placement_priorities, range_table_priority, task_names)
 
 INFINITE = (2**16)-1
@@ -1043,10 +1043,10 @@ def resolve_per_tree_plan(tasks):
 
   Returns (table_plan, field_plan, tree_intervals):
     table_plan: raw feature -> (the union of the tasks' intervals, the
-      (writer, code name, code width) of every code the table writes):
+      (writer, code width) of every code the table writes):
       resolve_per_task_plan's tasks, lowest priority first, each expanded into
       its trees with a threshold on the feature, tree index ascending. writer
-      is '<task>_<i>', the code name per_tree_field(task, i, feature).
+      is '<task>_<i>'; every code lands in the feature's one packed field.
     field_plan: resolved name pk_<feature> -> (raw feature, the union of the
       tasks' intervals, {tasks whose trees read the field}), in table_plan's
       order: one packed field per feature, the shape every section that walks
@@ -1060,8 +1060,7 @@ def resolve_per_tree_plan(tasks):
     for task, _, _ in written_by_task:
       for i, own in enumerate(tree_intervals[task]):
         if feature in own:
-          written.append(("%s_%d" % (task, i), per_tree_field(task, i, feature),
-                          len(own[feature]) - 1))
+          written.append(("%s_%d" % (task, i), len(own[feature]) - 1))
     table_plan[feature] = (union, written)
     field_plan[packed_field(feature)] = (
         feature, union, {task for task, _, _ in written_by_task

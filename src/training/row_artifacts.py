@@ -14,6 +14,7 @@ import joblib
 import sklearn
 
 from p4gen.build_p4_script import generate_P4_code
+from p4gen.evaluation import tree_stage_pins
 from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.program import JOINT_ENCODING
 from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
@@ -31,9 +32,18 @@ class RowContext:
 
 
 def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encoding):
-    """The row's program, written into a private temp dir and then moved
-    atomically, so a crash never leaves a half-written designs/<row_id>.p4
-    that the verifier would compile."""
+    """(path, stage_pins): the row's program, written into a private temp dir
+    and then moved atomically, so a crash never leaves a half-written
+    designs/<row_id>.p4 that the verifier would compile, and the stage pins it
+    was generated with.
+
+    The pins are the tree tables the model's own placement moved
+    (evaluation.tree_stage_pins, from the pool training priced; {} for every
+    encoding but per_tree): the generator writes each as @stage(n), so p4c
+    places it where the model did (spec 2026-11-11-packed-codes-stage-pin
+    Sec 4.3, 4.5). They are computed before the program, so a design the pool
+    refuses (NoSplitTree, ActionDataTooWide, PhvContainersExhausted) raises
+    here exactly as the generator would."""
     # Deferred: feature_selection imports this module, so a top-level import
     # would be circular.
     from src.training.feature_selection import (
@@ -46,6 +56,7 @@ def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encodin
         # generator rebuilds the shared tables' union from them).
         intervals_app = _derive_feature_intervals(model_app, names_app)
         intervals_ddos = _derive_feature_intervals(model_ddos, names_ddos)
+    stage_pins = tree_stage_pins(model_app, model_ddos, names_app, names_ddos, encoding)
     paths = run_paths(ctx.run_dir).ensure()
     scratch = tempfile.mkdtemp(prefix=row_id + '.', dir=paths.designs)
     try:
@@ -54,10 +65,10 @@ def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encodin
             feature_intervals_app=intervals_app, feature_intervals_ddos=intervals_ddos,
             output_dir=scratch + os.sep, output_filename=row_id + '.p4',
             selected_features_app=names_app, selected_features_ddos=names_ddos,
-            encoding=encoding)
+            encoding=encoding, stage_pins=stage_pins)
         final = os.path.join(paths.designs, row_id + '.p4')
         os.replace(written, final)
-        return final
+        return final, stage_pins
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -85,7 +96,14 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
                         encoding, usage, extra=None):
     """`extra`: a mapping merged into model.json after every computed field
     (the alignment twins' `source_row_id` / `identical_to`); it may not
-    override a computed key."""
+    override a computed key.
+
+    model.json records `stage_pins`, the {tree table: stage} the program was
+    generated with (None on a generator-error row). `model_paths_differ` is
+    True when the replay of the program prices other numbers than training,
+    or when the program's @stage lines are not the tables its own placement
+    moves (the replay's `stage_pins_consistent`): p4c would then place the
+    program otherwise than the model did."""
     paths = run_paths(ctx.run_dir).ensure()
     budgeted = ctx.M != float('inf')
     model = {
@@ -103,8 +121,8 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
         'codeword_bits': int(usage.codeword_length),
     }
     try:
-        p4_path = _generate(ctx, row_id, model_app, model_ddos,
-                            names_app, names_ddos, encoding)
+        p4_path, stage_pins = _generate(ctx, row_id, model_app, model_ddos,
+                                        names_app, names_ddos, encoding)
     except (ValueError, ActionDataTooWide, NoSplitTree, PhvContainersExhausted) as exc:
         # The three per-tree refusals are RuntimeErrors (p4model.errors), like the
         # other model refusals; the search records them as infeasible trials
@@ -114,7 +132,7 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
         atomic_write_text(os.path.join(paths.designs, row_id + '.generator_error.txt'),
                           message)
         model.update({'stage_depth': None, 'blocks': None, 'tables': None,
-                      'model_paths_differ': None, 'hw_feasible': False,
+                      'stage_pins': None, 'model_paths_differ': None, 'hw_feasible': False,
                       'budget_feasible': False, 'generator_error': message})
     else:
         replay = model_breakdown(parse_program(p4_path), row_id)
@@ -122,8 +140,10 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
             'stage_depth': replay['stage_depth'],
             'blocks': replay['blocks'],
             'tables': replay['tables'],
-            'model_paths_differ': (replay['stage_depth'], replay['blocks'])
-                                  != (usage.stage_depth, usage.blocks),
+            'stage_pins': dict(stage_pins),
+            'model_paths_differ': ((replay['stage_depth'], replay['blocks'])
+                                   != (usage.stage_depth, usage.blocks)
+                                   or not replay['stage_pins_consistent']),
             'hw_feasible': bool(replay['stage_depth'] <= TOFINO_PIPELINE_STAGES
                                 and model['codeword_bits'] <= MAX_CODEWORD_LENGTH),
             'budget_feasible': (not budgeted) or replay['blocks'] <= ctx.M,

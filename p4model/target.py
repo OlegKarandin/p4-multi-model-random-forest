@@ -128,19 +128,6 @@ CODEWORD_KEY_OVERHEAD_BITS = 4
 METER_ALUS_PER_STAGE = 4
 
 
-# The two limits of the per-tree arm (program.PER_TREE_ENCODING). Both come from
-# measurement, not from the compiler's source.
-#
-# At most this many 8-bit slices of code pins across a design (narrow [8] codes
-# and the 8-bit slices of multi-container codes such as [8, 32]); narrow codes
-# beyond it are pinned to 16 bits (per_tree.pins_for). Ingress has 48 8-bit
-# PHV containers; the N8 search found a PHV failure from 49 pinned fields on and
-# no failure up to 44, and 4,525 compiles on disk failed from 49 8-bit slices
-# on (results/encoding_evidence_2026_11/model3/phv8/). A generator limit, not a
-# model correction. Spec docs/superpowers/specs/2026-11-06-per-tree-arm-design.md
-# Sec 9.2; slices counted since 2026-11-11.
-PER_TREE_MAX_PIN8_FIELDS = 44
-
 # The action data bus: what a stage's match tables hand their actions. 128 bytes
 # (ADB_BYTES), fed from 16-byte action RAM words (BYTES_PER_RAM); p4c's
 # mau/tofino/action_data_bus.h. Where p4c puts each table's words on the bus
@@ -151,9 +138,6 @@ PER_TREE_MAX_PIN8_FIELDS = 44
 # bus_packed.py / bus_bytes.py.
 ACTION_DATA_BUS_BYTES = 128
 ACTION_RAM_WORD_BYTES = 16
-# One range table's action may write at most 112 container bytes, the sum of
-# 4W + 2H + B over the codes it writes (per_tree.action_bytes).
-PER_TREE_MAX_ACTION_BYTES = 112  # old per-tree path, removed in Task 8
 
 # Ingress PHV containers per size (bits): 4 / 6 / 4 groups of 16 containers of 8 / 16 / 32
 # bits, one group of each size egress-only (phv/phv_spec.cpp:383-429), so 48 / 80 / 48.

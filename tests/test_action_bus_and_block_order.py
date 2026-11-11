@@ -42,7 +42,7 @@ def _range_pool(action_bytes, level=4):
 
 
 def test_a_table_alone_always_takes_an_empty_stage():
-  # its own limit is per_tree.pins_for's, not the stage budget's
+  # its own limit is packed.layout_for's (a field over the bus is refused), not the stage budget's
   assert _range_pool([128]).table_stages == (4,)
   assert _range_pool([128, 128]).table_stages == (4, 5)
 

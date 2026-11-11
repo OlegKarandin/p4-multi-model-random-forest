@@ -84,6 +84,8 @@ PER_TASK_ENCODING = "per_task"
 # 'per_tree' is the same one threshold table per feature, whose action writes one
 # code per TREE that splits on the feature, as wide as that tree's own thresholds;
 # each tree keys only its own codes (spec 2026-11-06-per-tree-arm-design.md Sec 9.1).
+# Since 2026-11-11 all of a feature's codes sit in ONE packed field code_pk_<feature>,
+# each at its own byte offset (p4model.packed; spec 2026-11-11-packed-codes-stage-pin).
 PER_TREE_ENCODING = "per_tree"
 ENCODINGS = (JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING, PER_TREE_ENCODING)
 
@@ -99,24 +101,20 @@ def per_task_field(task, feature):
   return "%s%s_%s" % (PER_TASK_FIELD_PREFIX, task, feature)
 
 
-# The per-tree code fields' resolved names: tr_<task>_<tree>_<feature>, one code per
-# tree per feature that tree splits on (PER_TREE_ENCODING). The generator, the
-# model's pin rule (per_tree.py) and the replay's reading of a program all go
-# through these two names.
+# The per-tree code fields' resolved names in programs generated before the packed
+# codes (2026-11-11): tr_<task>_<tree>_<feature>, one code per tree per feature
+# that tree splits on. The generator now writes one packed field code_pk_<feature>
+# per feature instead (build_p4_script.packed_field); the replay still reads the
+# old names (p4_replay.code_written_by), so an archived per-tree program keeps
+# mapping each tree key to its range table.
 PER_TREE_FIELD_PREFIX = "tr_"
-
-
-def per_tree_field(task, tree, feature):
-  """The resolved name of tree `tree` of `task`'s own code field on feature,
-  e.g. tr_app_0_flow_iat_max for code_tr_app_0_flow_iat_max."""
-  return "%s%s_%d_%s" % (PER_TREE_FIELD_PREFIX, task, tree, feature)
 
 
 def feature_of_per_tree_field(field, task):
   """feature when `field` (with or without its code_ prefix) is one of task's
-  per-tree code fields, else None. It takes the task because task and feature
-  names may both hold underscores and digits, so a field name alone cannot be
-  split: tr_app_0_1_f is feature 1_f of tree 0 under task app, and feature f of
+  per-tree code fields of an archived program (PER_TREE_FIELD_PREFIX), else
+  None. It takes the task because task and feature names may both hold
+  underscores and digits, so a field name alone cannot be split: tr_app_0_1_f is feature 1_f of tree 0 under task app, and feature f of
   tree 1 under task app_0."""
   name = field[len("code_"):] if field.startswith("code_") else field
   match = re.match(r"^%s%s_\d+_(.+)$" % (re.escape(PER_TREE_FIELD_PREFIX), re.escape(task)), name)

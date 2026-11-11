@@ -137,25 +137,6 @@ def _parse_priorities(text):
             for priority, name in _PLACEMENT_PRIORITY.findall(text)}
 
 
-# A per-tree code's pin (program.PER_TREE_ENCODING): @pa_container_size on a
-# code_tr_ field, sizes in bits, low slice first.
-_PER_TREE_PIN = re.compile(
-    r'^@pa_container_size\("ingress", "ig_md\.(code_tr_\w+)", ([\d, ]+)\)\s*$', re.M)
-
-
-def _mark_spilled(text, bits):
-    """bits with every per-tree code of 8 bits or fewer that the program pins to
-    one 16-bit container marked lanes.Spilled: the layout the pins state, which
-    per_tree.marked_key_bits marks the same way on the training side (spec
-    2026-11-06-per-tree-arm Sec 9.5). Only code_tr_ fields: every other
-    encoding's pins are lanes.key_layout's own choice, which the price already
-    makes."""
-    for field, sizes in _PER_TREE_PIN.findall(text):
-        if field in bits and sizes.strip() == '16' and bits[field] <= 8:
-            bits[field] = lanes.Spilled(bits[field])
-    return bits
-
-
 # The generator's meta.fwd pin (build_p4_script, every program since 2026-11-09).
 _FWD_PIN = re.compile(r'^@pa_no_overlay\("ingress",\s*"ig_md\.fwd"\)\s*$', re.M)
 
@@ -174,7 +155,7 @@ _STAGE_PIN = re.compile(r'@stage\((\d+)\)\s*\n(?:\s*@\w+\([^)\n]*\)\s*\n)*'
 
 def parse_program_text(text):
     tables, widths, bits, slices = _parse_keys(text)
-    return Program(tables, widths, _mark_spilled(text, bits), _parse_sizes(text),
+    return Program(tables, widths, bits, _parse_sizes(text),
                    _parse_priorities(text), bool(_FWD_PIN.search(text)),
                    containers={name: tuple(int(size) for size in sizes.split(','))
                                for name, sizes in _PACKED_CONTAINERS.findall(text)},
@@ -307,8 +288,9 @@ def range_action_bytes(program):
     what evaluation._pool_inputs charges (spec 2026-11-11 Sec 5 rule 3). Any
     other code counts its keyed bits, ceil(bits / 8) over the table's codes
     together, as evaluation._pool_inputs does from the forests; a sliced key
-    counts its slices: rule A declares a wide code at its containers' width,
-    but only the keyed bits carry data."""
+    counts its slices: an archived per-tree program (code_tr_, before
+    2026-11-11) declared a wide code at its containers' width (rule A), but
+    only the keyed bits carry data."""
     tables, bits, containers = program.tables, program.bits, program.containers
     written = {}
     for name, keys in tables.items():
@@ -393,11 +375,9 @@ def _label_tasks(range_task, ternary_task):
 
 
 def _key_bits(bits, keys):
-    """One tree's key bits, sorted as per_tree.marked_key_bits sorts them (a
-    plain width ahead of a lanes.Spilled one of the same bits), so training and
-    replay hand the packer the same tuple. Bare widths sort as before."""
-    return tuple(sorted((bits[key] for key in keys),
-                        key=lambda b: (int(b), isinstance(b, lanes.Spilled))))
+    """One tree's key bits, sorted: the tuple training hands the packer
+    (tables.ternary_key_field_bits sorts the same way)."""
+    return tuple(sorted(bits[key] for key in keys))
 
 
 def _packed_price(program, name):

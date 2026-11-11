@@ -1,17 +1,18 @@
-"""Per-tree codes (program.PER_TREE_ENCODING): the names, the two limits, the Spilled width
-marker and the pin rule (p4model/per_tree.py) that generator and model both call; then the
-generator's per-tree program, its one `encoding` argument, and rule A.
+"""Per-tree codes (program.PER_TREE_ENCODING) after the packed-codes change (spec
+docs/superpowers/specs/2026-11-11-packed-codes-stage-pin-design.md): the encoding's name and
+plan, the generator's one `encoding` argument, the program and replay facts the packed
+program shares with the per-task one, the arm joint-tree and its training path (the row
+writer pins the moved tables, Sec 4.5).
 
-Spec docs/superpowers/specs/2026-11-06-per-tree-arm-design.md Sec 7, 9.2, 9.3 and its
-amendments of 2026-11-08 (A1: rule A, A2: one encoding argument, A3: the pin rule is the
-spill by range table). That the generator's per-tree text equals the investigations' harness
-byte for byte on 477 stored designs is checked outside git
-(results/encoding_evidence_2026_11/per_tree_arm/scripts/check_identity.py)."""
+The packed layout, program, entries, pool and replay have their own files
+(tests/test_packed_layout.py, test_packed_program.py, test_packed_entries.py,
+test_packed_pool.py, test_packed_placement.py, test_packed_replay.py); nothing here repeats
+them. The old per-tree rules (the 44-field cap and its spill, the 112-byte action budget,
+the Spilled width marker, phv_demand, rule A's padded declarations) are deleted (Sec 7)."""
 import dataclasses
 import hashlib
 import json
 import os
-import pickle
 import re
 
 import numpy as np
@@ -20,16 +21,12 @@ from sklearn.ensemble import RandomForestClassifier
 
 from p4gen import build_p4_script as bps
 from p4gen.p4_replay import model_breakdown, parse_program_text
-from p4model import lanes
-from p4model.errors import (ActionDataTooWide, CrossbarKeyTooWide, NoSplitTree,
-                            PhvContainersExhausted)
-from p4model.lanes import Spilled
-from p4model.per_tree import (action_bytes, base_pins, code_slices8, marked_key_bits, phv_demand,
-                              pins_for, spill_table_fields, widths_of)
+from p4model import lanes, packed
+from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
 from p4model.program import (APP_TASK, DDOS_TASK, DISJOINT_ENCODING, ENCODINGS, JOINT_ENCODING,
                              PER_TASK_ENCODING, PER_TREE_ENCODING, TaskSpec,
-                             feature_of_per_tree_field, per_tree_field)
-from p4model.target import PER_TREE_MAX_ACTION_BYTES, PER_TREE_MAX_PIN8_FIELDS
+                             feature_of_per_tree_field)
+from p4model.target import ACTION_DATA_BUS_BYTES
 from tests.test_per_task_codes import FEATURES, _forest, _own, _rng_design, _three_tasks
 
 DEEP_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean"]
@@ -45,239 +42,47 @@ def _deep_forest(n_classes, seed, depth, n_trees=2):
       n_estimators=n_trees, max_depth=depth, random_state=seed).fit(X, y))
 
 
-def _widths(app=(), ddos=()):
-  """{task: [{feature: bits}]} from per-tree lists of (feature, bits) pairs."""
-  return {"app": [dict(t) for t in app], "ddos": [dict(t) for t in ddos]}
+def test_the_encoding_is_named_and_listed():
+  assert PER_TREE_ENCODING == "per_tree" and PER_TREE_ENCODING in ENCODINGS
 
 
-def _counted(counts, bits=3):
-  """One app tree per row so that feature f has counts[f] narrow codes: tree i holds every
-  feature with more than i codes."""
-  trees = [{f: bits for f, n in counts.items() if n > i} for i in range(max(counts.values()))]
-  return {"app": trees, "ddos": []}
+def test_nothing_names_the_deleted_rules():
+  import importlib.util
+  import p4model.lanes as l
+  import p4model.program as p
+  import p4model.target as t
+  from p4gen import p4_replay
+  for name in ("PER_TREE_MAX_PIN8_FIELDS", "PER_TREE_MAX_ACTION_BYTES", "ACTION_DATA_BUS_BUDGET"):
+    assert not hasattr(t, name)
+  assert not hasattr(l, "Spilled")
+  assert importlib.util.find_spec("p4model.per_tree") is None
+  assert not hasattr(p4_replay, "_mark_spilled") and not hasattr(p4_replay, "_PER_TREE_PIN")
+  assert not hasattr(p, "per_tree_field")
 
 
-def test_field_helpers_undo_each_other_with_digits_and_underscores():
-  assert per_tree_field("app", 0, "flow_iat_max") == "tr_app_0_flow_iat_max"
+def test_an_archived_per_tree_field_name_still_maps_to_its_feature():
+  """Programs written before 2026-11-11 named one code per tree, code_tr_<task>_<i>_<f>;
+  the replay still maps such a key to its range table (p4_replay.code_written_by)."""
   assert feature_of_per_tree_field("code_tr_app_0_1_f", "app") == "1_f"
   assert feature_of_per_tree_field("tr_app_0_1_f", "app") == "1_f"
   assert feature_of_per_tree_field("code_tr_app_0_1_f", "app_0") == "f"
   assert feature_of_per_tree_field("code_tk_app_f", "app") is None
   assert feature_of_per_tree_field("code_tr_ddos_2_f", "app") is None
-
-
-def test_the_encoding_is_named_and_listed():
-  assert PER_TREE_ENCODING == "per_tree" and PER_TREE_ENCODING in ENCODINGS
-  assert PER_TREE_MAX_PIN8_FIELDS == 44 and PER_TREE_MAX_ACTION_BYTES == 112
+  assert feature_of_per_tree_field("code_pk_f", "app") is None
 
 
 def test_widths_are_interval_counts_minus_one_and_skip_featureless_entries():
   ivs = {"app": [{"f": [0, 5, 9], "g": [0]}], "ddos": [{"f": list(range(10))}]}
-  assert widths_of(ivs) == {"app": [{"f": 2}], "ddos": [{"f": 9}]}
-
-
-def test_44_narrow_fields_spill_nothing_and_45_spill_one_whole_feature_in_order():
-  # 5 app + 4 ddos trees x features f0..f4 of 3 bits = 45 narrow fields; drop the last ddos
-  # tree's f4 for 44
-  full = _widths([{f"f{j}": 3 for j in range(5)}] * 5, [{f"f{j}": 3 for j in range(5)}] * 4)
-  w45 = full
-  w44 = _widths([{f"f{j}": 3 for j in range(5)}] * 5,
-                [{f"f{j}": 3 for j in range(5)}] * 3 + [{f"f{j}": 3 for j in range(4)}])
-  pins_44, spilled_44 = pins_for(w44)
-  assert spilled_44 == []
-  assert sum(p == [8] for p in pins_44.values()) == 44
-  pins_45, spilled_45 = pins_for(w45)
-  # every feature holds 9 codes, so the first alphabetically goes, all of its codes together,
-  # tasks app then ddos, trees ascending
-  assert spilled_45 == [per_tree_field("app", i, "f0") for i in range(5)] + \
-                       [per_tree_field("ddos", i, "f0") for i in range(4)]
-  assert all(pins_45[n] == [16] for n in spilled_45)
-  assert sum(p == [8] for p in pins_45.values()) == 36
-  assert len(pins_45) == 45
-
-
-def test_a_spill_takes_the_smallest_code_count_at_or_above_the_need():
-  widths = _counted({"a": 1, "b": 2, "c": 4})        # 7 narrow codes
-  pins = base_pins(widths)
-  # need 3: a+b is exactly 3, c alone would be 4
-  assert spill_table_fields(widths, pins, 4) == [per_tree_field("app", 0, "a"),
-                                                  per_tree_field("app", 0, "b"),
-                                                  per_tree_field("app", 1, "b")]
-  # need 4: c alone (4) ties a+b+... only at its own count, and the fewest features win
-  assert spill_table_fields(widths, pins, 3) == [per_tree_field("app", i, "c") for i in range(4)]
-  # need 1: a (1 code) is the smallest total at or above it
-  assert spill_table_fields(widths, pins, 6) == [per_tree_field("app", 0, "a")]
-
-
-def test_a_spill_prefers_fewer_features_then_the_alphabet_on_equal_counts():
-  widths = _counted({"a": 1, "b": 2, "c": 3})        # 6 narrow codes
-  pins = base_pins(widths)
-  # need 3: {c} and {a,b} both total 3; one feature beats two
-  assert spill_table_fields(widths, pins, 3) == [per_tree_field("app", i, "c") for i in range(3)]
-  tie = _counted({"d": 2, "b": 2})                   # need 2: b and d tie, b is first
-  assert spill_table_fields(tie, base_pins(tie), 2) == [per_tree_field("app", i, "b") for i in range(2)]
-  nothing = spill_table_fields(widths, pins, 6)
-  assert nothing == []
-
-
-def test_the_spill_leaves_wider_fields_and_other_features_alone():
-  widths = _widths([{"f": 3, "g": 12, "h": 3}] * 3)
-  pins = base_pins(widths)
-  # 6 narrow codes, 5 allowed: f (3 codes) is the smallest total at or above 1
-  assert spill_table_fields(widths, pins, 5) == [per_tree_field("app", i, "f") for i in range(3)]
-  assert pins[per_tree_field("app", 0, "g")] == [16]       # a 12-bit field is H already, never 'narrow'
-
-
-def test_eight_bit_slices_of_wide_codes_count_toward_the_cap_but_never_spill():
-  # heldout6 joint-tree_M055_s04_k10's shape: 40 narrow codes on f, then 5 trees whose
-  # 33-bit code on w is pinned [8, 32]: 45 eight-bit slices, one over the 44 cap
-  widths = _widths([{"f": 3}] * 40 + [{"w": 33}] * 5)
-  pins = base_pins(widths)
-  assert pins[per_tree_field("app", 40, "w")] == [8, 32]
-  assert code_slices8(widths, pins) == 45
-  # only narrow codes move, and a feature moves whole: all 40 codes of f
-  assert spill_table_fields(widths, pins, 44) == [per_tree_field("app", i, "f") for i in range(40)]
-  pins, spilled = pins_for(widths)
-  assert len(spilled) == 40 and code_slices8(widths, pins) == 5
-  assert all(pins[per_tree_field("app", i, "w")] == [8, 32] for i in range(40, 45))
-  # 44 slices in all: nothing moves
-  assert pins_for(_widths([{"f": 3}] * 39 + [{"w": 33}] * 5))[1] == []
-
-
-def test_eight_bit_slices_left_after_the_spill_beyond_the_share_raise():
-  # 49 wide codes pinned [8, 32] over 7 features: no narrow code to move, 49 > 48
-  widths = _widths([{f"w{i % 7}": 33} for i in range(49)])
-  assert code_slices8(widths, base_pins(widths)) == 49
-  with pytest.raises(PhvContainersExhausted) as e:
-    pins_for(widths)
-  assert e.value.args[1] == 1
-  # 48 such slices plus narrow codes: the narrow ones all move, the 48 slices stay
-  widths = _widths([{f"w{i % 7}": 33} for i in range(48)] + [{"f": 3}] * 2)
-  pins, spilled = pins_for(widths)
-  assert spilled == [per_tree_field("app", i, "f") for i in (48, 49)]
-  assert code_slices8(widths, pins) == 48
-
-
-def test_too_many_features_to_enumerate_raises():
-  widths = _widths([{f"f{j:02d}": 3 for j in range(21)}] * 3)
-  with pytest.raises(ValueError):
-    spill_table_fields(widths, base_pins(widths), 10)
-
-
-def test_112_action_bytes_pass_and_113_raise():
-  # 28 trees with one 32-bit field on f: 28 x 4 = 112 bytes
-  ok = _widths([{"f": 32}] * 28)
-  pins, spilled = pins_for(ok)
-  assert spilled == [] and action_bytes(ok, pins) == {"f": 112}
-  bad = _widths([{"f": 32}] * 28 + [{"f": 8}])
-  with pytest.raises(ActionDataTooWide) as e:
-    pins_for(bad)
-  assert e.value.args[1] == 113
-
-
-def test_phv_demand_counts_the_programs_fields_by_container_size():
-  # app_0: f 3 bits -> one 8-bit pin, g 12 bits -> one 16-bit pin; ddos_0: f 20 bits -> 32-bit.
-  widths = _widths([{"f": 3, "g": 12}], [{"f": 20}])
-  pins, _ = pins_for(widths)
-  assert pins == {"tr_app_0_f": [8], "tr_app_0_g": [16], "tr_ddos_0_f": [32]}
-  # 8-bit: mirror_type + two class fields + one code; 16-bit: five template fields + one
-  # code + the value fields of f and g. 32-bit slices are not counted.
-  assert phv_demand(widths, pins) == {8: 4, 16: 8}
-
-
-def test_80_sixteen_bit_containers_pass_and_81_raise():
-  app = [{f"f{j:02d}": 12 for j in range(37)}]          # 37 codes + 37 value fields
-  ok = _widths(app, [{"f00": 12}])                       # + 1 code + 5 template = 80
-  pins, _ = pins_for(ok)
-  assert phv_demand(ok, pins)[16] == 80
-  bad = _widths(app, [{"f00": 12, "f01": 12}])
-  with pytest.raises(PhvContainersExhausted) as e:
-    pins_for(bad)
-  assert e.value.args[1] == 1
-
-
-def test_eight_bit_fields_beyond_the_share_count_as_sixteen_bit():
-  # 50 trees of one 3-bit code: 44 keep an 8-bit pin, the 10 ddos codes spill to 16 bits.
-  widths = _widths([{"f": 3}] * 40, [{"g": 3}] * 10)
-  pins, spilled = pins_for(widths)
-  assert len(spilled) == 10
-  # 8-bit: 1 template + 50 class fields + 40 codes = 91, 43 over the share of 48;
-  # 16-bit: 5 template + 10 spilled codes + 2 value fields + those 43 = 60.
-  assert phv_demand(widths, pins) == {8: 91, 16: 60}
-
-
-def test_action_bytes_count_every_slice_of_a_multi_container_field():
-  widths = _widths([{"f": 33, "g": 3}], [{"f": 49}])
-  pins = base_pins(widths)
-  assert pins["tr_app_0_f"] == [8, 32] and pins["tr_ddos_0_f"] == [32, 32]
-  # f: B + W (1 + 4) in the app tree, W + W (8) in the ddos tree; g: one B
-  assert action_bytes(widths, pins) == {"f": 13, "g": 1}
-
-
-def test_spilled_fields_count_as_the_16_bit_containers_they_are_pinned_to():
-  widths = _counted({"a": 1, "b": 2})
-  pins = base_pins(widths)
-  assert action_bytes(widths, pins) == {"a": 1, "b": 2}
-  pins = {**pins, per_tree_field("app", 0, "b"): [16]}
-  assert action_bytes(widths, pins) == {"a": 1, "b": 3}
-
-
-def test_a_tree_with_no_splits_raises():
-  with pytest.raises(NoSplitTree) as e:
-    pins_for(_widths([{"f": 3}, {}]))
-  assert e.value.args[1] == "app_1"
-  with pytest.raises(NoSplitTree):
-    pins_for(_widths([{"f": 3}], [{}]))
-
-
-def test_marked_key_bits_mark_exactly_the_narrow_fields_pinned_wide():
-  widths = _widths([{"a": 3, "b": 12, "c": 5}])
-  pins = base_pins(widths)
-  assert marked_key_bits("app", 0, widths["app"][0], pins) == (3, 5, 12)
-  assert not any(isinstance(b, Spilled) for b in marked_key_bits("app", 0, widths["app"][0], pins))
-  pins[per_tree_field("app", 0, "c")] = [16]
-  bits = marked_key_bits("app", 0, widths["app"][0], pins)
-  assert bits != (3, 5, 12)                    # the marked width is not equal to the plain one
-  assert [isinstance(b, Spilled) for b in bits] == [False, True, False]
-  assert [int(b) for b in bits] == [3, 5, 12]
-  # a 12-bit field pinned to its natural H is not a spill
-  assert not isinstance(bits[2], Spilled)
-
-
-def test_spilled_prices_as_h_and_stays_apart_from_a_plain_width():
-  assert lanes.key_bytes([Spilled(3)]) == lanes.bytes_from_layout([3], lambda w: [("H", w)])
-  assert hash(Spilled(3)) != hash(3) and Spilled(3) != 3 and 3 != Spilled(3)
-  assert Spilled(3) == Spilled(3) and not Spilled(3) != Spilled(3)
-  assert {Spilled(3): 1}.get(3) is None
-
-
-def test_a_mixed_key_prices_the_same_in_any_order_and_after_a_pickle():
-  a, b = (Spilled(3), 3, 20), (20, 3, Spilled(3))
-  assert lanes.table_blocks(a) == lanes.table_blocks(b)
-  assert sorted(lanes.key_bytes(a)) == sorted(lanes.key_bytes(b))
-  assert isinstance(pickle.loads(pickle.dumps(Spilled(3))), Spilled)
-  assert pickle.loads(pickle.dumps(Spilled(3))) == Spilled(3)
-
-
-def test_a_spilled_field_is_one_crossbar_byte_of_the_h_kind():
-  # ceil(3/8) == 1 byte either way; only the lane kind differs
-  assert [kind for kind, _, _ in lanes.key_bytes([Spilled(3)] * 3)] == ["H"] * 3
-  assert [kind for kind, _, _ in lanes.key_bytes([3] * 3)] == ["B"] * 3
+  assert packed.widths_of(ivs) == {"app": [{"f": 2}], "ddos": [{"f": 9}]}
 
 
 def test_bare_widths_price_as_before():
+  # the lane price of a plain key, now that the Spilled branch is gone
   for key in [(3,), (3, 3, 20), (1, 2, 3, 40, 52), (27, 52), (9, 9, 9, 9)]:
     assert lanes.table_blocks(key) == lanes.table_blocks(list(reversed(key)))
     assert lanes.key_bytes(key) == lanes.bytes_from_layout(list(key), lanes.key_layout(list(key)))
   assert lanes.table_blocks([]) == lanes.table_blocks(())
-
-
-def test_a_spilled_key_too_wide_still_raises():
-  # a 512-bit field is 64 crossbar bytes; one spilled byte more is past what a stage supplies
-  with pytest.raises(CrossbarKeyTooWide) as e:
-    lanes.table_blocks((Spilled(3), 512))
-  assert e.value.args[1] == 65
-  assert lanes.table_blocks((512,)) >= 1
+  assert lanes.table_blocks((3,) * 4) == 1
 
 
 # --- the generator's per-tree program ---------------------------------------------
@@ -291,8 +96,7 @@ def _specs(app, ddos, names_app=FEATURES, names_ddos=FEATURES, intervals_app=Non
 
 
 def _deep_specs(n_app=2):
-  """Deep app trees on one feature: codes wider than 64 bits, codes that fill their pins and
-  narrow ones (the entries tests' fixture too)."""
+  """Deep app trees on one feature: codes wider than 64 bits and narrow ones."""
   app, ddos = _deep_forest(3, 0, depth=9, n_trees=n_app), _deep_forest(2, 1, depth=3)
   return _specs(app, ddos, DEEP_FEATURES, DEEP_FEATURES)
 
@@ -302,18 +106,6 @@ def _program(tmp_path, tasks, name="tree.p4", encoding=PER_TREE_ENCODING, **kwar
                                  encoding=encoding, **kwargs)
   with open(path, encoding="utf-8") as handle:
     return handle.read()
-
-
-def _pinned(tasks):
-  """{resolved field: (code width, pinned width)} for every per-tree code of the design."""
-  _, fields, trees = bps.resolve_per_tree_plan(tasks)
-  pins, _ = pins_for(widths_of(trees))
-  return {name: (len(iv) - 1, sum(pins[name])) for name, (_, iv, _) in fields.items()}
-
-
-def _declared(width, pinned):
-  """Rule A: a code wider than 8 bits is declared at its pinned width."""
-  return pinned if width > 8 else width
 
 
 def test_plan_writes_one_code_per_tree_with_a_threshold_and_the_table_holds_the_union():
@@ -329,15 +121,16 @@ def test_plan_writes_one_code_per_tree_with_a_threshold_and_the_table_holds_the_
       own = bps.get_feature_intervals(bps._Forest([tree]), task.features)
       assert trees[task.name][i] == {f: iv for f, iv in own.items() if len(iv) >= 2}
   for feature, (_, written) in tables.items():
-    # program order: app's trees, then ddos', each tree index ascending
-    assert written == [("%s_%d" % (t, i), per_tree_field(t, i, feature), len(trees[t][i][feature]) - 1)
+    # program order: app's trees, then ddos', each tree index ascending; (writer, code bits)
+    assert written == [("%s_%d" % (t, i), len(trees[t][i][feature]) - 1)
                        for t in (APP_TASK, DDOS_TASK) for i in range(len(trees[t]))
                        if feature in trees[t][i]]
-  assert list(fields) == [field for _, written in tables.values() for _, field, _ in written]
-  for t in (APP_TASK, DDOS_TASK):
-    for i, tree in enumerate(trees[t]):
-      for f, iv in tree.items():
-        assert fields[per_tree_field(t, i, f)] == (f, iv, {t})
+  # one packed field per feature, in the tables' order, read by the tasks with a code on it
+  assert list(fields) == [bps.packed_field(f) for f in tables]
+  for name, (feature, union, readers) in fields.items():
+    assert name == "pk_" + feature and union == tables[feature][0]
+    assert readers == {t for t in (APP_TASK, DDOS_TASK)
+                       if any(feature in own for own in trees[t])}
 
 
 def test_plan_union_equals_the_per_task_plans():
@@ -350,35 +143,7 @@ def test_plan_union_equals_the_per_task_plans():
           == {f: union for f, (union, _) in per_task.items()})
   for feature, (_, written) in per_task.items():
     assert [t for t, _, _ in written] == list(dict.fromkeys(
-        w.rsplit("_", 1)[0] for w, _, _ in tables[feature][1]))
-
-
-def test_a_feature_one_tree_splits_gets_one_parameter(tmp_path):
-  # one tree per task, on features the other task never selects: every feature has one writer
-  app = _forest(3, 2, FEATURES[:2], n_trees=1, depth=3)
-  ddos = _forest(2, 1, FEATURES[2:4], n_trees=1, depth=3)
-  tasks = _specs(app, ddos, FEATURES[:2], FEATURES[2:4])
-  tables, _, _ = bps.resolve_per_tree_plan(tasks)
-  pinned = _pinned(tasks)
-  text = _program(tmp_path, tasks)
-  assert len(tables) == 4
-  for feature, (_, written) in tables.items():
-    (writer, field, width), = written
-    assert ("action set_code_%s (bit<%d> code_%s) {\n        meta.code_%s = code_%s;\n    }"
-            % (feature, _declared(width, pinned[field][1]), writer, field, writer)) in text
-
-
-def test_a_feature_only_one_task_splits_writes_only_its_trees(tmp_path):
-  app = _forest(3, 2, FEATURES[:2], depth=3)
-  ddos = _forest(2, 1, FEATURES[2:4], depth=3)
-  tasks = _specs(app, ddos, FEATURES[:2], FEATURES[2:4])
-  _, _, trees = bps.resolve_per_tree_plan(tasks)
-  text = _program(tmp_path, tasks)
-  for task, features in ((APP_TASK, FEATURES[:2]), (DDOS_TASK, FEATURES[2:4])):
-    for feature in features:
-      params = re.search(r"action set_code_%s \(([^)]*)\)" % feature, text)[1]
-      assert re.findall(r"code_(\w+)", params) == [
-          "%s_%d" % (task, i) for i, own in enumerate(trees[task]) if feature in own]
+        w.rsplit("_", 1)[0] for w, _ in tables[feature][1]))
 
 
 def test_a_task_with_no_trees_generates(tmp_path):
@@ -386,9 +151,8 @@ def test_a_task_with_no_trees_generates(tmp_path):
   tasks = [TaskSpec(DDOS_TASK, 2, [], None, {}),
            TaskSpec(APP_TASK, 3, list(app.estimators_), FEATURES, _own(app))]
   text = _program(tmp_path, tasks)
-  assert "get_classification_tree_app_0" in text and "code_tr_app_0_" in text
-  assert "code_tr_ddos_" not in text and "get_classification_tree_ddos" not in text
-  assert "vote_ddos" not in text
+  assert "get_classification_tree_app_0" in text and "code_pk_" in text
+  assert "get_classification_tree_ddos" not in text and "vote_ddos" not in text
 
 
 def test_a_task_with_trees_and_no_feature_list_raises(tmp_path):
@@ -407,48 +171,7 @@ def test_each_tree_keys_only_its_own_codes_in_feature_order(tmp_path):
   for t in (APP_TASK, DDOS_TASK):
     for i, own in enumerate(trees[t]):
       assert tables["get_classification_tree_%s_%d" % (t, i)] == [
-          "code_" + per_tree_field(t, i, f) for f in sorted(own)]
-
-
-def test_every_code_field_is_declared_and_pragmas_keep_the_harness_order(tmp_path):
-  app, ddos = _forest(3, 2, n_trees=2), _forest(2, 1)
-  tasks = _specs(app, ddos)
-  _, _, trees = bps.resolve_per_tree_plan(tasks)
-  pins, _ = pins_for(widths_of(trees))
-  pinned = _pinned(tasks)
-  text = _program(tmp_path, tasks)
-  lines = text.split("\n")
-  for name, (width, pin) in pinned.items():
-    assert "\tbit<%d> code_%s;" % (_declared(width, pin), name) in lines
-  assert not re.search(r"bit<\d+> code_(?!tr_)\w+;", text)
-  # one (feature, task) with trees 0 and 1, in the order the harness rewrote the per-task
-  # program's pragmas in: solitary 0, solitary 1, no_overlay 0, size 0, no_overlay 1, size 1
-  feature = next(f for f in trees[APP_TASK][0] if f in trees[APP_TASK][1])
-  a, b = ("ig_md.code_" + per_tree_field(APP_TASK, i, feature) for i in (0, 1))
-
-  def size(field, i):
-    return '@pa_container_size("ingress", "%s", %s)' % (
-        field, ", ".join(map(str, pins[per_tree_field(APP_TASK, i, feature)])))
-  expected = ['@pa_solitary("ingress", "%s")' % a, '@pa_solitary("ingress", "%s")' % b,
-              '@pa_no_overlay("ingress", "%s")' % a, size(a, 0),
-              '@pa_no_overlay("ingress", "%s")' % b, size(b, 1)]
-  start = lines.index(expected[0])
-  block = lines[start:start + len(expected)]
-  assert block == expected
-
-
-def test_spilled_fields_are_pinned_to_16(tmp_path):
-  app, ddos = _forest(3, 2, n_trees=10, depth=3), _forest(2, 1, n_trees=10, depth=3)
-  tasks = _specs(app, ddos)
-  _, _, trees = bps.resolve_per_tree_plan(tasks)
-  pins, spilled = pins_for(widths_of(trees))
-  assert spilled
-  text = _program(tmp_path, tasks)
-  for name in spilled:
-    assert '@pa_container_size("ingress", "ig_md.code_%s", 16)' % name in text
-  emitted = re.findall(r'@pa_container_size\("ingress", "ig_md\.code_(tr_\w+)", ([\d, ]+)\)', text)
-  assert {n: [int(s) for s in sizes.split(", ")] for n, sizes in emitted} == pins
-  assert sum(sizes == "8" for _, sizes in emitted) == PER_TREE_MAX_PIN8_FIELDS
+          "code_" + bps.packed_field(f) for f in sorted(own)]
 
 
 @pytest.mark.parametrize("deep", [False, True])
@@ -460,21 +183,10 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
   task = _program(tmp_path, tasks, "task.p4", encoding=PER_TASK_ENCODING)
 
   def without_codes(text):
-    return [line for line in text.split("\n") if "code_tk_" not in line and "code_tr_" not in line
+    return [line for line in text.split("\n") if "code_tk_" not in line and "code_pk_" not in line
             and "set_code_" not in line and not re.match(r"^\s*\}\s*$", line)]
   assert without_codes(tree) == without_codes(task)
   assert parse_program_text(tree).sizes == parse_program_text(task).sizes
-
-
-def test_the_generator_refuses_an_action_above_112_bytes(tmp_path):
-  tasks = _deep_specs(n_app=20)
-  _, _, trees = bps.resolve_per_tree_plan(tasks)
-  widths = widths_of(trees)
-  with pytest.raises(ActionDataTooWide) as e:
-    _program(tmp_path, tasks)
-  assert e.value.args[1] == max(action_bytes(widths, base_pins(widths)).values())
-  assert e.value.args[1] > PER_TREE_MAX_ACTION_BYTES
-  assert not (tmp_path / "tree.p4").exists()
 
 
 # --- one encoding argument ----------------------------------------------------------
@@ -585,86 +297,6 @@ def test_the_per_task_codes_argument_is_gone(tmp_path):
     bps.generate_table_entries(tasks, per_task_codes=True)
 
 
-# --- rule A -------------------------------------------------------------------------
-
-def _rule_a(tmp_path):
-  tasks = _deep_specs()
-  return tasks, _pinned(tasks), _program(tmp_path, tasks)
-
-
-def test_a_code_wider_than_8_bits_is_declared_at_its_pinned_width(tmp_path):
-  _, pinned, text = _rule_a(tmp_path)
-  padded = {n: (w, pin) for n, (w, pin) in pinned.items() if w > 8 and pin != w}
-  assert padded
-  for name, (width, pin) in padded.items():
-    assert "\tbit<%d> code_%s;\n" % (pin, name) in text
-    assert "bit<%d> code_%s;" % (width, name) not in text
-
-
-def test_its_action_parameter_is_widened_to_match(tmp_path):
-  tasks, pinned, text = _rule_a(tmp_path)
-  tables, _, _ = bps.resolve_per_tree_plan(tasks)
-  assert any(w > 8 and pin != w for w, pin in pinned.values())
-  for feature, (_, written) in tables.items():
-    params = ", ".join("bit<%d> code_%s" % (_declared(*pinned[field]), writer)
-                       for writer, field, _ in written)
-    assert "action set_code_%s (%s) {" % (feature, params) in text
-
-
-def test_its_key_reads_only_the_codes_own_bits(tmp_path):
-  _, pinned, text = _rule_a(tmp_path)
-  lines = text.split("\n")
-  sliced = {n: w for n, (w, pin) in pinned.items() if 8 < w <= 64 and pin != w}
-  assert sliced
-  for name, width in sliced.items():
-    assert "            meta.code_%s[%d:0] : ternary;" % (name, width - 1) in lines
-    assert "meta.code_%s : ternary;" % name not in text
-
-
-def test_a_code_wider_than_64_bits_is_keyed_as_slices_of_at_most_64(tmp_path):
-  _, pinned, text = _rule_a(tmp_path)
-  lines = text.split("\n")
-  wide = {n: w for n, (w, pin) in pinned.items() if w > 64 and pin != w}
-  assert wide
-  for name, width in wide.items():
-    want = ["            meta.code_%s[%d:%d] : ternary;" % (name, min(width, lo + 64) - 1, lo)
-            for lo in range(0, width, 64)]
-    assert len(want) >= 2
-    start = lines.index(want[0])
-    assert lines[start:start + len(want)] == want
-    assert "meta.code_%s : ternary;" % name not in text
-
-
-def test_a_code_of_8_bits_or_one_filling_its_containers_is_unchanged(tmp_path):
-  _, pinned, text = _rule_a(tmp_path)
-  lines = text.split("\n")
-  whole = {n: w for n, (w, pin) in pinned.items() if w <= 8 or pin == w}
-  assert any(w <= 8 for w in whole.values()) and any(w > 8 for w in whole.values())
-  for name, width in whole.items():
-    assert "\tbit<%d> code_%s;" % (width, name) in lines
-    assert "            meta.code_%s : ternary;" % name in lines
-    assert "meta.code_%s[" % name not in text
-
-
-def test_replay_prices_the_rule_a_program_as_the_unpadded_one(tmp_path):
-  _, pinned, text = _rule_a(tmp_path)
-  unpadded = text
-  for name, (width, pin) in pinned.items():
-    if bps.per_tree_key_slices(width, pin):
-      unpadded = unpadded.replace("bit<%d> code_%s;" % (pin, name),
-                                  "bit<%d> code_%s;" % (width, name))
-      unpadded = re.sub(r"( +meta\.code_%s)\[\d+:0\]( : ternary;\n)"
-                        r"(?: +meta\.code_%s\[\d+:\d+\] : ternary;\n)*" % (name, name),
-                        r"\1\2", unpadded)
-  assert unpadded != text
-  assert not any("[" in line for line in unpadded.split("\n") if line.endswith(": ternary;"))
-  program = parse_program_text(text)
-  for name, (width, _) in pinned.items():
-    assert program.bits["code_" + name] == width
-  assert program.tables == parse_program_text(unpadded).tables
-  assert model_breakdown(program) == model_breakdown(parse_program_text(unpadded))
-
-
 # --- the control-plane entries -------------------------------------------------------
 #
 # The other encodings' entries, frozen. The per-tree (packed) entries and their meaning tests
@@ -719,44 +351,10 @@ def test_generate_p4_program_writes_the_entries_of_its_encoding(tmp_path, encodi
     assert all(re.match(r"^code_(app|ddos)$", name) for name in params)
 
 
-def test_bfrt_key_name_keeps_a_slices_bounds():
-  assert bps.bfrt_key_name("meta.code_tr_app_0_bwd_packet_length_mean[63:0]") == "code_tr_app_0_bwd_packet_length_mean_63_0_"
-  assert bps.bfrt_key_name("meta.code_tr_app_0_bwd_packet_length_mean[89:64]") == "code_tr_app_0_bwd_packet_length_mean_89_64_"
-  assert bps.bfrt_key_name("meta.code_flow_iat_max") == "code_flow_iat_max"
-  assert bps.bfrt_key_name("meta.flow_iat_max_val") == "flow_iat_max_val"
-
-
-@pytest.mark.parametrize("width, pinned, slices", [
-    (3, 8, None),               # a narrow code keeps its padding: two may share a byte
-    (8, 8, None),
-    (27, 32, [(26, 0)]),        # declared bit<32>, keyed on its own 27 bits
-    (32, 32, None),             # fills its container: nothing to pad
-    (36, 40, [(35, 0)]),
-    (64, 64, None),
-    (74, 80, [(63, 0), (73, 64)]),   # p4c asserts on one slice wider than 64 bits
-    (90, 96, [(63, 0), (89, 64)]),
-    (200, 208, [(63, 0), (127, 64), (191, 128), (199, 192)]),
-])
-def test_per_tree_key_slices_is_rule_a(width, pinned, slices):
-  assert bps.per_tree_key_slices(width, pinned) == slices
-
-
-# --- the model: training path and replay (spec 9.3, 9.4, 9.5) ------------------------
+# --- the model: training path and replay ----------------------------------------------
 #
-# Training prices a forest through evaluation._pool_inputs; the replay prices the program
-# the generator writes for it. Both must give the same numbers on every design, including
-# one whose narrow codes spill to 16-bit pins (more than PER_TREE_MAX_PIN8_FIELDS of them)
-# and one with codes wider than 64 bits (rule A's sliced keys).
-
-def _design(case):
-  """(app forest, ddos forest, feature names): 'spill' has more than 44 narrow codes, 'deep'
-  codes wider than 64 bits, an int is test_per_task_codes' random design of that seed."""
-  if case == "spill":
-    return _forest(3, 2, n_trees=10, depth=3), _forest(2, 1, n_trees=10, depth=3), FEATURES
-  if case == "deep":
-    return _deep_forest(3, 0, depth=9), _deep_forest(2, 1, depth=3), DEEP_FEATURES
-  return _rng_design(case)
-
+# That training prices exactly what the generated program replays, and the pins' round trip,
+# are in tests/test_packed_replay.py.
 
 def _tree_text(tmp_path, app, ddos, names_app, names_ddos=None):
   names_ddos = names_app if names_ddos is None else names_ddos
@@ -775,67 +373,12 @@ def _pool(app, ddos, names_app, names_ddos=None):
   return _pool_inputs(app, ddos, names_app, names_ddos, PER_TREE_ENCODING)
 
 
-@pytest.mark.parametrize("case", ["spill", "deep"] + list(range(30)))
-def test_training_prices_exactly_what_the_generated_program_replays(tmp_path, case):
-  from p4gen.p4_replay import declared_prices, replay_plans
-  from p4model.usage import assemble_usage
-  app, ddos, names = _design(case)
-  try:
-    text = _tree_text(tmp_path, app, ddos, names)
-  except (ActionDataTooWide, NoSplitTree) as refused:
-    # what the generator refuses, training refuses the same way
-    with pytest.raises(type(refused)) as e:
-      _evaluate(app, ddos, names)
-    assert e.value.args[1:] == refused.args[1:]
-    return
-  usage = _evaluate(app, ddos, names)
-  program = parse_program_text(text)
-  replay = model_breakdown(program)
-  assert (usage.stage_depth, usage.blocks) == (replay["stage_depth"], replay["blocks"])
-  # and table by table: the same charge, in the same stage
-  _, range_plan, ternary_plan = assemble_usage(_pool(app, ddos, names))
-  plans = replay_plans("", program, declared_prices(program))
-  for trained, replayed in ((range_plan, plans.range_plan), (ternary_plan, plans.ternary_plan)):
-    assert trained.table_blocks == replayed.table_blocks
-    assert trained.table_stages == replayed.table_stages
-  if case == "spill":
-    assert any(isinstance(bits, Spilled) for bits in program.bits.values())
+def _many_trees():
+  """10 trees a task over five features: several codes on each packed field."""
+  return _forest(3, 2, n_trees=10, depth=3), _forest(2, 1, n_trees=10, depth=3), FEATURES
 
 
-def test_replay_marks_exactly_the_narrow_fields_pinned_to_16(tmp_path):
-  app, ddos, names = _design("spill")
-  tasks = _specs(app, ddos, names, names)
-  _, fields, trees = bps.resolve_per_tree_plan(tasks)
-  pins, spilled = pins_for(widths_of(trees))
-  assert spilled
-  expected = {"code_" + name for name, (_, iv, _) in fields.items()
-              if len(iv) - 1 <= 8 and pins[name] == [16]}
-  assert {"code_" + name for name in spilled} <= expected
-  program = parse_program_text(_program(tmp_path, tasks))
-  assert {k for k, v in program.bits.items() if isinstance(v, lanes.Spilled)} == expected
-  for name in expected:
-    assert int(program.bits[name]) == len(fields[name[len("code_"):]][1]) - 1
-  # what training prices for each tree is what the replay reads off the program's keys
-  pool = _pool(app, ddos, names)
-  keys = [k for n, k in program.tables.items() if n.startswith("get_classification_tree_")]
-  assert pool["ternary_key_bits"] == [
-      tuple(sorted((program.bits[key] for key in k),
-                   key=lambda b: (int(b), isinstance(b, Spilled)))) for k in keys]
-
-
-def test_a_narrow_field_pinned_16_outside_a_per_tree_code_is_not_marked():
-  text = "\n".join([
-      "\tbit<3> code_tk_app_f;", "\tbit<3> code_tr_app_0_g;", "\tbit<12> code_tr_app_0_h;",
-      '@pa_container_size("ingress", "ig_md.code_tk_app_f", 16)',
-      '@pa_container_size("ingress", "ig_md.code_tr_app_0_g", 16)',
-      '@pa_container_size("ingress", "ig_md.code_tr_app_0_h", 16)', ""])
-  bits = parse_program_text(text).bits
-  assert isinstance(bits["code_tr_app_0_g"], Spilled) and int(bits["code_tr_app_0_g"]) == 3
-  assert not isinstance(bits["code_tk_app_f"], Spilled)
-  assert not isinstance(bits["code_tr_app_0_h"], Spilled)     # a 12-bit field's natural H
-
-
-def test_replay_labels_a_reader_of_a_per_tree_code_by_task(tmp_path):
+def test_replay_labels_a_reader_of_a_packed_code_by_task(tmp_path):
   from p4gen.p4_replay import code_written_by, table_tasks
   from p4model.program import SHARED_TASK
   # app splits features 0-2, ddos 2-4: an app-only, a ddos-only and a shared feature
@@ -852,12 +395,12 @@ def test_replay_labels_a_reader_of_a_per_tree_code_by_task(tmp_path):
   trees = [(re.match(r"^get_classification_tree_(app|ddos)_(\d+)$", n), keys)
            for n, keys in tables.items() if n.startswith("get_classification_tree_")]
   for i, f in enumerate(union):
-    readers = {m[1] for m, keys in trees if "code_" + per_tree_field(m[1], int(m[2]), f) in keys}
+    readers = {m[1] for m, keys in trees if "code_pk_" + f in keys}
     assert labels["table_%d_%s" % (i, f)] == (SHARED_TASK if len(readers) == 2 else readers.pop())
   assert all(labels[m[0]] == m[1] for m, _ in trees)
-  # a tree key names the range table of its feature
-  assert code_written_by("code_" + per_tree_field(APP_TASK, 3, "flow_iat_max"), APP_TASK) == \
-      "code_flow_iat_max"
+  # a tree key names the range table of its feature, whichever encoding wrote it
+  assert code_written_by("code_pk_flow_iat_max", APP_TASK) == "code_flow_iat_max"
+  assert code_written_by("code_tr_app_3_flow_iat_max", APP_TASK) == "code_flow_iat_max"
   assert code_written_by("code_tk_app_flow_iat_max", APP_TASK) == "code_flow_iat_max"
   assert code_written_by("code_flow_iat_max", APP_TASK) == "code_flow_iat_max"
 
@@ -867,7 +410,7 @@ def test_a_tree_waits_for_the_range_tables_it_reads_as_the_replay_maps_them(tmp_
   keys, and never precedes the pool's last range table. Training must hand the packer the
   same reads the replay maps from the program's keys, or the two paths drift."""
   from p4gen.p4_replay import tree_range_reads
-  app, ddos, names = _design("spill")
+  app, ddos, names = _many_trees()
   program = parse_program_text(_tree_text(tmp_path, app, ddos, names))
   reads = tree_range_reads(program.tables)
   assert reads is not None
@@ -893,56 +436,27 @@ def test_a_tree_waits_for_the_range_tables_it_reads_as_the_replay_maps_them(tmp_
     for table in reads[name]:
       readers[table] = readers.get(table, 0) + 1
   assert pool["range_dependents"] == [readers.get(t, 0) for t in ranges]
-  # and each range table's action-data bus bytes (the range pool's per-stage bus budget)
-  from p4gen.p4_replay import range_action_bits
-  written = range_action_bits(program)
-  assert pool["range_action_bytes"] == [-(-written[t] // 8) for t in ranges]
-  assert all(b > 0 for b in pool["range_action_bytes"])
 
 
 def test_two_trees_on_identical_intervals_stay_distinct_keys():
-  from p4model.tables import per_tree_key_fields
-  iv = {"flow_iat_max": [(0, 5), (6, 9), (10, 65535)], "bwd_iat_mean": [(0, 3), (4, 65535)]}
-  a, b = per_tree_key_fields(APP_TASK, 0, iv), per_tree_key_fields(APP_TASK, 1, iv)
-  c = per_tree_key_fields(DDOS_TASK, 0, iv)
-  assert a == frozenset({("tr_app_0_flow_iat_max", 1), ("tr_app_0_bwd_iat_mean", 1)})
-  assert not a & b and not a & c and not b & c
-  # in a pool: two identical trees of one task keep apart, with equal key bits
+  # two identical trees of one task: equal codes, each at its own bytes of the packed field
   rng = np.random.RandomState(0)
   X = rng.randint(0, 2000, size=(600, len(FEATURES)))
   y = (X[:, 0] > 900).astype(int) + (X[:, 1] > 1200)
   twins = bps.dt_thresholds_float_to_int(RandomForestClassifier(
       n_estimators=2, bootstrap=False, max_features=None, max_depth=3, random_state=0).fit(X, y))
+  tasks = _specs(twins, _forest(2, 1))
+  table_plan, _, own = bps.resolve_per_tree_plan(tasks)
+  assert own[APP_TASK][0] == own[APP_TASK][1] and own[APP_TASK][0]
+  layout = bps.per_tree_layout(table_plan, own, tasks)
+  for feature in own[APP_TASK][0]:
+    (a, bits_a), (b, bits_b) = (layout.place[(APP_TASK, i, feature)] for i in (0, 1))
+    assert bits_a == bits_b
+    assert not (set(range(a, a + -(-bits_a // 8))) & set(range(b, b + -(-bits_b // 8))))
+  # in the pool: two keys of equal length, never sharing a crossbar field
   pool = _pool(twins, _forest(2, 1), FEATURES)
-  assert pool["ternary_key_bits"][0] == pool["ternary_key_bits"][1]
-  assert pool["ternary_fields"][0] != pool["ternary_fields"][1]
-  assert not pool["ternary_fields"][0] & pool["ternary_fields"][1]
-  assert ({b for _, b in pool["ternary_fields"][0]} == {b for _, b in pool["ternary_fields"][1]})
-
-
-def test_ternary_usage_prices_the_key_bits_it_is_given():
-  from p4gen.evaluation import ternary_matching_resource_usage
-  iv = {"f": [(0, i) for i in range(4)]}            # one 3-bit field
-  codewords = {0: {"111": 0, "011": 1}}
-  plain = ternary_matching_resource_usage(codewords, iv)
-  assert plain == ternary_matching_resource_usage(codewords, iv, key_bits=(3,))
-  spilled = ternary_matching_resource_usage(codewords, iv, key_bits=(Spilled(3),))
-  assert spilled[3] == [(lanes.table_blocks((Spilled(3),)), 1)]
-  assert (spilled[0], spilled[2]) == (plain[0], plain[2])
-  # the block count follows the key bits given, not the interval dict
-  wide = ternary_matching_resource_usage(codewords, iv, key_bits=(100,))
-  assert wide[1] == lanes.table_blocks((100,)) > plain[1]
-
-
-def test_pool_inputs_raises_above_112_bytes():
-  app, ddos = _deep_forest(3, 0, depth=9, n_trees=20), _deep_forest(2, 1, depth=3)
-  _, _, trees = bps.resolve_per_tree_plan(_specs(app, ddos, DEEP_FEATURES, DEEP_FEATURES))
-  with pytest.raises(ActionDataTooWide) as expected:
-    pins_for(widths_of(trees))
-  assert expected.value.args[1] > PER_TREE_MAX_ACTION_BYTES
-  with pytest.raises(ActionDataTooWide) as e:
-    _pool(app, ddos, DEEP_FEATURES)
-  assert e.value.args == expected.value.args
+  assert len(pool["ternary_key_bytes"][0]) == len(pool["ternary_key_bytes"][1])
+  assert pool["ternary_fields"] is None
 
 
 def test_pool_inputs_raises_on_a_tree_with_no_splits(tmp_path):
@@ -959,41 +473,17 @@ def test_pool_inputs_raises_on_a_tree_with_no_splits(tmp_path):
   assert generated.value.args == e.value.args
 
 
-def test_pool_inputs_prices_each_tree_on_its_own_intervals():
-  app, ddos, names = _design("spill")
+def test_the_range_pool_is_the_per_task_arms():
+  app, ddos, names = _many_trees()
   pool = _pool(app, ddos, names)
-  tasks = _specs(app, ddos, names, names)
-  _, _, trees = bps.resolve_per_tree_plan(tasks)
-  widths = widths_of(trees)
-  pins, _ = pins_for(widths)
-  order = [(t, i) for t in (APP_TASK, DDOS_TASK) for i in range(len(trees[t]))]
-  assert pool["ternary_task"] == [t for t, _ in order]
-  assert pool["ternary_key_bits"] == [marked_key_bits(t, i, widths[t][i], pins) for t, i in order]
-  assert pool["codeword_length"] == max(sum(widths[t][i].values()) for t, i in order)
-  # the range pool is the per-task arm's: one table per feature over the union
+  _, _, trees = bps.resolve_per_tree_plan(_specs(app, ddos, names, names))
+  assert pool["ternary_task"] == [t for t in (APP_TASK, DDOS_TASK) for _ in trees[t]]
+  # one range table per feature over the union, as under per_task
   from p4gen.evaluation import _pool_inputs
   per_task = _pool_inputs(app, ddos, names, names, PER_TASK_ENCODING)
   for key in ("range_table_specs", "range_levels", "range_task", "range_fields",
               "emitted_features", "register_names", "range_entries", "range_blocks"):
     assert pool[key] == per_task[key], key
-
-
-def test_rescore_prices_spills_as_training_did(tmp_path):
-  from src.training import row_artifacts as ra
-  from src.training.campaign_run import run_paths
-  from src.verify.runner import _rescored_model
-  app, ddos, names = _design("spill")
-  usage = _evaluate(app, ddos, names)
-  ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
-  row = "joint-tree_M035_s00_k05"
-  model = ra.write_row_artifacts(ctx, row, app, ddos, names, names, PER_TREE_ENCODING, usage)
-  assert model["generator_error"] is None
-  assert model["model_paths_differ"] is False
-  text = (tmp_path / "designs" / (row + ".p4")).read_text(encoding="utf-8")
-  assert re.search(r'@pa_container_size\("ingress", "ig_md\.code_tr_\w+", 16\)', text)
-  rescored = _rescored_model(run_paths(str(tmp_path)).ensure(), row, model)
-  assert rescored["model_paths_differ"] is False
-  assert (rescored["stage_depth"], rescored["blocks"]) == (usage.stage_depth, usage.blocks)
 
 
 # sha256 of json.dumps(model_breakdown(...), sort_keys=True) for the program each other encoding
@@ -1030,7 +520,7 @@ def test_one_code_and_per_task_programs_replay_unchanged(tmp_path, seed):
                               (PER_TASK_ENCODING, own)):
     program = parse_program_text(_two_task(tmp_path, app, ddos, names, intervals,
                                            encoding=encoding))
-    assert not any(isinstance(bits, Spilled) for bits in program.bits.values())
+    assert all(type(bits) is int for bits in program.bits.values())
     # The programs carry the meta.fwd pin since 2026-11-09, which switches the replay to
     # p4c's chain order for the gated register blocks (test_the_fwd_pin_switches_the_
     # register_order); read without it, everything else is the frozen replay, the
@@ -1044,32 +534,7 @@ def test_one_code_and_per_task_programs_replay_unchanged(tmp_path, seed):
     assert _sha(breakdown) == _OTHER_REPLAY_SHAS[(encoding, seed)], (encoding, seed)
 
 
-# --- the Spilled mark changes a price (forest-free) ------------------------------------
-
-def test_the_spilled_mark_alone_changes_a_tables_block_price():
-  assert lanes.table_blocks((Spilled(3),) * 4) == 2
-  assert lanes.table_blocks((3,) * 4) == 1
-
-
-def test_declared_prices_charge_a_marked_key_twice_what_the_unmarked_one_costs():
-  import dataclasses
-  from p4gen.p4_replay import declared_prices
-  fields = ["code_tr_app_0_%s" % f for f in "abcd"]
-  text = "\n".join(
-      ["\tbit<3> %s;" % f for f in fields]
-      + ['@pa_container_size("ingress", "ig_md.%s", 16)' % f for f in fields]
-      + ["table get_classification_tree_app_0 {", "\tkey = {"]
-      + ["\t\tmeta.%s : ternary;" % f for f in fields]
-      + ["\t}", "\tsize = 100;", "}", ""])
-  program = parse_program_text(text)
-  assert all(isinstance(program.bits[f], Spilled) for f in fields)
-  unmarked = {name: int(bits) for name, bits in program.bits.items()}
-  assert declared_prices(program) == {"get_classification_tree_app_0": 2}
-  assert declared_prices(dataclasses.replace(program, bits=unmarked)) == {
-      "get_classification_tree_app_0": 1}
-
-
-# --- the arm joint-tree (spec 9.1, 9.3, 9.4) -------------------------------------------
+# --- the arm joint-tree (spec 2026-11-06 Sec 9.1, 9.3, 9.4; 2026-11-11 Sec 4.5) ----------
 
 def test_arm_identity_flows_through_config_row_id_jobs_and_the_loader():
   from src.main import PER_TREE_ARM_ENTRY, select_arm_slugs
@@ -1116,7 +581,62 @@ def test_row_artifacts_of_the_arm_replay_to_the_trainings_numbers(tmp_path):
   assert model["model_paths_differ"] is False
   assert model["generator_error"] is None
   assert (model["stage_depth"], model["blocks"]) == (usage.stage_depth, usage.blocks)
-  assert "code_tr_app_0_" in (tmp_path / "designs" / (row + ".p4")).read_text(encoding="utf-8")
+  assert "code_pk_" in (tmp_path / "designs" / (row + ".p4")).read_text(encoding="utf-8")
+
+
+def _stage_lines(text):
+  return {name: int(stage) for stage, name in re.findall(
+      r"@stage\((\d+)\)\s*\n(?:\s*@\w+\([^)\n]*\)\s*\n)*\s*table\s+(\w+)\s*\{", text)}
+
+
+def test_the_row_writer_pins_the_moved_tables_and_records_them(tmp_path, monkeypatch):
+  """Spec 2026-11-11 Sec 4.5: the row writer computes the pins from the pool training priced
+  (evaluation.tree_stage_pins) and passes them to the generator. A forced one-group stage
+  budget moves tables (as tests/test_packed_pool.py does), so the pins are not empty."""
+  from p4model import packing
+  from src.training import row_artifacts as ra
+  monkeypatch.setattr(packing, "TERNARY_CROSSBAR_GROUPS_PER_STAGE", 1)
+  app, ddos, names = _rng_design(3)
+  usage = _evaluate(app, ddos, names)
+  ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
+  row = "joint-tree_M035_s00_k05"
+  model = ra.write_row_artifacts(ctx, row, app, ddos, names, names, PER_TREE_ENCODING, usage)
+  text = (tmp_path / "designs" / (row + ".p4")).read_text(encoding="utf-8")
+  assert model["stage_pins"] and model["stage_pins"] == _stage_lines(text)
+  assert model["model_paths_differ"] is False
+  assert (model["stage_depth"], model["blocks"]) == (usage.stage_depth, usage.blocks)
+  stored = json.loads((tmp_path / "designs" / (row + ".model.json")).read_text(encoding="utf-8"))
+  assert stored["stage_pins"] == model["stage_pins"]
+
+
+def test_unpinned_moved_tables_make_the_model_paths_differ(tmp_path, monkeypatch):
+  """A program missing the pins its own placement calls for prices the same totals here,
+  but p4c would not place it as the model did: model_paths_differ says so."""
+  from p4model import packing
+  from src.training import row_artifacts as ra
+  monkeypatch.setattr(packing, "TERNARY_CROSSBAR_GROUPS_PER_STAGE", 1)
+  monkeypatch.setattr(ra, "tree_stage_pins", lambda *args, **kwargs: {})
+  app, ddos, names = _rng_design(3)
+  usage = _evaluate(app, ddos, names)
+  ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
+  model = ra.write_row_artifacts(ctx, "joint-tree_M035_s00_k05", app, ddos, names, names,
+                                 PER_TREE_ENCODING, usage)
+  assert model["stage_pins"] == {}
+  assert (model["stage_depth"], model["blocks"]) == (usage.stage_depth, usage.blocks)
+  assert model["model_paths_differ"] is True
+
+
+@pytest.mark.parametrize("encoding", [JOINT_ENCODING, PER_TASK_ENCODING])
+def test_other_arms_rows_record_no_pins(tmp_path, encoding):
+  from p4gen.evaluation import multi_model_memory_evaluation
+  from src.training import row_artifacts as ra
+  app, ddos = _forest(3, 2), _forest(2, 1)
+  usage = multi_model_memory_evaluation(app, ddos, FEATURES, FEATURES, encoding)
+  ctx = ra.RowContext(str(tmp_path), "x", 35, "abc")
+  model = ra.write_row_artifacts(ctx, "x_M035_s00_k05", app, ddos, FEATURES, FEATURES,
+                                 encoding, usage)
+  assert model["stage_pins"] == {} and model["model_paths_differ"] is False
+  assert "@stage(" not in (tmp_path / "designs" / "x_M035_s00_k05.p4").read_text(encoding="utf-8")
 
 
 def test_the_loader_refuses_alignment_on_the_arm():
@@ -1158,11 +678,13 @@ def _generator_error_row(tmp_path, app, ddos, names):
   return row, model
 
 
-def test_an_action_above_112_bytes_is_recorded_as_a_generator_error_not_a_crash(tmp_path):
-  app, ddos = _deep_forest(3, 0, depth=9, n_trees=20), _deep_forest(2, 1, depth=3)
+def test_a_field_wider_than_the_bus_is_recorded_as_a_generator_error_not_a_crash(tmp_path):
+  # 20 deep app trees: flow_iat_max's packed field needs more than the bus's 128 bytes
+  app, ddos = _deep_forest(3, 0, depth=10, n_trees=20), _deep_forest(2, 1, depth=3)
   row, model = _generator_error_row(tmp_path, app, ddos, DEEP_FEATURES)
   assert "action data bus" in model["generator_error"]
   assert model["stage_depth"] is None and model["blocks"] is None
+  assert model["stage_pins"] is None
   assert model["hw_feasible"] is False and model["budget_feasible"] is False
   assert (tmp_path / "designs" / (row + ".generator_error.txt")).read_text() == \
       model["generator_error"]
@@ -1174,7 +696,8 @@ def test_a_tree_with_no_splits_is_recorded_as_a_generator_error_not_a_crash(tmp_
   flat = bps.dt_thresholds_float_to_int(RandomForestClassifier(
       n_estimators=2, max_depth=3, random_state=0).fit(X, np.arange(60) % 3))
   row, model = _generator_error_row(tmp_path, flat, _forest(2, 1), FEATURES)
-  assert "no split" in model["generator_error"]
+  assert "no threshold" in model["generator_error"]
+  assert model["stage_pins"] is None
   assert model["hw_feasible"] is False
 
 
@@ -1211,13 +734,13 @@ def _search(monkeypatch, replacement, n_trials=6):
   return captured["study"].trials, result
 
 
-def test_an_action_above_the_limit_is_an_infeasible_trial_with_its_overflow(monkeypatch):
+def test_a_field_wider_than_the_bus_is_an_infeasible_trial_with_its_overflow(monkeypatch):
   from src.training import early_stopping
 
   def replacement(real, call):
     if call == 0:
       def refuse(*args, **kwargs):
-        raise ActionDataTooWide("too wide", PER_TREE_MAX_ACTION_BYTES + 5)
+        raise ActionDataTooWide("too wide", ACTION_DATA_BUS_BYTES + 5)
       return refuse
     return real
 
@@ -1239,7 +762,7 @@ def test_a_phv_refusal_is_an_infeasible_trial_with_its_overflow(monkeypatch):
   def replacement(real, call):
     if call == 0:
       def refuse(*args, **kwargs):
-        raise PhvContainersExhausted("too many 16-bit fields", 4)
+        raise PhvContainersExhausted("no PHV container left", 4)
       return refuse
     return real
 
@@ -1254,10 +777,10 @@ def test_a_phv_refusal_is_an_infeasible_trial_with_its_overflow(monkeypatch):
   assert result is not None                       # and found a feasible design
 
 
-def test_an_action_overflow_is_floored_at_one(monkeypatch):
+def test_a_bus_overflow_is_floored_at_one(monkeypatch):
   def replacement(real, call):
     def refuse(*args, **kwargs):
-      raise ActionDataTooWide("too wide", PER_TREE_MAX_ACTION_BYTES)
+      raise ActionDataTooWide("too wide", ACTION_DATA_BUS_BYTES)
     return refuse
 
   trials, result = _search(monkeypatch, replacement, n_trials=3)
@@ -1367,9 +890,9 @@ def test_another_arm_with_no_feasible_trial_still_writes_no_trials_file(tmp_path
   assert not (tmp_path / "trials").exists() or not list((tmp_path / "trials").iterdir())
 
 
-@pytest.mark.parametrize("refusal", [ActionDataTooWide("too wide", 113),
+@pytest.mark.parametrize("refusal", [ActionDataTooWide("too wide", ACTION_DATA_BUS_BYTES + 1),
                                      NoSplitTree("tree app_0 has no split", "app_0"),
-                                     PhvContainersExhausted("too many 16-bit fields", 4)])
+                                     PhvContainersExhausted("no PHV container left", 1)])
 def test_hardware_validation_reports_a_per_tree_refusal_as_unavailable(monkeypatch, refusal):
   """The per-tree generator refusals are RuntimeErrors, not ValueErrors: they must degrade
   to the 'unavailable' marker like a missing register, not crash the split."""

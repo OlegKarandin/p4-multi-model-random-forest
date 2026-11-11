@@ -35,7 +35,7 @@ from p4gen.evaluation import (
 from p4gen.switch_semantics import switch_predict
 from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
 from p4model.program import PER_TREE_ENCODING
-from p4model.target import PER_TREE_MAX_ACTION_BYTES
+from p4model.target import ACTION_DATA_BUS_BYTES
 from src.training.threshold_alignment import align_with_policy
 from src.training import early_stopping
 from src.training import trial_selection
@@ -372,20 +372,22 @@ def train_multi_RF_Optuna_multi_constrained(
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
         except ActionDataTooWide as e:
-            # Per-tree codes only (spec 9.3): a range table whose action writes
-            # more container bytes than the action data bus carries. Reported
-            # through the crossbar attribute, as the other width refusal.
+            # Per-tree codes only: a packed code field needs more bus bytes
+            # than the action data bus carries (packed.layout_for; spec
+            # 2026-11-11-packed-codes-stage-pin Sec 3.2, 6). Reported through
+            # the crossbar attribute, as the other width refusal; the violation
+            # is the bytes over the bus, at least 1.
             trial.set_user_attr('crossbar_violation',
-                                float(max(1, e.args[1] - PER_TREE_MAX_ACTION_BYTES)))
+                                float(max(1, e.args[1] - ACTION_DATA_BUS_BYTES)))
             trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
         except PhvContainersExhausted as e:
-            # Per-tree codes only: the design needs more 16-bit PHV containers
-            # than ingress has (per_tree.phv_demand). Reported through the
-            # crossbar attribute like the action-width refusal; the violation is
-            # the number of containers over the share.
+            # Per-tree codes only: a packed code field finds no PHV container of
+            # any size left (packed.layout_for, packed.budgets). Reported through
+            # the crossbar attribute like the action-width refusal; the violation
+            # is the number of containers short.
             trial.set_user_attr('crossbar_violation', float(max(1, e.args[1])))
             trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
