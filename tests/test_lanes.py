@@ -553,3 +553,30 @@ def test_table_blocks_never_rises_when_one_field_loses_a_bit():
       smaller = key[:i] + (w - 1,) + key[i + 1:]
       assert lanes.table_blocks(smaller) <= base, (key, smaller)
       checked += 1
+
+
+# ---- lane cap: only 3 of the 12 groups start on any one lane (2026-11-11) ----
+
+# get_classification_tree_ddos_2 of heldout7's joint-tree_M035_s08_k16: 9 of its
+# 14 key bytes are byte 3 of a 32-bit container. p4c: 5 blocks (groups 0, 1, 2,
+# 7, 10; the three that start on lane 3 are 2, 7 and 10).
+_LANE3_HEAVY = ([('W', 3, True)] * 7 + [('W', 3, False)] * 2 + [('W', 2, True)]
+                + [('H', 1, True)] + [('B', 0, True)] * 2 + [('B', 0, False)])
+
+
+def test_three_groups_start_on_each_lane():
+  starts = [start % 4 for start in lanes.GROUP_START]
+  assert sorted(starts) == [0] * 3 + [1] * 3 + [2] * 3 + [3] * 3
+  assert lanes.GROUPS_PER_START_LANE == {0: 3, 1: 3, 2: 3, 3: 3}
+
+
+def test_standalone_never_takes_more_extra_slots_in_a_lane_than_groups_start_there():
+  # 4 groups would need 4 extras on lane 3 (4 + 4 + the lane-3 midbyte = 9);
+  # the chip offers 4 + 3 + 1 = 8, so the key needs a fifth group.
+  assert lanes.standalone(_LANE3_HEAVY) == 5
+
+
+def test_lane_cap_leaves_a_balanced_key_alone():
+  # 10 bytes, lanes [3, 3, 2, 2]: one group starting on lane 0, one on lane 1.
+  key = [('W', k, False) for k in (0, 1, 2, 3, 0, 1, 2, 3, 0, 1)]
+  assert lanes.standalone(key) == 2

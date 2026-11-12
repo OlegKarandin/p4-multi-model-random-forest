@@ -80,6 +80,10 @@ MID_PER_LANE = collections.Counter(MID_LANES)
 # 11 * (g // 2), the odd group of the pair 6 slots in. Slot j of group g sits
 # in lane (GROUP_START[g] + j) % 4.
 GROUP_START = [11 * (g // 2) + (0 if g % 2 == 0 else 6) for g in range(_GROUPS)]
+# How many groups start on each lane: 3 on every lane. A group's start lane is
+# the one lane it offers TWO slots in, so a key can have at most this many
+# doubled slots in a lane (heldout7 joint-tree_M035_s08_k16 ddos_2, 2026-11-11).
+GROUPS_PER_START_LANE = collections.Counter(start % _LANES for start in GROUP_START)
 
 
 # --------------------------------------------------------------------------
@@ -344,9 +348,11 @@ def _standalone(W, H, B, nib_types):
   for g in range(1, _GROUPS + 1):
     if _SLOTS_PER_GROUP * g + (g - 1) // 2 + 1 < n:
       continue
-    # Each group supplies one slot per lane plus one extra in a lane of its
-    # choosing (the lane it starts on).
+    # Each group supplies one slot per lane plus one extra in the lane it starts
+    # on. The key picks its groups, but only GROUPS_PER_START_LANE start on a lane.
     for extras in itertools.combinations_with_replacement(range(_LANES), g):
+      if any(extras.count(l) > GROUPS_PER_START_LANE[l] for l in range(_LANES)):
+        continue
       s0 = [g + extras.count(l) for l in range(_LANES)]
       for w in range(0, (g - 1) // 2 + 1):
         for whole in itertools.combinations_with_replacement(range(_LANES), w):
@@ -373,7 +379,8 @@ def _standalone(W, H, B, nib_types):
 
 def standalone(byte_list):
   """A key's lane price ALONE in a stage: the smallest block count `g` whose
-  `g` groups (each one slot per lane plus one extra, lane chosen), `w` whole
+  `g` groups (each one slot per lane plus one extra on its start lane; at most
+  GROUPS_PER_START_LANE groups start on a lane), `w` whole
   midbytes and at most one nibble-only tail midbyte `t`, with
   `2w + t + 1 <= g`, legally hold every byte. `None` if no `g <= 12` does.
 
