@@ -109,6 +109,38 @@ def test_the_shipped_known_misses_are_the_spec_list():
     }
 
 
+PRAGMAS_ARCHIVE = os.path.join("results", "compiler_calibration_pragmas_2026_09_29")
+
+
+def _find_pragmas_archive():
+    """The archive is not in git. Look in this checkout's results/ and then in
+    every parent directory, so a run from a worktree under
+    <main>/.claude/worktrees/ finds the main checkout's copy."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        candidate = os.path.join(here, PRAGMAS_ARCHIVE)
+        if os.path.isdir(os.path.join(candidate, "p4_src")):
+            return candidate
+        parent = os.path.dirname(here)
+        if parent == here:
+            return None
+        here = parent
+
+
+def test_the_model_matches_p4c_on_the_pragmas_archive(capsys):
+    """The model gate itself (`python -m src.verify --model-archive`): every
+    miss on the 73 archived compiles is in KNOWN_MISSES with the same numbers,
+    and no KNOWN_MISSES entry is stale."""
+    archive = _find_pragmas_archive()
+    if archive is None:
+        pytest.skip("calibration archive %s not found in this checkout or any "
+                    "parent directory (it is not in git)" % PRAGMAS_ARCHIVE)
+    code = cli.main(["--model-archive", archive])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "designs 73 " in out, out
+
+
 def test_cli_model_archive_exit_code(tmp_path, monkeypatch):
     archive = _archive(tmp_path, ["d1"])
     _fake_model(monkeypatch, {"d1": (11, EXACT_TABLES)})
