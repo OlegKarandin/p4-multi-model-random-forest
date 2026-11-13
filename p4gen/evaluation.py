@@ -117,9 +117,9 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
 
   The model takes a per-tree count of folded entries; deciding WHICH leaves fold
   is Planter RF_EB's majority-class rule, which lives in build_p4_script beside
-  get_table_entries (its other caller) precisely so the resource model does not
-  have to know about decision trees -- or import a module that pulls in numpy
-  and sklearn.tree.
+  the entry writer (its other caller, _tree_table_entries) precisely so the
+  resource model does not have to know about decision trees -- or import a
+  module that pulls in numpy and sklearn.tree.
 
   The only name in the shim block that is a wrapper rather than an identity
   re-export."""

@@ -578,7 +578,7 @@ def get_ternary_value_and_mask(codeword):
 
   bf_rt's real add_with_<action> convenience methods expose a ternary key
   field as TWO named kwargs (<field> and <field>_mask, see
-  bfrtcli._make_core_method_strs), so get_table_entries needs the two halves
+  bfrtcli._make_core_method_strs), so the entry writer needs the two halves
   separately; nothing in this project ever needed the combined form for
   anything else.'''
   value = ""
@@ -598,172 +598,6 @@ def get_ternary_value_and_mask(codeword):
   hex_mask = hex(int(mask, 2))[2:].upper().zfill((bit_length + 3) // 4)
 
   return f"0x{hex_value}", f"0x{hex_mask}"
-
-
-def get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset=None, path_to_output=OUTPUT_PATH, output_filename="table_entries.json", verbose=False, use_default_action_discount=False):
-  '''
-  Inputs: feature_intervals [dict]: Dictionary where each key is a tree_id. The values are a list of feature intervals for each tree.
-          codewords [dict]: Dictionary where each key is a tree_id. The values are a list of dictionaries.
-                            Each key in the dictionary is a codeword corresponding to a leaf node.
-                            Each value is the class label associated with that codeword (i.e.: to the leaf node).
-          use_default_action_discount [bool]: Planter-style default-action discount. When
-                            True, every one of each tree's leaves sharing the majority class (see
-                            most_common_class_and_dropped_codewords) is omitted from that tree's
-                            explicit table entries; instead ONE `is_default_action` record per tree
-                            carries that majority class, which the control plane installs as the
-                            table's default action at deploy time (see p4/deploy_table_entries.py --
-                            the generated P4 itself declares no default action, see
-                            generate_P4_tables_and_apply). False (the default) writes every leaf as
-                            an explicit entry and emits no default-action record at all.
-
-  Outputs: This function writes a JSON file: a flat list of table-entry records covering both
-           the feature codeword-bit (range) tables and the codeword-to-leaf-node (classification)
-           tables.
-
-           Every record's field names are the ones bf_rt's REAL Python API needs, so
-           p4/deploy_table_entries.py can pass them straight through as keyword arguments to the
-           dynamically generated add_with_<action> / set_default_with_<action> methods
-           (bfrtcli._create_add_with_action / _create_set_default_with_action):
-
-           - key_fields: {<bf_rt short field name>: <spec>}, where the short name is the P4 key
-             expression with its `meta.`/`hdr.` prefix dropped (bf_rt shortens dotted key names to
-             their shortest non-colliding suffix). A RANGE field's spec is
-             {"start": <decimal str>, "end": <decimal str>} -> the <name>_start / <name>_end
-             kwargs; a TERNARY field's spec is {"value": <hex str>, "mask": <hex str>} ->
-             the <name> / <name>_mask kwargs.
-           - priority: this entry's 0-indexed position within its OWN table, passed as bf_rt's
-             MATCH_PRIORITY kwarg (required for any table with a range or ternary key). Any
-             deterministic assignment is correct here: range intervals are disjoint by
-             construction and one tree's leaves partition the input space, so no two entries of
-             one table can ever match the same input.
-           - action_params: {<action data field name>: <decimal str>}. These names are fixed
-             literals of this generator's own templates -- `code` for every set_code_* action
-             (resources/action.p4) and `class` for every classify_flow_codeword_* action
-             (generate_P4_actions).
-           - is_default_action: True for the at-most-one-per-classification-table record that
-             carries the discounted majority class. Such a record has NO key concept at all
-             (bf_rt's set_default_with_<action> takes only data fields), so its key_fields is
-             empty and its priority is None.
-
-          Range-table entry:
-          {
-            "table_name": "table_0_flow_iat_max",
-            "action": "set_code_flow_iat_max",
-            "is_default_action": false,
-            "priority": 0,
-            "key_fields": {"flow_iat_max_val": {"start": "0", "end": "100"}},
-            "action_params": {"code": "1"}
-          }
-
-          Classification-table entry:
-          {
-            "table_name": "get_classification_tree_app_0",
-            "action": "classify_flow_codeword_app_0",
-            "is_default_action": false,
-            "priority": 3,
-            "key_fields": {
-              "code_flow_iat_max": {"value": "0x5", "mask": "0x7"},
-              "code_flow_iat_mean": {"value": "0x0", "mask": "0x0"}
-            },
-            "action_params": {"class": "1"}
-          }
-
-          Default-action record (only under use_default_action_discount):
-          {
-            "table_name": "get_classification_tree_app_0",
-            "action": "classify_flow_codeword_app_0",
-            "is_default_action": true,
-            "priority": null,
-            "key_fields": {},
-            "action_params": {"class": "0"}
-          }
-
-  Task 3 (disjoint-encoding single-pipeline generator) -- current support
-  for RESOLVED/namespaced `feature_intervals` keys (e.g. "app_flow_iat_max")
-  is PARTIAL, not "zero changes needed" everywhere:
-
-  - Section 1 below (the per-feature codeword-generation table entries,
-    "table_<idx>_<feature_name>" / "set_code_<feature_name>") IS genuinely
-    agnostic to raw vs. resolved names. It only ever reads intervals from
-    `feature_intervals[feature_name]` and never cross-references tree-path
-    step names, so passing it resolved/namespaced keys works correctly
-    as-is.
-
-  - `generate_codewords` (which must be called with the SAME
-    `feature_intervals` before this function, since `codewords`' segment
-    order has to match `feature_intervals`' iteration order) is NOT
-    namespace-aware: it matches each `feature_intervals` key directly
-    against the RAW feature names recorded in each tree path (e.g.
-    "flow_iat_max"). A resolved/namespaced key like "app_flow_iat_max"
-    will never match a real tree-path step name, so that feature is
-    silently treated as absent from every path and wildcarded in every
-    codeword -- wrong codewords, with no error raised.
-
-  - Section 2 below (the per-tree classification-entry loop that slices
-    each codeword across every entry in `feature_intervals`) also assumes
-    `feature_intervals` contains exactly the keys/order used to build the
-    per-model classification table's key fields. After this task, each
-    model's classification table only declares key fields for its own
-    feature subset (see `feature_names_app`/`feature_names_ddos` in
-    `generate_P4_tables_and_apply`), not the full resolved plan. Calling
-    this function with the FULL resolved-name-keyed dict (spanning both
-    models) would slice codewords into the wrong number/width of key
-    chunks for a real per-model table.
-
-  Net effect: a caller wanting genuinely namespaced, per-model exact
-  codewords/table_entries.json would need further changes to
-  `generate_codewords` (to match resolved names back to their underlying
-  raw feature for path-matching) and to how this function is invoked
-  (once per model, with that model's own feature subset) -- this task did
-  not make those changes. No caller in this task's scope exercises the
-  disjoint-namespaced path through `generate_codewords`/this function
-  today (main.py's pipeline is joint-only; feature_selection.py's
-  real-compile validation only needs `generate_P4_code`'s emitted .p4
-  SOURCE, not table_entries.json). generate_table_entries is the path that
-  handles namespaced fields and any number of tasks.
-  '''
-
-  table_entries = []
-
-  # 1. Table entries for generating the codeword based on feature values
-  for feature_idx, feature_name in enumerate(feature_intervals):
-    table_entries += _range_table_entries(
-        "table_"+str(feature_idx)+"_"+feature_name.lower(),
-        "set_code_"+feature_name.lower(),
-        feature_name.replace(" ","_").lower()+"_val",
-        feature_intervals[feature_name])
-
-  # 2. Table entries for getting each tree's classification based on generated codeword
-  fields = [("code_"+feature_name.replace(" ","_").lower(), len(intervals)-1)
-            for feature_name, intervals in feature_intervals.items()]
-  for tree_idx,tree in enumerate(codewords):
-    # Task M2-B2: `tree` is no longer a runtime action parameter -- each tree
-    # has its own dedicated table and action (see generate_P4_actions /
-    # generate_P4_tables_and_apply), so action_params carries only the class
-    # value.
-    if offset==None:
-      #One model encoding
-      table_name = "get_classification_tree_"+str(tree_idx)
-      action_name = "classify_flow_codeword_"+str(tree_idx)
-    elif tree_idx < offset:
-      #Multiple models encoding: App trees come first
-      table_name = "get_classification_tree_app_"+str(tree_idx)
-      action_name = "classify_flow_codeword_app_"+str(tree_idx)
-    else:
-      table_name = "get_classification_tree_ddos_"+str(tree_idx-offset)
-      action_name = "classify_flow_codeword_ddos_"+str(tree_idx-offset)
-    table_entries += _tree_table_entries(table_name, action_name, codewords[tree],
-                                         fields, use_default_action_discount)
-
-  if verbose == True:
-    # Show Generated Table Entries
-    for entry in table_entries:
-      print(entry)
-
-  # Save table entries to JSON
-  ensure_directory_exists(path_to_output)
-  with open(path_to_output + output_filename, 'w') as output_file:
-    output_file.write(json.dumps(table_entries))
 
 
 def _per_task_code(interval, own_intervals):
@@ -887,8 +721,8 @@ def _tree_table_entries(table_name, action_name, tree_codewords, fields,
 
 
 def generate_table_entries(tasks, use_default_action_discount=False, encoding=JOINT_ENCODING):
-  '''The control-plane entries (get_table_entries' record format, installed
-  by p4/deploy_table_entries.py) of the program generate_p4_program emits for
+  '''The control-plane entries (record format below, installed by
+  p4/deploy_table_entries.py) of the program generate_p4_program emits for
   the same `tasks` (Sequence[TaskSpec], N >= 1) and the same `encoding`
   (program.ENCODINGS; any other value raises ValueError):
 
@@ -901,7 +735,7 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
   text is built from: one range table per resolved entry, keyed on its raw
   value field, and one table per tree, keyed on its task's own code fields. So
   namespaced disjoint fields (<task>_<f>) are addressed correctly -- the case
-  get_table_entries' docstring records it gets wrong. Each task's codewords
+  the legacy get_table_entries (removed 2026-11-13) got wrong. Each task's codewords
   are computed against that task's OWN intervals, which are the intervals of
   every resolved field it reads.
 
@@ -911,7 +745,80 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
   task's codewords, against its own intervals, expect to find.
 
   Every task with trees needs its ordered training-feature-name list
-  (TaskSpec.features): its codewords are recomputed from its trees.'''
+  (TaskSpec.features): its codewords are recomputed from its trees.
+
+  use_default_action_discount: Planter-style default-action discount. When
+  True, every one of each tree's leaves sharing the majority class (see
+  most_common_class_and_dropped_codewords) is omitted from that tree's
+  explicit entries; instead ONE `is_default_action` record per tree carries
+  that majority class, which the control plane installs as the table's
+  default action at deploy time (see p4/deploy_table_entries.py -- the
+  generated P4 itself declares no default action, see
+  generate_P4_tables_and_apply). False (the default) writes every leaf as an
+  explicit entry and emits no default-action record at all.
+
+  RECORD FORMAT. A flat list of table-entry records covering both the feature
+  codeword-bit (range) tables and the codeword-to-leaf-node (classification) tables
+  (written as JSON by generate_p4_program's entries_filename):
+
+   Every record's field names are the ones bf_rt's REAL Python API needs, so
+   p4/deploy_table_entries.py can pass them straight through as keyword arguments to the
+   dynamically generated add_with_<action> / set_default_with_<action> methods
+   (bfrtcli._create_add_with_action / _create_set_default_with_action):
+
+   - key_fields: {<bf_rt short field name>: <spec>}, where the short name is the P4 key
+     expression with its `meta.`/`hdr.` prefix dropped (bf_rt shortens dotted key names to
+     their shortest non-colliding suffix). A RANGE field's spec is
+     {"start": <decimal str>, "end": <decimal str>} -> the <name>_start / <name>_end
+     kwargs; a TERNARY field's spec is {"value": <hex str>, "mask": <hex str>} ->
+     the <name> / <name>_mask kwargs.
+   - priority: this entry's 0-indexed position within its OWN table, passed as bf_rt's
+     MATCH_PRIORITY kwarg (required for any table with a range or ternary key). Any
+     deterministic assignment is correct here: range intervals are disjoint by
+     construction and one tree's leaves partition the input space, so no two entries of
+     one table can ever match the same input.
+   - action_params: {<action data field name>: <decimal str>}. These names are fixed
+     literals of this generator's own templates -- `code` for every set_code_* action
+     (resources/action.p4) and `class` for every classify_flow_codeword_* action
+     (generate_P4_actions).
+   - is_default_action: True for the at-most-one-per-classification-table record that
+     carries the discounted majority class. Such a record has NO key concept at all
+     (bf_rt's set_default_with_<action> takes only data fields), so its key_fields is
+     empty and its priority is None.
+
+  Range-table entry:
+  {
+    "table_name": "table_0_flow_iat_max",
+    "action": "set_code_flow_iat_max",
+    "is_default_action": false,
+    "priority": 0,
+    "key_fields": {"flow_iat_max_val": {"start": "0", "end": "100"}},
+    "action_params": {"code": "1"}
+  }
+
+  Classification-table entry:
+  {
+    "table_name": "get_classification_tree_app_0",
+    "action": "classify_flow_codeword_app_0",
+    "is_default_action": false,
+    "priority": 3,
+    "key_fields": {
+      "code_flow_iat_max": {"value": "0x5", "mask": "0x7"},
+      "code_flow_iat_mean": {"value": "0x0", "mask": "0x0"}
+    },
+    "action_params": {"class": "1"}
+  }
+
+  Default-action record (only under use_default_action_discount):
+  {
+    "table_name": "get_classification_tree_app_0",
+    "action": "classify_flow_codeword_app_0",
+    "is_default_action": true,
+    "priority": null,
+    "key_fields": {},
+    "action_params": {"class": "0"}
+  }
+  '''
   if encoding not in ENCODINGS:
     raise ValueError("encoding must be one of {}, got {!r}".format(
         ", ".join(repr(name) for name in ENCODINGS), encoding))
@@ -1056,7 +963,7 @@ def per_tree_layout(table_plan, tree_intervals, tasks):
 
 
 def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
-  '''The control-plane entries (get_table_entries' record format, installed by
+  '''The control-plane entries (generate_table_entries' record format, installed by
   p4/deploy_table_entries.py) of the packed per-tree program generate_p4_program
   emits under PER_TREE_ENCODING (spec 2026-11-11-packed-codes-stage-pin Sec 3.1,
   3.2, 8): one field meta.code_pk_<f> per feature, every tree's code on f at its
@@ -1417,7 +1324,7 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
   even for the classification tables under the Planter-style
   default-action discount (`use_default_action_discount`, which this
   function therefore no longer takes at all; it survives only in
-  generate_P4_code/get_table_entries, where it decides which entries the
+  generate_P4_code/generate_table_entries, where it decides which entries the
   control plane installs). Task 1 used to emit
   `const default_action = classify_flow_codeword_<task>_<i>(<class>);`
   here. A controlled real-compile A/B this session showed that construct
@@ -1433,7 +1340,7 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
   likewise declares no compile-time-constant default action; its real
   default class is installed by the control plane at deploy time, through
   the same runtime call that installs every other entry. This generator now
-  matches that architecture: get_table_entries emits a real
+  matches that architecture: generate_table_entries emits a real
   `is_default_action` record per discounted tree and
   p4/deploy_table_entries.py installs it via bf_rt's
   `set_default_with_<action>`.
@@ -1485,7 +1392,7 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
   gets a TypeError at the call instead of a silently oversized table.
 
   feature_table_sizes maps RESOLVED feature name -> entry count (one entry
-  per interval; see get_table_entries' range-entry section). Each task's
+  per interval; see generate_table_entries' range tables). Each task's
   per-tree sizes are indexed by that task's own tree id (no global offset).
   """
 
@@ -1790,7 +1697,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   directly or via `config`), this function recomputes each model's codewords
   internally; every leaf carrying its tree's majority class then comes off
   that classification table's declared `size` here, and off its explicit
-  entries in table_entries.json, where `get_table_entries` instead writes ONE
+  entries in table_entries.json, where `generate_table_entries` instead writes ONE
   `is_default_action` record per tree carrying that majority class. The
   generated P4 itself declares NO default action either way (see
   generate_P4_tables_and_apply's docstring for the real-compile evidence
@@ -1842,7 +1749,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   close, not one it introduces.
 
   CAVEAT: with match_type='exact', the emitted P4 program is NOT yet
-  end-to-end compilable/loadable on its own. get_table_entries (writes
+  end-to-end compilable/loadable on its own. generate_table_entries (writes
   table_entries.json) is unchanged by this parameter and still emits
   ternary/wildcard-shaped ('*') entries for the same classification tables
   that this function just declared `: exact;` -- concrete, enumerated

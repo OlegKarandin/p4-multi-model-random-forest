@@ -341,23 +341,6 @@ def test_entries_classify_every_input_exactly_as_each_tree_does(tmp_path, encodi
         assert got == {table: int(classes[s]) for table, classes in expected.items()}
 
 
-def test_entries_for_joint_two_tasks_equal_the_legacy_main_path(tmp_path):
-    app, ddos = _int_forest(3, 2), _int_forest(2, 1)
-    # main.generate_p4_from_models' path: one joint interval set over app's
-    # trees then ddos', ddos re-keyed past app's trees.
-    nodes = bps.merge_tree_nodes(bps.tree_nodes_for(app, FEATURES),
-                                 bps.tree_nodes_for(ddos, FEATURES))
-    intervals = bps.feature_intervals_from_nodes(nodes)
-    paths = bps.get_root_to_leaf_paths(nodes)
-    bps.get_table_entries(paths, intervals, bps.generate_codewords(paths, intervals),
-                          len(app.estimators_), path_to_output=str(tmp_path) + os.sep)
-    with open(os.path.join(str(tmp_path), "table_entries.json"), encoding="utf-8") as handle:
-        legacy = json.load(handle)
-    tasks = [TaskSpec(DDOS_TASK, 2, list(ddos.estimators_), FEATURES, intervals),
-             TaskSpec(APP_TASK, 3, list(app.estimators_), FEATURES, intervals)]
-    assert bps.generate_table_entries(tasks) == legacy
-
-
 def test_entries_need_each_tasks_ordered_feature_list():
     one = [(0, 10), (11, 65535)]
     task = _task("x", 2, 1, ["flow_iat_max"], intervals={"flow_iat_max": one})

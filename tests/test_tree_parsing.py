@@ -39,7 +39,7 @@ def _parse(clf, features):
 
 
 def _thermometer(intervals, value):
-    """The exact code get_table_entries writes for the interval containing
+    """The exact code the entry writer (generate_table_entries) writes for the interval containing
     `value`: original-order interval i -> '0'*i + '1'*(n-1-i)."""
     n = len(intervals)
     for i, (lo, hi) in enumerate(intervals):

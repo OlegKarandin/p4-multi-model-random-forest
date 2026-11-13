@@ -1,4 +1,4 @@
-"""Deploys table_entries.json (see build_p4_script.get_table_entries) to a real running Tofino
+"""Deploys table_entries.json (see build_p4_script.generate_table_entries) to a real running Tofino
 pipeline via the real bf_rt Python API. Run via:
     ~/open-p4studio/run_bfshell.sh -b p4/deploy_table_entries.py
 (assumes bfrt is already injected into the execution namespace by bfshell, matching every
@@ -16,10 +16,10 @@ What was confirmed directly in the real driver source:
     `add_with_<action>` / `set_default_with_<action>` method taking NAMED kwargs per field.
   * bfrtcli._make_core_method_strs exposes a RANGE key field as <name>_start / <name>_end, and a
     TERNARY key field as <name> / <name>_mask -- exactly the two key_fields spec shapes
-    get_table_entries writes.
+    generate_table_entries writes.
   * set_default_with_<action> is built from data fields ONLY: no key fields and no MATCH_PRIORITY,
     which is why an is_default_action record carries an empty key_fields and a null priority.
-  * The string values get_table_entries writes are fine as-is: bfrtTable.parse_str_input ->
+  * The string values generate_table_entries writes are fine as-is: bfrtTable.parse_str_input ->
     _Field.parse_input -> _parse_int does `int(value, 0)` for str input, so "0x5" parses as 5 and
     "100" as 100. (Passing plain ints would work identically -- see rm8_insert_test.py.)
 """

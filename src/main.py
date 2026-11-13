@@ -7,12 +7,10 @@ from p4gen.build_p4_script import (
     feature_intervals_from_nodes,
     feature_intervals_to_csv,
     generate_P4_code,
-    generate_codewords,
-    get_root_to_leaf_paths,
-    get_table_entries,
     merge_tree_nodes,
     tree_nodes_for,
 )
+from p4model.program import JOINT_ENCODING
 from src.training.config import PER_TASK_ARM, PER_TREE_ARM, TrainConfig, arm_encoding
 from src.training import campaign_run
 from src.training.campaign_runner import plan_jobs, run_jobs
@@ -269,37 +267,27 @@ def implement_tree_models_in_P4(clf_app, clf_ddos, selected_features,
     this as the model -> P4 interface.
 
     selected_features must be the model's ORDERED training-feature-name list
-    (feature_names[i] is training column i), which is what export_text needs;
+    (feature_names[i] is training column i), which is what get_nodes needs;
     it is not interchangeable with the alphabetically-sorted key order that
     get_feature_thresholds produces.
+
+    The entries come from the production writer, generate_table_entries
+    (via generate_P4_code's entries_filename, joint encoding), the same one
+    a campaign row's program is checked against -- not from a writer of its
+    own. Until 2026-11-13 this function used the legacy get_table_entries;
+    the two wrote identical entries on real joint campaign forests.
     """
     clf_app = dt_thresholds_float_to_int(clf_app)
     clf_ddos = dt_thresholds_float_to_int(clf_ddos)
 
-    # extract node features (leaf or internal) straight off each estimator's
-    # tree_ arrays. tree_nodes is needed below by get_root_to_leaf_paths,
-    # get_table_entries, and (via feature_intervals_from_nodes) the joint
-    # interval derivation -- computed once and shared across all three.
-    tree_nodes_app = tree_nodes_for(clf_app, selected_features)
-    tree_nodes = merge_tree_nodes(
-        tree_nodes_app, tree_nodes_for(clf_ddos, selected_features))
-
-    # Same "app tree count" offset get_table_entries needs below to re-key
-    # the DDoS trees -- merge_tree_nodes applies the identical offset
-    # internally when it builds tree_nodes above.
-    offset = len(tree_nodes_app)
-
+    # The joint discretization: every split point of every tree of both
+    # forests, read straight off each estimator's tree_ arrays.
+    tree_nodes = merge_tree_nodes(tree_nodes_for(clf_app, selected_features),
+                                  tree_nodes_for(clf_ddos, selected_features))
     feature_intervals = feature_intervals_from_nodes(tree_nodes)
 
     ensure_directory_exists(output_dir)
     feature_intervals_to_csv(feature_intervals, path_to_output=output_dir)
-
-    paths_leaf_nodes_per_tree = get_root_to_leaf_paths(tree_nodes)
-
-    codewords = generate_codewords(paths_leaf_nodes_per_tree, feature_intervals)
-    get_table_entries(paths_leaf_nodes_per_tree, feature_intervals, codewords, offset,
-                      path_to_output=output_dir,
-                      use_default_action_discount=use_default_action_discount)
 
     return generate_P4_code(
         num_classes_app, num_classes_ddos, clf_app, clf_ddos,
@@ -307,7 +295,8 @@ def implement_tree_models_in_P4(clf_app, clf_ddos, selected_features,
         output_dir=output_dir, output_filename=output_filename,
         use_default_action_discount=use_default_action_discount,
         selected_features_app=selected_features,
-        selected_features_ddos=selected_features)
+        selected_features_ddos=selected_features,
+        entries_filename='table_entries.json', encoding=JOINT_ENCODING)
 
 
 def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):
