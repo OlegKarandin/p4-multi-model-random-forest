@@ -249,16 +249,18 @@ def test_pinned_24_remainder_fields_fill_the_low_container_first(w, expected):
   assert lanes.relaxed_layout(w) == expected
 
 
-@pytest.mark.parametrize('w', range(0, 330))
-def test_fill_low_fix_leaves_every_pin_unchanged(w):
-  """Per FIELD, the pins (container sizes, low slice first) do not move. This
-  does NOT make the pins of a whole KEY unchanged: see
-  test_fill_low_fix_can_flip_a_keys_plain_vs_relaxed_pin."""
-  assert lanes.container_sizes(w) == [
-      lanes.CONTAINER_BITS[k] for k, _ in _pre_fill_low_layout(w)]
-  assert sorted(lanes.container_sizes(w)) == sorted(
-      lanes.CONTAINER_BITS[k] for k, _ in lanes.layout(w))
-  assert sum(bits for _, bits in lanes.layout(w)) == max(w, 0)
+def test_fill_low_fix_leaves_every_pin_unchanged():
+  """Per FIELD, the pins (container sizes, low slice first) do not move, for
+  every width 0..329. This does NOT make the pins of a whole KEY unchanged:
+  see test_fill_low_fix_can_flip_a_keys_plain_vs_relaxed_pin."""
+  failures = []
+  for w in range(0, 330):
+    sizes = lanes.container_sizes(w)
+    if (sizes != [lanes.CONTAINER_BITS[k] for k, _ in _pre_fill_low_layout(w)]
+        or sorted(sizes) != sorted(lanes.CONTAINER_BITS[k] for k, _ in lanes.layout(w))
+        or sum(bits for _, bits in lanes.layout(w)) != max(w, 0)):
+      failures.append(w)
+  assert not failures, 'widths whose pins moved: %r' % failures
 
 
 def _key_choice(widths, monkeypatch, old):

@@ -237,7 +237,9 @@ def _rng_design(seed):
             _forest(2, 1 + seed, names, n_trees=trees_ddos, depth=depth_ddos), names)
 
 
-@pytest.mark.parametrize("seed", range(40))
+# 12 of the 40 seeds once run here: the 7 that together reach every line and branch the 40
+# reached (results/encoding_evidence_2026_11/model8/out/tests_parametrize.csv) plus seeds 0-4.
+@pytest.mark.parametrize("seed", [0, 1, 2, 3, 4, 13, 14, 18, 20, 21, 30, 39])
 def test_training_prices_exactly_what_the_generated_program_replays(tmp_path, seed):
     app, ddos, names = _rng_design(seed)
     usage = multi_model_memory_evaluation(app, ddos, names, names, PER_TASK_ENCODING)

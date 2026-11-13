@@ -216,29 +216,39 @@ def _random_field_widths(rng):
                 rng.integers(1, 81, size=int(rng.integers(1, 16))))
 
 
-@pytest.mark.parametrize("seed", range(3000))
-def test_the_bit_width_bound_never_exceeds_the_composed_cost(seed):
+PROPERTY_SEEDS = range(3000)
+
+
+def test_the_bit_width_bound_never_exceeds_the_composed_cost():
     """`codeword_bits_to_blocks` (the bit-width band) is kept only as a
     lower-bound assertion target now -- never a search floor or a max() arm
     inside codeword_to_blocks's general path (spec F6). This is that
     assertion, as a test: the bound must still hold, by inspection of every
     trial rather than by construction, since nothing in the new implementation
     forces it structurally the way the old max() composition did."""
-    rng = np.random.default_rng(seed)
-    widths = _random_field_widths(rng)
-    assert codeword_bits_to_blocks(sum(widths)) <= codeword_to_blocks(widths), widths
+    failures = []
+    for seed in PROPERTY_SEEDS:
+        widths = _random_field_widths(np.random.default_rng(seed))
+        if codeword_bits_to_blocks(sum(widths)) > codeword_to_blocks(widths):
+            failures.append((seed, widths))
+    assert not failures, "%d of %d seeds fail, first (seed, widths): %r" % (
+        len(failures), len(PROPERTY_SEEDS), failures[:5])
 
 
-@pytest.mark.parametrize("seed", range(3000))
-def test_the_isolation_refinement_never_raises_the_headline_price(seed):
+def test_the_isolation_refinement_never_raises_the_headline_price():
     """The Sec 2.3 isolation credit is a REFINEMENT: it can only lower a key's
     price relative to the Sec 13.1 headline (`S = 0`) ladder, never raise it,
     because the credit only ever subtracts from the nibble test's left-hand
     side. codeword_to_blocks_headline is codeword_to_blocks with the credit
     switched off, so this is the direct comparison."""
-    rng = np.random.default_rng(seed + 1_000_000)   # disjoint stream from the test above
-    widths = _random_field_widths(rng)
-    assert codeword_to_blocks(widths) <= codeword_to_blocks_headline(widths), widths
+    failures = []
+    for seed in PROPERTY_SEEDS:
+        # seed + 1_000_000: a stream disjoint from the test above
+        widths = _random_field_widths(np.random.default_rng(seed + 1_000_000))
+        if codeword_to_blocks(widths) > codeword_to_blocks_headline(widths):
+            failures.append((seed, widths))
+    assert not failures, "%d of %d seeds fail, first (seed, widths): %r" % (
+        len(failures), len(PROPERTY_SEEDS), failures[:5])
 
 
 # --------------------------------------------------------------------------

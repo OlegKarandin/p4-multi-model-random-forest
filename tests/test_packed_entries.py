@@ -129,8 +129,11 @@ def test_the_deep_design_has_a_multi_slice_key_at_a_non_zero_offset():
   assert _multi_slice_keys_at_an_offset(_deep_specs()[0])
 
 
+# Case 0 under both discounts reaches every line and branch cases 0-5 did
+# (results/encoding_evidence_2026_11/model8/out/tests_parametrize.csv); "deep" adds a
+# multi-slice key at a non-zero offset.
 @pytest.mark.parametrize("discount", [False, True])
-@pytest.mark.parametrize("case", list(range(6)) + ["deep"])
+@pytest.mark.parametrize("case", [0, "deep"])
 def test_per_tree_entries_classify_every_input_exactly_as_each_tree(case, discount):
   tasks, app, ddos, names, top = _design(case)
   entries = bps.generate_table_entries(tasks, use_default_action_discount=discount,

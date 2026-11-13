@@ -1894,8 +1894,7 @@ def test_the_block_factor_equals_the_evaluators_block_factor():
             ternary_key_field_bits(joint))
 
 
-@pytest.mark.parametrize('seed', range(50))
-def test_the_block_factor_matches_p4model_on_random_width_vectors(seed):
+def test_the_block_factor_matches_p4model_on_random_width_vectors():
     """The property half of E1-blocks. The fixture above pins four features on
     one pair; codeword_to_blocks' multiset-dependent isolation credit (which
     replaced version_block_penalty, deleted 2026-09-21) fires only on
@@ -1903,15 +1902,18 @@ def test_the_block_factor_matches_p4model_on_random_width_vectors(seed):
     range (§1.3). Guards against anyone reimplementing _factor's arithmetic
     locally instead of delegating."""
     from p4model.tables import codeword_to_blocks
-    rng = np.random.default_rng(seed)
-    widths = {i: int(w) for i, w in
-              enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}
-    assert ab._factor(widths) == codeword_to_blocks(
-        tuple(sorted(widths.values())))
+    failures = []
+    for seed in range(50):
+        rng = np.random.default_rng(seed)
+        widths = {i: int(w) for i, w in
+                  enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}
+        if ab._factor(widths) != codeword_to_blocks(tuple(sorted(widths.values()))):
+            failures.append((seed, widths))
+    assert not failures, "%d of 50 seeds fail, first (seed, widths): %r" % (
+        len(failures), failures[:5])
 
 
-@pytest.mark.parametrize('seed', range(200))
-def test_shedding_a_bit_never_raises_the_block_factor(seed):
+def test_shedding_a_bit_never_raises_the_block_factor():
     """Invariant 7 (design §5.7). Alignment's only move sheds bits from one
     feature, so a non-monotone objective would create a perverse incentive: a
     run could be punished for a free saving, and the rollback would then be
@@ -1919,15 +1921,20 @@ def test_shedding_a_bit_never_raises_the_block_factor(seed):
     over 200 000 random shapes; pinned here over a smaller sample so a future
     change to codeword_to_blocks that breaks monotonicity fails in this
     suite rather than in a campaign."""
-    rng = np.random.default_rng(1000 + seed)
-    widths = {i: int(w) for i, w in
-              enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}
-    victim = int(rng.integers(0, len(widths)))
-    if widths[victim] <= 1:
-        return                          # nothing to shed; not a counterexample
-    before = ab._factor(widths)
-    widths[victim] -= 1
-    assert ab._factor(widths) <= before
+    failures = []
+    for seed in range(200):
+        rng = np.random.default_rng(1000 + seed)
+        widths = {i: int(w) for i, w in
+                  enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}
+        victim = int(rng.integers(0, len(widths)))
+        if widths[victim] <= 1:
+            continue                    # nothing to shed; not a counterexample
+        before = ab._factor(widths)
+        widths[victim] -= 1
+        if ab._factor(widths) > before:
+            failures.append((seed, victim, widths))
+    assert not failures, "%d of 200 seeds fail, first (seed, victim, widths after): %r" % (
+        len(failures), failures[:5])
 
 
 @pytest.mark.parametrize('delta_rel', [0.0, 0.05, None])
