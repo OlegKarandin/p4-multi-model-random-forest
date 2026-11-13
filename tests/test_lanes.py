@@ -281,7 +281,7 @@ def test_fill_low_fix_can_flip_a_keys_plain_vs_relaxed_pin(monkeypatch):
   the ladder, and the fill-low fix lowers the plain price of keys holding a
   24-remainder field, so a key mixing one with 17-32-bit fields can now pin
   plain W32 where the old code pinned relaxed H16 + B8. It held on all 7,681
-  campaign_2026_10 keys (tests/test_campaign_pins.py); a new campaign can pin
+  campaign_2026_10 keys (a one-off check, since removed); a new campaign can pin
   plain W32 where the old code pinned relaxed H16 on such keys, which no
   compile has tested."""
   key = (3, 21, 49)

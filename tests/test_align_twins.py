@@ -46,6 +46,17 @@ def _source(tmp_path, split=0, k=3, M=35):
     return ctx, row
 
 
+def test_column_indices_maps_names_back_to_columns():
+    assert align_twins.column_indices(['a', 'b', 'c'], 'c;a') == [2, 0]
+
+
+def test_column_indices_rejects_a_name_the_dataset_does_not_have():
+    """A silent mismatch would align a different feature set than the row
+    records."""
+    with pytest.raises(ValueError, match='not in the loaded dataset'):
+        align_twins.column_indices(['a', 'b'], 'a;zzz')
+
+
 def test_twin_row_id_swaps_the_arm_prefix_only():
     assert align_twins.twin_row_id('joint-off_M035_s07_k09') == 'joint-off-al_M035_s07_k09'
     assert align_twins.twin_row_id('joint-off_Minf_s24_k17') == 'joint-off-al_Minf_s24_k17'
