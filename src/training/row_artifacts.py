@@ -14,7 +14,6 @@ import joblib
 import sklearn
 
 from p4gen.build_p4_script import generate_P4_code
-from p4gen.evaluation import tree_stage_placement
 from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.program import JOINT_ENCODING
 from p4model.errors import (
@@ -34,18 +33,12 @@ class RowContext:
 
 
 def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encoding):
-    """(path, placement): the row's program, written into a private temp dir
-    and then moved atomically, so a crash never leaves a half-written
-    designs/<row_id>.p4 that the verifier would compile, and the
-    evaluation.TreeStagePlacement it was generated with.
-
-    placement.pins are the tree tables the model's own placement moved
-    (evaluation.tree_stage_placement, from the pool training priced; empty for
-    every encoding but per_tree): the generator writes each as @stage(n), so
-    p4c places it where the model did (spec 2026-11-11-packed-codes-stage-pin
-    Sec 4.3, 4.5). They are computed before the program, so a design the pool
-    refuses (NoSplitTree, ActionDataTooWide, PhvContainersExhausted) raises
-    here exactly as the generator would."""
+    """The row's program, written into a private temp dir and then moved
+    atomically, so a crash never leaves a half-written designs/<row_id>.p4 that
+    the verifier would compile. No @stage pins: since the crossbar port (spec
+    2026-11-13) the model moves no table for p4c to follow. A design the
+    per-tree pool refuses (NoSplitTree, ActionDataTooWide,
+    PhvContainersExhausted) raises from the generator."""
     # Deferred: feature_selection imports this module, so a top-level import
     # would be circular.
     from src.training.feature_selection import (
@@ -58,7 +51,6 @@ def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encodin
         # generator rebuilds the shared tables' union from them).
         intervals_app = _derive_feature_intervals(model_app, names_app)
         intervals_ddos = _derive_feature_intervals(model_ddos, names_ddos)
-    placement = tree_stage_placement(model_app, model_ddos, names_app, names_ddos, encoding)
     paths = run_paths(ctx.run_dir).ensure()
     scratch = tempfile.mkdtemp(prefix=row_id + '.', dir=paths.designs)
     try:
@@ -67,10 +59,10 @@ def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encodin
             feature_intervals_app=intervals_app, feature_intervals_ddos=intervals_ddos,
             output_dir=scratch + os.sep, output_filename=row_id + '.p4',
             selected_features_app=names_app, selected_features_ddos=names_ddos,
-            encoding=encoding, stage_pins=placement.pins)
+            encoding=encoding)
         final = os.path.join(paths.designs, row_id + '.p4')
         os.replace(written, final)
-        return final, placement
+        return final
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -100,19 +92,13 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
     (the alignment twins' `source_row_id` / `identical_to`); it may not
     override a computed key.
 
-    model.json records `stage_pins`, the {tree table: stage} the program was
-    generated with; `stage_pin_first_refusal`, {tree table: stage} for the same
-    tables, the first stage the 12-group rule refused each (spec 2026-11-11
-    Sec 4.3 assumes the pin is one stage later; a review fuzz found 26% two or
-    three later, so the gap is kept per design); and `unpinnable_tables`, the
-    sorted tree tables the rule moved but placed as several units, which no
-    @stage pin names (Plan Review Focus 3; [] when none). All three are None on
-    a generator-error row and empty for every encoding but per_tree.
-    `model_paths_differ` is
-    True when the replay of the program prices other numbers than training,
-    or when the program's @stage lines are not the tables its own placement
-    moves (the replay's `stage_pins_consistent`): p4c would then place the
-    program otherwise than the model did."""
+    model.json keeps the per-tree pin fields of spec 2026-11-11 so that every
+    run has one format: `stage_pins` and `stage_pin_first_refusal` ({}) and
+    `unpinnable_tables` ([]) are always empty since the crossbar port (spec
+    2026-11-13), None on a generator-error row. `model_paths_differ` is True
+    when the replay of the program prices other numbers than training, or
+    when the program carries @stage lines (the replay's
+    `stage_pins_consistent`), which the model no longer writes."""
     paths = run_paths(ctx.run_dir).ensure()
     budgeted = ctx.M != float('inf')
     model = {
@@ -130,7 +116,7 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
         'codeword_bits': int(usage.codeword_length),
     }
     try:
-        p4_path, placement = _generate(ctx, row_id, model_app, model_ddos,
+        p4_path = _generate(ctx, row_id, model_app, model_ddos,
                                        names_app, names_ddos, encoding)
     except (ValueError, ActionDataTooWide, NoSplitTree, PhvContainersExhausted,
             CodewordTooLong, CrossbarKeyTooWide) as exc:
@@ -139,8 +125,7 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
         # (train_model.objective), so selection should never reach one, but a
         # design that does is a generator_error row, not a crashed job.
         # CodewordTooLong and CrossbarKeyTooWide are caught the same way
-        # defensively: training refuses those designs before selection, so the
-        # pricing tree_stage_placement repeats cannot raise them today.
+        # defensively: training refuses those designs before selection.
         message = str(exc)
         atomic_write_text(os.path.join(paths.designs, row_id + '.generator_error.txt'),
                           message)
@@ -155,9 +140,9 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
             'stage_depth': replay['stage_depth'],
             'blocks': replay['blocks'],
             'tables': replay['tables'],
-            'stage_pins': dict(placement.pins),
-            'stage_pin_first_refusal': dict(placement.first_refusal),
-            'unpinnable_tables': list(placement.unpinnable),
+            'stage_pins': {},
+            'stage_pin_first_refusal': {},
+            'unpinnable_tables': [],
             'model_paths_differ': ((replay['stage_depth'], replay['blocks'])
                                    != (usage.stage_depth, usage.blocks)
                                    or not replay['stage_pins_consistent']),

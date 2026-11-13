@@ -9,7 +9,8 @@ from collections import namedtuple
 from dataclasses import dataclass, field
 
 from p4model.errors import CrossbarKeyTooWide
-from p4model.packing import _alone_blocks, crossbar_stages_needed
+from p4model.packing import (_alone_blocks, crossbar_stages_needed,
+                              packed_alone_blocks)
 from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
                                  VOTE_EPILOGUE_STAGES, feature_of_per_task_field,
                                  feature_of_per_tree_field)
@@ -429,13 +430,14 @@ def _key_bits(bits, keys):
 
 def _packed_price(program, name):
     """A packed tree table's price per 512-row block of entries: its key's
-    stand-alone price (spec 2026-11-11 Sec 5 rule 1), as evaluation._pool_inputs
-    charges it, and CrossbarKeyTooWide where training raises it (no lane fit)."""
+    stand-alone price (packing.packed_alone_blocks, p4c's crossbar allocation),
+    as evaluation._pool_inputs charges it, and CrossbarKeyTooWide where training
+    raises it (no allocation)."""
     key = tree_key_bytes(program, name)
-    price = lanes.standalone(list(key))
+    price = packed_alone_blocks(key)
     if price is None:
         raise CrossbarKeyTooWide(
-            "%s's key of %d bytes has no lane fit in a stage's crossbar groups"
+            "%s's key of %d bytes does not fit a stage's ternary crossbar"
             % (name, len(key)), len(key))
     return price
 
@@ -443,9 +445,9 @@ def _packed_price(program, name):
 def declared_prices(program):
     """The model's own per-table price for every priced table of a program
     (replay_program's pricing loop). A tree of a packed program (is_packed)
-    costs lanes.standalone of its tree_key_bytes, any other tree
-    lanes.table_blocks of its key bits; either times tree_entries_to_blocks
-    of its declared size."""
+    costs packing.packed_alone_blocks of its tree_key_bytes, any other tree
+    its key's price alone by its pinned containers (_field_price); either
+    times tree_entries_to_blocks of its declared size."""
     tables, bits, sizes = program.tables, program.bits, program.sizes
     packed_program = is_packed(program)
     blocks = {}
@@ -595,12 +597,11 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         return ReplayPlans(predicted, range_plan, ternary_plan, range_names,
                            ternary_names)
 
-    # The packed pool (spec 2026-11-11 Sec 4.3, 4.5, Sec 5 rule 2): placed by
-    # key_bytes and the 12-group rule exactly as usage.assemble_usage places
-    # it, which also gives the replay its OWN moved set (StagePlan.moved, at
-    # usage.moved_table_stages' stages). The program's @stage lines must be
-    # exactly that set, or the program and the model disagree on where the
-    # trees go: stage_pins_consistent says which.
+    # The packed pool, placed by key_bytes exactly as usage.assemble_usage
+    # places it. The model pins no table any more (the crossbar port, spec
+    # 2026-11-13), so a program with @stage lines -- one generated before the
+    # port, under spec 2026-11-11 Sec 4.3 -- is not one the model would write:
+    # stage_pins_consistent is False for it, and it is priced with its pins.
     def place(levels):
         return crossbar_stages_needed(
             ternary_specs, readiness_levels=levels, unavailable_stages=interior,
@@ -608,16 +609,11 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             placement_priority=priorities)
 
     ternary_plan = place(ternary_levels)
-    moved = {ternary_names[idx]: ternary_plan.table_stages[idx]
-             for idx in ternary_plan.moved}
-    consistent = program.stage_pins == moved
+    consistent = not program.stage_pins
     if program.stage_pins:
         # A pin is p4c's EARLIEST stage for its table (mau/table_placement.cpp:
-        # 2645, spec Sec 4.3), so the program is priced with each pin as a
-        # floor on that table's readiness. When the pins are the moved set this
-        # is the plan above unchanged (a moved table was refused in every
-        # stage before its pin, and a refusal changes nothing else); when they
-        # are not, it is what the program would cost, flagged inconsistent.
+        # 2645, spec 2026-11-11 Sec 4.3), so the program is priced with each pin
+        # as a floor on that table's readiness.
         ternary_plan = place([max(level, program.stage_pins.get(name, level))
                               for name, level in zip(ternary_names, ternary_levels)])
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
@@ -631,8 +627,8 @@ def model_breakdown(program, row_id=''):
     p4c's mau.resources.log is a name join, not a mapping. The model side of
     every campaign verdict (plan O3): the path the 60/60 calibration gate
     validates, and the one --rescore reruns from a saved program.
-    stage_pins_consistent: False when a packed program's @stage lines are not
-    the tables the replay's own placement moved (ReplayPlans), True otherwise
+    stage_pins_consistent: False when a packed program has @stage lines, which
+    the model no longer writes (ReplayPlans), True otherwise
     -- including every program that is not packed."""
     plans = replay_plans(row_id, program, declared_prices(program))
     tables = []

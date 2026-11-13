@@ -1,24 +1,21 @@
-"""Crossbar LANES: where a ternary key's bytes can physically sit, and what a key
-costs when it shares a stage with a key placed before it.
+"""Crossbar LANES and key LAYOUTS: how a ternary key's code fields sit in PHV
+containers, and the lane count that chooses that layout.
 
-tables.codeword_to_blocks (the LADDER) prices a key by its byte COUNT alone, as if it had the
-stage's whole ternary crossbar to itself. That is exact for the first key p4c
-places in a stage (it agrees with standalone() below on 74/74 real design
-keys), but a LATER key in the same stage gets only what the earlier keys left,
-and whether those leftovers can hold it depends on WHICH slots are free, not how
-many. This module models that, in three layers. `table_blocks` (below) is the
-production per-table price since 2026-10-04; the ladder is kept for alignment
-and key_layout.
+Since 2026-11-13 the price of a key -- alone (`table_blocks`) and in a shared
+stage (packing's stage simulation) -- is p4c's ternary crossbar allocation,
+ported (xbar.py). This module keeps what feeds it:
 
   1. Layout (`layout`, `relaxed_layout`, `key_layout`, `key_bytes`, `container_sizes`): each `code_*` field's
      PHV container layout, predicted from its bit width alone -- the model runs
      before any compile, so it has no PHV log. Audit Sec 7.4.
-  2. Lane price (`standalone`, `price_with_supply`): the smallest block count
-     whose crossbar slots can legally hold the key's bytes, by counting.
-     Audit Sec 7.2 and Appendix A.
-  3. Stage simulation (`stage_prices`): keys priced one at a time in placement
-     order, each later key into the leftovers of the ones before. Audit Sec
-     7.2 / 7.5, the "fullest-lane midbytes, lane-aware fill" row.
+  2. Lane count (`standalone`): the smallest block count whose crossbar slots
+     can legally hold the key's bytes, by counting. Audit Sec 7.2 and Appendix
+     A. It is no longer a price: `key_layout` compares it with the ladder to
+     choose the layout the generator pins, and pins must not change.
+  3. `table_blocks` / `key_fields`: the key's fields in that layout, priced by
+     xbar.alone_blocks. (The lane stage simulation -- `price_with_supply`,
+     `fit_with_supply`, `first_key_occupancy`, `later_key_occupancy`,
+     `stage_prices` -- was deleted 2026-11-13: the port replaced it.)
 
 THE LANE RULE (audit Appendix A.3). Every crossbar byte slot has a lane
 (`slot index mod 4`). Byte k of a 32-bit (W) container may sit only in a
@@ -29,9 +26,7 @@ its lanes) and 6 midbytes (`MID_LANES` gives each one's lane). A key of `g`
 blocks takes up to `g` groups, and the midbyte nibbles pair blocks: a key may
 use `w` whole midbytes and at most one extra nibble-only "tail" midbyte `t`
 when `2w + t + 1 <= g` -- the `+1` is the mandatory 2-bit version field's
-nibble. A later key's blocks are `max(groups used, 2w + t + 1)`: data nibbles
-beyond its groups become version-only blocks (dsp41: 4 groups + 3 whole
-midbytes -> 7, as p4c charged).
+nibble.
 
 A BYTE LIST is this module's key representation: one `(kind, k, nibble_only)`
 tuple per crossbar byte, `kind` in {'W', 'H', 'B'} (the container size), `k`
@@ -43,10 +38,7 @@ carries at most 4 live bits (it may then sit in a single midbyte nibble).
 no legal fit in the 12 groups/6 midbytes available.
 
 Ported from the audit's scratch scripts, `reviews/model_audit_scratch/`:
-`width_layout.py` (layer 1), `fastlane.py` (layer 2), `stage_sim_fast.py`
-(layer 3, with its module-global modes fixed to FIRST_MID='fullest',
-FILL='lane' -- the mode the audit's Sec 7.5 selected and `proto_model.py` runs
-end to end, 42/43 stage_depth and 38/38 blocks on the pragma'd arm-D compiles).
+`width_layout.py` (layer 1) and `fastlane.py` (layer 2).
 The width layout rule is p4c-version-specific: re-run the audit's
 `phv_layout_survey.py` after a compiler upgrade."""
 import collections
@@ -62,13 +54,11 @@ from p4model.tables import (
     codeword_to_blocks,
 )
 from p4model.target import (
-    TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE,
     TERNARY_CROSSBAR_GROUPS_PER_STAGE,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
 )
 
 _GROUPS = TERNARY_CROSSBAR_GROUPS_PER_STAGE       # 12
-_MIDBYTES = TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE  # 6
 _SLOTS_PER_GROUP = 5
 _LANES = 4
 
@@ -406,254 +396,3 @@ def standalone(byte_list):
   `tables.codeword_to_blocks` on 74/74 real design keys (from `key_bytes`)."""
   W, H, B = _counts(byte_list)
   return _standalone(W, H, B, _nibble_types(byte_list))
-
-
-def price_with_supply(byte_list, free_groups, free_mids):
-  """A key's LEFTOVER price: the cheapest lane-legal fit into a partly used
-  stage. (The scratch `fastlane.py` reserved this name for a generic
-  supply-driven price but left it unimplemented; the one supply-driven price
-  the audit validated is `stage_sim_fast._later_price`, ported here.)
-
-  free_groups : {group index: set of free slot positions 0..4} -- a partly
-                used group may be shared; groups absent or with an empty set
-                are unavailable.
-  free_mids   : set of free midbyte indices 0..5.
-
-  Any subset of groups with free slots may be used; whole bytes go in the
-  LOWEST-index free midbytes, at most one tail nibble in the next one;
-  blocks = max(groups used, 2w + t + 1). Returns the minimum such block count,
-  or `None` if the key cannot fit. "Lowest free midbyte" reproduces p4c on
-  133/133 keys in crowded stages given where the other keys actually landed
-  (audit Sec 7.2). The block count of `fit_with_supply`, which also says WHERE
-  the fit sits."""
-  fit = fit_with_supply(byte_list, free_groups, free_mids)
-  return None if fit is None else fit[0]
-
-
-def fit_with_supply(byte_list, free_groups, free_mids):
-  """price_with_supply's cheapest fit, and where it sits -- what a later key's
-  bookkeeping (later_key_occupancy) needs. Returns
-  `(blocks, groups, whole, tail, tail_class)`: the block count; the tuple of
-  group indices used; the tuple of midbytes holding a whole byte; the midbyte
-  holding the one tail nibble, or None; and the `(kind, lane-or-parity)` class
-  (see _nibble_types) of the byte in that nibble, or None. Among equally cheap
-  fits it is the FIRST one the search meets -- the fewest groups, then the
-  lowest group indices, then the fewest whole midbytes -- which is the order
-  price_with_supply has always searched in, so the price is unchanged.
-  `None` when the key cannot fit."""
-  c = _counts(byte_list)
-  n = len(byte_list)
-  nib_types = sorted(_nibble_types(byte_list))   # sorted: a fixed tie order, not the set's
-  cands = [g for g in range(_GROUPS) if free_groups.get(g)]
-  lanes = {g: collections.Counter((GROUP_START[g] + j) % _LANES for j in free_groups[g])
-           for g in cands}
-  mids = sorted(free_mids)
-  best = None
-  for gcount in range(1, len(cands) + 1):
-    if best is not None and gcount >= best[0]:
-      break
-    seen = set()
-    for S in itertools.combinations(cands, gcount):
-      sig = tuple(sorted(tuple(sorted(lanes[x].items())) for x in S))
-      if sig in seen:
-        continue
-      seen.add(sig)
-      s0 = [sum(lanes[x][l] for x in S) for l in range(_LANES)]
-      if sum(s0) + len(mids) < n:
-        continue
-      for w in range(0, len(mids) + 1):
-        s = list(s0)
-        for m in mids[:w]:
-          s[MID_LANES[m]] += 1
-        blocks = max(gcount, 2 * w + 1)
-        if (best is None or blocks < best[0]) and _fits(c, s):
-          best = (blocks, S, tuple(mids[:w]), None, None)
-        if w < len(mids):  # plus one tail nibble, in the next lowest midbyte only
-          # (Widening this to "the lowest free midbyte the nibble's lane
-          # allows" was tried 2026-11-06 and rejected: it matches p4c's tail
-          # choice more often -- 151 vs 109 of 191 later keys in the per-tree
-          # dev set -- but makes the model a better optimiser than p4c, which
-          # takes groups greedily and then pays a whole midbyte; three designs
-          # went under. See results/encoding_evidence_2026_11/per_tree_model/.)
-          tl = MID_LANES[mids[w]]
-          for kind, lp in nib_types:
-            if not _tail_allowed(kind, lp, tl):
-              continue
-            c2 = _remove_one(c, kind, lp)
-            blocks = max(gcount, 2 * w + 2)
-            if (best is None or blocks < best[0]) and _fits(c2, s):
-              best = (blocks, S, tuple(mids[:w]), mids[w], (kind, lp))
-  return best
-
-
-# --------------------------------------------------------------------------
-# Layer 3: the stage simulation (stage_sim_fast.py, FIRST_MID='fullest',
-# FILL='lane' -- audit Sec 7.5's selected row: probes 334 exact / 0 under /
-# 2 over of 336 keys, 0 under on every real design set)
-# --------------------------------------------------------------------------
-
-def first_key_occupancy(byte_list, g):
-  """What the FIRST key in a stage, priced at `g` blocks, leaves free.
-
-  Midbytes first (p4c allocates them before groups): `(g - 1) // 2` whole
-  midbytes, each the free one whose lane has the most unplaced key bytes, ties
-  to the lowest index ("fullest-lane", p4c's `allocate_mid_bytes`). Then
-  groups 0..g-1, filled lane by lane: each slot takes an unplaced byte that
-  may sit in its lane (W of that lane, else H of its parity, else B), and a
-  slot no remaining byte can use stays free ("lane-aware fill").
-
-  Known and deliberately NOT modelled (2026-11-06, results/
-  encoding_evidence_2026_11/per_tree_model/report.md): p4c puts a first key's
-  nibble-only byte into a midbyte nibble whenever its price leaves one free
-  (241 of 241 first keys at even prices in the per-tree dev set), where this
-  fill puts it in a group slot. Modelling that alone over-prices the NEXT key
-  (price_with_supply's tail may only take the next lowest midbyte, and that
-  one is now taken), and widening the tail's midbyte choice to match makes the
-  model a better optimiser than p4c and under-prices keys p4c allocates
-  greedily (M035_s13_k03). The two coincident simplifications are kept
-  together; the residual +-1 misses are listed there as accepted.
-
-  Returns `(free_groups, free_mids)` in `price_with_supply`'s format."""
-  free = {grp: set(range(_SLOTS_PER_GROUP)) for grp in range(_GROUPS)}
-  W, H, B = _counts(byte_list)
-  W, H, Bc = list(W), list(H), [B]
-
-  def take(lane):
-    if W[lane] > 0:
-      W[lane] -= 1
-      return True
-    if H[lane % 2] > 0:
-      H[lane % 2] -= 1
-      return True
-    if Bc[0] > 0:
-      Bc[0] -= 1
-      return True
-    return False
-
-  mids = []
-  avail = list(range(_MIDBYTES))
-  for _ in range((g - 1) // 2):
-    m = max(avail, key=lambda m: (W[MID_LANES[m]] + H[MID_LANES[m] % 2] + Bc[0], -m))
-    avail.remove(m)
-    mids.append(m)
-    take(MID_LANES[m])
-  for grp in range(min(g, _GROUPS)):
-    for j in range(_SLOTS_PER_GROUP):
-      if take((GROUP_START[grp] + j) % _LANES):
-        free[grp].discard(j)
-  return free, set(range(_MIDBYTES)) - set(mids)
-
-
-def stage_prices(keys_bytes, order=None):
-  """Price every DISTINCT key sharing one stage, p4c-style, one at a time.
-
-  keys_bytes : list of byte lists, one per distinct key (`key_bytes`).
-  order      : placement order, a sequence of indices into keys_bytes
-               (default: list order). The first placed key pays its
-               `standalone` price and occupies its midbytes and groups as
-               `first_key_occupancy` says; each later key pays the price of
-               its `fit_with_supply` into what is left, then occupies the
-               slots of that fit (`later_key_occupancy`).
-
-  Returns {key index: blocks per 512-row table word, or None}. `None` means
-  the key has no legal fit in that stage; once one key has no price, every
-  key after it has none either (the scratch simulation's 99 sentinel consumed
-  the whole crossbar, with the same effect). A caller should treat any `None`
-  as "this stage does not fit"."""
-  if order is None:
-    order = range(len(keys_bytes))
-  free = {g: set(range(_SLOTS_PER_GROUP)) for g in range(_GROUPS)}
-  free_mids = set(range(_MIDBYTES))
-  prices = {}
-  exhausted = False
-  for pos, k in enumerate(order):
-    kb = keys_bytes[k]
-    if exhausted:
-      prices[k] = None
-      continue
-    if pos == 0:
-      g = standalone(kb)
-      prices[k] = g
-      if g is None:
-        exhausted = True
-        continue
-      free, free_mids = first_key_occupancy(kb, g)
-      continue
-    fit = fit_with_supply(kb, free, free_mids)
-    if fit is None:
-      prices[k] = None
-      exhausted = True
-      continue
-    prices[k] = fit[0]
-    free, free_mids = later_key_occupancy(kb, free, free_mids, fit)
-  return prices
-
-
-def later_key_occupancy(byte_list, free_groups, free_mids, fit):
-  """What a LATER key leaves free: everything but the slots its fit takes
-  (stage_prices' bookkeeping, split out so packing.crossbar_stages_needed can
-  run the same simulation with the first key charged its production price).
-
-  THE RULE (2026-11-06). A later key occupies only the crossbar slots its
-  bytes need: the midbytes its fit used, and in the groups its fit chose one
-  lane-legal slot per remaining byte, filled in slot order exactly as
-  first_key_occupancy fills the first key's groups. The slots it leaves free
-  in a group it shares stay available to the keys placed after it.
-
-  Read from p4c's own assembly (prog.bfa) over the per-tree dev set
-  (results/encoding_evidence_2026_11/per_tree_model/step1/): 50 of 359 later
-  tree keys under per-tree codes, and 177 of 351 under per-task codes, hold a
-  crossbar group that an earlier table of the same stage also holds -- groups
-  are shared, not consumed whole -- and every one of the 1120 trees' committed
-  block counts equals max(groups, 2*whole + tail + 1), the price this fit is
-  built on. Before this the function consumed, whole, the first `price`
-  groups with a free slot and the lowest (price - 1) // 2 midbytes, which
-  over-stated what the THIRD and later keys of a stage had left: 9 of the 18
-  missed per-tree designs, and every "no lane fit" refusal in a stage p4c
-  had filled, came from that. Nothing reads this ledger after a stage's last
-  key, so a stage of one or two keys -- every one-code design, every per-task
-  stage of the campaigns -- is priced exactly as before.
-
-  `fit` is fit_with_supply's result for `byte_list` on (free_groups,
-  free_mids). Returns new `(free_groups, free_mids)`; the arguments are not
-  modified."""
-  _blocks, groups, whole, tail, tail_class = fit
-  free = {grp: set(slots) for grp, slots in free_groups.items()}
-  W, H, B = _counts(byte_list)
-  W, H, Bc = list(W), list(H), [B]
-
-  def take(lane):
-    if W[lane] > 0:
-      W[lane] -= 1
-      return True
-    if H[lane % 2] > 0:
-      H[lane % 2] -= 1
-      return True
-    if Bc[0] > 0:
-      Bc[0] -= 1
-      return True
-    return False
-
-  if tail is not None:
-    kind, lp = tail_class
-    if kind == 'W':
-      W[lp] -= 1
-    elif kind == 'H':
-      H[lp] -= 1
-    else:
-      Bc[0] -= 1
-  for m in whole:
-    take(MID_LANES[m])
-  for grp in groups:
-    for j in sorted(free[grp]):
-      if take((GROUP_START[grp] + j) % _LANES):
-        free[grp].discard(j)
-  # Unreachable with a fit made on these very slots (Hall's condition on the
-  # chosen supply guarantees the lane-wise fill places every byte); a stale
-  # fit can then only over-state the key's use, never under-state it.
-  left = sum(W) + sum(H) + Bc[0]
-  for grp in groups:
-    while left > 0 and free[grp]:
-      free[grp].pop()
-      left -= 1
-  return free, set(free_mids) - set(whole) - ({tail} if tail is not None else set())

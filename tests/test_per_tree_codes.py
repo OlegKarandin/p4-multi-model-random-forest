@@ -590,8 +590,8 @@ def _stage_lines(text):
 
 
 def test_the_row_writer_writes_no_stage_pin(tmp_path):
-  """Since the crossbar simulation (spec 2026-11-13) no table is moved for the model, so the row writer
-  computes empty pins and the program carries no @stage line."""
+  """Since the crossbar simulation (spec 2026-11-13) no table is moved for the model: the program carries
+  no @stage line and model.json's pin fields (kept for one format across runs) are empty."""
   from src.training import row_artifacts as ra
   app, ddos, names = _rng_design(3)
   usage = _evaluate(app, ddos, names)
@@ -606,31 +606,8 @@ def test_the_row_writer_writes_no_stage_pin(tmp_path):
   assert stored["stage_pin_first_refusal"] == {} and stored["unpinnable_tables"] == []
 
 
-def test_the_row_writer_records_unpinnable_tables(tmp_path, monkeypatch):
-  """Plan Review Focus 3: a moved table placed as several units gets no pin and is reported in
-  model.json's unpinnable_tables. Construction: the real placement with one table reported
-  unpinnable (tests/test_packed_placement.py builds such a table at the packer level)."""
-  from p4gen import evaluation
-  from src.training import row_artifacts as ra
-  real = ra.tree_stage_placement
-
-  def with_unpinnable(*args, **kwargs):
-    return real(*args, **kwargs)._replace(unpinnable=["get_classification_tree_ddos_0"])
-
-  monkeypatch.setattr(ra, "tree_stage_placement", with_unpinnable)
-  app, ddos, names = _rng_design(3)
-  usage = _evaluate(app, ddos, names)
-  ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
-  row = "joint-tree_M035_s00_k05"
-  model = ra.write_row_artifacts(ctx, row, app, ddos, names, names, PER_TREE_ENCODING, usage)
-  stored = json.loads((tmp_path / "designs" / (row + ".model.json")).read_text(encoding="utf-8"))
-  assert stored["unpinnable_tables"] == model["unpinnable_tables"] == ["get_classification_tree_ddos_0"]
-  assert isinstance(evaluation.tree_stage_placement(app, ddos, names, names, PER_TREE_ENCODING),
-                    evaluation.TreeStagePlacement)
-
-
 @pytest.mark.parametrize("error", ["CodewordTooLong", "CrossbarKeyTooWide"])
-def test_a_pricing_refusal_while_pinning_is_a_generator_error_row(tmp_path, monkeypatch, error):
+def test_a_pricing_refusal_while_generating_is_a_generator_error_row(tmp_path, monkeypatch, error):
   """Defensive (unreachable today: training refuses these designs before selection)."""
   from p4model import errors
   from src.training import row_artifacts as ra
@@ -638,7 +615,7 @@ def test_a_pricing_refusal_while_pinning_is_a_generator_error_row(tmp_path, monk
   def refuse(*args, **kwargs):
     raise getattr(errors, error)("refused for the test", 99)
 
-  monkeypatch.setattr(ra, "tree_stage_placement", refuse)
+  monkeypatch.setattr(ra, "generate_P4_code", refuse)
   app, ddos, names = _rng_design(3)
   row, model = _generator_error_row(tmp_path, app, ddos, names)
   assert "refused for the test" in model["generator_error"]

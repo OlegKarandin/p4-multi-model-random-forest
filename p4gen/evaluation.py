@@ -5,7 +5,6 @@
 # p4model/ (see the shim block below) and is import-light -- no sklearn,
 # no numpy, no CWD dependence.
 # ---------------------------------------------------------------------------
-import collections
 
 import sklearn.metrics as mt
 from p4gen.build_p4_script import (
@@ -48,7 +47,7 @@ from p4gen.build_p4_script import (
 #                                            reader inside the model
 #   most_common_class_and_dropped_codewords   -- codegen policy, not physics
 # ---------------------------------------------------------------------------
-from p4model.usage import ResourceUsage, assemble_usage, moved_table_stages
+from p4model.usage import ResourceUsage, assemble_usage
 from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from p4model.target import (
     CODEWORD_KEY_OVERHEAD_BITS,
@@ -80,6 +79,7 @@ from p4model.packing import (
     _stage_shards,
     crossbar_stages_needed,
     fits_two_columns,
+    packed_alone_blocks,
 )
 from p4model.ranges import (
     compiler_range_rows,
@@ -462,10 +462,10 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       ternary_entries += entries
       # Independent keys, as under 'disjoint': see ResourceUsage.codeword_length.
       codeword_length = max(codeword_length, length)
-      price = lanes.standalone(list(key))
+      price = packed_alone_blocks(key)
       if price is None:
         raise CrossbarKeyTooWide(
-            "tree %s_%d's key of %d bytes has no lane fit in a stage's crossbar groups"
+            "tree %s_%d's key of %d bytes does not fit a stage's ternary crossbar"
             % (task, index, len(key)), len(key))
       ternary_table_specs.append((price * tree_entries_to_blocks(entries), len(key)))
       ternary_key_bytes.append(key)
@@ -655,55 +655,6 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     pool["tree_reads"] = tree_reads
     pool["ternary_key_bytes"] = ternary_key_bytes
   return pool
-
-
-TreeStagePlacement = collections.namedtuple(
-    "TreeStagePlacement", ["pins", "first_refusal", "unpinnable"])
-TreeStagePlacement.__doc__ = """tree_stage_placement's result, every table named
-  "get_classification_tree_<task>_<i>" as the generator names it:
-  pins          -- {table: stage}, the @stage(n) the generator writes (tree_stage_pins);
-  first_refusal -- {table: stage} for the same tables, the first stage the 12-group
-                   rule refused it (StagePlan.first_refused): spec 2026-11-11 Sec 4.3
-                   assumes pin == first refusal + 1, which a review fuzz found false
-                   for 26% of moved tables, so the gap is recorded per design;
-  unpinnable    -- sorted table names the rule moved but placed as several units
-                   (StagePlan.unpinnable): no single @stage names where they went, so
-                   p4c may place them otherwise than the model did."""
-
-
-def tree_stage_placement(clf_app, clf_ddos, selected_features_app, selected_features_ddos,
-                         encoding, use_default_action_discount=False):
-  """TreeStagePlacement of the tree tables the packed pool's 12-group rule moved
-  (spec 2026-11-11 Sec 4.3, Plan Review Focus 3): the pins, each pinned table's
-  first-refusal stage, and the moved tables no pin can name. Empty for every
-  encoding but per_tree. Stages are the plan's 0-based absolute pipeline stages
-  (usage.moved_table_stages), p4c's own numbering."""
-  if encoding != PER_TREE_ENCODING:
-    return TreeStagePlacement({}, {}, [])
-  pool = _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddos,
-                      encoding, use_default_action_discount=use_default_action_discount)
-  _, _, ternary_plan = assemble_usage(pool)
-  seen, names = {}, []
-  for task in pool["ternary_task"]:
-    names.append("get_classification_tree_%s_%d" % (task, seen.get(task, 0)))
-    seen[task] = seen.get(task, 0) + 1
-  return TreeStagePlacement(
-      {names[idx]: stage for idx, stage in moved_table_stages(ternary_plan).items()},
-      {names[idx]: stage for idx, stage in ternary_plan.first_refused},
-      sorted(names[idx] for idx in ternary_plan.unpinnable))
-
-
-def tree_stage_pins(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
-                    use_default_action_discount=False):
-  """{"get_classification_tree_<task>_<i>": stage} for the tables the packed pool's
-  12-group rule moved (spec 2026-11-11 Sec 4.3): the generator emits each as
-  @stage(n), so p4c places it where the model did. {} for every encoding but
-  per_tree. Stages are the plan's 0-based absolute pipeline stages (usage.
-  moved_table_stages); a table placed as several units (StagePlan.unpinnable) gets
-  no pin -- tree_stage_placement names those, with each pin's first-refusal stage."""
-  return tree_stage_placement(clf_app, clf_ddos, selected_features_app,
-                              selected_features_ddos, encoding,
-                              use_default_action_discount=use_default_action_discount).pins
 
 
 def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,

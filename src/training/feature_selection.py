@@ -110,12 +110,7 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
 
     encoding == 'per_task' or 'per_tree': each model's OWN intervals too, with
     `encoding` passed through (`resolve_per_task_plan` / `resolve_per_tree_plan`).
-    'per_tree' also gets the @stage pins of the tree tables the model's
-    placement moved (`evaluation.tree_stage_pins`, from the same forests and
-    names and `config.use_default_action_discount`, as
-    `row_artifacts._generate` does): without them p4c would not place the
-    validated program where the model did (spec 2026-11-11 Sec 4.3, 4.5).
-    Every other encoding gets {} (no pins).
+    No encoding gets @stage pins (the crossbar port, spec 2026-11-13).
 
     config: forwarded verbatim to `generate_P4_code` in both branches, so
     `P4GenConfig.match_type` / `use_default_action_discount` actually take
@@ -132,7 +127,6 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
 
     from p4gen.p4_compile import compile_p4_async
     from p4gen.build_p4_script import generate_P4_code
-    from p4gen.evaluation import tree_stage_pins
 
     if encoding == 'joint':
         feature_intervals = _derive_joint_feature_intervals(
@@ -147,11 +141,6 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
 
     filename = f"split{split_idx}_{method}_k{k}.p4"
     try:
-        # Inside the try: the pins price the per-tree pool, which raises the same
-        # per-tree refusals the generator does.
-        stage_pins = tree_stage_pins(
-            model_app, model_ddos, feature_names_app, feature_names_ddos, encoding,
-            use_default_action_discount=bool(config and config.use_default_action_discount))
         written_path = generate_P4_code(
             3, 2, model_app, model_ddos,
             feature_intervals_app=feature_intervals_app,
@@ -159,7 +148,7 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             output_dir=hardware_output_dir, output_filename=filename,
             selected_features_app=feature_names_app,
             selected_features_ddos=feature_names_ddos,
-            config=config, encoding=encoding, stage_pins=stage_pins)
+            config=config, encoding=encoding)
     except (ValueError, ActionDataTooWide, NoSplitTree, PhvContainersExhausted) as e:
         # The three per-tree refusals (a RuntimeError each, p4model.errors) are
         # caught with it, as row_artifacts._generate does: an unbuildable design

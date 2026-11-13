@@ -9,7 +9,7 @@ from p4model import lanes, packed, packing, tables
 from p4model.errors import CrossbarKeyTooWide
 from p4model.program import (APP_TASK, DDOS_TASK, DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING,
                              PER_TREE_ENCODING)
-from p4model.usage import assemble_usage, moved_table_stages
+from p4model.usage import assemble_usage
 
 from tests.test_per_task_codes import _rng_design
 
@@ -36,7 +36,7 @@ def test_the_per_tree_pool_carries_each_trees_key_bytes_and_stand_alone_blocks()
   assert (len(pool["ternary_key_bytes"]) == len(pool["ternary_table_specs"])
           == len(app.estimators_) + len(ddos.estimators_))
   for key, (blocks, width) in zip(pool["ternary_key_bytes"], pool["ternary_table_specs"]):
-    assert width == len(key) and blocks % lanes.standalone(list(key)) == 0
+    assert width == len(key) and blocks % packing.packed_alone_blocks(tuple(key)) == 0
   # blocks == stand-alone price * row blocks of the tree's entries
   entries = [evaluation.ternary_matching_resource_usage(
                  evaluation.generate_codewords(evaluation.get_root_to_leaf_paths({0: nodes}), iv), iv)[0]
@@ -45,7 +45,7 @@ def test_the_per_tree_pool_carries_each_trees_key_bytes_and_stand_alone_blocks()
              for iv in [{f: i for f, i in evaluation.feature_intervals_from_nodes({0: nodes}).items()
                          if len(i) >= 2}]]
   for key, (blocks, _), count in zip(pool["ternary_key_bytes"], pool["ternary_table_specs"], entries):
-    assert blocks == lanes.standalone(list(key)) * tables.tree_entries_to_blocks(count)
+    assert blocks == packing.packed_alone_blocks(tuple(key)) * tables.tree_entries_to_blocks(count)
 
 
 def test_usage_charges_the_sum_of_the_tables_own_blocks():
@@ -53,35 +53,6 @@ def test_usage_charges_the_sum_of_the_tables_own_blocks():
   pool = evaluation._pool_inputs(app, ddos, names, names, PER_TREE_ENCODING)
   usage, _, ternary_plan = assemble_usage(pool)
   assert ternary_plan.blocks == sum(blocks for blocks, _ in pool["ternary_table_specs"])
-
-
-@pytest.mark.parametrize("seed", range(6))
-def test_no_tree_is_moved_or_pinned(seed):
-  # the crossbar simulation (packing._packed_stage_test) refuses a tree only where p4c would not place it
-  # either, so the placement never moves a table for the model's sake and the generator writes no @stage
-  app, ddos, names = _rng_design(seed)
-  pool = evaluation._pool_inputs(app, ddos, names, names, PER_TREE_ENCODING)
-  _, _, plan = assemble_usage(pool)
-  assert plan.moved == () and plan.unpinnable == () and plan.first_refused == ()
-  assert evaluation.tree_stage_pins(app, ddos, names, names, PER_TREE_ENCODING) == {}
-  assert evaluation.tree_stage_placement(app, ddos, names, names, PER_TREE_ENCODING) == ({}, {}, [])
-
-
-def test_tree_stage_placement_names_the_unpinnable_tables(monkeypatch):
-  # Construction: the real plan with index 0 (the first app tree) reported unpinnable, as a table
-  # moved and placed as several units would be (tests/test_packed_placement.py builds one).
-  import dataclasses
-  real = evaluation.assemble_usage
-
-  def with_unpinnable(pool):
-    usage, range_plan, ternary_plan = real(pool)
-    return usage, range_plan, dataclasses.replace(ternary_plan, unpinnable=(0,))
-
-  monkeypatch.setattr(evaluation, "assemble_usage", with_unpinnable)
-  app, ddos, names = _rng_design(3)
-  placement = evaluation.tree_stage_placement(app, ddos, names, names, PER_TREE_ENCODING)
-  assert placement.unpinnable == ["get_classification_tree_app_0"]
-  assert "get_classification_tree_app_0" not in placement.pins
 
 
 def test_a_key_the_old_unpacked_layout_cannot_place_is_priced_not_refused(monkeypatch):

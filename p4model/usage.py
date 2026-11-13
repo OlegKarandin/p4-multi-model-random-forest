@@ -212,13 +212,6 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
   return levels
 
 
-def moved_table_stages(plan):
-  """{table index: stage} for the tables the 12-group rule moved (StagePlan.moved):
-  the stages the generator pins with @stage (spec 2026-11-11 Sec 4.3). Stages are
-  the plan's 0-based absolute pipeline stages, which are p4c's own numbering."""
-  return {idx: plan.table_stages[idx] for idx in plan.moved}
-
-
 def assemble_usage(pool):
   """Pack both pools and assemble the ResourceUsage.
 

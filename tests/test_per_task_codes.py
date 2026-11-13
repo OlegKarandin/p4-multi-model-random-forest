@@ -456,16 +456,14 @@ def _two_key_plan(bytes_a, bytes_b):
                                   placement_priority=[1, 2])
 
 
-def test_a_pair_past_66_bytes_always_splits_and_a_pair_within_is_up_to_the_lanes():
+def test_a_pair_past_66_bytes_always_splits_and_a_pair_within_may_share():
+    # A stage's ternary crossbar has 12 groups x 5 byte slots + 6 midbytes = 66.
+    # p4c's allocation (the port, xbar.py) fits 33 + 33 bytes into exactly those
+    # 66 slots at 7 blocks each, and refuses one byte more.
     assert _two_key_plan(33, 34).occupied == 2
-    # Below the limit the byte check says nothing: this pair fits one stage.
     assert _two_key_plan(16, 16).occupied == 1
-    # 65-66 bytes: the check no longer refuses, so the plan is the lane fit's, which
-    # either prices both keys or refuses the second one (a real rise).
-    a, b = [8 * 33], [8 * 33]
-    free, mids = lanes.first_key_occupancy(lanes.key_bytes(a), lanes.table_blocks(a))
-    fits = lanes.price_with_supply(lanes.key_bytes(b), free, mids) is not None
-    assert _two_key_plan(33, 33).occupied == (1 if fits else 2)
+    both = _two_key_plan(33, 33)
+    assert (both.occupied, both.table_blocks) == (1, (7, 7))
 
 
 # --- the arm ------------------------------------------------------------------

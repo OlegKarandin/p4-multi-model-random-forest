@@ -1,17 +1,13 @@
 """p4model/lanes.py: the crossbar lane model (audit
 reviews/model_audit_2026-09-27.md Sec 7.2-7.5), ported from the audit's scratch
-scripts width_layout.py / fastlane.py / stage_sim_fast.py.
+scripts width_layout.py / fastlane.py (its stage simulation, from
+stage_sim_fast.py, was deleted 2026-11-13: xbar.py prices shared stages).
 
 Every number pinned here was OBSERVED in a real p4c compile, not derived:
 
   * w019 / w027 -- results/tcam_phv_slice_sweep.csv (field widths (19, 64) and
     (27, 56), real_blocks 2 and 3); the tables.tail_is_isolatable docstring
     walks through why they differ.
-  * dsp41 -- results/tcam_discount_scan.csv / crowded_stages.csv: a 41-byte
-    spacer key (328,) placed first (crossbar groups 0-7, 8 blocks) and the
-    (84, 84) key second in the same stage, which p4c charged 7 blocks although
-    the ladder prices it at 5 alone (the lane model: 4 under the pinned fill-low layout; the dsp probes
-    were compiled WITHOUT pins, where p4c splits each 84-bit field W24-low and charges 5).
   * REAL_DESIGN_KEYS -- every distinct classification-tree key (field bit
     widths) in the real design compiles results/compiler_calibration_v6,
     results/compiler_calibration_extra, results/tcam_margin_screen and the
@@ -21,15 +17,12 @@ Every number pinned here was OBSERVED in a real p4c compile, not derived:
 
 The port was also checked against the scratch code itself (not committed; the
 scratch directory is untracked): layout/relaxed_layout for w in 0..329,
-key_bytes and standalone on 1679 keys, stage_prices on 1611 random 2-4 key
-stages in random order, price_with_supply on 2000 random supplies -- 0
-differences, 99 read as None.
+key_bytes and standalone on 1679 keys -- 0 differences, 99 read as None.
 """
 import pytest
 
 from p4model import lanes
 from p4model.tables import codeword_to_blocks
-from p4model.target import TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE
 
 
 REAL_DESIGN_KEYS = (
@@ -131,18 +124,6 @@ def test_w019_costs_two_blocks():
 
 def test_w027_costs_three_blocks():
   assert _price((27, 56)) == 3
-
-
-def test_dsp41_second_key_pays_seven_beside_a_41_byte_spacer():
-  """The (84, 84) key costs 4 alone in the lane model under the fill-low
-  layout (ladder: 5). The only compiles of it, dsp01-dsp10 in
-  results/tcam_discount_scan.csv, are PRE-PIN and show 5, so the standalone
-  value is unverified on a pinned program (spec 2026-10-04 decision 6). The
-  crowded-stage price p4c charged, 7, is unchanged."""
-  spacer, key = lanes.key_bytes((328,)), lanes.key_bytes((84, 84))
-  assert lanes.standalone(key) == 4
-  assert codeword_to_blocks((84, 84)) == 5
-  assert lanes.stage_prices([spacer, key], (0, 1)) == {0: 8, 1: 7}
 
 
 # -------------------------------------------------- against the production price
@@ -384,89 +365,13 @@ def test_unpriceable_key_is_none():
   assert lanes.standalone(lanes.key_bytes((600,))) is None
 
 
-def test_no_price_propagates_to_every_later_key():
-  huge, small = lanes.key_bytes((600,)), lanes.key_bytes((8,))
-  assert lanes.stage_prices([huge, small]) == {0: None, 1: None}
-  full = lanes.key_bytes((477,))
-  prices = lanes.stage_prices([full, lanes.key_bytes((200,)), small])
-  assert prices[0] == codeword_to_blocks((477,))
-  assert prices[1] is None and prices[2] is None
+# ------------------------------------------- the lane stage simulation is gone
 
-
-def test_price_with_supply_on_an_exhausted_crossbar_is_none():
-  assert lanes.price_with_supply(lanes.key_bytes((8,)), {}, set()) is None
-
-
-# ---------------------------------------------------------------- simulation
-
-def test_first_key_price_is_its_standalone_price():
-  for widths in REAL_DESIGN_KEYS[:10]:
-    kb = lanes.key_bytes(widths)
-    assert lanes.stage_prices([kb, lanes.key_bytes((8,))])[0] == lanes.standalone(kb)
-
-
-def test_order_decides_who_pays():
-  spacer, key = lanes.key_bytes((328,)), lanes.key_bytes((84, 84))
-  prices = lanes.stage_prices([spacer, key], (1, 0))
-  assert prices[1] == 4          # (84, 84) first: its standalone price (fill-low layout)
-  assert prices[0] == 8          # the spacer behind it still pays 8
-
-
-def test_first_key_occupancy_uses_fullest_lane_midbytes():
-  """(84, 84) at 5 blocks takes (5 - 1) // 2 = 2 whole midbytes."""
-  key = lanes.key_bytes((84, 84))
-  free, free_mids = lanes.first_key_occupancy(key, 5)
-  assert len(free_mids) == TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE - 2
-  assert all(free[g] == set(range(5)) for g in range(5, 12))
-
-
-def test_no_module_level_mode_flags_remain():
-  for name in ('FILL', 'FIRST_MID'):
+def test_the_lane_stage_simulation_is_deleted():
+  # 2026-11-13: p4c's crossbar allocation (xbar.py) prices shared stages.
+  for name in ('FILL', 'FIRST_MID', 'stage_prices', 'price_with_supply',
+               'fit_with_supply', 'first_key_occupancy', 'later_key_occupancy'):
     assert not hasattr(lanes, name)
-
-
-def test_later_key_occupancy_takes_only_the_slots_of_its_fit():
-  # stage_prices' later-key bookkeeping, split out for packing's simulation
-  # (rule of 2026-11-06, read from prog.bfa: groups are shared between the
-  # tables of a stage, not consumed whole). Three 8-bit bytes fit the lowest
-  # free group at 1 block and take three of its five slots; the other two,
-  # every other group and every midbyte stay free. The inputs are untouched.
-  free = {g: set(range(5)) for g in range(12)}
-  free[0] = set()
-  mids = {1, 2, 4, 5}
-  key = lanes.key_bytes((8, 8, 8))
-  fit = lanes.fit_with_supply(key, free, mids)
-  assert fit == (1, (1,), (), None, None)
-  new_free, new_mids = lanes.later_key_occupancy(key, free, mids, fit)
-  assert new_free[1] == {3, 4}
-  assert all(new_free[g] == set(range(5)) for g in range(2, 12))
-  assert new_mids == {1, 2, 4, 5}
-  assert free[1] == set(range(5)) and mids == {1, 2, 4, 5}
-
-
-def test_later_key_occupancy_takes_the_midbytes_of_its_fit():
-  # Seven lane-free bytes into one free group of five slots need two more:
-  # the two lowest free midbytes (whole bytes go in the lowest-index free
-  # midbytes), giving max(1, 2w + 1) = 5 blocks. The key occupies exactly
-  # those two midbytes and the group's five slots; the other four midbytes
-  # stay free.
-  free = {g: set() for g in range(12)}
-  free[0] = set(range(5))
-  mids = set(range(6))
-  key = lanes.key_bytes((8,) * 7)
-  fit = lanes.fit_with_supply(key, free, mids)
-  assert fit == (5, (0,), (0, 1), None, None)
-  new_free, new_mids = lanes.later_key_occupancy(key, free, mids, fit)
-  assert new_free[0] == set()
-  assert new_mids == {2, 3, 4, 5}
-
-
-def test_price_with_supply_is_the_fit_price():
-  free = {g: set(range(5)) for g in range(12)}
-  for widths in REAL_DESIGN_KEYS[:20]:
-    kb = lanes.key_bytes(widths)
-    fit = lanes.fit_with_supply(kb, free, set(range(6)))
-    assert lanes.price_with_supply(kb, free, set(range(6))) == fit[0]
 
 
 # ------------------------------------------------ table_blocks (spec 2026-10-04)

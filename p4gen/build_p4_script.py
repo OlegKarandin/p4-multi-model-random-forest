@@ -1830,8 +1830,9 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
 
   stage_pins: {tree table name: stage} or None (the same as {}). Each named
     table gets `@stage(<stage>)` directly above its @placement_priority line,
-    the stage as given (the model's 0-based absolute pipeline stage,
-    evaluation.tree_stage_pins; spec 2026-11-11 Sec 4.3/4.5). Only the
+    the stage as given (a 0-based absolute pipeline stage; spec 2026-11-11
+    Sec 4.3/4.5). Since the crossbar port (spec 2026-11-13) the model writes no
+    pins; this stays to regenerate archived pinned programs. Only the
     per-tree program takes pins: ValueError for a non-empty stage_pins under
     another encoding, or a name that is not a tree table of the program.
 

@@ -40,11 +40,6 @@ def _layout(seed):
   return bps.per_tree_layout(table_plan, own, specs)
 
 
-def _pins(seed):
-  app, ddos, names = _rng_design(seed)
-  return evaluation.tree_stage_pins(app, ddos, names, names, PER_TREE_ENCODING)
-
-
 @pytest.mark.parametrize("seed", range(6))
 def test_replay_rebuilds_the_layouts_key_bytes_from_the_text(tmp_path, seed):
   program = parse_program_text(_generate(tmp_path, seed))
@@ -75,15 +70,14 @@ def test_the_program_parses_into_containers_slices_and_pins(tmp_path):
 def test_training_prices_exactly_what_the_generated_program_replays(tmp_path, seed):
   app, ddos, names = _rng_design(seed)
   usage = evaluation.multi_model_memory_evaluation(app, ddos, names, names, PER_TREE_ENCODING)
-  pins = _pins(seed)
-  replay = model_breakdown(parse_program_text(_generate(tmp_path, seed, stage_pins=pins)))
+  replay = model_breakdown(parse_program_text(_generate(tmp_path, seed)))
   assert (replay["stage_depth"], replay["blocks"]) == (usage.stage_depth, usage.blocks)
   assert replay["stage_pins_consistent"] is True
 
 
-def test_a_program_whose_pins_disagree_with_the_model_is_flagged(tmp_path):
-  # Review Focus 4: app_0 is not a moved table (seed 3 moves none), yet the program pins it.
-  assert _pins(3) == {}
+def test_a_program_with_pins_is_flagged_and_priced_with_them(tmp_path):
+  # The model writes no @stage pins since the crossbar port (spec 2026-11-13); a program that
+  # carries one (an archived pinned program, spec 2026-11-11 Sec 4.3) is flagged.
   text = _generate(tmp_path, 3, stage_pins={"get_classification_tree_app_0": 11})
   breakdown = model_breakdown(parse_program_text(text))
   assert breakdown["stage_pins_consistent"] is False
