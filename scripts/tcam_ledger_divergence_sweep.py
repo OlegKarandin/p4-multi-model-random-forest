@@ -15,22 +15,29 @@ construction -- no spacer, no offset dependence, no reliance on M1) to see
 whether the real compiler keeps agreeing with us or was just being generous
 on `(27, 52)`.
 
-Reuses `scripts.tcam_stretch_sweep.synthetic_program`/`as_fields`/
-`key_bytes_for` exactly as `scripts/tcam_version_sweep.py` does, and
+Reuses `scripts.tcam_stretch_sweep.synthetic_program`/`key_bytes_for`, and
 `tcam_version_sweep.read_committed`/`measured_start_group` to read back the
 compiler's own crossbar byte map (so a compile that does NOT actually land at
 group 0 -- p4c is free to choose -- is reported rather than assumed).
 
-Run it (from the repository root; needs the WSL2 p4c toolchain):
+The point generator (`is_divergence_point` / `find_divergence_points`)
+called `tables.version_block_penalty`, deleted on 2026-09-21 with the
+offset-taking `codeword_to_blocks` it interrogated, so `main()`'s default path
+raised NameError. It was removed on 2026-11-13 (see git history); the 13
+collected points live in the gitignored results/tcam_ledger_divergence_sweep.csv,
+which scripts/tcam_table_scoreboard.py scores directly. `ledger_blocks` stays:
+scripts/tcam_lane_sweep.py imports it. `main()` now summarises --out and
+compiles only the points given with --fields.
+
+Run it (from the repository root; compiling needs the WSL2 p4c toolchain):
   PYTHONPATH=. "C:/Users/olegk/miniconda3/envs/PolimiML/python.exe" \\
-      scripts/tcam_ledger_divergence_sweep.py
+      scripts/tcam_ledger_divergence_sweep.py [--fields "47,51,71;23,27,48,69"]
 
 Resumable: points already present in --out are skipped.
 """
 import argparse
 import math
 import os
-import random
 import shutil
 import sys
 import time
@@ -40,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 
-from scripts.tcam_stretch_sweep import as_fields, key_bytes_for, synthetic_program
+from scripts.tcam_stretch_sweep import key_bytes_for, synthetic_program
 from scripts.tcam_version_sweep import measured_start_group, read_committed
 from p4gen.p4_compile import compile_p4
 from p4model.tables import codeword_to_blocks
@@ -70,63 +77,6 @@ def ledger_blocks(field_bit_widths):
             if nibbles + 1 <= g:
                 return g
         g += 1
-
-
-def is_divergence_point(field_bit_widths):
-    """Saturated (our rule charges the version penalty), has a nibble-clean
-    field to make clause (d) relevant, and our rule prices strictly ABOVE the
-    ledger -- the exact class N4 measured at 7.9% of random keys.
-
-    STALE (2026-09-21, whole-branch review cleanup): `version_block_penalty`
-    was deleted along with the offset-taking `codeword_to_blocks` this
-    function was built to interrogate (2026-09-20 rewrite design Sec 13.1) --
-    the entire mechanism this comparison exists to test (a hand-coded
-    reference `ledger_blocks()` vs. the old per-clause version-block penalty)
-    no longer has a live counterpart in any form, so there is nothing left to
-    compare. `find_divergence_points` (below) is `main()`'s default
-    point-generation path, so calling `main()` fresh now raises `NameError`
-    at this line the moment it runs -- this is the same honest "module
-    imports cleanly, but this specific stale codepath loudly fails if
-    actually invoked" state `scripts/tcam_version_sweep.py`'s `predict()`
-    already established as this repo's precedent for retired one-shot
-    instruments. This script's already-collected data lives in the
-    gitignored `results/tcam_ledger_divergence_sweep.csv`, which
-    `scripts/tcam_table_scoreboard.py` scores directly from the CSV and does
-    NOT call back into these functions. Do not resurrect this comparison
-    against the current `codeword_to_blocks`/its isolation-credit logic --
-    that would be new, unvalidated modelling work, out of scope for a
-    cleanup."""
-    if not any(1 <= b % 8 <= 4 for b in field_bit_widths):
-        return False
-    if version_block_penalty(field_bit_widths, 0) != 1:  # noqa: F821 -- see docstring
-        return False
-    ours = codeword_to_blocks(field_bit_widths)
-    ledger = ledger_blocks(field_bit_widths)
-    return ours > ledger
-
-
-def find_divergence_points(n=12, seed=0, max_fields=4, max_bits=88, tries=2_000_000):
-    """A deterministic, diverse sample of `n` divergence-class field-width
-    tuples: varied field counts and varied group counts `g`, not n copies of
-    the same shape.
-
-    STALE (2026-09-21): calls `is_divergence_point`, whose whole mechanism
-    was retired along with `version_block_penalty` -- see that function's
-    docstring. Invoking this (via `main()`'s default path) raises
-    `NameError`; not fixed to run again, out of scope for this cleanup."""
-    rng = random.Random(seed)
-    found = {}
-    for _ in range(tries):
-        n_fields = rng.randint(1, max_fields)
-        fields = tuple(sorted(rng.randint(1, max_bits) for _ in range(n_fields)))
-        if not is_divergence_point(fields):
-            continue
-        groups = codeword_to_blocks(fields)
-        key = (len(fields), groups)
-        found.setdefault(key, fields)
-        if len(found) >= n:
-            break
-    return sorted(found.values(), key=lambda f: (len(f), sum(f)))
 
 
 def run_point(point_id, fields, output_root, size):
@@ -198,12 +148,9 @@ def main(argv=None):
     parser.add_argument('--out', default=DEFAULT_OUT)
     parser.add_argument('--output-root', default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument('--size', type=int, default=512)
-    parser.add_argument('--n-points', type=int, default=13)
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--max-fields', type=int, default=5)
-    parser.add_argument('--max-bits', type=int, default=100)
-    parser.add_argument('--only', default=None,
-                        help='comma-separated point_ids to run')
+    parser.add_argument('--fields', default='',
+                        help='points to compile, as semicolon-separated '
+                             'comma-separated field bit widths, e.g. "47,51,71;23,27"')
     args = parser.parse_args(argv)
 
     os.makedirs(args.output_root, exist_ok=True)
@@ -214,15 +161,12 @@ def main(argv=None):
         rows = existing.to_dict('records')
         done = set(existing['point_id'])
 
-    points = find_divergence_points(n=args.n_points, seed=args.seed,
-                                    max_fields=args.max_fields,
-                                    max_bits=args.max_bits)
-    print('generated %d divergence-class points' % len(points))
-    wanted = set(args.only.split(',')) if args.only else None
-    for i, fields in enumerate(points):
+    points = [tuple(sorted(int(b) for b in point.split(',')))
+              for point in args.fields.split(';') if point.strip()]
+    for i, fields in enumerate(points, start=len(rows)):
         point_id = 'div%02d_n%d_g%d' % (
             i, len(fields), codeword_to_blocks(fields))
-        if point_id in done or (wanted and point_id not in wanted):
+        if point_id in done:
             continue
         print('=== %s -- fields=%s' % (point_id, fields), flush=True)
         try:
