@@ -50,13 +50,9 @@ from p4gen.build_p4_script import (
 from p4model.usage import ResourceUsage, assemble_usage
 from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from p4model.target import (
-    CODEWORD_KEY_OVERHEAD_BITS,
     MAX_CODEWORD_LENGTH,
     TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
-    MAX_RANGE_KEY_BITS,
     METER_ALUS_PER_STAGE,
-    RANGE_WORST_CASE_ENTRY_FRACTION,
-    RANGE_WORST_CASE_ROWS_CAP,
     TOFINO_PIPELINE_STAGES,
 )
 from p4model.program import (
@@ -66,27 +62,22 @@ from p4model.program import (
     PER_TASK_ENCODING,
     PER_TREE_ENCODING,
     SHARED_TASK,
-    FEATURE_VALUE_BIT_WIDTH,
     FLOW_HASH_LEVEL,
     ORIENTATION_REGISTER,
     RANGE_TABLE_KEY_BYTES,
-    REGISTER_BLOCK_ORDER,
     VOTE_EPILOGUE_STAGES,
     per_task_field,
 )
 from p4model.packing import (
-    StagePlan,
     _stage_shards,
     crossbar_stages_needed,
     fits_two_columns,
     packed_alone_blocks,
 )
 from p4model.ranges import (
-    compiler_range_rows,
     nibble_widths_for,
     range_entry_count,
 )
-from p4model.lanes import table_blocks
 from p4model.tables import (
     codeword_bits_to_blocks,
     codeword_bytes_to_blocks,
@@ -107,7 +98,6 @@ from p4model.tables import (
 from p4model import tables as _tables
 from p4model import lanes, packed
 from p4model.registers import (
-    _register_blocks,
     feature_readiness_level,
     gated_block_interior_stages,
     readiness_levels_for,
@@ -117,7 +107,6 @@ from p4model.names import normalise_feature_name
 from p4model.catalog import (
     FEATURE_REGISTER_CATALOG,
     register_names_for,
-    register_width_bits,
 )
 
 

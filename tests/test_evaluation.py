@@ -549,7 +549,7 @@ def test_multi_model_memory_evaluation_returns_a_frozen_resource_usage():
   assert dataclasses.is_dataclass(usage)
   with pytest.raises(dataclasses.FrozenInstanceError):
     usage.blocks = 0
-  # Deliberately absent: unlike StagePlan, no __int__ shim, so a caller
+  # Deliberately absent: no __int__ shim, so a caller
   # cannot silently use the whole object where a count is meant.
   assert not hasattr(usage, '__int__') or type(usage).__int__ is object.__int__
   assert usage.range_entries > 0 and usage.ternary_entries > 0

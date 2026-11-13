@@ -115,10 +115,9 @@ def test_build_p4_script_reexports_are_the_same_object(name):
 
 
 EV_CONSTANT_REEXPORTS = (
-    "TOFINO_PIPELINE_STAGES", "CODEWORD_KEY_OVERHEAD_BITS",
+    "TOFINO_PIPELINE_STAGES",
     "VOTE_EPILOGUE_STAGES", "FLOW_HASH_LEVEL", "METER_ALUS_PER_STAGE",
-    "FEATURE_VALUE_BIT_WIDTH", "RANGE_TABLE_KEY_BYTES", "MAX_RANGE_KEY_BITS",
-    "RANGE_WORST_CASE_ENTRY_FRACTION", "RANGE_WORST_CASE_ROWS_CAP",
+    "RANGE_TABLE_KEY_BYTES",
     "ORIENTATION_REGISTER",
 )
 
@@ -167,7 +166,7 @@ def test_catalog_imports_normalise_at_module_level_not_inside_a_function():
     assert "import" not in inspect.getsource(catalog.register_names_for)
 
 
-PACKING_REEXPORTS = ("StagePlan", "fits_two_columns", "_stage_shards",
+PACKING_REEXPORTS = ("fits_two_columns", "_stage_shards",
                      "crossbar_stages_needed")
 
 
@@ -898,7 +897,7 @@ def test_a_seed_and_tree_keys_share_a_stage_up_to_66_bytes_if_the_lanes_fit():
     # 62-byte net refused this outright; now only the lanes and the real
     # 66-byte limit decide. The lanes still cannot fit the spacer behind the
     # seed and the probe, so it moves on -- same placement, new reason.
-    from p4model.packing import crossbar_stages_needed, stage_load_fits
+    from p4model.packing import crossbar_stages_needed
 
     spacer = frozenset({(("code", "spacer"), 44)})
     probe = frozenset({(("code", "a"), 7), (("code", "b"), 7)})
@@ -907,10 +906,6 @@ def test_a_seed_and_tree_keys_share_a_stage_up_to_66_bytes_if_the_lanes_fit():
         key_fields=[spacer, probe], key_field_bits=[(352,), (54, 56)],
         seed_stages=[_seed(0, [1, 1, 1], [2, 2, 2])])
     assert (plan.occupied, plan.blocks, plan.table_stages) == (2, 12, (1, 0))
-    # Judged after the fact: two pools totalling exactly 66 bytes fit;
-    # 68 bytes are past the real crossbar limit and still do not.
-    assert stage_load_fits([_seed(0, [1], [8]), _seed(0, [9, 3], [58])])
-    assert not stage_load_fits([_seed(0, [1], [10]), _seed(0, [9, 3], [58])])
 
 
 def test_seed_stages_need_readiness_levels_and_one_load_per_stage():
@@ -944,7 +939,8 @@ def test_stage_load_fits_checks_the_combined_limits():
     assert stage_load_fits([_seed(0, [12], [2]), _seed(0, [6, 6], [30])])
     assert not stage_load_fits([_seed(0, [12], [2]), _seed(0, [8, 8], [2])])
     assert not stage_load_fits([_seed(0, [1] * 5, [2]), _seed(0, [1] * 4, [2])])
-    assert not stage_load_fits([_seed(0, [1], [40]), _seed(0, [1], [30])])
+    # No byte clause (2026-11-13): the crossbar simulation placed the keys.
+    assert stage_load_fits([_seed(0, [1], [40]), _seed(0, [1], [30])])
 
 
 def test_a_classification_table_wider_than_a_stage_is_split_by_whole_rows():

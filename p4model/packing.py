@@ -100,24 +100,21 @@ class StagePlan:
                          # simulation. sum(table_blocks) == blocks. What model.json's
                          # per-table list reports (spec 2026-09-29 §5.3).
 
-  def __int__(self):     # transitional: `stages` is still the occupancy count
-    return self.occupied
-
 
 def stage_load_fits(loads):
   """Whether several pools' StageLoads for the SAME stage index fit together
-  under the per-stage limits: <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
-  tables, <= TERNARY_CROSSBAR_STAGE_BYTES bytes of distinct key
-  fields, and a 12x2 column packing of every shard (fits_two_columns). The check crossbar_stages_needed's seed_stages
-  makes while placing (there on per-key byte SUMS, which are never below
-  this union), restated as a predicate so a caller can assert it after the
-  fact. The lane prices themselves are already inside each load's charged
-  blocks."""
+  under the per-stage limits the classification placement enforces: <=
+  TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE tables and a 12x2 column packing of
+  every shard (fits_two_columns), restated as a predicate so a caller can
+  assert it after the fact. The crossbar itself is not checked here: the
+  placement's crossbar simulation (_crossbar_stage, xbar.py) already decided
+  that every key in the stage has an allocation, and its charges are inside
+  each load's blocks. (The union of the loads' field bytes against
+  TERNARY_CROSSBAR_STAGE_BYTES was dropped from this test on 2026-11-13: the
+  placement no longer enforces it, and nibble-sized bytes can share a
+  midbyte, so it is not guaranteed to hold.)"""
   loads = list(loads)
-  fields = frozenset().union(*(load.fields for load in loads))
-  total_bytes = sum(field_bytes for _, field_bytes in fields)
   return (sum(load.tables for load in loads) <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE
-          and total_bytes <= TERNARY_CROSSBAR_STAGE_BYTES
           and fits_two_columns([b for load in loads for b in load.blocks]))
 
 
@@ -223,9 +220,7 @@ class _Unit:
   of its rows."""
   table_idx: int
   chunk: int
-  blocks: int            # charged if its key is the stage's first
-  rows: int              # 512-row words -- what a later key's price multiplies
-  width: int             # crossbar bytes of the key
+  rows: int              # 512-row words -- what the key's per-row charge multiplies
   fields: frozenset
   bits: tuple            # the key: (field id, slices) per field (_field_units), or
                          # a packed key's lanes.py byte tuples (_packed_units)
@@ -252,8 +247,8 @@ def _field_units(table_specs, key_fields, key_slices, levels, priorities):
       raise CrossbarKeyTooWide(
           "table %d's key of %d bytes does not fit one stage's ternary crossbar"
           % (idx, byte_width), byte_width)
-    units.extend(_row_chunks(idx, block_count, byte_width, max(1, per_row),
-                             fields, key, levels[idx], priorities[idx]))
+    units.extend(_row_chunks(idx, block_count, max(1, per_row), fields, key,
+                             levels[idx], priorities[idx]))
   return units
 
 
@@ -262,22 +257,17 @@ def _alone_blocks(key):
   return xbar.alone_blocks(key) if key else 1
 
 
-def _row_chunks(idx, block_count, byte_width, per_row, fields, bits, level,
-                priority):
+def _row_chunks(idx, block_count, per_row, fields, bits, level, priority):
   """One table's _Units: the whole table, or -- charged more than one stage's
   TCAM_BLOCKS_PER_STAGE -- chunks of whole 512-row words (per_row blocks
   each) that each fit a stage; every chunk keeps the full key."""
   units = []
-  rows = max(1, math.ceil(block_count / per_row))
+  remaining_rows = max(1, math.ceil(block_count / per_row))
   rows_per_chunk = max(1, TCAM_BLOCKS_PER_STAGE // per_row)
-  remaining_blocks, remaining_rows, chunk = block_count, rows, 0
+  chunk = 0
   while True:
     chunk_rows = min(remaining_rows, rows_per_chunk)
-    chunk_blocks = (remaining_blocks if chunk_rows == remaining_rows
-                    else min(remaining_blocks, per_row * chunk_rows))
-    units.append(_Unit(idx, chunk, chunk_blocks, chunk_rows, byte_width,
-                       fields, bits, level, priority))
-    remaining_blocks -= chunk_blocks
+    units.append(_Unit(idx, chunk, chunk_rows, fields, bits, level, priority))
     remaining_rows -= chunk_rows
     chunk += 1
     if remaining_rows <= 0:
@@ -285,30 +275,26 @@ def _row_chunks(idx, block_count, byte_width, per_row, fields, bits, level,
   return units
 
 
-def _ordered_stage_simulation(table_specs, key_fields, key_slices, levels,
-                              priorities, unavailable_stages, seed_at,
+def _ordered_stage_simulation(units, mode, unavailable_stages, seed_at,
                               last_seed):
-  """The classification pool's placement for keys of whole code fields:
-  p4c's table placer, stage by stage. At stage s, repeatedly take the FIRST
-  remaining table, in the order (placement priority descending, then the
-  table listed LAST first), whose level is <= s and that fits the stage as it
-  now stands (_crossbar_stage_test, mode 'fields'); when none does, move to
-  s + 1. A stage in unavailable_stages is skipped.
+  """The classification pool's placement: p4c's table placer, stage by
+  stage. At stage s, repeatedly take the FIRST remaining table, in the order
+  (placement priority descending, then the table listed LAST first), whose
+  level is <= s and that fits the stage as it now stands
+  (_crossbar_stage_test in `mode`: 'fields' for keys of whole code fields,
+  _field_units; 'packed' for packed per-tree keys, _packed_units); when none
+  does, move to s + 1. A stage in unavailable_stages is skipped.
   Returns ({stage index: [(unit, charge), ...]}, {table_idx: latest stage})."""
-  units = _field_units(table_specs, key_fields, key_slices, levels, priorities)
   return _place_in_order(
       units,
-      lambda here, unit, seed, stage: _crossbar_stage_test(
-          here + [unit], seed, 'fields'),
+      lambda here, unit, seed: _crossbar_stage_test(here + [unit], seed, mode),
       unavailable_stages, seed_at, last_seed)
 
 
 def _place_in_order(units, admit, unavailable_stages, seed_at, last_seed):
-  """The ordered placement loop shared by both classification modes:
-  _ordered_stage_simulation (key_field_bits) and _packed_stage_simulation
-  (key_bytes). `admit(here, unit, seed, stage)` returns the charges of
-  `here + [unit]` in placement order, or None when stage `stage` refuses the
-  unit."""
+  """The ordered placement loop of _ordered_stage_simulation.
+  `admit(here, unit, seed)` returns the charges of `here + [unit]` in
+  placement order, or None when the stage holding `seed` refuses the unit."""
   remaining = sorted(units, key=lambda u: (-u.priority, -u.table_idx, u.chunk))
   if not remaining:
     return {}, {}
@@ -332,7 +318,7 @@ def _place_in_order(units, admit, unavailable_stages, seed_at, last_seed):
     for unit in remaining:
       if unit.level > stage:
         continue
-      charged = admit(here, unit, seed, stage)
+      charged = admit(here, unit, seed)
       if charged is not None:
         placed[stage] = here + [unit]
         charges[stage] = charged
@@ -383,8 +369,8 @@ def _packed_units(table_specs, key_fields, key_bytes, levels, priorities):
           % (idx, len(key), TERNARY_CROSSBAR_GROUPS_PER_STAGE), byte_width)
     fields = (key_fields[idx] if key_fields is not None
               else frozenset({(("<private>", idx), byte_width)}))
-    units.extend(_row_chunks(idx, block_count, byte_width, per_row, fields,
-                             key, levels[idx], priorities[idx]))
+    units.extend(_row_chunks(idx, block_count, per_row, fields, key,
+                             levels[idx], priorities[idx]))
   return units
 
 
@@ -490,18 +476,6 @@ def _crossbar_stage_test(units, seed, mode='packed'):
                            for width, _ in _stage_shards(charge, 1)]):
     return None
   return charges
-
-
-def _packed_stage_simulation(table_specs, key_fields, key_bytes, levels,
-                             priorities, unavailable_stages, seed_at,
-                             last_seed):
-  """The packed pool's placement: _ordered_stage_simulation's order and
-  unavailable_stages, with _crossbar_stage_test (mode 'packed') as the stage
-  test."""
-  units = _packed_units(table_specs, key_fields, key_bytes, levels, priorities)
-  return _place_in_order(
-      units, lambda here, unit, seed, stage: _crossbar_stage_test(here + [unit], seed),
-      unavailable_stages, seed_at, last_seed)
 
 
 def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
@@ -782,9 +756,10 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   if key_bytes is not None:
     priorities = (list(placement_priority) if placement_priority is not None
                   else [0] * len(table_specs))
-    by_index, table_stages = _packed_stage_simulation(
-        table_specs, key_fields, key_bytes, list(readiness_levels), priorities,
-        frozenset(unavailable_stages), seed_at, max(seeds, default=0))
+    by_index, table_stages = _ordered_stage_simulation(
+        _packed_units(table_specs, key_fields, key_bytes,
+                      list(readiness_levels), priorities),
+        'packed', frozenset(unavailable_stages), seed_at, max(seeds, default=0))
     return unit_plan(by_index, table_stages)
 
   if key_field_bits is not None:
@@ -800,8 +775,9 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
         key_slices.append(tuple(((identity, field), slices) for field, slices
                                 in lanes.key_fields(bits)))
     by_index, table_stages = _ordered_stage_simulation(
-        table_specs, key_fields, [tuple(key) for key in key_slices], levels,
-        priorities,
+        _field_units(table_specs, key_fields,
+                     [tuple(key) for key in key_slices], levels, priorities),
+        'fields',
         frozenset(unavailable_stages) if readiness_levels is not None
         else frozenset(), seed_at, max(seeds, default=0))
     return unit_plan(by_index, table_stages)

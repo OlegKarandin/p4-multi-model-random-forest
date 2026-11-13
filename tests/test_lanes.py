@@ -17,7 +17,7 @@ Every number pinned here was OBSERVED in a real p4c compile, not derived:
 
 The port was also checked against the scratch code itself (not committed; the
 scratch directory is untracked): layout/relaxed_layout for w in 0..329,
-key_bytes and standalone on 1679 keys -- 0 differences, 99 read as None.
+key_bytes (since deleted) and standalone on 1679 keys -- 0 differences, 99 read as None.
 """
 import pytest
 
@@ -112,8 +112,14 @@ LANE_BELOW_P4C_REAL_KEYS = {
 }
 
 
+def _key_bytes(widths):
+  """A key's byte list as this model lays it out: key_layout's choice."""
+  widths = list(widths)
+  return lanes.bytes_from_layout(widths, lanes.key_layout(widths))
+
+
 def _price(widths):
-  return lanes.standalone(lanes.key_bytes(widths))
+  return lanes.standalone(_key_bytes(widths))
 
 
 # ---------------------------------------------------------------- pinned probes
@@ -309,13 +315,13 @@ def test_layout_fallback_rule(widths, plain, relaxed):
   """Audit Sec 7.4: the width layout, unless its lane price exceeds
   codeword_to_blocks -- then the relaxed layout."""
   assert lanes.standalone(lanes.bytes_from_widths(widths)) == plain
-  chosen = lanes.key_bytes(widths)
+  chosen = _key_bytes(widths)
   assert chosen == lanes.bytes_from_layout(widths, lanes.relaxed_layout)
   assert lanes.standalone(chosen) == relaxed == codeword_to_blocks(widths)
 
 
 def test_fallback_keeps_the_width_layout_when_it_already_matches_production():
-  assert lanes.key_bytes((19, 64)) == lanes.bytes_from_widths((19, 64))
+  assert _key_bytes((19, 64)) == lanes.bytes_from_widths((19, 64))
 
 
 # ------------------------------------------------ key_layout (spec 2026-09-29)
@@ -326,10 +332,9 @@ def test_fallback_keeps_the_width_layout_when_it_already_matches_production():
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS + (
     (19, 20, 21, 21, 23, 23, 28), (18, 18, 18, 19, 19, 21, 24, 27)))
-def test_key_bytes_is_key_layout_applied(widths):
+def test_key_layout_is_one_of_the_two_layouts(widths):
   lay = lanes.key_layout(widths)
   assert lay is lanes.layout or lay is lanes.relaxed_layout
-  assert lanes.key_bytes(widths) == lanes.bytes_from_layout(widths, lay)
 
 
 @pytest.mark.parametrize('widths,relaxed', [
@@ -362,7 +367,7 @@ def test_byte_list_marks_nibble_only_bytes():
 # ---------------------------------------------------------------- None, not 99
 
 def test_unpriceable_key_is_none():
-  assert lanes.standalone(lanes.key_bytes((600,))) is None
+  assert lanes.standalone(_key_bytes((600,))) is None
 
 
 # ------------------------------------------- the lane stage simulation is gone

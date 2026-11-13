@@ -28,9 +28,8 @@ class ResourceUsage:
   multi_model_memory_evaluation docstring for the four-quantity
   disambiguation.
 
-  No __int__ is provided. packing.StagePlan has one as a transitional shim;
-  repeating it here would let a caller silently use the whole object where
-  a count is meant.
+  No __int__ is provided: it would let a caller silently use the whole
+  object where a count is meant.
 
   codeword_length : classification-table key width in bits. Under
                   'joint' this is THE pooled split-threshold count of the
@@ -338,7 +337,7 @@ def assemble_usage(pool):
     if load.index in range_loads:
       assert stage_load_fits([range_loads[load.index], load]), (
           "range and classification tables share stage {} beyond its "
-          "table/byte/column limits".format(load.index))
+          "table/column limits".format(load.index))
 
   # F5/F6: stage_depth is ternary_plan.depth -- the classification pool is
   # placed LAST in the sense that matters: every tree starts after its own

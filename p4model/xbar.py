@@ -99,10 +99,6 @@ def can_use(flags):
 _BITS = tuple(tuple(i for i in range(4) if mask >> i & 1) for mask in range(16))
 
 
-def _bits(mask):
-  return _BITS[mask]
-
-
 class _Grp:
   """IXBar::grp_use (a ternary group, or a midbyte as mid_byte_use with the single position 0)."""
   __slots__ = ('group', 'found', 'free', 'attempted', 'range_index')
@@ -139,9 +135,6 @@ class _Grp:
 
   def max_free(self):
     return self.free[0] | self.free[1] | self.free[2] | self.free[3]
-
-  def total_avail(self):
-    return len(self.found) + len(self.max_free())
 
   def range_set(self):
     return self.range_index != -1

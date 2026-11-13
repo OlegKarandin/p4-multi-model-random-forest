@@ -21,7 +21,7 @@ from p4gen.p4_replay import model_breakdown, parse_program, parse_program_text, 
 from p4gen.switch_semantics import per_tree_class_indices, switch_predict, vote_winner
 from p4model import lanes
 from p4model.errors import CrossbarKeyTooWide
-from p4model.packing import StageLoad, _stage_shards, crossbar_stages_needed, stage_load_fits
+from p4model.packing import StageLoad, _stage_shards, crossbar_stages_needed
 from p4model.program import (APP_TASK, DDOS_TASK, PER_TASK_ENCODING, SHARED_TASK, TaskSpec,
                              feature_of_per_task_field, per_task_field, range_table_priority)
 from p4model.target import (MAX_CODEWORD_LENGTH, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
@@ -438,8 +438,6 @@ def test_the_stage_limit_is_66_while_the_single_key_limit_stays_64():
     assert TERNARY_CROSSBAR_STAGE_BYTES == 66
     assert TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE == 64
     assert MAX_CODEWORD_LENGTH == 512
-    assert stage_load_fits([_load(0, [("a", 33)]), _load(0, [("b", 33)])])
-    assert not stage_load_fits([_load(0, [("a", 33)]), _load(0, [("b", 34)])])
     with pytest.raises(CrossbarKeyTooWide):
         _stage_shards(1, 65)
     with pytest.raises(CrossbarKeyTooWide):

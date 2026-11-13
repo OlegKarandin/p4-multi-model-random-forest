@@ -80,7 +80,6 @@ def test_bare_widths_price_as_before():
   # the lane price of a plain key, now that the Spilled branch is gone
   for key in [(3,), (3, 3, 20), (1, 2, 3, 40, 52), (27, 52), (9, 9, 9, 9)]:
     assert lanes.table_blocks(key) == lanes.table_blocks(list(reversed(key)))
-    assert lanes.key_bytes(key) == lanes.bytes_from_layout(list(key), lanes.key_layout(list(key)))
   assert lanes.table_blocks([]) == lanes.table_blocks(())
   assert lanes.table_blocks((3,) * 4) == 1
 

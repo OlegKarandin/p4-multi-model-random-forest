@@ -34,10 +34,13 @@ TCAM_BLOCK_KEY_LENGTH = 44
 # version_block_penalty apparatus it justified, is gone. reviews/
 # p4_tofino_reference.md Sec 4.1.1 and Appendix B "Mechanism G".
 CROSSBAR_PRIVATE_BYTES_PER_GROUP = 5
-# The stage's crossbar, in the two units the groups above come in. Documentation
-# and provenance ONLY -- deliberately consumed by nothing, because no group-BUDGET
-# term exists in this model. The near-cap effect a budget would price (spec F5)
-# is handled by the lane simulation (lanes.py) alone; the placement refusal that once sat beside it was retired 2026-09-29 (see below).
+# The stage's crossbar group count. No group-BUDGET term exists in this model:
+# the near-cap effect a budget would price (spec F5) is handled by the ternary
+# crossbar port's stage simulation (xbar.py, packing._crossbar_stage, since
+# 2026-11-13; the lane simulation before), which allocates a stage's groups as
+# p4c does; the placement refusal that once sat beside it was retired
+# 2026-09-29 (see below). The midbyte count (6 per stage) lives in
+# xbar.BYTE_GROUPS.
 #
 # Provenance, and a retraction. scripts/tcam_group_cap_probe.py's point
 # `groups_13_bytes_64` was read for months as "a per-stage group cap was probed
@@ -49,7 +52,6 @@ CROSSBAR_PRIVATE_BYTES_PER_GROUP = 5
 # Provenance: ir/tofino.def:38, MAX_TERNARY_GROUPS (model_audit_2026-09-27.md
 # Appendix C).
 TERNARY_CROSSBAR_GROUPS_PER_STAGE = 12      # 5 private bytes each
-TERNARY_CROSSBAR_BYTE_GROUPS_PER_STAGE = 6  # midbytes, 2 nibbles each
 TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 # Provenance: mau/tofino/memories.h:54, TERNARY_TABLES_MAX (model_audit_2026-
 # 09-27.md Appendix C).

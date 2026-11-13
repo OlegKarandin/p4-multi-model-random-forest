@@ -5,7 +5,7 @@ Since 2026-11-13 the price of a key -- alone (`table_blocks`) and in a shared
 stage (packing's stage simulation) -- is p4c's ternary crossbar allocation,
 ported (xbar.py). This module keeps what feeds it:
 
-  1. Layout (`layout`, `relaxed_layout`, `key_layout`, `key_bytes`, `container_sizes`): each `code_*` field's
+  1. Layout (`layout`, `relaxed_layout`, `key_layout`, `key_fields`, `container_sizes`): each `code_*` field's
      PHV container layout, predicted from its bit width alone -- the model runs
      before any compile, so it has no PHV log. Audit Sec 7.4.
   2. Lane count (`standalone`): the smallest block count whose crossbar slots
@@ -32,7 +32,8 @@ A BYTE LIST is this module's key representation: one `(kind, k, nibble_only)`
 tuple per crossbar byte, `kind` in {'W', 'H', 'B'} (the container size), `k`
 the byte's index within its container slice, `nibble_only` True when the byte
 carries at most 4 live bits (it may then sit in a single midbyte nibble).
-`key_bytes(field_bit_widths)` builds one.
+`bytes_from_layout(field_bit_widths, key_layout(field_bit_widths))` builds the
+one this model lays a key out with.
 
 "No price" is `None` throughout (the audit's scratch code used 99): a key with
 no legal fit in the 12 groups/6 midbytes available.
@@ -190,8 +191,8 @@ def key_layout(field_bit_widths):
   too: it pins every tree-key code_* field to exactly this layout with
   @pa_container_size (build_p4_script.code_field_container_sizes), so p4c
   can no longer pick a different split under PHV pressure (spec 2026-09-29
-  Sec 1.2). Pricing (key_bytes) and pinning share this one decision so the
-  two cannot drift."""
+  Sec 1.2). Pricing (key_fields -> xbar.alone_blocks, and the stage
+  simulation) and pinning share this one decision so the two cannot drift."""
   field_bit_widths = list(field_bit_widths)
   prod = codeword_to_blocks(tuple(sorted(field_bit_widths)))
   plain_price = standalone(bytes_from_widths(field_bit_widths))
@@ -201,19 +202,12 @@ def key_layout(field_bit_widths):
   return relaxed_layout if _price_le(standalone(relaxed), plain_price) else layout
 
 
-def key_bytes(field_bit_widths):
-  """The byte list this model uses for a key: its fields laid out by
-  `key_layout`'s choice."""
-  field_bit_widths = list(field_bit_widths)
-  return bytes_from_layout(field_bit_widths, key_layout(field_bit_widths))
-
-
 def table_blocks(field_bit_widths):
   """THE production per-table price: TCAM blocks one 512-row word of a
   classification table with this key costs alone in a stage, as p4c's ternary
   crossbar allocator (ported, xbar.py) lays out the key's pinned PHV
   containers -- `xbar.alone_blocks(key_fields(w))` (2026-11-13; the lane
-  count `standalone(key_bytes(w))` until then).
+  count `standalone(bytes_from_layout(w, key_layout(w)))` until then).
 
   2026-11-13, campaign_2026_11 (7,763 distinct tree keys of 15,300 designs):
   the port and the lane count differ on 61 keys; on every one p4c's own
@@ -228,15 +222,16 @@ def table_blocks(field_bit_widths):
 
   Evidence (reviews/campaign_2026_10_lane_findings.md Sec 3-5): on
   campaign_2026_10 the lane price is below the ladder on 133 tables and p4c
-  agrees on all 133. One accepted miss: independent_low_sd5's (27, 52) key,
-  lane 2 vs p4c 3 (p4c's greedy midbyte choice leaves no nibble for the
-  version bits).
+  agrees on all 133. Its one accepted miss, independent_low_sd5's (27, 52)
+  key (lane 2 vs p4c 3: p4c's greedy midbyte choice leaves no nibble for the
+  version bits), is priced 3 by the port, matching p4c.
 
   Order-insensitive. The empty key returns the ladder's floor. Raises
   CrossbarKeyTooWide(message, byte_width) when the key exceeds the stage's
   TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes (checked before enumerating --
-  66-72-byte keys would otherwise pay the full 1..12-block search) or when no
-  lane-legal fit exists within the crossbar."""
+  66-72-byte keys would otherwise pay the full 1..12-block search) or when
+  p4c's crossbar allocation (xbar.alone_blocks) finds no place for it in an
+  empty stage."""
   return _table_blocks(tuple(sorted(int(w) for w in field_bit_widths)))
 
 
@@ -393,6 +388,7 @@ def standalone(byte_list):
   `2w + t + 1 <= g`, legally hold every byte. `None` if no `g <= 12` does.
 
   Agrees with p4c on 57/57 probe keys (from the real PHV layout) and with
-  `tables.codeword_to_blocks` on 74/74 real design keys (from `key_bytes`)."""
+  `tables.codeword_to_blocks` on 74/74 real design keys (laid out by
+  `key_layout`)."""
   W, H, B = _counts(byte_list)
   return _standalone(W, H, B, _nibble_types(byte_list))
