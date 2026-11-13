@@ -232,9 +232,10 @@ def assemble_usage(pool):
   ternary_fields = pool["ternary_fields"]
   ternary_key_bits = pool["ternary_key_bits"]
   # Packed codes (per_tree): each tree's key bytes come from the layout, so the
-  # classification pool is placed by key_bytes and the 12-group rule, not by
-  # key_field_bits (packing.crossbar_stages_needed). Packed trees never share
-  # crossbar bytes, so no key_fields (private placeholders) either.
+  # classification pool is placed by key_bytes and the ternary crossbar port's
+  # allocation (packing._crossbar_stage, mode 'packed'), not by key_field_bits
+  # (packing.crossbar_stages_needed). Packed trees never share crossbar bytes,
+  # so no key_fields (private placeholders) either.
   ternary_key_bytes = pool.get("ternary_key_bytes")
   interior_stages = pool["interior_stages"]
   register_names = pool["register_names"]
@@ -298,7 +299,8 @@ def assemble_usage(pool):
   # pool is SEEDED with the range pool's loads: those range shards count
   # against the stage's table cap, byte limit and column packing, and their
   # range fields are keys placed on the stage's crossbar BEFORE any tree key
-  # in the lane simulation, but are not charged again (see
+  # in the crossbar simulation (packing._crossbar_stage), but are not charged
+  # again (see
   # crossbar_stages_needed's seed_stages). With no range
   # table for a task, its trees start right after the flow-hash prologue
   # (tree_readiness_levels).
@@ -310,8 +312,9 @@ def assemble_usage(pool):
   # are placed in p4c's order -- @placement_priority, ddos before app
   # (program.PLACEMENT_PRIORITY), ties to the tree listed last, which is why
   # ternary_table_specs must stay in program order (app trees, then ddos, each
-  # by index) -- and a key placed after a different key in its stage pays its
-  # lane leftover price. This runs once per call, i.e. once per trial; it is
+  # by index) -- and every table is charged its crossbar allocation on what the
+  # earlier tables in its stage left (a later table of the SAME key too; it can
+  # cost a block less than alone). This runs once per call, i.e. once per trial; it is
   # never inside threshold alignment's loop, which prices keys with
   # the ladder codeword_to_blocks alone. A range table keys one meta.<feature>_val field
   # of FEATURE_VALUE_BIT_WIDTH bits -- 2 bytes -- so the range pool needs none
@@ -362,8 +365,9 @@ def assemble_usage(pool):
   register_count = len(register_names)
 
   # ternary_plan.blocks, not ternary_blocks: the latter is the naive
-  # per-table sum, before the lane leftover prices that only
-  # crossbar_stages_needed's stage simulation knows about -- see
+  # per-table sum of stand-alone prices, before the in-stage crossbar
+  # allocation charges that only crossbar_stages_needed's stage simulation
+  # knows about -- see
   # StagePlan.blocks. range_blocks needs no substitution:
   # a range table's key always leaves spare crossbar byte slots,
   # so range_plan.blocks is provably identical to range_blocks.

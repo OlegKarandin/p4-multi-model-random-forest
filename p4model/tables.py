@@ -247,7 +247,8 @@ def codeword_to_blocks_headline(field_bit_widths):
   block per tree on the other 8 (the two 33-byte, 15-feature keys), and NEVER
   observed to under-predict across 405 table observations as a first or only key (12 scoreboard rows
   are priced as later keys beside another key, 7 of them inside the 389; the
-  lane simulation handles those, not this function --
+  stage simulation -- the ternary crossbar port, packing._crossbar_stage, since
+  2026-11-13 -- handles those, not this function --
   scripts/tcam_table_scoreboard.py).
   `codeword_to_blocks`
   never returns MORE than this function does -- see
@@ -362,8 +363,10 @@ def codeword_to_blocks(field_bit_widths):
   starts. The real, measured effect the old offset term was chasing --
   `(179, 204)` costing 9 blocks alone and 10 when a different key shares its
   stage -- has not vanished; it belongs to STAGE PLACEMENT, not to this
-  per-table price, and moves to `p4model/packing.py`'s stage-sharing
-  margin, Sec 13.2.)
+  per-table price, and is handled by `p4model/packing.py`'s stage
+  simulation: since 2026-11-13 the ternary crossbar port
+  (packing._crossbar_stage, xbar.py) allocates each later table on what the
+  earlier ones left. The stage-sharing margin of Sec 13.2 is gone.)
 
   `B = sum(ceil(w / 8) for w in field_bit_widths)` crossbar bytes. `g` blocks
   supply `5g` private byte slots and (from `crossbar_capacity`) roughly one
@@ -436,7 +439,8 @@ def codeword_bytes_to_blocks(key_bytes):
   charge: this function prices a key standalone, and what a key pays when it
   is placed behind a different key in its stage is a different quantity
   computed by a different module -- see packing.crossbar_stages_needed's
-  ordered stage simulation and lanes.price_with_supply.)
+  ordered stage simulation, which since 2026-11-13 is the ternary crossbar
+  port (packing._crossbar_stage, xbar.py).)
 
   One block is fed by exactly one crossbar group, and a group delivers 5
   private bytes + 1 midbyte nibble = TCAM_BLOCK_KEY_LENGTH bits = 5.5 BYTES
@@ -522,9 +526,10 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
         "compiler rejects this table rather than splitting it across stages"
         % (table_bytes, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), table_bytes)
 
-  # The per-tree block width: lanes.table_blocks, the lane-model price of the
-  # table's pinned crossbar key (2026-10-04). Imported here, not at module
-  # level: lanes imports this module at load time.
+  # The per-tree block width: lanes.table_blocks, xbar.alone_blocks of the
+  # table's pinned crossbar key layout (2026-11-13; the lane count from
+  # 2026-10-04 until then). Imported here, not at module level: lanes imports
+  # this module at load time.
   from p4model.lanes import table_blocks
   factor = table_blocks(ternary_key_field_bits(feature_intervals))
   for index, tree in enumerate(codewords):

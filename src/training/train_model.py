@@ -243,7 +243,8 @@ def rf_params_from_params(params, suffix):
 def _crossbar_violation(byte_width):
     """crossbar_violation for a CrossbarKeyTooWide trial: the byte overflow,
     floored at 1. lanes.table_blocks also raises for a key of <= 64 bytes
-    with no lane-legal layout, whose overflow would read <= 0 -- i.e.
+    with no crossbar allocation (xbar.alone_blocks), whose overflow would
+    read <= 0 -- i.e.
     feasible -- to early_stopping.constraint_values."""
     return max(1, byte_width - TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
 

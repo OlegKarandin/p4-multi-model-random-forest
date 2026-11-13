@@ -9,8 +9,10 @@ p4c -- 405 rows across 14 CSV files in results/, 50 of them from compiles the
 model was never fitted on -- and require ZERO under-predictions on the
 quantity the production packer will actually charge, at every placement the
 packer can emit. Since 2026-10-04 blocks_charged is priced with lanes.table_blocks
-(pinned fill-low layout); probes compiled without pins under-predict by one on
-24-remainder fields -- listed in the test, not a model error on generated designs.
+(pinned fill-low layout; since 2026-11-13 that is the ternary crossbar port,
+xbar.alone_blocks, the lane count before); probes compiled without pins
+under-predict by one on 24-remainder fields -- listed in the test, not a model
+error on generated designs.
 
 THREE PREDICTED QUANTITIES, per row:
   blocks_headline -- tables.codeword_to_blocks_headline(field_bit_widths),
@@ -18,22 +20,24 @@ THREE PREDICTED QUANTITIES, per row:
                       states.
   blocks_refined  -- tables.codeword_to_blocks(field_bit_widths), the
                       LADDER per-table price (the production price is now
-                      lanes.table_blocks; headline plus the Sec 2.3
+                      lanes.table_blocks, the crossbar port; headline plus the Sec 2.3
                       isolation credit, capped at one field per Sec 6.1).
   blocks_charged  -- what p4model/packing.py's ordered stage simulation
                       charges the table (audit C5): blocks_refined when its
                       key is the first distinct key in its stage (or the
                       source cannot say what was placed ahead of it); when a
-                      DIFFERENT key sits ahead of it in the same stage, its
-                      lane LEFTOVER price behind that key
-                      (packing._stage_key_prices, the packer's own pricing
-                      function). Headline and refined alone are EXPECTED to
+                      DIFFERENT key sits ahead of it in the same stage, the
+                      blocks of its crossbar allocation on what that key left
+                      (packing.stage_key_prices: p4c's ternary crossbar
+                      allocation, ported, since 2026-11-13; the lane leftover
+                      price of the deleted packing._stage_key_prices before). Headline and refined alone are EXPECTED to
                       under-predict on shared stages; only blocks_charged
                       must hit 0 under.
 
 Rows whose stage the packer would never produce are marked placement_refused
-and excluded from the gate: a key the lane simulation cannot fit into the
-stage (the 62-byte mixed-key net was retired 2026-09-29). (Until
+and excluded from the gate: a key the crossbar simulation
+(packing.stage_key_prices) cannot allocate in the stage (the 62-byte
+mixed-key net was retired 2026-09-29). (Until
 2026-09-28 blocks_charged instead added the fitted crowded-stage margin, +1
 to a non-first key when two different keys filled more than 58 bytes; before
 2026-09-25, the per-key SATURATION margin. Both retired.)
@@ -61,10 +65,11 @@ WHICH KEY IS "NOT FIRST", AND WHAT IS AHEAD OF IT, resolved per source:
     the `layout` JSON (its blocks_a/blocks_b columns are a STALE predicted
     price). The file cannot say which of two co-located keys p4c served
     first, so both orders are scored and the WORSE one that the packer could
-    emit is charged; a stage of two keys up to 64 bytes is priced by the lanes.
+    emit is charged; a stage of two keys up to 64 bytes is priced by the
+    crossbar simulation (packing.stage_key_prices).
   * tcam_offset_harvest and tcam_heldout_harvest record measured_start_group
     but not the other keys of the stage, so no stage-mate is known and
-    blocks_charged is the refined price. The design-level lane simulation on
+    blocks_charged is the refined price. The design-level stage simulation on
     those archives is scored end to end by scripts/validation_table.py.
 
 Run (from the repository root):
@@ -164,8 +169,9 @@ def score_observation(source, identifier, field_bit_widths, observed_blocks,
     stage_mates names the OTHER keys p4c put in the same stage (field-bit
     tuples), when the source records them. They are placed ahead of this key
     when not_first, behind it otherwise, and the table is charged what the
-    packer would charge it there (price_in_stage): its lane leftover price
-    behind them, or its refined price as the first key. A table with no
+    packer would charge it there (price_in_stage): its crossbar-allocation
+    price behind them (packing.stage_key_prices), or its refined price as the
+    first key. A table with no
     recorded stage-mates is charged the refined price.
 
     orders (optional) replaces that for a source that cannot say which of
@@ -278,7 +284,8 @@ def score_stretch_sweep(path):
     shares this table's stage in the committed layout. This file carries no
     crossbar evidence to say which of two co-located keys is truly first, so
     both orders are candidates and the worse emittable one is charged; a
-    stage of two keys up to 64 bytes is priced by the lanes."""
+    stage of two keys up to 64 bytes is priced by the crossbar simulation
+    (packing.stage_key_prices)."""
     frame = pd.read_csv(path)
     rows = []
     for _, r in frame.iterrows():
@@ -502,7 +509,7 @@ def under_predictions(rows, diff_key="diff_charged"):
 
 
 def refused_placements(rows):
-    """Rows observed at a stage the packer refuses (no lane-legal fit)."""
+    """Rows observed at a stage the packer refuses (no crossbar allocation)."""
     return [r for r in rows if r["placement_refused"]]
 
 
@@ -538,7 +545,7 @@ def main(argv=None):
                   r["behind_other_key"]))
 
     refused = refused_placements(rows)
-    print("\n### placements the packer refuses (no lane fit): %d\n" % len(refused))
+    print("\n### placements the packer refuses (no crossbar allocation): %d\n" % len(refused))
     for r in refused:
         print("  %s / %s: field_bit_widths=%s blocks_charged=%d observed_blocks=%d"
               % (r["source"], r["identifier"], r["field_bit_widths"],

@@ -2045,7 +2045,9 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   #     pressure and p4c then put some 17-32-bit fields whole in W containers:
   #     same bytes, worse lanes, +1 block per tree. The model's 62-byte
   #     mixed-key refusal was retired on the strength of these pins
-  #     (target.py) -- dropping them re-exposes M150_k7_s11.
+  #     (target.py) -- dropping them re-exposes M150_k7_s11. The ternary
+  #     crossbar port (xbar.py, 2026-11-13) prices the pinned layouts too,
+  #     so it relies on the same pins.
   # Evidence: results/compiler_calibration_pragmas_2026_09_29/ (73 designs,
   # feasible stage_depth 60/60, blocks 60/60; cost +4.7 PHV containers).
   # Per-tree codes: one packed field per feature (spec 2026-11-11-packed-codes-

@@ -9,9 +9,12 @@ The joint block cost is
 -- see total_blocks, which is the whole objective.
 
 PRICES WITH THE LADDER (2026-10-04, spec Sec I.3.4 option b). The production
-per-table price is lanes.table_blocks (the lane model); alignment keeps the
-byte-count ladder tables.codeword_to_blocks. Measured on 2,330 joint programs:
-a lane-priced alignment ends with different thresholds on 48 (2.1%), summed
+per-table price is lanes.table_blocks (since 2026-11-13 xbar.alone_blocks of
+the key's pinned layout, the ternary crossbar port; the lane count from
+2026-10-04 until then); alignment keeps the byte-count ladder
+tables.codeword_to_blocks. Measured on 2,330 joint programs AGAINST THE LANE
+COUNT (lane-era, 2026-10-04; not re-measured against the port): a
+lane-priced alignment ends with different thresholds on 48 (2.1%), summed
 total blocks 1,708 vs 1,706, accuracy differences +-0.001 that cancel, at
 x1.42 the alignment time. align_stats' factor_* / total_blocks_* fields are
 therefore LADDER quantities.
@@ -143,8 +146,11 @@ def _factor(widths):
     reason the objective collapses to one integer (design §3): under 'joint'
     encoding every classification table keys the same field set, so every table
     shares this factor, while alignment changes neither a tree's entry count
-    nor the tree count. Minimising this minimises the LADDER's blocks; the shipped price (lanes.table_blocks) agrees except on 13 of
-    2,330 post-alignment joint campaign keys (always lane lower) and 2 of 2,330 pre-alignment keys (lane higher).
+    nor the tree count. Minimising this minimises the LADDER's blocks; the
+    price shipped on 2026-10-04 (lanes.table_blocks, then the lane count)
+    agreed except on 13 of 2,330 post-alignment joint campaign keys (always
+    lane lower) and 2 of 2,330 pre-alignment keys (lane higher). Lane-era
+    measurement, not re-measured against the crossbar port (2026-11-13).
 
     Delegates to p4model rather than restating the rule, which is the point of
     the repair -- the superseded `blocks = range_blocks + n_trees *
@@ -217,8 +223,10 @@ def total_blocks(widths, multiplier):
     Equals ResourceUsage.blocks on every joint row of
     tests/fixtures/resource_model_golden.json (design §7.4) -- on the fixture,
     not in general: ResourceUsage prices with lanes.table_blocks and this with
-    the ladder; they differ on 13 of 2,330 post-alignment joint campaign keys
-    (lane lower) and 2 of 2,330 pre-alignment keys (lane higher).
+    the ladder. Measured lane-era (2026-10-04, against the lane count, not
+    re-measured against the crossbar port): they differed on 13 of 2,330
+    post-alignment joint campaign keys (lane lower) and 2 of 2,330
+    pre-alignment keys (lane higher).
 
     What this REPLACES is `_factor` alone, which was blind to range blocks
     entirely: a feature four intervals from a free range block could not open

@@ -1,6 +1,7 @@
 """HISTORICAL: the cap this sweep tested was retired 2026-09-29 (spec
 2026-09-29-overlay-and-layout-pragmas-design.md Sec 5.2); the summary now checks
-the lane price instead.
+the model's in-stage price instead (packing.stage_key_prices: the lane price
+until 2026-11-13, the ternary crossbar port since).
 
 E1-lite: does TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62 hold for probe
 keys other than the one it was read off?
@@ -63,7 +64,7 @@ def summarize(out):
             'probe_predicted_blocks_at_0', 'probe_real_blocks', 'extra']
     print(frame[cols].to_string(index=False))
     shared = frame[frame['both_in_one_stage'] == True]  # noqa: E712
-    def lane_price(row):
+    def port_price(row):
         # The spacer is one solid field (tcam_offset_scan's key 'b'); the
         # CSV stores probe_fields space-separated (e.g. "54 56").
         spacer = (8 * int(row['spacer_bytes']),)
@@ -71,11 +72,11 @@ def summarize(out):
                       .replace(',', ' ').replace('(', ' ').replace(')', ' ').split())
         prices = stage_key_prices((spacer, probe))
         return None if prices is None else prices[1]
-    shared = shared.assign(lane=shared.apply(lane_price, axis=1))
-    missed = shared[shared['lane'].isna() | (shared['lane'] < shared['probe_real_blocks'])]
-    print('\nshared-stage points the lane price would MISS (under p4c): %d' % len(missed))
+    shared = shared.assign(port=shared.apply(port_price, axis=1))
+    missed = shared[shared['port'].isna() | (shared['port'] < shared['probe_real_blocks'])]
+    print('\nshared-stage points the port price would MISS (under p4c): %d' % len(missed))
     if len(missed):
-        print(missed[cols + ['lane']].to_string(index=False))
+        print(missed[cols + ['port']].to_string(index=False))
 
 
 def main(argv=None):

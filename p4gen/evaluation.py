@@ -194,7 +194,8 @@ def _packed_tree_entries(codewords, key, use_default_action_discount):
   a design for a key the program never emits. The refusals kept are the packed
   key's own: a codeword over MAX_CODEWORD_LENGTH bits, and a key over the
   stage's crossbar bytes (len(key), the packed byte count). The packer adds the
-  lane-fit refusal on the packed key (CrossbarKeyTooWide)."""
+  crossbar-allocation refusal on the packed key (CrossbarKeyTooWide, when
+  packing.packed_alone_blocks finds no allocation)."""
   entries = len(codewords[0])
   if use_default_action_discount and entries > 0:
     entries -= len(most_common_class_and_dropped_codewords(codewords[0])[1])
@@ -275,8 +276,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   is deliberately NOT one of the 15 keys: it is already dead after the branch
   converges -- assemble_usage's ResourceUsage.blocks uses ternary_plan.blocks,
   the StagePlan total from p4model.packing, charged by its ordered stage
-  simulation (a key placed behind a different key pays its lane leftover
-  price), never this naive sum. Carrying it into the pool would invite exactly
+  simulation (every table pays its crossbar allocation on what the earlier
+  tables in its stage left, a later table of the same key included), never
+  this naive sum. Carrying it into the pool would invite exactly
   the confusion the StagePlan.blocks fix (see CLAUDE.md's compiler-calibration
   note) was created to resolve.
 

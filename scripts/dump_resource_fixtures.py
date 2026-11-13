@@ -61,12 +61,16 @@ offset premise under it are gone -- reading p4c's own assembly showed a block
 may pair with ANY of a stage's midbytes and groups need not be consecutive, so
 a key's own price cannot depend on where it starts. The paragraph above is
 kept as the record of how the earlier retraction was settled, not as a
-description of live code. What prices a key now is `tables.codeword_to_blocks`
-(no offset argument), and the sharing effect lives in
+description of live code. What prices a key now is p4c's ternary crossbar
+allocation, ported (`lanes.table_blocks` -> `xbar.alone_blocks`, since
+2026-11-13; `tables.codeword_to_blocks`, no offset argument, before
+2026-10-04 and the lane count in between), and the sharing effect lives in
 `p4model/packing.py`'s stage placement -- first as a stage-sharing margin
 (`known_findings` entry `stage_sharing_margin_2026_09_21` below, an
-OVER-prediction rather than a correction), since audit C5 as an ordered stage
-simulation over crossbar lanes (`ordered_stage_simulation_2026_09_28`).
+OVER-prediction rather than a correction), from audit C5 as an ordered stage
+simulation over crossbar lanes (`ordered_stage_simulation_2026_09_28`), and
+since 2026-11-13 as the same ordered simulation over the ported crossbar
+allocation (`packing._crossbar_stage`, `p4model/xbar.py`).
 
 `ternary_ragged` is no longer serialized: the penalty prices a key by its
 field BIT widths, and key_field_sets already carries those.
@@ -394,9 +398,12 @@ def _metadata(campaign_dir):
                     "(ddos 2 before app 1, ties to the tree listed last), the "
                     "first key in a stage pays codeword_to_blocks, and every "
                     "later key pays its lane leftover price "
-                    "(p4model/lanes.py). Two different keys above 62 "
-                    "combined bytes are still refused (the greedy-give-up "
-                    "safety net). independent_low_sd12's real stage shares a "
+                    "(p4model/lanes.py; since 2026-11-13 the ternary "
+                    "crossbar port, p4model/xbar.py, charges every table "
+                    "its allocation instead). Two different keys above 62 "
+                    "combined bytes were then still refused (the "
+                    "greedy-give-up safety net, retired 2026-09-29). "
+                    "independent_low_sd12's real stage shares a "
                     "40-byte app key and a 20-byte ddos key at 60 bytes and "
                     "p4c charged nothing; the simulation agrees, so blocks "
                     "79 -> 78 against tcam_real 78 (EXACT; "

@@ -62,8 +62,10 @@ TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
 # which has only been validated at 64. 12 groups x 5 private bytes + 6 midbytes
 # (p4c's input_xbar.cpp:1319 says 66), and real stages of 65 and 66 distinct bytes
 # were built. Replay of 691 designs: 5 stage depths corrected, 0 regressions.
-# Bytes alone do not admit a stage at 65-66: the lane simulation still has to fit
-# every key (lanes.price_with_supply returning None is what makes a stage rise).
+# Bytes alone do not admit a stage at 65-66: the ternary crossbar port
+# (packing._crossbar_stage, xbar.py, since 2026-11-13) still has to find every
+# key an allocation, and refuses the stage when it cannot. Since then only the
+# range pool's packer (crossbar_stages_needed's fits) reads this constant.
 TERNARY_CROSSBAR_STAGE_BYTES = 66
 # RETIRED 2026-09-29: TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62, the
 # "greedy-give-up safety net" that refused a stage holding two different keys
@@ -71,11 +73,12 @@ TERNARY_CROSSBAR_STAGE_BYTES = 66
 # (22 + 41 = 63 bytes, p4c moved the app key a stage), was a PHV LAYOUT
 # artifact: with the generator's @pa_container_size pins on every tree-key
 # code_* field (build_p4_script.code_field_container_sizes), p4c places both
-# keys in one stage, as the lane simulation does. Every probe point at 56-64
-# bytes (tcam_mixed_key_cap_sweep, tcam_discount_scan dsp01-42) stayed in one
-# stage and _stage_key_prices reproduces all 42 charges; dsp43-45 at 65-67 bytes
-# stay refused, by the lane simulation at 65-66 and TERNARY_CROSSBAR_STAGE_BYTES
-# at 67. Evidence: spec
+# keys in one stage, as the model's stage simulation does. History: every probe
+# point at 56-64 bytes (tcam_mixed_key_cap_sweep, tcam_discount_scan dsp01-42)
+# stayed in one stage, and the lane simulation of the time reproduced all 42
+# charges and refused dsp43-45 (65-67 bytes). Since 2026-11-13 that stage
+# simulation is the ternary crossbar port (packing._crossbar_stage, xbar.py),
+# which relies on the same pins. Evidence: spec
 # docs/superpowers/specs/2026-09-29-overlay-and-layout-pragmas-design.md
 # Sec 5.2. THE RETIREMENT HOLDS ONLY WHILE THOSE PINS ARE EMITTED -- a
 # generator change that drops them re-exposes M150_k7_s11.

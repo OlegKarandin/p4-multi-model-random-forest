@@ -1,7 +1,8 @@
 """Where the tables land: TCAM column geometry and the ternary crossbar packer.
 
 Depends on target.py, errors.py, xbar.py (p4c's ternary crossbar allocation,
-ported) and lanes.py (key layouts; the packed pool's stand-alone price) only. Deliberately knows nothing about features,
+ported: every table's stand-alone and in-stage price) and lanes.py (key
+layouts) only. Deliberately knows nothing about features,
 registers or trees -- it is handed (blocks, byte_width) specs plus readiness
 levels (and, for the classification pool, key field widths and placement
 priorities) and returns a placement, which is what lets the same packer serve
@@ -48,7 +49,7 @@ class StageLoad:
 
   index  : the stage index.
   blocks : the TCAM block count of every table SHARD in the stage, as charged
-           (a later key's lane price included), one entry per column-sized
+           (its crossbar-allocation charge in the stage), one entry per column-sized
            shard. Kept per shard rather than summed because the 12x2 column
            packing (fits_two_columns) needs the widths, not the total.
   fields : the distinct crossbar key fields present, (field_id, field_bytes)
@@ -95,8 +96,8 @@ class StagePlan:
                          # so that pool sees these stages as partly full.
   table_blocks: tuple = ()  # one CHARGED block count per table_specs entry, positionally
                          # aligned like table_stages: the declared count in the
-                         # declared-price paths, the sum of its chunks' charges (a
-                         # later key's lane price included) in the ordered
+                         # declared-price paths, the sum of its chunks' charges (each
+                         # its crossbar-allocation charge in its stage) in the ordered
                          # simulation. sum(table_blocks) == blocks. What model.json's
                          # per-table list reports (spec 2026-09-29 §5.3).
 
@@ -528,7 +529,9 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     * TCAM blocks, as a 12x2 COLUMN packing (fits_two_columns), not a flat
       <= TCAM_BLOCKS_PER_STAGE total
     * <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE independent tables
-    * <= TERNARY_CROSSBAR_STAGE_BYTES bytes of DISTINCT key fields
+    * <= TERNARY_CROSSBAR_STAGE_BYTES bytes of DISTINCT key fields (the range
+      pool; the classification pool's crossbar is decided by the ternary
+      crossbar port's allocation instead, below)
   (RM-5/RM-6/RM-7, reviews/p4_tofino_reference.md §4.3.) These constraints
   are not separable: tables (20 blocks, 5 B), (20, 5), (1, 60) need 3 stages
   although each relaxation alone says 2.
@@ -604,10 +607,12 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   joint-off-al compiles of campaign_2026_11 price every tree table exactly
   (model7/findings.md Part 4).
 
-  Measured on the 43 pragma'd arm-D
-  compiles (results/compiler_calibration_pinned/): stage_depth 42/43 (the
-  miss, independent_high_sd12, is the one design where the pragma itself
-  cost p4c a stage) and blocks 38/38.
+  Measured under the ternary crossbar port (2026-11-13) on the 73 designs of
+  results/compiler_calibration_pragmas_2026_09_29/ (python -m src.verify
+  --model-archive): stage_depth feasible 60/60 (all 72/73; the miss,
+  heldout_independent_M250_k14_s12, is infeasible either way) and blocks
+  feasible 60/60; plus the step-2 replay of the 7,650 campaign_2026_11
+  compiles (model7/findings.md Part 4).
 
   THE PACKED CLASSIFICATION POOL (key_bytes given: one lanes.py byte-list
   tuple per table, packed.key_bytes -- spec

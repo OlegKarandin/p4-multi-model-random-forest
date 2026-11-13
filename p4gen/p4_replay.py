@@ -548,11 +548,12 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             range_names.append(name)
         elif name.startswith('get_classification_tree'):
             # blocks[name] is either the model's own standalone price
-            # (lanes.table_blocks x rows, replay_design) or the count p4c
-            # committed (replay_stage_depth). Either way it is what the table
-            # is charged as its stage's FIRST key; the packer's ordered stage
-            # simulation charges a table placed behind a different key its
-            # lane leftover price instead (packing.crossbar_stages_needed).
+            # (_field_price, xbar.alone_blocks, x rows; replay_design) or the
+            # count p4c committed (replay_stage_depth). It sizes the table's
+            # rows; what the table is charged is decided by the packer's
+            # ordered stage simulation, which charges every table its
+            # crossbar allocation on what the earlier tables in its stage left
+            # (packing.crossbar_stages_needed).
             # Program order is kept: p4c breaks placement-priority ties by
             # taking the table listed LAST first.
             key_bits = _key_bits(bits, keys)
@@ -580,9 +581,10 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     # the other task's range tables, which count against that stage's limits.
     # key_field_bits and placement_priority (the generator's
     # @placement_priority per task) switch on the ordered stage simulation,
-    # which decides both WHERE trees land and what a tree behind a different
-    # key in its stage pays -- so they matter even when the block counts are
-    # p4c's own.
+    # which decides both WHERE trees land and what every tree pays on the
+    # crossbar the earlier tables in its stage left (a later tree of the same
+    # key included) -- so they matter even when the block counts are p4c's
+    # own.
     ternary_levels = tree_readiness_levels(
         range_plan.table_stages, range_task, ternary_task,
         tasks=_label_tasks(range_task, ternary_task),
