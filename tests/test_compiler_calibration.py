@@ -993,9 +993,10 @@ _PINNED_CSV = os.path.join('results', 'compiler_calibration_pinned.csv')
 # leaves the list; the pre-pragma compile's 13 is the C1 fixture's (below).
 _PINNED_KNOWN_STAGE_MISSES = {'margin_independent_M150_k7_s11': -1}
 
-# The lane price's accepted greedy miss (2026-10-04): independent_low_sd5's
-# three ddos trees key (27, 52), lane 2 per tree vs p4c 3. model - p4c.
-_KNOWN_BLOCK_MISSES = {'independent_low_sd5': -3}
+# model - p4c blocks. Empty since the crossbar port (2026-11-13): it prices
+# independent_low_sd5's ddos key (27, 52) at p4c's 3 per tree (the lane count
+# said 2, a -3 miss over three trees).
+_KNOWN_BLOCK_MISSES = {}
 
 
 def _pinned_rows():
@@ -1016,10 +1017,8 @@ def test_the_pinned_archive_holds_all_43_designs():
 @pytest.mark.parametrize('row_id,tcam_real,stages_real', _pinned_rows())
 def test_the_model_matches_p4c_on_every_pinned_design(row_id, tcam_real,
                                                       stages_real):
-    """stage_depth 41/43 (the two known misses above), blocks 37/38
-    (independent_low_sd5, the accepted lane-price under)
-    -- design for design the same as the audit's prototype
-    (reviews/model_audit_scratch/proto_model.py --c1, FILL=lane)."""
+    """Under the crossbar port (2026-11-13): stage_depth 42/43 (the known
+    miss above), blocks 38/38."""
     if not os.path.isdir(os.path.join(_PINNED_ROOT, 'compiles', row_id)):
         pytest.skip('needs %s (gitignored)' % _PINNED_ROOT)
     depth, blocks = cc.replay_design(row_id, _PINNED_ROOT)

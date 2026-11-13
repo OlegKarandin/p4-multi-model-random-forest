@@ -18,18 +18,17 @@ from p4gen.p4_ground_truth import committed_blocks, committed_stages_real
 from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.target import TOFINO_PIPELINE_STAGES
 
-# results/compiler_calibration_pragmas_2026_09_29 under the lane price
-# (2026-10-04): stage_depth 70/73 (feasible 60/60), blocks 59/60.
-# row -> {metric: (model, p4c)}. See CLAUDE.md "Accuracy -- current gates".
+# results/compiler_calibration_pragmas_2026_09_29 under the ternary crossbar
+# port (p4model/xbar.py, 2026-11-13): stage_depth 72/73 (feasible 60/60),
+# blocks feasible 60/60. row -> {metric: (model, p4c)}.
 KNOWN_MISSES = {
-    # Infeasible either way (> 12 stages); listed in CLAUDE.md. Exact since
-    # 2026-11-08 (p4c's tie order for registers and range tables, rule E):
+    # Infeasible either way (> 12 stages). Exact since 2026-11-08 (p4c's tie
+    # order for registers and range tables, rule E):
     # heldout_independent_M150_k15_s16 (was 14 vs 13) and
-    # independent_high_sd12 (was 13 vs 14).
+    # independent_high_sd12 (was 13 vs 14). Since the port (2026-11-13)
+    # independent_low_sd5's ddos key (27, 52) prices 3 per tree like p4c (the
+    # lane count said 2), so its blocks miss (13 vs 16) left the list.
     'heldout_independent_M250_k14_s12': {'stage_depth': (15, 16)},
-    # The lane price's accepted greedy miss: ddos key (27, 52), 2 per tree vs
-    # p4c's 3, three trees (golden fixture known_findings 'lane_price_2026_10').
-    'independent_low_sd5': {'blocks': (13, 16)},
 }
 
 
