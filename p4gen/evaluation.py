@@ -21,7 +21,7 @@ from p4gen.build_p4_script import (
 
 # ---------------------------------------------------------------------------
 # Shim block. The resource model itself now lives in p4model/ (import-light:
-# no sklearn, no numpy, no CWD dependence -- see tests/test_p4model_guards.py).
+# no sklearn, no numpy, no CWD dependence -- see tests/test_package_layout.py).
 # Everything below is re-exported at its historical path so src/training/,
 # src/reporting/, scripts/ and the test suite keep the imports they always had.
 # Explicit names, never `import *`, so the mapping stays greppable and a heavy

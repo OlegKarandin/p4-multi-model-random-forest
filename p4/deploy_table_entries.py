@@ -36,7 +36,7 @@ import sys
 # p4model, .catalog, .errors, .names, .packing, .program, .ranges,
 # .registers, .tables, .target, .usage, plus the stdlib modules they use
 # (dataclasses, math, re) -- still no sklearn/numpy/pandas/CWD-relative file
-# reads (see tests/test_p4model_guards.py's standalone-import guard), but the
+# reads (see tests/test_package_layout.py's standalone-import guards), but the
 # `dataclasses` import means this deploy path needs Python >= 3.7.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
