@@ -2,7 +2,6 @@ import os
 import math
 from pathlib import Path
 import numpy as np
-from sklearn.tree import export_text
 from sklearn.tree import _tree as _sklearn_tree
 import csv
 import json
@@ -44,8 +43,6 @@ MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
 PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources") + os.sep
 INTERMEDIATE = "temp/"
 OUTPUT_PATH = "p4/"
-PATH_TABLE_ENTRIES_OUTPUT = OUTPUT_PATH + "table_entries.json"
-PATH_TABLE_TEMPLATE_P4  = PATH + 'table.p4'
 PATH_ACTION_TEMPLATE_P4 = PATH + 'action.p4'
 PATH_TABLE_CLASSIFICATION_TEMPLATE_P4 = PATH + 'table_classification.p4'
 # Task 8: Planter RF_EB-style exact-match code/decision tables. The two
@@ -133,47 +130,6 @@ def dt_thresholds_float_to_int(clf):
   return clf
 
 
-def get_tree_textual_representation(clf, feature_names, verbose=False):
-  """Renders each estimator's tree as export_text's indented text.
-
-  No code anywhere in this repo parses this any more: Task 15 replaced the
-  export_text-and-reparse path (the removed _get_nodes_from_text, which this
-  function's rendered text used to feed) with get_nodes(), which reads
-  estimator.tree_'s C-level arrays directly and so cannot hit export_text's
-  own truncation default (see the comment below). Kept anyway -- not deleted
-  alongside _get_nodes_from_text -- because it is a correct, general-purpose
-  "render this fitted tree as text" utility with no defect of its own, and
-  because tests/test_tree_parsing.py's characterisation suite used it
-  (commit 838acf6) to prove get_nodes() agrees with the old parser before
-  that parser was deleted; kept available for the same kind of manual
-  re-characterisation if get_nodes() itself ever needs re-verifying against
-  a human-readable rendering."""
-  tree_textual_representation = {}
-
-  for idx,tree in enumerate(clf.estimators_):
-    # max_depth MUST be passed explicitly: sklearn's export_text defaults to
-    # max_depth=10 and renders anything deeper as
-    # "|--- truncated branch of depth N" lines -- see commit 838acf6's
-    # test_export_text_default_max_depth_truncates_a_deep_tree (since
-    # removed alongside _get_nodes_from_text, the parser it was
-    # characterising) for the measured effect: a real depth-12 tree with 350
-    # leaves parsed as 168, and on a depth-14 tree 2516 of 4000 probe inputs
-    # then matched no table entry at all. Sizing to the tree's own depth
-    # keeps this function's OWN output exact regardless. (get_nodes() -- the
-    # production path since Task 15 -- reads tree_ arrays directly and is
-    # immune to this class of bug entirely: there is no rendered text to
-    # under-size.)
-    tree_textual_representation[idx] = export_text(
-        tree, feature_names=feature_names, max_depth=max(1, tree.get_depth()))
-
-  if verbose == True:
-    for tree in tree_textual_representation:
-      print("Tree ", tree)
-      print(tree_textual_representation[tree])
-
-  return tree_textual_representation
-
-
 def _parents_and_depths(t):
   """One forward pass over a fitted tree_'s children_left/children_right
   arrays, returning (parent, depth) lists indexed by node id: parent[i] is
@@ -209,7 +165,7 @@ def get_nodes(estimator, feature_names):
 
   Replaces the export_text round-trip that used to render the tree to
   indented text and re-parse it (Task 15) -- that approach cost a max_depth
-  truncation hazard (see get_tree_textual_representation's comment), a
+  truncation hazard (sklearn's export_text defaults to max_depth=10), a
   rounding-order bug, an O(n^2) rescan per node to find its right child, a
   state-machine parser, and dependence on export_text's exact
   "class: <value>" line format. Proved equivalent to that approach across
@@ -1855,9 +1811,9 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   list, which is why `selected_features_app`/`selected_features_ddos` exist
   and cannot be replaced by `feature_intervals_*.keys()`:
   `get_feature_thresholds` sorts alphabetically by feature name, whereas
-  `export_text(tree, feature_names=...)` (via
-  `get_tree_textual_representation`) requires `feature_names[i]` to be
-  training column `i`. Raises ValueError when the flag is True and an active
+  `get_nodes(estimator, feature_names)` names a node's feature
+  `feature_names[estimator.tree_.feature[node]]`, so `feature_names[i]` must
+  be training column `i`. Raises ValueError when the flag is True and an active
   model's list is missing -- silently guessing an order would produce
   wrong-but-plausible codewords.
 
