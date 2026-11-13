@@ -96,8 +96,11 @@ def can_use(flags):
   return sum(1 << i for i in range(4) if not (flags & ALIGN_FAIL[i]))
 
 
+_BITS = tuple(tuple(i for i in range(4) if mask >> i & 1) for mask in range(16))
+
+
 def _bits(mask):
-  return [i for i in range(4) if mask >> i & 1]
+  return _BITS[mask]
 
 
 class _Grp:
@@ -110,9 +113,29 @@ class _Grp:
 
   def free_of(self, cu):
     out = set()
-    for i in _bits(cu):
+    for i in _BITS[cu]:
       out |= self.free[i]
     return out
+
+  def metrics(self, full, half, mx):
+    """The numbers is_better_group compares, for this group alone (they never depend on the other group): computed
+    once per selection instead of once per comparison. full / half are the (can-use mask, count) requirements with
+    one / two usable positions, mx the largest full count."""
+    total = len(self.found) + len(self.max_free())
+    a32 = sum(min(len(self.free_of(k)), n) for k, n in full)
+    lk = self.clone()
+    for k, n in full:
+      idx = _BITS[k][0]
+      for i in range(len(self.free_of(k))):
+        if not lk.free[idx]:
+          break
+        if i == n:
+          break
+        lk.free[idx].discard(min(lk.free[idx]))
+    a16 = sum(min(len(self.free_of(k)), n) for k, n in half)
+    a16l = sum(min(len(lk.free_of(k)), n) for k, n in half)
+    a32m = sum(min(len(self.free_of(k)), n) for k, n in full if n == mx)
+    return (self.attempted, total, len(self.found), a32, a16l, a32m, a16, self.group)
 
   def max_free(self):
     return self.free[0] | self.free[1] | self.free[2] | self.free[3]
@@ -131,54 +154,44 @@ class _Grp:
 
   def is_better(self, b, prefer_found, required, reqs):
     """grp_use::is_better_group: True if self (a) beats the currently selected b."""
-    a = self
-    if not a.attempted and b.attempted:
-      return True
-    if a.attempted and not b.attempted:
-      return False
-    ac, bc = a.total_avail() > required, b.total_avail() > required
-    if ac and not bc:
-      return True
-    if bc and not ac:
-      return False
-    if prefer_found:
-      t = len(a.found) - len(b.found)
-      if t:
-        return t > 0
-      t = a.total_avail() - b.total_avail()
-      if t:
-        return t < 0
-    full = [(k, n) for k, n in sorted(reqs.items()) if bin(k).count('1') == 1]
-    half = [(k, n) for k, n in sorted(reqs.items()) if bin(k).count('1') == 2]
-    a32 = sum(min(len(a.free_of(k)), n) for k, n in full)
-    b32 = sum(min(len(b.free_of(k)), n) for k, n in full)
-    t = a32 - b32
+    full, half, mx = _split_reqs(reqs)
+    return _is_better(self.metrics(full, half, mx), b.metrics(full, half, mx), prefer_found, required)
+
+
+def _split_reqs(reqs):
+  """(full, half, mx) of is_better_group: the requirements whose bytes have one usable position, two, and the largest
+  count among the first."""
+  full = [(k, n) for k, n in sorted(reqs.items()) if bin(k).count('1') == 1]
+  half = [(k, n) for k, n in sorted(reqs.items()) if bin(k).count('1') == 2]
+  return full, half, max([n for _, n in full], default=0)
+
+
+def _is_better(a, b, prefer_found, required):
+  """grp_use::is_better_group on two groups' metrics (_Grp.metrics): attempted, total available, found, 32-bit
+  aligned fit, 16-bit fit after the 32-bit bytes are locked, fit of the largest 32-bit requirement, 16-bit fit,
+  total available, then the lower group number."""
+  a_att, a_tot, a_found, a32, a16l, a32m, a16, a_grp = a
+  b_att, b_tot, b_found, b32, b16l, b32m, b16, b_grp = b
+  if not a_att and b_att:
+    return True
+  if a_att and not b_att:
+    return False
+  ac, bc = a_tot > required, b_tot > required
+  if ac and not bc:
+    return True
+  if bc and not ac:
+    return False
+  if prefer_found:
+    t = a_found - b_found
     if t:
       return t > 0
-
-    def lock32(g):
-      lk = g.clone()
-      for k, n in full:
-        idx = _bits(k)[0]
-        for i in range(len(g.free_of(k))):
-          if not lk.free[idx]:
-            break
-          if i == n:
-            break
-          lk.free[idx].discard(min(lk.free[idx]))
-      return lk
-    al, bl = lock32(a), lock32(b)
-    a16 = sum(min(len(a.free_of(k)), n) for k, n in half)
-    b16 = sum(min(len(b.free_of(k)), n) for k, n in half)
-    a16l = sum(min(len(al.free_of(k)), n) for k, n in half)
-    b16l = sum(min(len(bl.free_of(k)), n) for k, n in half)
-    mx = max([n for _, n in full], default=0)
-    a32m = sum(min(len(a.free_of(k)), n) for k, n in full if n == mx)
-    b32m = sum(min(len(b.free_of(k)), n) for k, n in full if n == mx)
-    for t in (a16l - b16l, a32m - b32m, a16 - b16, a.total_avail() - b.total_avail()):
-      if t:
-        return t > 0
-    return a.group < b.group
+    t = a_tot - b_tot
+    if t:
+      return t < 0
+  for t in (a32 - b32, a16l - b16l, a32m - b32m, a16 - b16, a_tot - b_tot):
+    if t:
+      return t > 0
+  return a_grp < b_grp
 
 
 def _sort_key(tie):
@@ -268,10 +281,12 @@ class StageXbar:
 
   @staticmethod
   def _select(cands, prefer_found, required, reqs):
-    sel = None
+    full, half, mx = _split_reqs(reqs)
+    sel = sel_m = None
     for g in cands:
-      if sel is None or g.is_better(sel, prefer_found, required, reqs):
-        sel = g
+      m = g.metrics(full, half, mx)
+      if sel is None or _is_better(m, sel_m, prefer_found, required):
+        sel, sel_m = g, m
     return sel
 
   def _found_bytes(self, grp, unalloced, st):
