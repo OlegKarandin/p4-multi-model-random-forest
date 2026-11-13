@@ -34,7 +34,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from p4gen.p4_compile import P4CompileTimeout, compile_p4, read_compilation_succeeded
 from p4gen.p4_ground_truth import (
     committed_blocks, committed_stages_real, p4c_numbers)
-from p4gen.p4_replay import model_breakdown, parse_program
+from p4gen.p4_replay import carries_stage_pins, model_breakdown, parse_program
 from p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
 from src.reporting.manifest import git_provenance
 from src.training.campaign_run import (
@@ -444,13 +444,42 @@ def _rescored_model(paths, row_id, model):
     return model
 
 
+def _stage_pinned_rows(paths):
+    """The verified rows rescore would replay whose saved program carries
+    @stage pins (the replay refuses those, p4_replay.parse_program_text)."""
+    pinned = []
+    for name in sorted(os.listdir(paths.verify)):
+        if not name.endswith('.json'):
+            continue
+        row_id = _read_json(os.path.join(paths.verify, name))['row_id']
+        p4_path = os.path.join(paths.designs, row_id + '.p4')
+        if (not os.path.isfile(p4_path)
+                or _generator_failed(paths, row_id, _load_model(paths, row_id))):
+            continue
+        with open(p4_path, encoding='utf-8', errors='replace') as handle:
+            if carries_stage_pins(handle.read()):
+                pinned.append(row_id)
+    return pinned
+
+
 def rescore(run_dir):
     """Reclassify every verified row with the current model code and the
     p4c numbers re-parsed from its tarball. Never compiles. Keeps the
     compile's own provenance (p4c image, open-p4studio commit, verified_utc,
     p4c errors/warnings, compile_seconds); verifier_git_commit becomes the
-    rescoring commit."""
+    rescoring commit.
+
+    Raises ValueError, before rewriting any record, when any program it would
+    replay carries @stage pins: such a run is rescored at the commit that
+    generated it, never left half-rescored."""
     paths = run_paths(run_dir).ensure()
+    pinned = _stage_pinned_rows(paths)
+    if pinned:
+        raise ValueError(
+            f"cannot rescore {run_dir}: {len(pinned)} program(s) carry @stage pins, "
+            f"which the current model no longer prices: {', '.join(pinned)}. "
+            "Rescore this run at the commit that generated it. "
+            "Nothing was rewritten.")
     for name in sorted(os.listdir(paths.verify)):
         if not name.endswith('.json'):
             continue

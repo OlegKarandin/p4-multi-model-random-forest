@@ -156,11 +156,17 @@ _CODE_CONTAINERS = re.compile(
 _STAGE_PIN = re.compile(r'^\s*@stage\(\d+\)', re.M)
 
 
+def carries_stage_pins(text):
+    """True when the program text has @stage lines, which parse_program_text
+    refuses (src.verify's rescore checks a whole run with this up front)."""
+    return bool(_STAGE_PIN.search(text))
+
+
 def parse_program_text(text):
     """Raises ValueError for a program with @stage lines: the model no longer
     prices pinned placements, so such a program is replayed at the commit that
     generated it, never silently priced as if unpinned."""
-    if _STAGE_PIN.search(text):
+    if carries_stage_pins(text):
         raise ValueError('program carries @stage pins, which the model no longer '
                          'prices (spec 2026-11-13); replay it at the commit that '
                          'generated it')

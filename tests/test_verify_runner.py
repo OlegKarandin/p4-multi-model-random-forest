@@ -473,6 +473,27 @@ def test_rescore_raises_when_a_rows_program_is_missing(tmp_path):
         runner.rescore(run_dir)
 
 
+def test_rescore_refuses_a_stage_pinned_run_before_rewriting_anything(tmp_path):
+    """One @stage-pinned program anywhere in the run: rescore raises naming it
+    and leaves every verify json as it was (rows sorted before AND after it)."""
+    run_dir = _run_dir(tmp_path, rows=("a", "p", "z"))
+    for row_id in ("a", "p", "z"):
+        runner.verify_row(run_dir, row_id, compile_fn=FakeCompiler())
+    with open(os.path.join(run_dir, "designs", "p.p4"), "w") as handle:
+        handle.write("// program p\n@stage(3)\ntable t {}\n")
+    before = {}
+    for name in os.listdir(os.path.join(run_dir, "verify")):
+        with open(os.path.join(run_dir, "verify", name), "rb") as handle:
+            before[name] = handle.read()
+    with pytest.raises(ValueError, match=r"@stage pins.*\bp\b.*commit that generated it"):
+        runner.rescore(run_dir)
+    after = {}
+    for name in os.listdir(os.path.join(run_dir, "verify")):
+        with open(os.path.join(run_dir, "verify", name), "rb") as handle:
+            after[name] = handle.read()
+    assert after == before
+
+
 def test_rescore_recomputes_the_model_from_the_saved_program(tmp_path, monkeypatch):
     run_dir = _run_dir(tmp_path)
     runner.verify_row(run_dir, "r", compile_fn=FakeCompiler())
