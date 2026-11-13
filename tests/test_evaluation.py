@@ -1794,7 +1794,7 @@ def test_stage_depth_counts_the_vote_epilogue_stage():
 # margin; and until 2026-09-28 the fitted CROWDED-STAGE margin (+1 to every
 # non-first key when two keys filled more than 58 of a stage's 64 bytes),
 # which could not tell a ragged key from a solid one. See
-# tests/test_p4model_guards.py for the packing-level measurement set and
+# tests/test_packing.py for the packing-level measurement set and
 # tests/test_lanes.py for the lane model itself.
 
 APP_49 = (179, 204)      # 23 + 26 = 49 crossbar bytes, 9 blocks, ragged

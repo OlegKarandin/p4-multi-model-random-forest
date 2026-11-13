@@ -69,6 +69,21 @@ def fixture_rows():
 IDS = [r[0] for r in fixture_rows()]
 
 
+def test_resource_usage_field_order_is_pinned():
+    # The golden fixture serializes these by name, but scripts/ and
+    # src/training/ build rows positionally in places -- a reordering would be a
+    # silent data corruption, so pin it here rather than discover it later.
+    import dataclasses
+
+    from p4model import usage
+
+    assert [f.name for f in dataclasses.fields(usage.ResourceUsage)] == [
+        "stages", "blocks", "stage_depth", "range_entries", "ternary_entries",
+        "codeword_length", "register_depth", "register_count", "range_depth",
+        "ternary_depth", "range_tables", "ternary_tables",
+    ]
+
+
 def test_fixture_covers_all_nineteen_calibration_rows():
     rows = load_fixture()["rows"]
     assert len(rows) == 19

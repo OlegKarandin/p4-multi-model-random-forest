@@ -43,6 +43,17 @@ def test_p4model_needs_only_the_standard_library(tmp_path):
     assert result.returncode == 0, result.stderr[-800:]
 
 
+def test_p4model_imports_and_computes_from_an_unrelated_cwd(tmp_path):
+    code = ("from p4model.packing import crossbar_stages_needed\n"
+            "print(crossbar_stages_needed([(8, 4)] * 3).occupied)\n")
+    result = _run(code, tmp_path)
+
+    assert result.returncode == 0, result.stderr[-800:]
+    # Three 8-block tables sum to exactly 24 but need two stages: a table chains
+    # its blocks down ONE 12-row column, so 8+8 overflows.
+    assert result.stdout.strip() == "2"
+
+
 def test_p4gen_finds_its_templates_from_any_directory(tmp_path):
     code = ("import os, p4gen.build_p4_script as b, p4gen.p4_compile as c\n"
             "assert os.path.isabs(b.PATH), b.PATH\n"

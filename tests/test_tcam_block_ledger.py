@@ -28,8 +28,9 @@ with. See this task's report for the full accounting of what moved versus
 what was retired outright.
 
 2026-09-21 (Task 4): those sharing tests are now restored, against the margin
-rather than against an offset, in `tests/test_p4model_guards.py` alongside its
-other packing-level guards. This file stays per-table.
+rather than against an offset, in `tests/test_packing.py` (first in
+`tests/test_p4model_guards.py`) with the other packing-level tests. This
+file stays per-table.
 
 2026-09-27 (final model check cleanup): renamed from `test_version_block.py` --
 "version block" was this file's old per-table vocabulary, retired along with
