@@ -22,7 +22,9 @@ def _tiny_problem(n=300, seed=0):
     return X_app, y_app, X_ddos, y_ddos
 
 
-def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300):
+def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300, optuna_seed=0):
+    """One small search. Seeded by default: an unseeded Optuna search makes
+    any assertion about which trials it draws random."""
     X_app, y_app, X_ddos, y_ddos = _tiny_problem(n=n)
     cfg = cfg or TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3)
     return train_multi_RF_Optuna_multi_constrained(
@@ -30,7 +32,7 @@ def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300):
         (X_app, y_app), (X_ddos, y_ddos),
         (X_app, y_app), (X_ddos, y_ddos),
         FEATURE_NAMES, FEATURE_NAMES,
-        max_blocks, encoding, cfg)
+        max_blocks, encoding, cfg, optuna_seed=optuna_seed)
 
 
 def test_the_contract_returns_a_frozen_train_result_with_all_thirty_fields():

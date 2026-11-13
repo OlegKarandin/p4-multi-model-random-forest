@@ -61,12 +61,18 @@ M2_MEAN_SPIKE_PATH = os.path.join(
 )
 
 
-def _load_m2_mean_spike():
-  with open(M2_MEAN_SPIKE_PATH, "r") as spike_file:
-    return spike_file.read()
+def _read_spike_if_present(path):
+  """The tna_*.p4 spikes are gitignored (.gitignore: p4/tofino_spike/tna_*.p4),
+  so a fresh clone or a worktree has none of them: None then, and the test that
+  compares against the spike skips instead of breaking collection."""
+  try:
+    with open(path, "r") as spike_file:
+      return spike_file.read()
+  except FileNotFoundError:
+    return None
 
 
-M2_MEAN_SPIKE = _load_m2_mean_spike()
+M2_MEAN_SPIKE = _read_spike_if_present(M2_MEAN_SPIKE_PATH)
 
 # Task 3: symmetric-hash flow-direction bookkeeping ground truth (compiled
 # clean against the real Tofino compiler this session, 0 errors) -- the
@@ -78,12 +84,7 @@ M2_SYMMETRIC_HASH_SPIKE_PATH = os.path.join(
 )
 
 
-def _load_m2_symmetric_hash_spike():
-  with open(M2_SYMMETRIC_HASH_SPIKE_PATH, "r") as spike_file:
-    return spike_file.read()
-
-
-M2_SYMMETRIC_HASH_SPIKE = _load_m2_symmetric_hash_spike()
+M2_SYMMETRIC_HASH_SPIKE = _read_spike_if_present(M2_SYMMETRIC_HASH_SPIKE_PATH)
 
 # The M1 feature set as generate_P4_registers_and_apply's real caller
 # (build_p4_script.get_nodes()/get_feature_intervals()) actually produces
@@ -331,6 +332,7 @@ def test_symmetric_hash_bookkeeping_design(m1_generated):
   assert "other_seen" not in apply_code
 
 
+@pytest.mark.skipif(M2_SYMMETRIC_HASH_SPIKE is None, reason='p4/tofino_spike/tna_m2_symmetric_hash_spike.p4 is absent (gitignored, so never in a fresh clone or a worktree)')
 def test_flow_orientation_action_matches_spike(m1_generated):
   # Task 3: the old flows_test_other/flows_set_self design is replaced by a
   # single flow_orientation_action RegisterAction on flow_forward_srcaddr_reg
@@ -412,6 +414,7 @@ def test_value_registers_assigned_with_val_suffix(m1_generated):
 # shared-dependency-register dedup fix.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(M2_MEAN_SPIKE is None, reason='p4/tofino_spike/tna_m2_mean_spike.p4 is absent (gitignored, so never in a fresh clone or a worktree)')
 def test_mathunit_ewma_body_matches_spike(m2_mean_generated):
   # Transcribed-verbatim check against the compiled ground-truth spike
   # (p4/tofino_spike/tna_m2_mean_spike.p4, flow_iat_mean_ewma_action). The

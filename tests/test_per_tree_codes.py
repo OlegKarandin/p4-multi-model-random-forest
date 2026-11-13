@@ -835,7 +835,9 @@ def test_the_failed_per_tree_search_carries_the_table_on_the_exception():
   from tests.test_train_model_contract import _call
   cfg = TrainConfig(n_trials=4, min_feasible_before_stop=3, lookback=2)
   with pytest.raises(NoFeasibleSolution) as e:
-    _call(encoding=PER_TREE_ENCODING, cfg=cfg, max_blocks=200, n=240)
+    # Seeded: whether all 4 trials draw a no-split tree depends on the draw
+    # (unseeded, it failed 2 of 18 runs alone).
+    _call(encoding=PER_TREE_ENCODING, cfg=cfg, max_blocks=200, n=240, optuna_seed=0)
   assert list(e.value.trial_table[0])[-1] == "no_split_tree"
   assert all(row["no_split_tree"] for row in e.value.trial_table)
   with pytest.raises(NoFeasibleSolution) as e:

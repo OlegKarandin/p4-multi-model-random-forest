@@ -667,6 +667,14 @@ def test_plot_mode_end_to_end_raises_on_a_partial_campaign_when_allow_partial_fa
                         output_dir=str(tmp_path / 'figures'))
 
 
+# src/training/dataset.py reads these cwd-relative; they are gitignored.
+_CAMPAIGN_DATASETS = ('resources/apps_flow_features.csv',
+                      'resources/Wednesday-workingHours.pcap_ISCX.csv')
+
+
+@pytest.mark.skipif(
+    not all(os.path.isfile(path) for path in _CAMPAIGN_DATASETS),
+    reason='needs the gitignored datasets %s in the current directory' % ', '.join(_CAMPAIGN_DATASETS))
 def test_load_campaign_data_returns_aligned_columns_and_names():
     """The replay harness maps a CSV row's ';'-joined feature names back to
     column indices, so the name list and the matrix must agree in width and
