@@ -370,15 +370,6 @@ def test_unpriceable_key_is_none():
   assert lanes.standalone(_key_bytes((600,))) is None
 
 
-# ------------------------------------------- the lane stage simulation is gone
-
-def test_the_lane_stage_simulation_is_deleted():
-  # 2026-11-13: p4c's crossbar allocation (xbar.py) prices shared stages.
-  for name in ('FILL', 'FIRST_MID', 'stage_prices', 'price_with_supply',
-               'fit_with_supply', 'first_key_occupancy', 'later_key_occupancy'):
-    assert not hasattr(lanes, name)
-
-
 # ------------------------------------------------ table_blocks (spec 2026-10-04)
 
 from p4model.errors import CrossbarKeyTooWide

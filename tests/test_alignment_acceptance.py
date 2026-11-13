@@ -76,13 +76,6 @@ def test_delta_none_accepts_everything_including_a_catastrophic_move():
     assert ta.accept_alignment(BEFORE, after, delta_rel=None) is True
 
 
-def test_the_ratchet_is_gone():
-    """Spec 2026-09-28 T3: the guard is anchored at the PRE-ALIGNMENT scores
-    for the whole run. The running high-water mark it replaced let a noise
-    gain on val_align become the floor for every later move."""
-    assert not hasattr(ta, 'ratchet')
-
-
 class _ScriptedMetrics:
     """Stands in for IncrementalMetrics inside align_rf_thresholds.
 

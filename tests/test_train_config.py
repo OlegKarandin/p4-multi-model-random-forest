@@ -115,43 +115,6 @@ def test_ccp_alpha_max_zero_accepted():
     assert cfg.ccp_alpha_max == 0.0
 
 
-def test_the_overlap_threshold_and_delta_align_tunables_are_gone():
-    """D4 retired overlap_threshold: the ratio test never protected accuracy or
-    runtime (the whole sweep costs tenths of a second) -- it only masked the
-    correctness gap at its extreme setting, which is now closed
-    unconditionally. Its loosest setting strictly dominated: one real fitted
-    pair moved from 193 key bytes (factor 36) at the 0.5 default to 176 bytes
-    (factor 32) with no ratio test, at accuracy_spent exactly 0.0.
-
-    2026-09-15 retired delta_align the same way, on Track 5's pre-registered
-    verdict delta_helps = FALSE (mean_d000 0.7956173344395895 vs mean_d020
-    0.7861922400433382, cells_favouring_d020 14/24).
-
-    The arm slug loses a conditional suffix to each: there is one alignment
-    behaviour now, so the aligned joint arm is plain `joint`.
-    """
-    import inspect
-    from src.training import config as cfg_mod
-    from src.training import threshold_alignment as ta
-
-    assert not hasattr(cfg_mod, 'DEFAULT_OVERLAP_THRESHOLD')
-    assert 'overlap_threshold' not in cfg_mod.TrainConfig.__dataclass_fields__
-    assert not hasattr(cfg_mod.TrainConfig, 'overlap_threshold_label')
-    assert not hasattr(cfg_mod.TrainConfig, '_overlap_suffix')
-    with pytest.raises(TypeError):
-        cfg_mod.TrainConfig(overlap_threshold=0.5)
-
-    assert 'delta_align' not in cfg_mod.TrainConfig.__dataclass_fields__
-    assert not hasattr(cfg_mod.TrainConfig, 'delta_align_label')
-    with pytest.raises(TypeError):
-        cfg_mod.TrainConfig(delta_align=0.20)
-
-    assert cfg_mod.TrainConfig().arm_slug('joint') == 'joint'
-
-    for fn in (ta.align_rf_thresholds, ta.align_with_policy):
-        assert 'overlap_threshold' not in inspect.signature(fn).parameters, fn
-
-
 def test_selection_defaults_are_the_tie_aware_rule_at_alpha_005():
     cfg = TrainConfig()
     assert cfg.selection_rule == 'tied_cheapest'

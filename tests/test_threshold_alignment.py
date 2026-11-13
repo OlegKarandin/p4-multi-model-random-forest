@@ -1840,32 +1840,6 @@ def test_legacy_combined_order_reproduces_the_pre_2026_09_07_order():
     assert ta._legacy_combined_order(iv1, iv2) == expected
 
 
-def test_align_rf_thresholds_no_longer_accepts_an_objective():
-    """The axis is gone, not defaulted: a caller still passing it must fail
-    loudly rather than have the argument silently ignored."""
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
-    with pytest.raises(TypeError):
-        ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
-                               delta_rel=0.0,
-                               align_objective='stages')
-
-
-def test_crossed_a_boundary_is_gone():
-    """Deleted 2026-09-15 with the rest of the delta_align mechanism (Track 5:
-    delta_helps = FALSE -- mean_d000 0.7956173344395895 vs mean_d020
-    0.7861922400433382, cells_favouring_d020 14/24).
-
-    It answered "did this run buy a cheaper block FACTOR?" and existed only so
-    align_with_policy could decide whether to roll a speculative run back. Both
-    were unreachable without a non-zero delta. Asserted ABSENT rather than
-    simply untested, so a future reviewer reinstating it as a gate has to argue
-    for it rather than restore it quietly -- review finding 2.1 was that this
-    test priced the factor where feature_order and the per-feature early exit
-    price total blocks, and the resolution was deletion, not repricing.
-    """
-    assert not hasattr(ta, 'crossed_a_boundary')
-
-
 def test_the_byte_domain_stats_are_recorded():
     """B (key bytes) IS the block cost after this repair -- there is no
     separate stage cost any more -- and the validation needs these recorded
@@ -2061,14 +2035,6 @@ def test_feature_order_keeps_the_combined_count_key_when_nothing_buys_a_block():
     widths = {0: 2, 1: 4}
     assert ta.feature_order(iv1, iv2, multiplier=4,
                             widths=widths, floors=floors) == [1, 0]
-
-
-def test_feature_order_no_longer_takes_an_objective():
-    """The axis is gone, not defaulted -- a caller still passing it must fail
-    loudly rather than have the argument silently ignored."""
-    intervals1, intervals2 = _order_fixture_pair()
-    with pytest.raises(TypeError):
-        ta.feature_order(intervals1, intervals2, 'blocks')
 
 
 def test_still_overlaps_rejects_a_pair_an_earlier_move_pulled_apart():

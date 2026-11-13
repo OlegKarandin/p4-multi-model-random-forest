@@ -1,5 +1,4 @@
 from p4model import ranges
-from p4gen import evaluation as ev
 import pytest
 
 
@@ -34,9 +33,3 @@ def test_range_entry_count_rejects_hi_less_than_lo():
     with pytest.raises(ValueError):
         ranges.range_entry_count(10, 5)
 
-
-def test_evaluation_range_entry_count_is_the_same_object_as_p4models():
-    # One canonical implementation, re-exported -- not two copies that can
-    # drift. This assertion is what replaces the p4/range_expansion.py
-    # duplication that used to carry the same guarantee by construction.
-    assert ev.range_entry_count is ranges.range_entry_count

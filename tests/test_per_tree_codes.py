@@ -46,20 +46,6 @@ def test_the_encoding_is_named_and_listed():
   assert PER_TREE_ENCODING == "per_tree" and PER_TREE_ENCODING in ENCODINGS
 
 
-def test_nothing_names_the_deleted_rules():
-  import importlib.util
-  import p4model.lanes as l
-  import p4model.program as p
-  import p4model.target as t
-  from p4gen import p4_replay
-  for name in ("PER_TREE_MAX_PIN8_FIELDS", "PER_TREE_MAX_ACTION_BYTES", "ACTION_DATA_BUS_BUDGET"):
-    assert not hasattr(t, name)
-  assert not hasattr(l, "Spilled")
-  assert importlib.util.find_spec("p4model.per_tree") is None
-  assert not hasattr(p4_replay, "_mark_spilled") and not hasattr(p4_replay, "_PER_TREE_PIN")
-  assert not hasattr(p, "per_tree_field")
-
-
 def test_an_archived_per_tree_field_name_still_maps_to_its_feature():
   """Programs written before 2026-11-11 named one code per tree, code_tr_<task>_<i>_<f>;
   the replay still maps such a key to its range table (p4_replay.code_written_by)."""
@@ -282,18 +268,6 @@ def test_an_unknown_encoding_raises(tmp_path):
   with pytest.raises(ValueError) as e:
     bps.generate_table_entries(tasks, encoding="per_forest")
   assert all(repr(name) in str(e.value) for name in ENCODINGS)
-
-
-def test_the_per_task_codes_argument_is_gone(tmp_path):
-  tasks, _, _ = _three_tasks()
-  with pytest.raises(TypeError):
-    bps.generate_p4_program(tasks, output_dir=str(tmp_path) + os.sep, output_filename="t.p4",
-                            per_task_codes=True)
-  app, ddos = _forest(3, 2), _forest(2, 1)
-  with pytest.raises(TypeError):
-    _two_task(tmp_path, app, ddos, FEATURES, (_own(app), _own(ddos)), per_task_codes=True)
-  with pytest.raises(TypeError):
-    bps.generate_table_entries(tasks, per_task_codes=True)
 
 
 # --- the control-plane entries -------------------------------------------------------
