@@ -239,12 +239,40 @@ _RECORDED_ON_39D83D6 = {
 }
 
 
+# 2026-11-13: a single-key (joint) pool is now placed by the crossbar simulation, in p4c's
+# order (ddos trees first, the table listed last first), not by the declared-price packer:
+# seeds 0, 2 and 5 keep their stage depth and blocks; only which tree sits in which stage
+# moves (packing.crossbar_stages_needed, "EVERY classification pool is simulated").
+_JOINT_ORDER_2026_11_13 = {
+    0: ('table_1_bwd_packet_length_max:1@5 table_2_flow_iat_max:1@5 '
+        'table_3_flow_iat_min:1@5 table_0_bwd_iat_mean:1@6 '
+        'get_classification_tree_app_2:4@7 get_classification_tree_app_3:4@7 '
+        'get_classification_tree_ddos_0:4@7 get_classification_tree_ddos_1:4@7 '
+        'get_classification_tree_ddos_2:4@7 get_classification_tree_ddos_3:4@7 '
+        'get_classification_tree_app_0:4@8 get_classification_tree_app_1:4@8'),
+    2: ('table_1_bwd_packet_length_max:1@5 table_0_bwd_iat_mean:1@6 '
+        'table_2_fwd_packet_length_max:1@6 get_classification_tree_ddos_2:8@7 '
+        'get_classification_tree_ddos_3:8@7 get_classification_tree_ddos_0:8@8 '
+        'get_classification_tree_ddos_1:8@8 get_classification_tree_app_5:8@9 '
+        'get_classification_tree_app_6:8@9 get_classification_tree_app_3:8@10 '
+        'get_classification_tree_app_4:8@10 get_classification_tree_app_1:8@11 '
+        'get_classification_tree_app_2:8@11 get_classification_tree_app_0:8@12'),
+    5: ('table_0_flow_iat_min:1@5 table_1_fwd_packet_length_max:1@5 '
+        'get_classification_tree_app_2:4@6 get_classification_tree_app_3:4@6 '
+        'get_classification_tree_app_4:4@6 get_classification_tree_app_5:4@6 '
+        'get_classification_tree_app_6:4@6 get_classification_tree_ddos_0:4@6 '
+        'get_classification_tree_app_0:4@7 get_classification_tree_app_1:4@7'),
+}
+
+
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, PER_TASK_ENCODING, DISJOINT_ENCODING])
 def test_other_encodings_replay_as_before(tmp_path, encoding):
   for seed in range(6):
     breakdown = model_breakdown(parse_program_text(_generate_as_recorded(tmp_path, seed, encoding)))
     tables = " ".join("%s:%d@%d" % (t["table"], t["blocks"], t["stage"])
                       for t in breakdown["tables"])
-    assert (breakdown["stage_depth"], breakdown["blocks"], tables) == \
-        _RECORDED_ON_39D83D6[encoding][seed], seed
+    recorded = _RECORDED_ON_39D83D6[encoding][seed]
+    if encoding == JOINT_ENCODING and seed in _JOINT_ORDER_2026_11_13:
+      recorded = recorded[:2] + (_JOINT_ORDER_2026_11_13[seed],)
+    assert (breakdown["stage_depth"], breakdown["blocks"], tables) == recorded, seed
     assert breakdown["stage_pins_consistent"] is True

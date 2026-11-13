@@ -490,13 +490,13 @@ def test_the_range_pool_is_the_per_task_arms():
 # writes for test_per_task_codes' random design of the seed, frozen 2026-11-08 at 64ab25c,
 # before the replay learned per-tree codes.
 _OTHER_REPLAY_SHAS = {
-    ("joint", 0): "f8f1696ddf718121742c15400f39d3f090d6db8913f40b9a648ecc89651f0e65",
+    ("joint", 0): "0ddd86d1ae9800c435020184bbaf44ae0d76173977070b097ea3403716f42ced",  # 2026-11-13: joint pool simulated, same totals
     ("disjoint", 0): "9726ece6130b4ef6e4b80481f68291bcf6a26a8afadd4b1dd7181d14e8da25e7",
     ("per_task", 0): "84ee7109c89fe0ebd142f5416f40c7797799531d1c78a68fb2bdcdd2ce972e8c",
     ("joint", 1): "62d1be543bcea0b8242e3c7213f9f82898577b147ab475b8db0df1a8a9760b02",
     ("disjoint", 1): "dd83f6bc9962048dd56275f8142cbb10e8b4889d7eba877c93ca0ff80a5d4e93",
     ("per_task", 1): "62d1be543bcea0b8242e3c7213f9f82898577b147ab475b8db0df1a8a9760b02",
-    ("joint", 2): "01429872003e38e8fa60ad6b9c34f1acc25ddf5b5416135594dc5a3879944e8e",
+    ("joint", 2): "0056e70905fc70ca91bf79b92d6313d2367347adb61dacfb859360f768dde64a",  # 2026-11-13: joint pool simulated, same totals
     ("disjoint", 2): "16296479245e1f310425f1b7e388fed3761953cbf424d0d43536d3ad2d51ae39",
     ("per_task", 2): "57ddde2b9eb72d69671ea259cee648d41def369736a7291a8977b19788bd5a13",
     ("joint", 3): "d653f8b2df9ee85839c15378ffe683191867be0f4efb9310afc1f068e8316788",
@@ -505,7 +505,7 @@ _OTHER_REPLAY_SHAS = {
     ("joint", 4): "0090942bc443b22f4d69add18e555be29718999f43bb32bf4addfaa71f0013bb",
     ("disjoint", 4): "5b6f0a75cd2f73b77d489796e1905b508d78073e61a777b8ff0b1f86cb442187",
     ("per_task", 4): "0090942bc443b22f4d69add18e555be29718999f43bb32bf4addfaa71f0013bb",
-    ("joint", 5): "0895476ebcc3e12f41b41cd77cfabc73772e3bd5383e849b8d31aab33b9ef8d9",
+    ("joint", 5): "4a5389c4885dea09e728fcc879bf9ab709c21f944975690133d6ece7ff9a2a1d",  # 2026-11-13: joint pool simulated, same totals
     ("disjoint", 5): "b3b00aebf004fc1e89bf674d9d9655ca3ea3c3be197fbf4f7568c6e5f1a77748",
     ("per_task", 5): "4e62db9f47fb3831cead683627f98f2c9b2b2f0bb6c6b1c00c0c6c2a9590943e",
 }

@@ -104,4 +104,5 @@ def test_declared_prices_charge_classification_tables_with_table_blocks():
         widths={'code_a': 4, 'code_b': 7},
         bits={'code_a': 27, 'code_b': 52},
         sizes={'get_classification_tree_ddos_0': 600})       # 2 words
-    assert declared_prices(program) == {'get_classification_tree_ddos_0': 4}
+    # (27, 52): 3 per word, p4c's charge (independent_low_sd5); the lane count said 2
+    assert declared_prices(program) == {'get_classification_tree_ddos_0': 6}

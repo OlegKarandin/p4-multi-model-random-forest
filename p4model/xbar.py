@@ -202,6 +202,15 @@ class StageXbar:
     self.bgu = [None] * BYTE_GROUPS
     self.fields = defaultdict(list)          # container -> [(group, slot)], slot 5 = the midbyte at (2m, 5)
 
+  def clone(self):
+    """An independent copy of the stage as it stands (find_alloc never changes it; commit does)."""
+    other = StageXbar.__new__(StageXbar)
+    other.sort_key = self.sort_key
+    other.use = [list(row) for row in self.use]
+    other.bgu = list(self.bgu)
+    other.fields = defaultdict(list, {k: list(v) for k, v in self.fields.items()})
+    return other
+
   def commit(self, placed):
     """Record a table's newly placed bytes (IXBar::update / fill_out_use)."""
     for b in placed:
@@ -509,3 +518,52 @@ def range_key(index, nbytes):
   number 900000 + index: never one of tree_key's."""
   return [Byte('H%d' % (900000 + index), 8 * j, 0xFF, spec=spec, range_index=0)
           for j in range(nbytes) for spec in (RANGE_LO, RANGE_HI)]
+
+
+_KINDS = {8: 'B', 16: 'H', 32: 'W'}
+
+
+def fill_low(bits, sizes):
+  """A `bits`-bit field pinned to containers of `sizes` bits (low container first, @pa_container_size's order) as
+  (kind, used bits) slices: p4c fills the low container first (lanes.layout's fill-low rule, 7,479 of 7,479 fields),
+  so every container is full except the last one used. A container left with no bits is dropped."""
+  out, left = [], int(bits)
+  for size in sizes:
+    if left <= 0:
+      break
+    used = min(int(size), left)
+    out.append((_KINDS[int(size)], used))
+    left -= used
+  if left > 0:
+    raise ValueError('a %d-bit field does not fit containers %r' % (bits, tuple(sizes)))
+  return tuple(out)
+
+
+def field_key(fields, numbering):
+  """A key of whole code FIELDS -- every encoding but per-tree -- as Bytes. `fields` is a sequence of
+  (field_id, slices), slices being (kind, used bits) per container, low first (fill_low, lanes.layout). Each field
+  starts at bit 0 of its own containers (@pa_solitary), so a container's byte k carries bits 8k.. and only the top
+  byte can be part-used: at most 4 live bits make it a one-nibble byte. `numbering` maps (field_id, slice index) to
+  a container number and is shared by every key of a stage, so two tables keying the same field name the same
+  container bytes and p4c's found-byte path shares their slots. Numbers are handed out in order of first use; they
+  only order bytes p4c's sort leaves tied (the module docstring's tie rule)."""
+  out = []
+  for field_id, slices in fields:
+    for index, (kind, used) in enumerate(slices):
+      ident = (field_id, index)
+      if ident not in numbering:
+        numbering[ident] = len(numbering)
+      name = '%s%d' % (kind, 2000 + numbering[ident])
+      for k in range(-(-used // 8)):
+        live = min(8, used - 8 * k)
+        out.append(Byte(name, 8 * k, 0x0F if live <= 4 else 0xFF))
+  return out
+
+
+def alone_blocks(fields):
+  """TCAM blocks per 512-row word of a key of whole fields (field_key's `fields`) alone in an empty stage, as p4c
+  allocates it, or None when it does not fit 12 groups."""
+  key = field_key(fields, {})
+  if not StageXbar().allocate(key):
+    return None
+  return blocks_per_row(key)

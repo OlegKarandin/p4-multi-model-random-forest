@@ -89,7 +89,7 @@ from p4model.tables import (  # noqa: E402
     codeword_to_blocks_headline,
     crossbar_capacity,
 )
-from p4model.packing import _stage_key_prices  # noqa: E402
+from p4model.packing import stage_key_prices  # noqa: E402
 
 RESULTS_DIR = os.path.join(ROOT, "results")
 DEFAULT_OUT = os.path.join(RESULTS_DIR, "tcam_table_scoreboard.csv")
@@ -141,14 +141,14 @@ def _parse_int_list(value):
 def price_in_stage(field_bit_widths, ahead=(), behind=()):
     """(charged blocks, refused) for a key sharing a stage with the keys
     `ahead` of it and `behind` it (field-bit tuples, in placement order) --
-    the packer's own pricing (packing._stage_key_prices): the first key pays
-    codeword_to_blocks, every later key its lane leftover price. refused is
-    True when some key has no lane-legal fit (charged is then None). Keys behind this one cannot change its price, only refuse
+    the packer's own pricing (packing.stage_key_prices, p4c's crossbar
+    allocation ported, since 2026-11-13; the lane price before). refused is
+    True when some key does not fit (charged is then None). Keys behind this one cannot change its price, only refuse
     the stage."""
     field_bit_widths = tuple(field_bit_widths)
     sequence = (tuple(tuple(key) for key in ahead) + (field_bit_widths,)
                 + tuple(tuple(key) for key in behind))
-    prices = _stage_key_prices((), sequence)
+    prices = stage_key_prices(sequence)
     if prices is None:
         return None, True
     return prices[len(ahead)], False

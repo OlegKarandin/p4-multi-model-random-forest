@@ -73,6 +73,7 @@ from p4model.program import (
     RANGE_TABLE_KEY_BYTES,
     REGISTER_BLOCK_ORDER,
     VOTE_EPILOGUE_STAGES,
+    per_task_field,
 )
 from p4model.packing import (
     StagePlan,
@@ -218,6 +219,31 @@ def _packed_tree_entries(codewords, key, use_default_action_discount):
   return entries, length
 
 
+def _key_slices(fields):
+  """One classification key as packing.crossbar_stages_needed's key_slices
+  takes it: (field id, slices) per (field id, bit width) of `fields`, laid
+  out by lanes.key_layout's choice for the whole key -- the containers
+  build_p4_script.code_field_container_sizes pins. A field with no bits is
+  not keyed."""
+  fields = list(fields)
+  lay = lanes.key_layout([bits for _, bits in fields])
+  return tuple((field_id, tuple(lay(bits))) for field_id, bits in fields
+               if bits > 0)
+
+
+def _code_fields(feature_intervals, task=None):
+  """(field id, bit width) per code field of a key over feature_intervals, in
+  its order, with the ids tables.ternary_key_fields (task None) or
+  tables.per_task_key_fields (task given) give the same fields."""
+  out = []
+  for feature, intervals in feature_intervals.items():
+    name = normalise_feature_name(feature)
+    field_id = (per_task_field(task, name) if task is not None
+                else (name, tuple(intervals)))
+    out.append((field_id, max(len(intervals) - 1, 0)))
+  return out
+
+
 def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                  use_default_action_discount=False):
   """Fitted-forest frontend for multi_model_memory_evaluation: runs the
@@ -307,6 +333,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     ternary_fields = [ternary_key_fields(feature_intervals)] * len(ternary_table_specs)
     ternary_key_bits = ([ternary_key_field_bits(feature_intervals)]
                         * len(ternary_table_specs))
+    ternary_key_slices = ([_key_slices(_code_fields(feature_intervals))]
+                          * len(ternary_table_specs))
     # Every range table writes a code field of the ONE merged interval set,
     # which every tree of both tasks keys on. The merged tree set lists the
     # app trees first (merge_tree_nodes' order), one classification table
@@ -362,6 +390,11 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     ternary_key_bits = (
         [ternary_key_field_bits(feature_intervals_app)] * len(ternary_table_specs_app) +
         [ternary_key_field_bits(feature_intervals_ddos)] * len(ternary_table_specs_ddos))
+    ternary_key_slices = (
+        [_key_slices(_code_fields(feature_intervals_app, APP_TASK))]
+        * len(ternary_table_specs_app) +
+        [_key_slices(_code_fields(feature_intervals_ddos, DDOS_TASK))]
+        * len(ternary_table_specs_ddos))
     # A table writes a code only for a task with a threshold on its feature, so
     # a tree waits only for those: the same per-task rule as 'disjoint', on one
     # table per feature. Only a feature both tasks split is SHARED_TASK.
@@ -455,6 +488,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # packer gets private placeholders: no key_fields, no key_field_bits.
     ternary_fields = None
     ternary_key_bits = None
+    ternary_key_slices = None
     # A table is its readers' task, or SHARED_TASK when both tasks' trees read
     # it -- the per-task rule, read from the trees as p4_replay.table_tasks does.
     range_task = []
@@ -559,6 +593,11 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     ternary_key_bits = (
         [ternary_key_field_bits(feature_intervals_app)] * len(ternary_table_specs_app) +
         [ternary_key_field_bits(feature_intervals_ddos)] * len(ternary_table_specs_ddos))
+    # A feature both models split identically is one code field both keys
+    # read (same id), so its crossbar slots are shared in a stage.
+    ternary_key_slices = (
+        [_key_slices(_code_fields(feature_intervals_app))] * len(ternary_table_specs_app) +
+        [_key_slices(_code_fields(feature_intervals_ddos))] * len(ternary_table_specs_ddos))
     # Registers, unlike range_levels, must be deduplicated ACROSS both
     # models: they are a single physical Register<> array shared by the
     # whole generated program regardless of 'joint' vs 'disjoint' ENCODING
@@ -598,6 +637,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       "range_fields": range_fields,
       "ternary_fields": ternary_fields,
       "ternary_key_bits": ternary_key_bits,
+      "ternary_key_slices": ternary_key_slices,
       "interior_stages": interior_stages,
       "emitted_features": emitted_features,
       "register_names": register_names,

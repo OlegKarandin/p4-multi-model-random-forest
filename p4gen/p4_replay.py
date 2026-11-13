@@ -9,13 +9,13 @@ from collections import namedtuple
 from dataclasses import dataclass, field
 
 from p4model.errors import CrossbarKeyTooWide
-from p4model.packing import crossbar_stages_needed
+from p4model.packing import _alone_blocks, crossbar_stages_needed
 from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
                                  VOTE_EPILOGUE_STAGES, feature_of_per_task_field,
                                  feature_of_per_tree_field)
 from p4model.ranges import compiler_range_rows
 from p4model.registers import gated_block_interior_stages, readiness_levels_for
-from p4model import lanes, packed
+from p4model import lanes, packed, xbar
 from p4model.tables import tree_entries_to_blocks
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 from p4model.usage import tree_readiness_levels
@@ -35,7 +35,12 @@ class Program:
     [(hi, lo)], each `meta.<field>[hi:lo]` key line of that table in program
     order; every sliced key of any program is recorded) and stage_pins (table
     -> the n of the @stage(n) line above it). The first and last are empty for
-    every other program."""
+    every other program.
+
+    code_containers: every other code_<f> field's @pa_container_size sizes in
+    bits, low container first (the generator pins every tree-key code field,
+    build_p4_script.code_field_container_sizes) -- the containers the crossbar
+    port lays the field's key bytes in (tree_key_slices)."""
     tables: dict
     widths: dict
     bits: dict
@@ -45,6 +50,7 @@ class Program:
     containers: dict = field(default_factory=dict)
     key_slices: dict = field(default_factory=dict)
     stage_pins: dict = field(default_factory=dict)
+    code_containers: dict = field(default_factory=dict)
 
 
 # stage_pins_consistent: the program's @stage lines are exactly the tables the
@@ -147,6 +153,10 @@ _PACKED_CONTAINERS = re.compile(
     r'^@pa_container_size\("ingress", "ig_md\.(%s\w+)", ([\d, ]+)\)\s*$'
     % _PACKED_FIELD, re.M)
 
+# Any code field's container pin; the packed ones are kept apart (containers).
+_CODE_CONTAINERS = re.compile(
+    r'^@pa_container_size\("ingress", "ig_md\.(code_\w+)", ([\d, ]+)\)\s*$', re.M)
+
 # @stage(n) above a table, other pragmas (its @placement_priority) between it
 # and the table (build_p4_script, spec 2026-11-11 Sec 4.3).
 _STAGE_PIN = re.compile(r'@stage\((\d+)\)\s*\n(?:\s*@\w+\([^)\n]*\)\s*\n)*'
@@ -161,7 +171,10 @@ def parse_program_text(text):
                                for name, sizes in _PACKED_CONTAINERS.findall(text)},
                    key_slices=slices,
                    stage_pins={name: int(stage)
-                               for stage, name in _STAGE_PIN.findall(text)})
+                               for stage, name in _STAGE_PIN.findall(text)},
+                   code_containers={name: tuple(int(size) for size in sizes.split(','))
+                                    for name, sizes in _CODE_CONTAINERS.findall(text)
+                                    if not name.startswith(_PACKED_FIELD)})
 
 
 def parse_program(p4_path):
@@ -353,6 +366,36 @@ def tree_key_bytes(program, table):
     return packed.key_bytes(packed.Layout(containers, place), task, tree)
 
 
+def tree_key_slices(program, table):
+    """One tree table's key of whole code fields (every program but a packed
+    one) as packing.crossbar_stages_needed's key_slices takes it: (field name,
+    slices) per keyed field with bits, in key order. A field's slices are its
+    @pa_container_size pin filled low first (xbar.fill_low); a field with no
+    pin (a program generated before the pins) gets lanes.key_layout's choice
+    for the key, which is what the pin would say."""
+    keys = [key for key in program.tables[table] if program.bits.get(key, 0) > 0]
+    lay = lanes.key_layout([program.bits[key] for key in keys])
+    return tuple((key, xbar.fill_low(program.bits[key], program.code_containers[key])
+                  if key in program.code_containers else tuple(lay(program.bits[key])))
+                 for key in keys)
+
+
+def _field_price(program, name):
+    """A tree table's price per 512-row block of entries: its key alone in a
+    stage, as p4c's ternary crossbar allocator lays out its pinned containers
+    (xbar.alone_blocks; lanes.table_blocks prices training's keys the same
+    way), and CrossbarKeyTooWide where no allocation exists."""
+    key = tree_key_slices(program, name)
+    if not key:
+        return lanes.table_blocks(())
+    price = _alone_blocks(key)
+    if price is None:
+        raise CrossbarKeyTooWide(
+            "%s's key does not fit one stage's ternary crossbar" % name,
+            sum(program.widths[k] for k in program.tables[name]))
+    return price
+
+
 def _tree_priority(program, name, task):
     """A tree table's @placement_priority: the pragma the program carries, or,
     for a program generated before the pragma existed, the two-task constant
@@ -411,7 +454,7 @@ def declared_prices(program):
             continue
         if name.startswith('get_classification_tree'):
             per_row = (_packed_price(program, name) if packed_program
-                       else lanes.table_blocks(_key_bits(bits, keys)))
+                       else _field_price(program, name))
             blocks[name] = per_row * tree_entries_to_blocks(sizes[name])
         elif name.startswith('table_'):
             blocks[name] = -(-compiler_range_rows(sizes[name])
@@ -474,6 +517,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     range_specs, range_fields, range_levels, range_task = [], [], [], []
     range_names, ternary_names = [], []
     ternary_specs, ternary_fields, ternary_key_bits, ternary_task = [], [], [], []
+    ternary_key_slices = []
     ternary_key_bytes = []
     for name, keys in tables.items():
         if name not in blocks or not keys:
@@ -510,6 +554,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             ternary_specs.append((blocks[name], width))
             ternary_fields.append(fields)
             ternary_key_bits.append(key_bits)
+            ternary_key_slices.append(tree_key_slices(program, name))
             ternary_task.append(tasks[name])
             ternary_names.append(name)
 
@@ -543,7 +588,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         ternary_plan = crossbar_stages_needed(
             ternary_specs, readiness_levels=ternary_levels,
             key_fields=ternary_fields, unavailable_stages=interior,
-            key_field_bits=ternary_key_bits,
+            key_field_bits=ternary_key_bits, key_slices=ternary_key_slices,
             seed_stages=range_plan.stage_loads,
             placement_priority=priorities)
         predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)

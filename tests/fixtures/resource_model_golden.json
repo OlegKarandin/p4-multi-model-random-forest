@@ -74,6 +74,16 @@
      "independent_low_sd5"
     ],
     "summary": "RE-PINNED to the lane-model per-table price (lanes.table_blocks, spec docs/superpowers/specs/2026-10-04-lane-price-and-tie-aware-selection-design.md). The delta is an UNDER-prediction against tcam_real, ACCEPTED: the three ddos trees key (27, 52), which the lane model prices at 2 blocks per tree and p4c charged 3 (resources.json). p4c's greedy crossbar allocator parks a whole byte on the midbyte and leaves no nibble for the version bits -- the 'greedy miss' class of reviews/campaign_2026_10_lane_findings.md Sec 5. The previous pin of 3 per tree (the ladder, tables.codeword_to_blocks) was right by luck. Every other row is unchanged: no other fixture key changes price."
+   },
+   {
+    "id": "crossbar_port_2026_11_13",
+    "row_deltas": {
+     "independent_low_sd5": 3
+    },
+    "rows": [
+     "independent_low_sd5"
+    ],
+    "summary": "RE-PINNED to EXACT (p4c's tcam_real). 'lane_price_2026_10' above accepted an UNDER of 3 on this row: the three ddos trees key (27, 52), which the lane count priced at 2 blocks per tree and p4c charged 3. The per-table price and the stage simulation are now p4c's ternary crossbar allocation, ported (p4model/xbar.py, lanes.table_blocks = xbar.alone_blocks of the pinned layout): it prices the key at 3, the stage at 12, the design at 16 -- p4c's numbers. Every other row is unchanged."
    }
   ],
   "note": "Inputs captured at evaluation._pool_inputs; outputs from usage.assemble_usage.",
@@ -229,7 +239,7 @@
      "occupied": 2
     },
     "ternary_plan": {
-     "blocks": 9,
+     "blocks": 12,
      "depth": 7,
      "indices": [
       6
@@ -237,7 +247,7 @@
      "occupied": 1
     },
     "usage": {
-     "blocks": 13,
+     "blocks": 16,
      "codeword_length": 110,
      "range_depth": 6,
      "range_entries": 404,

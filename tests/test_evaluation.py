@@ -1900,7 +1900,8 @@ def test_ternary_key_field_bits_reports_every_code_field_width():
 
 POOL_KEYS = {
     "range_table_specs", "ternary_table_specs", "range_levels", "range_fields",
-    "ternary_fields", "ternary_key_bits", "interior_stages", "emitted_features",
+    "ternary_fields", "ternary_key_bits", "ternary_key_slices", "interior_stages",
+    "emitted_features",
     "register_names", "range_entries", "range_blocks", "ternary_entries",
     "codeword_length", "range_task", "ternary_task",
     # 2026-11-08: trees reading each range table, the range pool's p4c tie

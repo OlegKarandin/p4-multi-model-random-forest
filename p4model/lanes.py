@@ -54,6 +54,7 @@ import functools
 import itertools
 import math
 
+from p4model import xbar
 from p4model.errors import CrossbarKeyTooWide
 from p4model.tables import (
     codeword_bits_to_blocks,
@@ -218,10 +219,16 @@ def key_bytes(field_bit_widths):
 
 
 def table_blocks(field_bit_widths):
-  """THE production per-table price (2026-10-04): TCAM blocks one 512-row
-  word of a classification table with this key costs, as the lane model
-  prices the key's pinned PHV layout alone in a stage --
-  `standalone(key_bytes(w))`.
+  """THE production per-table price: TCAM blocks one 512-row word of a
+  classification table with this key costs alone in a stage, as p4c's ternary
+  crossbar allocator (ported, xbar.py) lays out the key's pinned PHV
+  containers -- `xbar.alone_blocks(key_fields(w))` (2026-11-13; the lane
+  count `standalone(key_bytes(w))` until then).
+
+  2026-11-13, campaign_2026_11 (7,763 distinct tree keys of 15,300 designs):
+  the port and the lane count differ on 61 keys; on every one p4c's own
+  allocation agrees with the port (the lane count was below p4c on 49 of
+  them), model7/out/truth_alone.jsonl. The history below is the lane count's.
 
   Replaces the byte-count ladder `tables.codeword_to_blocks` as the price
   every table is CHARGED (packing, p4_replay, ternary_matching_resource_usage).
@@ -253,12 +260,23 @@ def _table_blocks(widths):
         "table key is %d crossbar bytes; no stage supplies more than %d, so the "
         "compiler rejects this table rather than splitting it across stages"
         % (byte_width, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), byte_width)
-  price = standalone(key_bytes(widths))
+  price = xbar.alone_blocks(key_fields(widths))
   if price is None:
     raise CrossbarKeyTooWide(
-        "table key of %d crossbar bytes has no lane-legal layout in one stage's "
+        "table key of %d crossbar bytes does not fit one stage's ternary "
         "crossbar" % byte_width, byte_width)
   return price
+
+
+def key_fields(field_bit_widths):
+  """A key's fields as xbar.field_key takes them, (field id, slices) per field
+  with any bits, laid out by key_layout's choice -- the containers the
+  generator pins (build_p4_script.code_field_container_sizes). Field ids are
+  positions in `field_bit_widths`: a key never repeats a field."""
+  field_bit_widths = [int(w) for w in field_bit_widths]
+  lay = key_layout(field_bit_widths)
+  return tuple((index, tuple(lay(w))) for index, w in enumerate(field_bit_widths)
+               if w > 0)
 
 
 # The PHV container size each slice kind names, in the unit

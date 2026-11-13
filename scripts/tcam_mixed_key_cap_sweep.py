@@ -34,7 +34,7 @@ import pandas as pd  # noqa: E402
 from scripts.tcam_offset_scan import collect  # noqa: E402
 from scripts.tcam_stretch_sweep import key_bytes_for  # noqa: E402
 from p4model.tables import codeword_to_blocks  # noqa: E402
-from p4model.packing import _stage_key_prices  # noqa: E402
+from p4model.packing import stage_key_prices  # noqa: E402
 
 DEFAULT_OUT = 'results/tcam_mixed_key_cap_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_mixed_key_cap_sweep'
@@ -69,7 +69,7 @@ def summarize(out):
         spacer = (8 * int(row['spacer_bytes']),)
         probe = tuple(int(x) for x in str(row['probe_fields'])
                       .replace(',', ' ').replace('(', ' ').replace(')', ' ').split())
-        prices = _stage_key_prices((), (spacer, probe))
+        prices = stage_key_prices((spacer, probe))
         return None if prices is None else prices[1]
     shared = shared.assign(lane=shared.apply(lane_price, axis=1))
     missed = shared[shared['lane'].isna() | (shared['lane'] < shared['probe_real_blocks'])]

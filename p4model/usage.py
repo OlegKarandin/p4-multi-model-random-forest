@@ -331,6 +331,8 @@ def assemble_usage(pool):
       unavailable_stages=interior_stages,
       key_field_bits=None if ternary_key_bytes is not None else ternary_key_bits,
       key_bytes=ternary_key_bytes,
+      key_slices=(None if ternary_key_bytes is not None
+                  else pool.get("ternary_key_slices")),
       seed_stages=range_plan.stage_loads,
       placement_priority=[PLACEMENT_PRIORITY[task] for task in ternary_task])
 

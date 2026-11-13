@@ -476,14 +476,20 @@ from p4model.tables import codeword_bits_to_blocks
 
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
-def test_table_blocks_is_the_lane_price_of_the_pinned_layout(widths):
-  assert lanes.table_blocks(widths) == _price(widths)
+def test_table_blocks_is_the_crossbar_ports_price_of_the_pinned_layout(widths):
+  # Since 2026-11-13 the per-table price is p4c's ternary crossbar allocation
+  # (xbar.py) of the pinned layout, no longer the lane count.
+  from p4model import xbar
+  assert lanes.table_blocks(widths) == xbar.alone_blocks(lanes.key_fields(widths))
 
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
-def test_table_blocks_equals_the_ladder_on_real_keys_except_greedy_misses(widths):
+def test_table_blocks_equals_p4c_on_real_keys(widths):
+  # The ladder is p4c's charge on every real design key; on the one key where
+  # the lane count was below p4c (LANE_BELOW_P4C_REAL_KEYS, the greedy miss)
+  # the port gives p4c's number.
   if widths in LANE_BELOW_P4C_REAL_KEYS:
-    assert lanes.table_blocks(widths) == LANE_BELOW_P4C_REAL_KEYS[widths][0]
+    assert lanes.table_blocks(widths) == LANE_BELOW_P4C_REAL_KEYS[widths][1]
   else:
     assert lanes.table_blocks(widths) == codeword_to_blocks(widths)
 
@@ -497,7 +503,8 @@ def test_table_blocks_pins_the_two_known_ladder_disagreements_off_the_compiled_s
 
 
 def test_table_blocks_ignores_field_order():
-  assert lanes.table_blocks((52, 27)) == lanes.table_blocks((27, 52)) == 2
+  # 3: p4c's charge on independent_low_sd5's ddos trees (the lane count said 2)
+  assert lanes.table_blocks((52, 27)) == lanes.table_blocks((27, 52)) == 3
 
 
 def test_table_blocks_of_the_empty_key_is_the_ladders_floor():
@@ -507,16 +514,16 @@ def test_table_blocks_of_the_empty_key_is_the_ladders_floor():
 
 def test_table_blocks_rejects_a_key_over_the_crossbar_before_enumerating(monkeypatch):
   def boom(*_):
-    raise AssertionError('standalone must not run for a 65-byte key')
-  monkeypatch.setattr(lanes, 'standalone', boom)
+    raise AssertionError('the crossbar must not run for a 65-byte key')
+  monkeypatch.setattr(lanes.xbar, 'alone_blocks', boom)
   lanes._table_blocks.cache_clear()
   with pytest.raises(CrossbarKeyTooWide) as info:
     lanes.table_blocks((8,) * 65)
   assert info.value.args[1] == 65
 
 
-def test_table_blocks_raises_when_no_lane_layout_fits(monkeypatch):
-  monkeypatch.setattr(lanes, 'standalone', lambda _bytes: None)
+def test_table_blocks_raises_when_the_crossbar_cannot_fit_the_key(monkeypatch):
+  monkeypatch.setattr(lanes.xbar, 'alone_blocks', lambda _fields: None)
   lanes._table_blocks.cache_clear()
   with pytest.raises(CrossbarKeyTooWide) as info:
     lanes.table_blocks((27, 52))
@@ -533,26 +540,23 @@ def test_table_blocks_memo_returns_identical_results():
   assert info.hits >= len(REAL_DESIGN_KEYS) and info.maxsize == 65536
 
 
-def test_table_blocks_never_rises_when_one_field_loses_a_bit():
-  """Monotonicity guard (the B3 measurement: 0 increases in ~503k steps)."""
-  import random
-  rng = random.Random('table-blocks-monotone')
-  pool = [w for key in REAL_DESIGN_KEYS for w in key] + list(range(49, 57)) * 4
-  checked = 0
-  while checked < 3000:
-    key = tuple(sorted(rng.choice(pool) for _ in range(rng.randint(1, 8))))
-    if sum(-(-w // 8) for w in key) > 64:
-      continue
-    try:
-      base = lanes.table_blocks(key)
-    except CrossbarKeyTooWide:
-      continue
-    for i, w in enumerate(key):
-      if w <= 1:
-        continue
-      smaller = key[:i] + (w - 1,) + key[i + 1:]
-      assert lanes.table_blocks(smaller) <= base, (key, smaller)
-      checked += 1
+def test_table_blocks_can_rise_when_one_field_loses_a_bit():
+  """p4c's allocator is greedy, so its price is not monotone in the key: a
+  5-bit field is a whole byte, a 4-bit one a single nibble, and with the
+  nibble p4c's midbyte choice leaves this key one block dearer, under every
+  container-numbering tie (2026-11-13). The lane count (monotone, the B3
+  measurement) said 4 for both. Threshold alignment prices with the ladder
+  codeword_to_blocks, which stays monotone."""
+  from p4model import xbar
+  assert lanes.table_blocks((5, 19, 24, 53, 62)) == 4
+  assert lanes.table_blocks((4, 19, 24, 53, 62)) == 5
+  for tie in xbar.TIES:
+    for widths, price in (((5, 19, 24, 53, 62), 4), ((4, 19, 24, 53, 62), 5)):
+      key = xbar.field_key(lanes.key_fields(widths), {})
+      crossbar = xbar.StageXbar(tie=tie)
+      assert crossbar.allocate(key) and xbar.blocks_per_row(key) == price
+  assert (codeword_to_blocks((4, 19, 24, 53, 62))
+          <= codeword_to_blocks((5, 19, 24, 53, 62)))
 
 
 # ---- lane cap: only 3 of the 12 groups start on any one lane (2026-11-11) ----

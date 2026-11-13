@@ -392,13 +392,12 @@ def test_a_deep_table_pays_a_later_keys_price_once_per_row_word():
 # restored: reading p4c's own assembly showed that premise false (rewrite
 # design Sec 2).
 # --------------------------------------------------------------------------
-def test_the_packer_charges_sd5s_stage_nine_blocks_an_accepted_under_of_three():
+def test_the_packer_charges_sd5s_stage_twelve_blocks_as_p4c_does():
     # Modelled on independent_low_sd5's stage 6, where p4c charged its app and
     # ddos trees 3 TCAM blocks each (resources.json): 12 in all. Under the lane
-    # price (2026-10-04) the ddos key (27, 52) costs 2 per tree, so the model
-    # charges 3 + 3 * 2 = 9 -- an UNDER of 3, the accepted greedy-miss class
-    # (golden fixture known_findings 'lane_price_2026_10'). The ladder's 3 was
-    # right by luck.
+    # price (2026-10-04) the ddos key (27, 52) cost 2 per tree -- 9 in all, the
+    # accepted greedy-miss UNDER of 3. p4c's crossbar allocation, ported
+    # (xbar.py, 2026-11-13), gives the key 3 and the stage 12.
     from p4model.lanes import table_blocks
     from p4model.packing import crossbar_stages_needed
     from p4model.tables import codeword_to_blocks
@@ -406,14 +405,14 @@ def test_the_packer_charges_sd5s_stage_nine_blocks_an_accepted_under_of_three():
     app = frozenset({(("code", "app_flm"), 7), (("code", "app_plm"), 7)})
     ddos = frozenset({(("code", "ddos_bplm"), 4), (("code", "ddos_plm"), 7)})
     assert codeword_to_blocks((27, 52)) == 3
-    assert table_blocks((27, 52)) == 2
+    assert table_blocks((27, 52)) == 3
     assert table_blocks((54, 56)) == 3
     plan = crossbar_stages_needed(
-        [(3, 14), (2, 11), (2, 11), (2, 11)],
+        [(3, 14), (3, 11), (3, 11), (3, 11)],
         key_fields=[app, ddos, ddos, ddos],
         key_field_bits=[(54, 56), (27, 52), (27, 52), (27, 52)],
         placement_priority=[1, 2, 2, 2])
-    assert plan.blocks == 9
+    assert plan.blocks == 12
 
 
 def test_a_stage_of_one_shared_key_is_charged_exactly_its_declared_blocks():
@@ -532,29 +531,34 @@ _SPACER = frozenset({(("code", "spacer"), 41)})
 _PROBE = frozenset({(("code", "probe_a"), 11), (("code", "probe_b"), 11)})
 
 
-def test_the_lane_price_alone_keeps_two_probes_off_a_crowded_spacer():
+def test_a_probe_behind_a_crowded_spacer_pays_p4cs_seven_blocks():
     # results/tcam_discount_scan.csv dsp41: a (84, 84) probe key (22 crossbar
-    # bytes, 4 blocks alone under the pinned fill-low layout (the unpinned
-    # dsp41 compile charged 5)) behind a 41-byte spacer costs p4c 7 blocks, not 5,
-    # and p4c kept both in ONE stage. The lane simulation charges exactly that
-    # 7 (spacer placed first by priority). With two probes it is 8 | 7+7,
-    # which a 12-row column cannot hold, so the second probe moves on -- the
-    # price keeps them apart, no byte threshold needed (the 62-byte refusal
-    # was retired by spec 2026-09-29).
+    # bytes) behind a 41-byte spacer, both in ONE stage; p4c charged the probe 7
+    # blocks. That compile pinned no containers: p4c laid each 84-bit field out
+    # as W24 | W32 | W28 (its prog.bfa), and with that layout the crossbar port
+    # (xbar.py) charges exactly p4c's 8 + 7. Under the layout the generator pins
+    # (lanes.key_layout, fill-low W32 | W32 | W20) the port's price is 6, never
+    # compiled.
     from p4model.packing import crossbar_stages_needed
 
-    one = crossbar_stages_needed(
+    def probe(slices):
+        return tuple((("probe", i), slices) for i in range(2))
+
+    spacer = ((("spacer", 0), (("B", 8),) + (("W", 32),) * 10),)
+    measured = crossbar_stages_needed(
+        [(8, 41), (4, 22)], readiness_levels=[0] * 2,
+        key_fields=[_SPACER, _PROBE], key_field_bits=[(328,), (84, 84)],
+        key_slices=[spacer, probe((("W", 24), ("W", 32), ("W", 28)))],
+        placement_priority=[2, 1])
+    assert (measured.occupied, measured.table_blocks, measured.table_stages) == (
+        1, (8, 7), (0, 0))
+
+    pinned = crossbar_stages_needed(
         [(8, 41), (4, 22)], readiness_levels=[0] * 2,
         key_fields=[_SPACER, _PROBE], key_field_bits=[(328,), (84, 84)],
         placement_priority=[2, 1])
-    assert (one.occupied, one.blocks, one.table_stages) == (1, 15, (0, 0))
-
-    two = crossbar_stages_needed(
-        [(8, 41), (4, 22), (4, 22)], readiness_levels=[0] * 3,
-        key_fields=[_SPACER, _PROBE, _PROBE],
-        key_field_bits=[(328,), (84, 84), (84, 84)],
-        placement_priority=[2, 1, 1])
-    assert (two.occupied, two.blocks, two.table_stages) == (2, 19, (0, 1, 0))
+    assert (pinned.occupied, pinned.table_blocks, pinned.table_stages) == (
+        1, (8, 6), (0, 0))
 
 
 def test_a_41_plus_22_byte_mixed_stage_now_shares_one_stage():
@@ -847,8 +851,12 @@ def test_seed_range_keys_are_placed_ahead_of_every_tree_key():
     # share stage 0 at 9 + 3 = 12. With two 2-byte range keys already there,
     # 4 + 44 + 14 = 62 bytes are within the 64-byte crossbar, but the lanes
     # are not: the spacer still fits behind the range keys, and the probe,
-    # placed third, pays its lane leftover price of 4 instead of 3 for the
+    # placed third, paid its lane leftover price of 4 instead of 3 for the
     # slots the range keys took. The seed itself is never charged.
+    # 2026-11-13, p4c's crossbar allocation (xbar.py): a range byte takes a
+    # slot for each of its two nibble ranges, so the two 2-byte range keys
+    # hold 8 slots; behind them and the 44-byte spacer the 14-byte probe no
+    # longer fits the stage, and waits for stage 1 at its stand-alone 3.
     # (Until 2026-11-06 the second range key consumed a whole crossbar group,
     # which left the probe no legal fit at all and moved it to stage 1; a
     # later key now occupies only the slots its fit takes, lanes.
@@ -864,7 +872,7 @@ def test_seed_range_keys_are_placed_ahead_of_every_tree_key():
                                     seed_stages=[_seed(0, [1, 1], [2, 2])],
                                     **kwargs)
     assert (alone.occupied, alone.blocks, alone.table_stages) == (1, 12, (0, 0))
-    assert (seeded.occupied, seeded.blocks, seeded.table_stages) == (1, 13, (0, 0))
+    assert (seeded.occupied, seeded.blocks, seeded.table_stages) == (2, 12, (1, 0))
 
 
 def test_a_tree_key_behind_a_seed_pays_its_leftover_price_never_less():
@@ -972,60 +980,6 @@ def test_a_classification_table_wider_than_a_column_stays_in_one_stage():
     assert plan.stage_loads[0].tables == 2
 
 
-# --- Plan invariant 1, structurally: a single-key classification pool (every
-# 'joint' design) is placed and charged exactly as before audit C5. The
-# ordered stage simulation's placement order once leaked into single-key
-# pools and moved stage_depth on ~1% of realistic tree-size mixes (task-5
-# review fuzz, 224/20 000) while the archive happened to avoid them. The
-# reference below is an INDEPENDENT restatement of the pre-C5 placement
-# (packing.py at 5e97e6b, where a single key never paid the old margin):
-# column-sized shards, placed eagerly in (level, largest-load-first) order at
-# the earliest legal stage (first-fit-decreasing without levels), a stage
-# taking a shard while it keeps <= 8 shards, <= 64 bytes of distinct fields
-# and a 12x2 column packing, every shard charged its declared blocks
-# (declared = lanes.table_blocks x words since 2026-10-04).
-
-def _pre_c5_single_key_reference(specs, levels, unavailable):
-    from p4model.packing import fits_two_columns
-
-    shards = []
-    for idx, (blocks, width) in enumerate(specs):
-        remaining = blocks
-        while remaining > 12:
-            shards.append((12, width, idx))
-            remaining -= 12
-        shards.append((remaining, width, idx))
-
-    def load(shard):
-        return max(shard[0] / 24, shard[1] / 64, 1 / 8)
-
-    stages = {}                     # index -> shard blocks; one key, so width is fixed
-
-    def fits(here, blocks, width):
-        return (width <= 64 and len(here) + 1 <= 8
-                and fits_two_columns(here + [blocks]))
-
-    table_stage = {}
-    if levels is None:
-        for blocks, width, idx in sorted(shards, key=load, reverse=True):
-            index = 0
-            while index in stages and not fits(stages[index], blocks, width):
-                index += 1
-            stages.setdefault(index, []).append(blocks)
-            table_stage[idx] = max(index, table_stage.get(idx, index))
-    else:
-        for blocks, width, idx in sorted(shards, key=lambda s: (levels[s[2]], -load(s))):
-            index = levels[idx]
-            while index in unavailable or (
-                    index in stages and not fits(stages[index], blocks, width)):
-                index += 1
-            stages.setdefault(index, []).append(blocks)
-            table_stage[idx] = max(index, table_stage.get(idx, index))
-    depth = max(stages) + 1 if stages else 0
-    return (len(stages), depth, sum(map(sum, stages.values())),
-            tuple(table_stage[i] for i in range(len(specs))))
-
-
 def _single_key_config(rng, dist):
     from p4model.errors import CrossbarKeyTooWide
     from p4model.lanes import table_blocks
@@ -1063,33 +1017,51 @@ def _single_key_config(rng, dist):
 
 
 @pytest.mark.parametrize("dist", ["one", "mix", "small", "extreme"])
-def test_a_single_key_pool_is_placed_exactly_as_before_the_ordered_simulation(dist):
+def test_a_single_key_pool_is_never_charged_above_its_stand_alone_prices(dist):
+    # Since 2026-11-13 a single-key pool (every 'joint' design) is placed by the
+    # crossbar simulation in p4c's order, not by the declared-price packer
+    # it was until then: on campaign_2026_11's 4,800 joint programs
+    # that puts 15,116 of 15,144 trees in p4c's own stage (the old packer
+    # 12,546). A later table of the stage's one key reuses its slots, so no
+    # table is ever charged above its stand-alone blocks; it can be charged
+    # less (test_a_later_table_of_one_key_can_cost_a_block_less).
     import random
 
     from p4model.packing import StageLoad, crossbar_stages_needed
 
     rng = random.Random("single-key-" + dist)
-    for case in range(1500):
+    for case in range(40):
         specs, key, bits, levels, unavailable, priority = _single_key_config(rng, dist)
-        pure = case % 4 == 0
         kwargs = dict(key_fields=[key] * len(specs), key_field_bits=[bits] * len(specs),
                       placement_priority=priority)
-        if pure:
+        if case % 4 == 0:
             plan = crossbar_stages_needed(specs, **kwargs)
-            expected = _pre_c5_single_key_reference(specs, None, frozenset())
         else:
-            # A range seed BELOW the trees' level (every 'joint' design: trees
-            # wait for every range table) must not change anything either.
             seed = StageLoad(index=levels[0] - 1, blocks=(1, 1),
                              fields=frozenset({(("val", 0), 2), (("val", 1), 2)}),
                              tables=2)
             plan = crossbar_stages_needed(specs, readiness_levels=levels,
                                           unavailable_stages=unavailable,
                                           seed_stages=[seed], **kwargs)
-            expected = _pre_c5_single_key_reference(specs, levels, unavailable)
-        assert (plan.occupied, plan.depth, plan.blocks, plan.table_stages) == expected, (
-            dist, case, specs, levels, sorted(unavailable))
-        assert plan.blocks == sum(blocks for blocks, _ in specs)
+        assert all(charged <= declared for charged, (declared, _)
+                   in zip(plan.table_blocks, specs)), (dist, case)
+        assert plan.blocks == sum(plan.table_blocks)
+
+
+def test_a_later_table_of_one_key_can_cost_a_block_less():
+    # joint-off_M035_s22_k06 (campaign_2026_11), stage 7: four ddos trees of one
+    # (17, 21, 21, 25, 27, 31) key, charged 5, 5, 4, 5 by p4c -- the third
+    # reuses the earlier tables' slots in a shape one block cheaper than alone.
+    from p4model.lanes import table_blocks
+    from p4model.packing import crossbar_stages_needed
+
+    bits = (17, 21, 21, 25, 27, 31)
+    key = frozenset({(("code", i), -(-b // 8)) for i, b in enumerate(bits)})
+    assert table_blocks(bits) == 5
+    plan = crossbar_stages_needed(
+        [(5, 21)] * 4, readiness_levels=[0] * 4, key_fields=[key] * 4,
+        key_field_bits=[bits] * 4, placement_priority=[2] * 4)
+    assert (plan.table_blocks, plan.table_stages) == ((5, 5, 4, 5), (0, 0, 0, 0))
 
 
 def test_a_second_key_or_a_reachable_seed_switches_the_simulation_on():
