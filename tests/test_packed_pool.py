@@ -1,7 +1,7 @@
 """The training path prices the packed layout (per_tree, spec
 2026-11-11-packed-codes-stage-pin Sec 3.2, 4.3, 5): each tree's key bytes come from
-packed.layout_for, its table is charged its stand-alone price, and the tables the
-12-group rule moved are the ones the generator pins."""
+packed.layout_for and its declared blocks are its stand-alone price; the stage placement
+then prices it by the crossbar simulation (spec 2026-11-13) and moves no table."""
 from p4gen import evaluation
 import pytest
 
@@ -55,31 +55,16 @@ def test_usage_charges_the_sum_of_the_tables_own_blocks():
   assert ternary_plan.blocks == sum(blocks for blocks, _ in pool["ternary_table_specs"])
 
 
-def test_stage_pins_name_exactly_the_moved_tables(monkeypatch):
-  # one group per stage: seed 3 has two one-group trees, which can no longer share
-  monkeypatch.setattr(packing, "TERNARY_CROSSBAR_GROUPS_PER_STAGE", 1)
-  app, ddos, names = _rng_design(3)
-  pins = evaluation.tree_stage_pins(app, ddos, names, names, PER_TREE_ENCODING)
-  assert pins and all(name.startswith("get_classification_tree_") for name in pins)
-  assert evaluation.tree_stage_pins(app, ddos, names, names, PER_TASK_ENCODING) == {}
+@pytest.mark.parametrize("seed", range(6))
+def test_no_tree_is_moved_or_pinned(seed):
+  # the crossbar simulation (packing._packed_stage_test) refuses a tree only where p4c would not place it
+  # either, so the placement never moves a table for the model's sake and the generator writes no @stage
+  app, ddos, names = _rng_design(seed)
   pool = evaluation._pool_inputs(app, ddos, names, names, PER_TREE_ENCODING)
   _, _, plan = assemble_usage(pool)
-  moved = moved_table_stages(plan)
-  assert sorted(pins.values()) == sorted(moved.values())
-  assert len(pins) == len(moved) and set(moved) == set(plan.moved)
-  seen = {}
-  for idx, task in enumerate(pool["ternary_task"]):
-    ordinal = seen[task] = seen.get(task, -1) + 1
-    if idx in moved:
-      assert pins["get_classification_tree_%s_%d" % (task, ordinal)] == moved[idx]
-  # tree_stage_placement: the same pins, each pinned table's first refusal (one stage or more
-  # before its pin), and no unpinnable table in this design
-  placement = evaluation.tree_stage_placement(app, ddos, names, names, PER_TREE_ENCODING)
-  assert placement.pins == pins and placement.unpinnable == []
-  assert set(placement.first_refusal) == set(pins)
-  assert all(placement.first_refusal[name] < pins[name] for name in pins)
-  assert sorted(placement.first_refusal.values()) == sorted(s for _, s in plan.first_refused)
-  assert evaluation.tree_stage_placement(app, ddos, names, names, PER_TASK_ENCODING) == ({}, {}, [])
+  assert plan.moved == () and plan.unpinnable == () and plan.first_refused == ()
+  assert evaluation.tree_stage_pins(app, ddos, names, names, PER_TREE_ENCODING) == {}
+  assert evaluation.tree_stage_placement(app, ddos, names, names, PER_TREE_ENCODING) == ({}, {}, [])
 
 
 def test_tree_stage_placement_names_the_unpinnable_tables(monkeypatch):

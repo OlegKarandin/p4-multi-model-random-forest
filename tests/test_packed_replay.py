@@ -81,26 +81,6 @@ def test_training_prices_exactly_what_the_generated_program_replays(tmp_path, se
   assert replay["stage_pins_consistent"] is True
 
 
-@pytest.mark.parametrize("seed", [0, 2, 3, 5])
-def test_moved_tables_replay_where_training_put_them(tmp_path, monkeypatch, seed):
-  """A forced one-group budget moves tables (as tests/test_packed_pool.py does): the replay,
-  reading the same budget, moves the same ones, and with their pins in the program it prices
-  what training priced and calls the pins consistent; without them it flags the program."""
-  monkeypatch.setattr(packing, "TERNARY_CROSSBAR_GROUPS_PER_STAGE", 1)
-  app, ddos, names = _rng_design(seed)
-  usage = evaluation.multi_model_memory_evaluation(app, ddos, names, names, PER_TREE_ENCODING)
-  pins = _pins(seed)
-  assert pins
-  replay = model_breakdown(parse_program_text(_generate(tmp_path, seed, stage_pins=pins)))
-  assert (replay["stage_depth"], replay["blocks"]) == (usage.stage_depth, usage.blocks)
-  assert replay["stage_pins_consistent"] is True
-  stages = {table["table"]: table["stage"] for table in replay["tables"]}
-  assert all(stages[name] == stage for name, stage in pins.items())
-  unpinned = model_breakdown(parse_program_text(_generate(tmp_path, seed)))
-  assert unpinned["stage_pins_consistent"] is False
-  assert (unpinned["stage_depth"], unpinned["blocks"]) == (usage.stage_depth, usage.blocks)
-
-
 def test_a_program_whose_pins_disagree_with_the_model_is_flagged(tmp_path):
   # Review Focus 4: app_0 is not a moved table (seed 3 moves none), yet the program pins it.
   assert _pins(3) == {}

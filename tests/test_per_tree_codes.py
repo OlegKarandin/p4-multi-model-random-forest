@@ -589,29 +589,21 @@ def _stage_lines(text):
       r"@stage\((\d+)\)\s*\n(?:\s*@\w+\([^)\n]*\)\s*\n)*\s*table\s+(\w+)\s*\{", text)}
 
 
-def test_the_row_writer_pins_the_moved_tables_and_records_them(tmp_path, monkeypatch):
-  """Spec 2026-11-11 Sec 4.5: the row writer computes the pins from the pool training priced
-  (evaluation.tree_stage_pins) and passes them to the generator. A forced one-group stage
-  budget moves tables (as tests/test_packed_pool.py does), so the pins are not empty."""
-  from p4model import packing
+def test_the_row_writer_writes_no_stage_pin(tmp_path):
+  """Since the crossbar simulation (spec 2026-11-13) no table is moved for the model, so the row writer
+  computes empty pins and the program carries no @stage line."""
   from src.training import row_artifacts as ra
-  monkeypatch.setattr(packing, "TERNARY_CROSSBAR_GROUPS_PER_STAGE", 1)
   app, ddos, names = _rng_design(3)
   usage = _evaluate(app, ddos, names)
   ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
   row = "joint-tree_M035_s00_k05"
   model = ra.write_row_artifacts(ctx, row, app, ddos, names, names, PER_TREE_ENCODING, usage)
   text = (tmp_path / "designs" / (row + ".p4")).read_text(encoding="utf-8")
-  assert model["stage_pins"] and model["stage_pins"] == _stage_lines(text)
+  assert model["stage_pins"] == {} and _stage_lines(text) == {}
   assert model["model_paths_differ"] is False
   assert (model["stage_depth"], model["blocks"]) == (usage.stage_depth, usage.blocks)
   stored = json.loads((tmp_path / "designs" / (row + ".model.json")).read_text(encoding="utf-8"))
-  assert stored["stage_pins"] == model["stage_pins"]
-  # each pinned table's first-refusal stage is recorded beside its pin, at least one stage earlier
-  refusal = stored["stage_pin_first_refusal"]
-  assert set(refusal) == set(model["stage_pins"])
-  assert all(refusal[name] < model["stage_pins"][name] for name in refusal)
-  assert stored["unpinnable_tables"] == []
+  assert stored["stage_pin_first_refusal"] == {} and stored["unpinnable_tables"] == []
 
 
 def test_the_row_writer_records_unpinnable_tables(tmp_path, monkeypatch):
@@ -653,25 +645,6 @@ def test_a_pricing_refusal_while_pinning_is_a_generator_error_row(tmp_path, monk
   assert model["stage_pins"] is None and model["unpinnable_tables"] is None
   assert model["stage_pin_first_refusal"] is None
   assert not (tmp_path / "designs" / (row + ".p4")).exists()
-
-
-def test_unpinned_moved_tables_make_the_model_paths_differ(tmp_path, monkeypatch):
-  """A program missing the pins its own placement calls for prices the same totals here,
-  but p4c would not place it as the model did: model_paths_differ says so."""
-  from p4gen import evaluation
-  from p4model import packing
-  from src.training import row_artifacts as ra
-  monkeypatch.setattr(packing, "TERNARY_CROSSBAR_GROUPS_PER_STAGE", 1)
-  monkeypatch.setattr(ra, "tree_stage_placement",
-                      lambda *args, **kwargs: evaluation.TreeStagePlacement({}, {}, []))
-  app, ddos, names = _rng_design(3)
-  usage = _evaluate(app, ddos, names)
-  ctx = ra.RowContext(str(tmp_path), "joint-tree", 35, "abc")
-  model = ra.write_row_artifacts(ctx, "joint-tree_M035_s00_k05", app, ddos, names, names,
-                                 PER_TREE_ENCODING, usage)
-  assert model["stage_pins"] == {}
-  assert (model["stage_depth"], model["blocks"]) == (usage.stage_depth, usage.blocks)
-  assert model["model_paths_differ"] is True
 
 
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, PER_TASK_ENCODING])

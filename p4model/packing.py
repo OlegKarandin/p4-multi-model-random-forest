@@ -16,15 +16,15 @@ audit C5): tables are placed in the order p4c's placer takes them, which the
 generator pins with @placement_priority, and every stage is priced key by key
 in that order with lanes.py.
 
-Packed codes (key_bytes, spec 2026-11-11 Sec 4-5) keep that order but price
-every tree key stand-alone and refuse a stage whose tree keys would need more
-than 12 crossbar groups; the tables that refusal moves are reported, so the
-generator can pin them."""
+Packed codes (key_bytes, spec 2026-11-11 Sec 4-5) keep that order and
+simulate each stage's crossbar as p4c allocates it (xbar.py, spec 2026-11-13):
+a tree is charged the blocks of its actual allocation, and a tree whose key no
+longer fits waits for a later stage, as in p4c."""
 import functools
 import math
 from dataclasses import dataclass
 
-from p4model import lanes
+from p4model import lanes, xbar
 from p4model.errors import CrossbarKeyTooWide
 from p4model.target import (
     ACTION_DATA_BUS_WORDS,
@@ -510,48 +510,70 @@ def _packed_units(table_specs, key_fields, key_bytes, levels, priorities):
   return units
 
 
-def _packed_stage_test(units, seed):
-  """The stage test of the packed pool (spec 2026-11-11 Sec 5 rule 2): the
-  charges of `units` (this pool's, in placement order) in one stage holding
-  `seed`, or None when refused, and whether the 12-group rule ALONE refused it.
+@functools.lru_cache(maxsize=65536)
+def _crossbar_stage(seed_fields, units):
+  """p4c's ternary crossbar allocation of one stage (xbar.py, spec 2026-11-13):
+  the seed's range keys first (seed_fields, sorted), then each tree TABLE's key
+  in placement order, each on top of the ones before. `units` is a tuple of
+  (table_idx, key byte tuple, rows) in placement order; units of one table
+  share one allocation. Returns {table_idx: blocks per 512-row word}, None
+  when a range key or a tree key does not fit, or 'alone' when the stage's
+  only table is a tree whose key does not fit even an empty crossbar."""
+  crossbar = xbar.StageXbar(tie='whole_first')
+  for index, (_, field_bytes) in enumerate(seed_fields):
+    if not crossbar.allocate(xbar.range_key(index, field_bytes)):
+      return None
+  per_row = {}
+  for table_idx, key, _ in units:
+    if table_idx in per_row:
+      continue
+    key_bytes = xbar.tree_key(key, table_idx)
+    placed = crossbar.find_alloc(key_bytes)
+    if placed is None:
+      return 'alone' if not seed_fields and len(units) == 1 else None
+    crossbar.commit(placed)
+    per_row[table_idx] = xbar.blocks_per_row(key_bytes)
+  return per_row
 
-  Every unit is charged its own blocks -- the stand-alone price, wherever it
-  sits (Sec 5 rule 1): with packed codes the first key of a stage is at its
-  stand-alone price in 117/117 probe stages, and a later key pays more almost
-  only when the stage's tree keys need 12 or more groups (Sec 4.1, the model4
-  probe, results/encoding_evidence_2026_11/model4/). That squeeze is not
-  priced; it is prevented. A stage admits when all of these hold:
+
+def _packed_stage_test(units, seed):
+  """The stage test of the packed pool: the charges of `units` (this pool's,
+  in placement order) in one stage holding `seed`, or None when refused.
+
+  The stage's crossbar is simulated as p4c allocates it (_crossbar_stage,
+  xbar.py): its range tables, then its trees in placement order, each on the
+  slots the earlier ones left. A tree whose key no longer fits is refused, so
+  the placement tries the next table or stage, as p4c's placer does; a tree
+  that fits is charged its rows x the blocks of its actual allocation. This
+  replaces the stand-alone price, the 12-group rule and the @stage pins of
+  spec 2026-11-11 (spec 2026-11-13: p4c's allocation reproduced slot for slot
+  on 2,481 compiles). Also required:
     * at most TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE tables, seed included;
-    * at most TERNARY_CROSSBAR_STAGE_BYTES bytes of distinct key fields;
-    * the blocks, seed shards included, pack 12x2 (fits_two_columns);
-    * the GROUP RULE (Sec 4.2): lanes.standalone of each tree table's key
-      (once per table, whatever its units), plus ceil(2 * seed.tables / 5)
-      for the seed's range tables (a 2-byte key each, 5 slots a group), at
-      most TERNARY_CROSSBAR_GROUPS_PER_STAGE (12, the groups a stage has).
-      Read at call time, so a test can patch it. A stage holding nothing
-      else -- no unit of this pool, no seed -- admits any single unit, so
-      the placement always ends (a key over 12 groups is refused earlier,
-      by _packed_units).
-  Returns (charges or None, refused by the group rule alone)."""
-  tables_ok = (len(units) + seed.tables
-               <= TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
-  present = frozenset().union(*(unit.fields for unit in units)) | seed.fields
-  bytes_ok = (sum(field_bytes for _, field_bytes in present)
-              <= TERNARY_CROSSBAR_STAGE_BYTES)
-  charges = [unit.blocks for unit in units]
-  columns_ok = fits_two_columns(
-      list(seed.blocks) + [width for charge in charges
-                           for width, _ in _stage_shards(charge, 1)])
+    * the blocks, seed shards included, pack 12x2 (fits_two_columns).
+  A stage holding nothing else admits any single unit, so the placement
+  always ends: a key the simulation cannot fit even then (never seen) is
+  charged its stand-alone blocks (a key over 12 groups is refused earlier,
+  by _packed_units). The range tables' 8-word action data bus rule is the
+  range pool's (crossbar_stages_needed), not this test's.
+  Returns (charges or None, False): the second value, "refused by the group
+  rule alone", is always False now that no table is moved for the model."""
+  if len(units) + seed.tables > TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE:
+    return None, False
   alone = (len(units) == 1 and seed.tables == 0 and not seed.blocks
            and not seed.fields)
-  keys = {unit.table_idx: unit.bits for unit in units}
-  groups = (sum(_standalone_groups(key) for key in keys.values())
-            + -(-2 * seed.tables // 5))
-  groups_ok = alone or groups <= TERNARY_CROSSBAR_GROUPS_PER_STAGE
-  others_ok = tables_ok and bytes_ok and columns_ok
-  if others_ok and groups_ok:
-    return charges, False
-  return None, others_ok
+  per_row = _crossbar_stage(
+      tuple(sorted(seed.fields)),
+      tuple((unit.table_idx, unit.bits, unit.rows) for unit in units))
+  if per_row == 'alone' and alone:
+    return [units[0].blocks], False
+  if per_row is None or per_row == 'alone':
+    return None, False
+  charges = [unit.rows * per_row[unit.table_idx] for unit in units]
+  if not alone and not fits_two_columns(
+      list(seed.blocks) + [width for charge in charges
+                           for width, _ in _stage_shards(charge, 1)]):
+    return None, False
+  return charges, False
 
 
 def _packed_stage_simulation(table_specs, key_fields, key_bytes, levels,
@@ -720,19 +742,16 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   docs/superpowers/specs/2026-11-11-packed-codes-stage-pin-design.md Sec 4.2,
   4.3, Sec 5 rules 1-2) is placed in the same order as the ordered stage
   simulation, with unavailable_stages honoured the same way, but priced and
-  admitted differently (_packed_stage_test): every table is charged its
-  table_specs blocks whatever its position (its key's stand-alone price), and
-  a stage admits a table only while its tree keys need at most
-  TERNARY_CROSSBAR_GROUPS_PER_STAGE (12) groups between them, the seed's
-  range tables counting ceil(2 * tables / 5). Evidence, the model4 probe
-  (Sec 4.1, results/encoding_evidence_2026_11/model4/): the first key of a
-  stage is at its stand-alone price in 117/117 stages, and a later key pays
-  more almost only past 12 groups, where p4c's squeeze is not predictable --
-  so the model prevents it instead, and the generator pins the tables the
-  rule moved. StagePlan.moved / unpinnable report them, and
-  StagePlan.first_refused the stage the rule first refused each moved one. Needs
-  readiness_levels; refuses key_field_bits, table_dependents and
-  action_bytes.
+  admitted differently (_packed_stage_test): each stage's ternary crossbar
+  is simulated as p4c allocates it (xbar.py, spec 2026-11-13: p4c's slot
+  assignment reproduced on every ternary table of 2,481 compiles), the
+  seed's range keys first, then the trees in placement order. A tree is
+  charged its rows x the blocks of its actual allocation; a tree that no
+  longer fits is refused there and waits, as p4c's placer makes it wait.
+  This replaced the stand-alone price, the 12-group rule and the @stage pins
+  of spec 2026-11-11, so StagePlan.moved / unpinnable / first_refused are
+  always empty. Needs readiness_levels; refuses key_field_bits,
+  table_dependents and action_bytes.
   """
   if key_bytes is not None:
     if key_field_bits is not None:
