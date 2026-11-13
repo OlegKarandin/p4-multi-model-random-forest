@@ -1,8 +1,8 @@
 """The replay of a packed per-tree program (spec docs/superpowers/specs/
 2026-11-11-packed-codes-stage-pin-design.md Sec 3.1, 4.3, 4.5, 5): it rebuilds every tree's
 key bytes from the program text alone (the code_pk_ slices and their @pa_container_size
-pins), prices them as training does, and checks the program's @stage pins against the
-tables its own placement moved."""
+pins) and prices them as training does. A program with @stage pins (one generated before
+the crossbar port of spec 2026-11-13) is refused."""
 import os
 import re
 
@@ -53,9 +53,8 @@ def test_replay_rebuilds_the_layouts_key_bytes_from_the_text(tmp_path, seed):
     assert tree_key_bytes(program, name) == expected, name      # the order is recoverable too
 
 
-def test_the_program_parses_into_containers_slices_and_pins(tmp_path):
-  text = _generate(tmp_path, 0, stage_pins={"get_classification_tree_ddos_1": 10})
-  program = parse_program_text(text)
+def test_the_program_parses_into_containers_and_slices(tmp_path):
+  program = parse_program_text(_generate(tmp_path, 0))
   layout = _layout(0)
   assert program.containers == {"code_pk_" + feature: containers
                                 for feature, containers in layout.containers.items()}
@@ -63,7 +62,6 @@ def test_the_program_parses_into_containers_slices_and_pins(tmp_path):
     name = "get_classification_tree_%s_%d" % (task, tree)
     assert (program.key_slices[(name, "code_pk_" + feature)]
             == packed.key_slices(layout, task, tree, feature))
-  assert program.stage_pins == {"get_classification_tree_ddos_1": 10}
 
 
 @pytest.mark.parametrize("seed", range(6))
@@ -72,20 +70,18 @@ def test_training_prices_exactly_what_the_generated_program_replays(tmp_path, se
   usage = evaluation.multi_model_memory_evaluation(app, ddos, names, names, PER_TREE_ENCODING)
   replay = model_breakdown(parse_program_text(_generate(tmp_path, seed)))
   assert (replay["stage_depth"], replay["blocks"]) == (usage.stage_depth, usage.blocks)
-  assert replay["stage_pins_consistent"] is True
 
 
-def test_a_program_with_pins_is_flagged_and_priced_with_them(tmp_path):
-  # The model writes no @stage pins since the crossbar port (spec 2026-11-13); a program that
-  # carries one (an archived pinned program, spec 2026-11-11 Sec 4.3) is flagged.
-  text = _generate(tmp_path, 3, stage_pins={"get_classification_tree_app_0": 11})
-  breakdown = model_breakdown(parse_program_text(text))
-  assert breakdown["stage_pins_consistent"] is False
-  # The pin is p4c's earliest stage for the table (spec Sec 4.3), so the replay places it
-  # no earlier: what the program would cost, not what the model wanted.
-  stages = {table["table"]: table["stage"] for table in breakdown["tables"]}
-  assert stages["get_classification_tree_app_0"] == 11
-  assert breakdown["stage_depth"] == 11 + 1 + 1
+def test_a_program_with_stage_pins_is_refused(tmp_path):
+  # An archived pinned program (spec 2026-11-11 Sec 4.3, e.g. heldout8) is replayed at the
+  # commit that generated it; the model no longer prices pins, so it never prices one silently.
+  text = _generate(tmp_path, 3)
+  pinned = re.sub(r"(\n)(\s*@placement_priority\(\d+\)\s*\n\s*table get_classification_tree_app_0 \{)",
+                  r"\1    @stage(11)\n\2", text, count=1)
+  assert pinned != text
+  model_breakdown(parse_program_text(text))
+  with pytest.raises(ValueError, match="@stage"):
+    parse_program_text(pinned)
 
 
 @pytest.mark.parametrize("seed", range(6))
@@ -269,4 +265,3 @@ def test_other_encodings_replay_as_before(tmp_path, encoding):
     if encoding == JOINT_ENCODING and seed in _JOINT_ORDER_2026_11_13:
       recorded = recorded[:2] + (_JOINT_ORDER_2026_11_13[seed],)
     assert (breakdown["stage_depth"], breakdown["blocks"], tables) == recorded, seed
-    assert breakdown["stage_pins_consistent"] is True

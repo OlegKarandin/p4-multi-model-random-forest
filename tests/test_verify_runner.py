@@ -344,8 +344,7 @@ def test_the_tarball_keeps_the_manifest_and_rescore_agrees(tmp_path, monkeypatch
     atomic_write_text(os.path.join(run_dir, "verify", "r.json"), canonical_json(stored))
     monkeypatch.setattr(runner, "model_breakdown",
                         lambda program, row_id: {"stage_depth": 12, "blocks": 6,
-                                                 "tables": _TABLES,
-                                                 "stage_pins_consistent": True})
+                                                 "tables": _TABLES})
     runner.rescore(run_dir)
     record = _verify_json(run_dir)
     assert record["failure"] == "assembler" and record["verdict"] == "COMPILE_ERROR"
@@ -353,19 +352,19 @@ def test_the_tarball_keeps_the_manifest_and_rescore_agrees(tmp_path, monkeypatch
     assert _csv_rows(run_dir)[0]["failure"] == "assembler"
 
 
-def test_a_rescored_program_whose_pins_disagree_with_its_placement_differs(tmp_path, monkeypatch):
-    # The replay prices the training's own totals, but the program's @stage lines are not the
-    # tables its placement moves (stage_pins_consistent False): p4c would place it otherwise.
+def test_a_rescored_program_differs_when_its_replay_prices_other_totals(tmp_path, monkeypatch):
     run_dir = _run_dir(tmp_path)
     monkeypatch.setattr(runner, "parse_program", lambda path: "program")
-    for consistent, differs in ((True, False), (False, True)):
+    base = _model("r")
+    for depth, differs in ((base["training_stage_depth"], False),
+                           (base["training_stage_depth"] + 1, True)):
         monkeypatch.setattr(runner, "model_breakdown",
-                            lambda program, row_id, c=consistent: {
-                                "stage_depth": 12, "blocks": 6, "tables": _TABLES,
-                                "stage_pins_consistent": c})
-        model = runner._rescored_model(run_paths(run_dir), "r", _model("r"))
+                            lambda program, row_id, d=depth: {
+                                "stage_depth": d, "blocks": base["training_blocks"],
+                                "tables": _TABLES})
+        model = runner._rescored_model(run_paths(run_dir), "r", base)
         assert model["model_paths_differ"] is differs
-        assert (model["stage_depth"], model["blocks"]) == (12, 6)
+        assert model["stage_depth"] == depth
 
 
 def test_rescore_of_an_old_tarball_with_no_manifest_changes_nothing(tmp_path, monkeypatch):
@@ -381,8 +380,7 @@ def test_rescore_of_an_old_tarball_with_no_manifest_changes_nothing(tmp_path, mo
             tar.addfile(member, io.BytesIO(data))
     monkeypatch.setattr(runner, "model_breakdown",
                         lambda program, row_id: {"stage_depth": 12, "blocks": 6,
-                                                 "tables": _TABLES,
-                                                 "stage_pins_consistent": True})
+                                                 "tables": _TABLES})
     before = _verify_json(run_dir)
     runner.rescore(run_dir)
     after = _verify_json(run_dir)
@@ -452,8 +450,7 @@ def test_rescore_uses_edited_model_json_without_compiling(tmp_path, monkeypatch)
     monkeypatch.setattr(runner, "parse_program", lambda p4: ("parsed", p4))
     monkeypatch.setattr(runner, "model_breakdown",
                         lambda program, row_id: {"stage_depth": 11, "blocks": 6,
-                                                 "tables": _TABLES,
-                                                 "stage_pins_consistent": True})
+                                                 "tables": _TABLES})
 
     def never(*a, **k):
         raise AssertionError("rescore must not compile")
@@ -484,8 +481,7 @@ def test_rescore_recomputes_the_model_from_the_saved_program(tmp_path, monkeypat
     monkeypatch.setattr(runner, "parse_program", lambda p4: ("parsed", p4))
     monkeypatch.setattr(runner, "model_breakdown",
                         lambda program, row_id: {"stage_depth": 12, "blocks": 8,
-                                                 "tables": tables,
-                                                 "stage_pins_consistent": True})
+                                                 "tables": tables})
     monkeypatch.setattr(runner, "compile_p4", None)
     runner.rescore(run_dir)
     record = _verify_json(run_dir)
@@ -630,8 +626,7 @@ def test_rescore_keeps_a_copied_twin_copied_and_scores_it_from_its_sources_tarba
     assert not os.path.exists(os.path.join(run_dir, "verify", twin + ".tar.gz"))
     monkeypatch.setattr(runner, "model_breakdown",
                         lambda program, row_id: {"stage_depth": 12, "blocks": 6,
-                                                 "tables": _TABLES,
-                                                 "stage_pins_consistent": True})
+                                                 "tables": _TABLES})
 
     runner.rescore(run_dir)
 

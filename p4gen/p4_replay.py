@@ -30,13 +30,11 @@ class Program:
     that carries one), fwd_pinned (the program pins meta.fwd out of PHV
     overlays, _FWD_PIN: the register blocks' order, register_stage_schedule).
 
-    A packed per-tree program (spec 2026-11-11-packed-codes-stage-pin Sec 3.1,
-    4.3) fills three more: containers (code_pk_<f> -> its @pa_container_size
-    sizes in bits, low container first), key_slices ((table, field) ->
-    [(hi, lo)], each `meta.<field>[hi:lo]` key line of that table in program
-    order; every sliced key of any program is recorded) and stage_pins (table
-    -> the n of the @stage(n) line above it). The first and last are empty for
-    every other program.
+    A packed per-tree program (spec 2026-11-11-packed-codes-stage-pin Sec 3.1)
+    fills two more: containers (code_pk_<f> -> its @pa_container_size sizes in
+    bits, low container first; empty for every other program) and key_slices
+    ((table, field) -> [(hi, lo)], each `meta.<field>[hi:lo]` key line of that
+    table in program order; every sliced key of any program is recorded).
 
     code_containers: every other code_<f> field's @pa_container_size sizes in
     bits, low container first (the generator pins every tree-key code field,
@@ -50,18 +48,11 @@ class Program:
     fwd_pinned: bool = False
     containers: dict = field(default_factory=dict)
     key_slices: dict = field(default_factory=dict)
-    stage_pins: dict = field(default_factory=dict)
     code_containers: dict = field(default_factory=dict)
 
 
-# stage_pins_consistent: the program's @stage lines are exactly the tables the
-# replay's own packed placement moved, at the stages it put them (always True
-# for a program that is not packed). Defaulted, so a caller building one by
-# position keeps working.
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
-                                        'range_names ternary_names '
-                                        'stage_pins_consistent',
-                         defaults=(True,))
+                                        'range_names ternary_names')
 
 # The packed per-tree code field of feature f (build_p4_script.packed_field):
 # meta.code_pk_<f>, written whole by range table table_<n>_<f>.
@@ -158,21 +149,27 @@ _PACKED_CONTAINERS = re.compile(
 _CODE_CONTAINERS = re.compile(
     r'^@pa_container_size\("ingress", "ig_md\.(code_\w+)", ([\d, ]+)\)\s*$', re.M)
 
-# @stage(n) above a table, other pragmas (its @placement_priority) between it
-# and the table (build_p4_script, spec 2026-11-11 Sec 4.3).
-_STAGE_PIN = re.compile(r'@stage\((\d+)\)\s*\n(?:\s*@\w+\([^)\n]*\)\s*\n)*'
-                        r'\s*table\s+(\w+)\s*\{')
+# A table's @stage(n) line. Per-tree programs generated under spec 2026-11-11
+# Sec 4.3 (heldout runs up to heldout8, before the crossbar port of spec
+# 2026-11-13) carry them; nothing generates them now, and the model does not
+# price them.
+_STAGE_PIN = re.compile(r'^\s*@stage\(\d+\)', re.M)
 
 
 def parse_program_text(text):
+    """Raises ValueError for a program with @stage lines: the model no longer
+    prices pinned placements, so such a program is replayed at the commit that
+    generated it, never silently priced as if unpinned."""
+    if _STAGE_PIN.search(text):
+        raise ValueError('program carries @stage pins, which the model no longer '
+                         'prices (spec 2026-11-13); replay it at the commit that '
+                         'generated it')
     tables, widths, bits, slices = _parse_keys(text)
     return Program(tables, widths, bits, _parse_sizes(text),
                    _parse_priorities(text), bool(_FWD_PIN.search(text)),
                    containers={name: tuple(int(size) for size in sizes.split(','))
                                for name, sizes in _PACKED_CONTAINERS.findall(text)},
                    key_slices=slices,
-                   stage_pins={name: int(stage)
-                               for stage, name in _STAGE_PIN.findall(text)},
                    code_containers={name: tuple(int(size) for size in sizes.split(','))
                                     for name, sizes in _CODE_CONTAINERS.findall(text)
                                     if not name.startswith(_PACKED_FIELD)})
@@ -598,27 +595,14 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
                            ternary_names)
 
     # The packed pool, placed by key_bytes exactly as usage.assemble_usage
-    # places it. The model pins no table any more (the crossbar port, spec
-    # 2026-11-13), so a program with @stage lines -- one generated before the
-    # port, under spec 2026-11-11 Sec 4.3 -- is not one the model would write:
-    # stage_pins_consistent is False for it, and it is priced with its pins.
-    def place(levels):
-        return crossbar_stages_needed(
-            ternary_specs, readiness_levels=levels, unavailable_stages=interior,
-            key_bytes=ternary_key_bytes, seed_stages=range_plan.stage_loads,
-            placement_priority=priorities)
-
-    ternary_plan = place(ternary_levels)
-    consistent = not program.stage_pins
-    if program.stage_pins:
-        # A pin is p4c's EARLIEST stage for its table (mau/table_placement.cpp:
-        # 2645, spec 2026-11-11 Sec 4.3), so the program is priced with each pin
-        # as a floor on that table's readiness.
-        ternary_plan = place([max(level, program.stage_pins.get(name, level))
-                              for name, level in zip(ternary_names, ternary_levels)])
+    # places it.
+    ternary_plan = crossbar_stages_needed(
+        ternary_specs, readiness_levels=ternary_levels, unavailable_stages=interior,
+        key_bytes=ternary_key_bytes, seed_stages=range_plan.stage_loads,
+        placement_priority=priorities)
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
     return ReplayPlans(predicted, range_plan, ternary_plan, range_names,
-                       ternary_names, consistent)
+                       ternary_names)
 
 
 def model_breakdown(program, row_id=''):
@@ -626,10 +610,7 @@ def model_breakdown(program, row_id=''):
     the program's own table names -- so spec sec 6.3's per-table comparison with
     p4c's mau.resources.log is a name join, not a mapping. The model side of
     every campaign verdict (plan O3): the path the 60/60 calibration gate
-    validates, and the one --rescore reruns from a saved program.
-    stage_pins_consistent: False when a packed program has @stage lines, which
-    the model no longer writes (ReplayPlans), True otherwise
-    -- including every program that is not packed."""
+    validates, and the one --rescore reruns from a saved program."""
     plans = replay_plans(row_id, program, declared_prices(program))
     tables = []
     for kind, plan, names in (('range', plans.range_plan, plans.range_names),
@@ -640,5 +621,4 @@ def model_breakdown(program, row_id=''):
     tables.sort(key=lambda t: (t['stage'], t['table']))
     return {'stage_depth': int(plans.stage_depth),
             'blocks': int(plans.range_plan.blocks + plans.ternary_plan.blocks),
-            'tables': tables,
-            'stage_pins_consistent': bool(plans.stage_pins_consistent)}
+            'tables': tables}

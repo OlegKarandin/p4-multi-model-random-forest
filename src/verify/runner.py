@@ -433,12 +433,10 @@ def _rescored_model(paths, row_id, model):
         'stage_depth': fresh['stage_depth'],
         'blocks': fresh['blocks'],
         'tables': fresh['tables'],
-        # As row_artifacts.write_row_artifacts: the program's @stage lines
-        # must also be the tables its own placement moves.
+        # As row_artifacts.write_row_artifacts.
         'model_paths_differ': ((fresh['stage_depth'], fresh['blocks'])
                                != (model.get('training_stage_depth'),
-                                   model.get('training_blocks'))
-                               or not fresh['stage_pins_consistent']),
+                                   model.get('training_blocks'))),
         'hw_feasible': bool(fresh['stage_depth'] <= TOFINO_PIPELINE_STAGES
                             and (model.get('codeword_bits') or 0) <= MAX_CODEWORD_LENGTH),
         'budget_feasible': model.get('M') is None or fresh['blocks'] <= model['M'],

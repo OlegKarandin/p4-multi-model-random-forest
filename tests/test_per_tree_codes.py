@@ -527,10 +527,7 @@ def test_one_code_and_per_task_programs_replay_unchanged(tmp_path, seed):
     # range pool's action-data budget included.
     assert program.fwd_pinned
     program = dataclasses.replace(program, fwd_pinned=False)
-    breakdown = model_breakdown(program)
-    # The packed-codes replay (2026-11-11) added this key; the hashes predate it.
-    assert breakdown.pop("stage_pins_consistent") is True
-    breakdown = json.dumps(breakdown, sort_keys=True)
+    breakdown = json.dumps(model_breakdown(program), sort_keys=True)
     assert _sha(breakdown) == _OTHER_REPLAY_SHAS[(encoding, seed)], (encoding, seed)
 
 
@@ -584,14 +581,9 @@ def test_row_artifacts_of_the_arm_replay_to_the_trainings_numbers(tmp_path):
   assert "code_pk_" in (tmp_path / "designs" / (row + ".p4")).read_text(encoding="utf-8")
 
 
-def _stage_lines(text):
-  return {name: int(stage) for stage, name in re.findall(
-      r"@stage\((\d+)\)\s*\n(?:\s*@\w+\([^)\n]*\)\s*\n)*\s*table\s+(\w+)\s*\{", text)}
-
-
 def test_the_row_writer_writes_no_stage_pin(tmp_path):
   """Since the crossbar simulation (spec 2026-11-13) no table is moved for the model: the program carries
-  no @stage line and model.json's pin fields (kept for one format across runs) are empty."""
+  no @stage line and model.json has no pin field."""
   from src.training import row_artifacts as ra
   app, ddos, names = _rng_design(3)
   usage = _evaluate(app, ddos, names)
@@ -599,11 +591,11 @@ def test_the_row_writer_writes_no_stage_pin(tmp_path):
   row = "joint-tree_M035_s00_k05"
   model = ra.write_row_artifacts(ctx, row, app, ddos, names, names, PER_TREE_ENCODING, usage)
   text = (tmp_path / "designs" / (row + ".p4")).read_text(encoding="utf-8")
-  assert model["stage_pins"] == {} and _stage_lines(text) == {}
+  assert "@stage(" not in text
   assert model["model_paths_differ"] is False
   assert (model["stage_depth"], model["blocks"]) == (usage.stage_depth, usage.blocks)
   stored = json.loads((tmp_path / "designs" / (row + ".model.json")).read_text(encoding="utf-8"))
-  assert stored["stage_pin_first_refusal"] == {} and stored["unpinnable_tables"] == []
+  assert not {"stage_pins", "stage_pin_first_refusal", "unpinnable_tables"} & set(stored)
 
 
 @pytest.mark.parametrize("error", ["CodewordTooLong", "CrossbarKeyTooWide"])
@@ -619,8 +611,6 @@ def test_a_pricing_refusal_while_generating_is_a_generator_error_row(tmp_path, m
   app, ddos, names = _rng_design(3)
   row, model = _generator_error_row(tmp_path, app, ddos, names)
   assert "refused for the test" in model["generator_error"]
-  assert model["stage_pins"] is None and model["unpinnable_tables"] is None
-  assert model["stage_pin_first_refusal"] is None
   assert not (tmp_path / "designs" / (row + ".p4")).exists()
 
 
@@ -633,8 +623,8 @@ def test_other_arms_rows_record_no_pins(tmp_path, encoding):
   ctx = ra.RowContext(str(tmp_path), "x", 35, "abc")
   model = ra.write_row_artifacts(ctx, "x_M035_s00_k05", app, ddos, FEATURES, FEATURES,
                                  encoding, usage)
-  assert model["stage_pins"] == {} and model["model_paths_differ"] is False
-  assert model["stage_pin_first_refusal"] == {} and model["unpinnable_tables"] == []
+  assert model["model_paths_differ"] is False
+  assert "stage_pins" not in model
   assert "@stage(" not in (tmp_path / "designs" / "x_M035_s00_k05.p4").read_text(encoding="utf-8")
 
 
@@ -683,8 +673,6 @@ def test_a_field_wider_than_the_bus_is_recorded_as_a_generator_error_not_a_crash
   row, model = _generator_error_row(tmp_path, app, ddos, DEEP_FEATURES)
   assert "action data bus" in model["generator_error"]
   assert model["stage_depth"] is None and model["blocks"] is None
-  assert model["stage_pins"] is None
-  assert model["stage_pin_first_refusal"] is None and model["unpinnable_tables"] is None
   assert model["hw_feasible"] is False and model["budget_feasible"] is False
   assert (tmp_path / "designs" / (row + ".generator_error.txt")).read_text() == \
       model["generator_error"]
@@ -697,7 +685,6 @@ def test_a_tree_with_no_splits_is_recorded_as_a_generator_error_not_a_crash(tmp_
       n_estimators=2, max_depth=3, random_state=0).fit(X, np.arange(60) % 3))
   row, model = _generator_error_row(tmp_path, flat, _forest(2, 1), FEATURES)
   assert "no threshold" in model["generator_error"]
-  assert model["stage_pins"] is None
   assert model["hw_feasible"] is False
 
 

@@ -1430,8 +1430,7 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
 
 def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
                               raw_feature_names=None, *, feature_table_sizes,
-                              priorities, config: "p4_gen_config.P4GenConfig" = None,
-                              stage_pins=None):
+                              priorities, config: "p4_gen_config.P4GenConfig" = None):
   """
   task_tables: (task name, key feature names, per-tree sizes) per task, in
   PROGRAM order (the reverse of task order). Each task's tree i gets table
@@ -1443,10 +1442,6 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
   pair instead of a name: the key reads those slices of meta.code_<name>, one
   `meta.code_<name>[hi:lo]` line per slice in the order given (the packed
   per-tree program, packed.key_slices).
-  stage_pins: {tree table name: stage} -- `@stage(<stage>)` on its own line
-  directly above that table's @placement_priority line (spec 2026-11-11-
-  packed-codes-stage-pin Sec 4.3; the caller checks the names). None or {}
-  writes none.
   config: Task 4 -- additive convenience. When given, `config.match_type`
   takes precedence over the individual `match_type` keyword argument above
   (which remains the source of truth when `config` is None, so every
@@ -1578,8 +1573,6 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
   # the generated key text, since neither template file declares its own
   # <MATCH_TYPE> marker (match type is baked into <KEYS> here, not read from
   # the template).
-  stage_pins = stage_pins or {}
-
   def _classification_keys(names):
     lines = []
     for feature in names:
@@ -1611,15 +1604,9 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
       # ties within a priority by declaration order, which the "last-listed
       # tree first" rule relies on.
       table_name = "get_classification_tree_"+task+"_"+str(i)
-      # Spec 2026-11-11 Sec 4.3: a tree table the model's 12-group rule moved
-      # carries @stage(n), n its stage in the model's plan. In this p4c the pin
-      # is the table's earliest stage, and placing it later fails the compile
-      # (mau/table_placement.cpp:2645, mau/table_summary.cpp:232).
-      stage_line = ("    @stage(%d)\n" % stage_pins[table_name]
-                    if table_name in stage_pins else "")
       table_template = table_template.replace(
           "    table "+table_name+" {",
-          stage_line + "    @placement_priority("+str(priorities[task])+")"
+          "    @placement_priority("+str(priorities[task])+")"
           "\n    table "+table_name+" {",
           1,
       )
@@ -1757,7 +1744,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
                       use_default_action_discount=False,
                       selected_features_app=None, selected_features_ddos=None,
                       config: "p4_gen_config.P4GenConfig" = None,
-                      entries_filename=None, encoding=JOINT_ENCODING, stage_pins=None):
+                      entries_filename=None, encoding=JOINT_ENCODING):
   """The two-task program (spec 2026-10-11 compatibility wrapper):
   generate_p4_program with TaskSpecs in the order (ddos, app), which gives
   the C5 priorities ddos 2 / app 1 and today's program text byte for byte.
@@ -1766,8 +1753,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   missing task, the same dict for both under joint encoding; each model's
   own, always, under PER_TASK_ENCODING and PER_TREE_ENCODING);
   selected_features_* are the ordered training-feature-name lists. See
-  generate_p4_program for everything else, `encoding` and `stage_pins`
-  included."""
+  generate_p4_program for everything else, `encoding` included."""
   tasks = [
       TaskSpec(DDOS_TASK, num_class_ddos,
                trees=list(clf_ddos.estimators_) if clf_ddos is not None else [],
@@ -1779,8 +1765,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   return generate_p4_program(
       tasks, output_dir=output_dir, output_filename=output_filename,
       match_type=match_type, use_default_action_discount=use_default_action_discount,
-      config=config, entries_filename=entries_filename, encoding=encoding,
-      stage_pins=stage_pins)
+      config=config, entries_filename=entries_filename, encoding=encoding)
 
 
 class _Forest:
@@ -1793,8 +1778,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                         output_filename='p4_code_RF_models.p4',
                         match_type='ternary', use_default_action_discount=False,
                         config: "p4_gen_config.P4GenConfig" = None,
-                        entries_filename=None, encoding=JOINT_ENCODING,
-                        stage_pins=None):
+                        entries_filename=None, encoding=JOINT_ENCODING):
   """One P4 program serving every task in `tasks` (Sequence[TaskSpec], N >= 1,
   spec 2026-10-11). Task order sets @placement_priority (task i of N gets
   N - i, every range table N + 1, program.range_table_priority); the program
@@ -1827,14 +1811,6 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       features in the tree's feature order. The layout raises NoSplitTree /
       ActionDataTooWide / PhvContainersExhausted before anything is written.
       Every task with trees needs its ordered feature list.
-
-  stage_pins: {tree table name: stage} or None (the same as {}). Each named
-    table gets `@stage(<stage>)` directly above its @placement_priority line,
-    the stage as given (a 0-based absolute pipeline stage; spec 2026-11-11
-    Sec 4.3/4.5). Since the crossbar port (spec 2026-11-13) the model writes no
-    pins; this stays to regenerate archived pinned programs. Only the
-    per-tree program takes pins: ValueError for a non-empty stage_pins under
-    another encoding, or a name that is not a tree table of the program.
 
   The parameter notes below were written for the two-task form: read
   clf_<task> / feature_intervals_<task> / selected_features_<task> as that
@@ -1962,17 +1938,6 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # first, exactly the two-task program.
   program_tasks = list(reversed(list(tasks)))
   n_trees = {task.name: len(task.trees) for task in tasks}
-
-  stage_pins = dict(stage_pins or {})
-  if stage_pins and not tree_codes:
-    raise ValueError("stage_pins are written only into the {!r} program, got {} for "
-                     "encoding {!r}".format(PER_TREE_ENCODING, sorted(stage_pins), encoding))
-  tree_tables = {"get_classification_tree_%s_%d" % (task.name, i)
-                 for task in tasks for i in range(n_trees[task.name])}
-  unknown = sorted(set(stage_pins) - tree_tables)
-  if unknown:
-    raise ValueError("stage_pins names {} that are not tree tables of this program"
-                     .format(unknown))
 
   # generate the definition of the bit containers that contain decisions of
   # each tree -- only meaningful (and only computed) when the task actually
@@ -2314,8 +2279,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   table_templates, apply_templates = generate_tables_and_apply(
       flat_resolved_intervals.keys(), task_tables, match_type=match_type,
       raw_feature_names=raw_feature_names,
-      feature_table_sizes=feature_table_sizes, priorities=priorities,
-      stage_pins=stage_pins)
+      feature_table_sizes=feature_table_sizes, priorities=priorities)
 
   # generate code to vote between the trees -- one vote table per task that
   # actually has trees. generate_voting_code returns (table_decl,

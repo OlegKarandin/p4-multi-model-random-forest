@@ -1,7 +1,7 @@
 """The generator's packed per-tree program (spec docs/superpowers/specs/
 2026-11-11-packed-codes-stage-pin-design.md Sec 3.1, 4.3, 4.5): one field code_pk_<f> per
 feature holding every tree's code at its byte offset (p4model.packed), each tree keying its
-own slices of it, and @stage(n) on the tree tables the model moved."""
+own slices of it. No program carries an @stage line."""
 import os
 import re
 
@@ -57,21 +57,12 @@ def test_tree_keys_are_slices_of_at_most_64_bits_and_trees_do_not_overlap(tmp_pa
   assert owner
 
 
-def test_stage_pins_are_written_above_the_named_tables_only(tmp_path):
-  text = _text(tmp_path, stage_pins={"get_classification_tree_app_0": 9})
-  assert re.search(r"@stage\(9\)\s*\n\s*@placement_priority\(\d+\)\s*\n\s*table get_classification_tree_app_0 \{", text)
-  assert text.count("@stage(") == 1
-  with pytest.raises(ValueError):
-    _text(tmp_path, stage_pins={"no_such_table": 3})
-
-
-def test_no_pins_and_empty_pins_write_the_same_per_tree_program(tmp_path):
-  assert _text(tmp_path) == _text(tmp_path, stage_pins={})
+def test_the_per_tree_program_has_no_stage_line(tmp_path):
   assert "@stage(" not in _text(tmp_path)
 
 
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, PER_TASK_ENCODING, DISJOINT_ENCODING])
-def test_the_other_encodings_take_no_stage_pins_and_write_none(tmp_path, encoding):
+def test_the_other_encodings_have_no_stage_line(tmp_path, encoding):
   app, ddos, names = _rng_design(3)
   specs = _specs(app, ddos, names, names)
   if encoding == JOINT_ENCODING:
@@ -84,24 +75,7 @@ def test_the_other_encodings_take_no_stage_pins_and_write_none(tmp_path, encodin
     with open(path, encoding="utf-8") as handle:
       return handle.read()
 
-  assert text() == text(stage_pins={})
   assert "@stage(" not in text()
-  with pytest.raises(ValueError):
-    text(stage_pins={"get_classification_tree_app_0": 4})
-
-
-def test_generate_P4_code_passes_the_pins_through(tmp_path):
-  app, ddos, names = _rng_design(3)
-  path = bps.generate_P4_code(3, 2, app, ddos, feature_intervals_app=_own(app, names),
-                              feature_intervals_ddos=_own(ddos, names),
-                              output_dir=str(tmp_path) + os.sep, output_filename="design.p4",
-                              selected_features_app=names, selected_features_ddos=names,
-                              encoding=PER_TREE_ENCODING,
-                              stage_pins={"get_classification_tree_ddos_0": 7})
-  with open(path, encoding="utf-8") as handle:
-    text = handle.read()
-  assert re.search(r"@stage\(7\)\s*\n\s*@placement_priority\(\d+\)\s*\n\s*"
-                   r"table get_classification_tree_ddos_0 \{", text)
 
 
 def test_a_range_table_no_tree_codes_is_refused(tmp_path):

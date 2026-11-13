@@ -92,13 +92,8 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
     (the alignment twins' `source_row_id` / `identical_to`); it may not
     override a computed key.
 
-    model.json keeps the per-tree pin fields of spec 2026-11-11 so that every
-    run has one format: `stage_pins` and `stage_pin_first_refusal` ({}) and
-    `unpinnable_tables` ([]) are always empty since the crossbar port (spec
-    2026-11-13), None on a generator-error row. `model_paths_differ` is True
-    when the replay of the program prices other numbers than training, or
-    when the program carries @stage lines (the replay's
-    `stage_pins_consistent`), which the model no longer writes."""
+    `model_paths_differ` is True when the replay of the program prices other
+    numbers than training."""
     paths = run_paths(ctx.run_dir).ensure()
     budgeted = ctx.M != float('inf')
     model = {
@@ -130,8 +125,6 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
         atomic_write_text(os.path.join(paths.designs, row_id + '.generator_error.txt'),
                           message)
         model.update({'stage_depth': None, 'blocks': None, 'tables': None,
-                      'stage_pins': None, 'stage_pin_first_refusal': None,
-                      'unpinnable_tables': None,
                       'model_paths_differ': None, 'hw_feasible': False,
                       'budget_feasible': False, 'generator_error': message})
     else:
@@ -140,12 +133,8 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
             'stage_depth': replay['stage_depth'],
             'blocks': replay['blocks'],
             'tables': replay['tables'],
-            'stage_pins': {},
-            'stage_pin_first_refusal': {},
-            'unpinnable_tables': [],
             'model_paths_differ': ((replay['stage_depth'], replay['blocks'])
-                                   != (usage.stage_depth, usage.blocks)
-                                   or not replay['stage_pins_consistent']),
+                                   != (usage.stage_depth, usage.blocks)),
             'hw_feasible': bool(replay['stage_depth'] <= TOFINO_PIPELINE_STAGES
                                 and model['codeword_bits'] <= MAX_CODEWORD_LENGTH),
             'budget_feasible': (not budgeted) or replay['blocks'] <= ctx.M,
