@@ -2128,16 +2128,17 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # feasible stage_depth 60/60, blocks 60/60; cost +4.7 PHV containers).
   # Per-tree codes: one packed field per feature (spec 2026-11-11-packed-codes-
   # stage-pin Sec 3.1), declared at its containers' bits and pinned to them,
-  # low container first; no @pa_solitary (spec Sec 3.1) and no @pa_no_overlay:
-  # removing the latter left p4c's stage depth and blocks unchanged on all 370
-  # development programs and saved 2-4 PHV containers (spec 2026-11-13 rule
-  # cuts H5). Without @pa_container_size, stages were worse on 15 of 30 k<=8
-  # probe designs (results/encoding_evidence_2026_11/model4, spec Sec 3.4), and
-  # the crossbar simulation needs the containers to know each key byte's lane.
+  # low container first, plus @pa_no_overlay for the reason given above (kept by
+  # the user's choice, 2026-11-13, although removing it changed no p4c stage or
+  # block count on the 370 development programs); no @pa_solitary (spec Sec
+  # 3.1). Without @pa_container_size, stages were worse on 15 of 30 k<=8 probe
+  # designs (results/encoding_evidence_2026_11/model4, spec Sec 3.4), and the
+  # crossbar simulation needs the containers to know each key byte's lane.
   if tree_codes:
     for feature, containers in layout.containers.items():
       field = "code_" + packed_field(feature)
       metadata_code += "\tbit<"+str(packed.field_bits(layout, feature))+"> "+field+";\n"
+      phv_pragmas += '@pa_no_overlay("ingress", "ig_md.'+field+'")\n'
       phv_pragmas += ('@pa_container_size("ingress", "ig_md.' + field + '", '
                       + ", ".join(str(size) for size in containers) + ')\n')
   tasks_with_trees = [task.name for task in program_tasks if n_trees[task.name] > 0]
