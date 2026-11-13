@@ -289,12 +289,12 @@ def test_two_manifests_written_back_to_back_land_in_different_files(tmp_path):
     assert os.path.isfile(path2)
 
 
-def test_campaign_manifest_records_the_lane_block_price(tmp_path):
+def test_campaign_manifest_records_the_xbar_block_price(tmp_path):
     from src.reporting.manifest import write_campaign_manifest
     from src.training.config import TrainConfig
     manifest = write_campaign_manifest(str(tmp_path), [('joint', TrainConfig())],
                                        [35], [0], 10, 10)
-    assert manifest['block_price'] == 'lane'
+    assert manifest['block_price'] == 'xbar'
 
 
 def test_a_run_trained_with_another_block_price_cannot_be_extended(tmp_path):

@@ -212,10 +212,12 @@ def write_run_manifest(arms, M_values, n_splits, n_rows_app, n_rows_ddos,
 # splits to that run rather than one file per invocation.
 # ---------------------------------------------------------------------------
 
-# The per-table TCAM price the run was TRAINED with (spec 2026-10-04 Sec II.4):
-# 'lane' = lanes.table_blocks. results/campaign_2026_10 was trained with the
-# 'ladder' (tables.codeword_to_blocks) and carries that value by hand.
-BLOCK_PRICE = 'lane'
+# The per-table TCAM price the run was TRAINED with (spec 2026-10-04 Sec II.4).
+# 'xbar': since befbd05 (2026-11-13) the per-table and stage price are the
+# ternary crossbar port (p4model/xbar.py). Earlier values: 'lane'
+# (lanes.table_blocks' lane count, e.g. campaign_2026_11) and 'ladder'
+# (tables.codeword_to_blocks, results/campaign_2026_10, set by hand).
+BLOCK_PRICE = 'xbar'
 
 SEED_RULES = {'data': '42 + split', 'optuna': '1000 * split + k'}
 
