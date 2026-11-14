@@ -1038,20 +1038,21 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
   p4/deploy_table_entries.py) of the packed per-tree program generate_p4_program
   emits under PER_TREE_ENCODING (spec 2026-11-11-packed-codes-stage-pin Sec 3.1,
   3.2, 8): one field meta.code_pk_<f> per feature, every tree's code on f at its
-  byte offset in it, from the same per_tree_layout the program is written from.
+  bit offset in it (codes of <= 8 bits may share a byte, none straddles one;
+  decision 4.4), from the same per_tree_layout the program is written from.
 
   Range table table_<index>_<f> (resolve_per_tree_plan's table_plan, over the
   union of the tasks' intervals): its action set_code_<f> takes ONE parameter
   `code`, the whole field: per interval, each tree's thermometer code of that
   interval in the TREE's own intervals (which is what that tree's codewords,
-  built against the same intervals, expect to find), shifted to the tree's byte
-  offset (packed.range_value). Bits no tree owns are 0.
+  built against the same intervals, expect to find), shifted to the tree's bit
+  offset and OR-ed (packed.range_value). Bits no tree owns are 0.
 
   Tree table get_classification_tree_<task>_<i>: one key field per slice of each
   of its own codes (packed.key_slices, at most 64 bits each), named as bf_rt names
   `meta.code_pk_<f>[hi:lo]` (bfrt_key_name, e.g. code_pk_flow_iat_max_19_8_);
   each slice's value and mask are the codeword's bits hi..lo, counted from the
-  code's own bit 0 (field bit - 8 * offset). Keys in the program's order: the
+  code's own bit 0 (field bit - the code's bit offset). Keys in the program's order: the
   tree's features in table_plan order (both sorted by name).
 
   Refuses what the program refuses, before any entry is written: per_tree_layout's
@@ -1081,7 +1082,7 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
       intervals = own[task.name][i]
       fields = []
       for feature, iv in intervals.items():
-        field, base = "code_" + packed_field(feature), 8 * layout.place[(task.name, i, feature)][0]
+        field, base = "code_" + packed_field(feature), layout.place[(task.name, i, feature)][0]
         fields.append((field, len(iv) - 1,
                        [(bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo)),
                          hi - base, lo - base)
@@ -1259,7 +1260,7 @@ def generate_actions(feature_intervals, task_trees, per_task_writes=None,
   packed_bits: under the per-tree encoding, entry name -> the container bits N
   of its packed field: the action takes ONE parameter `bit<N> code` and writes
   it whole to meta.code_pk_<entry> (spec 2026-11-11-packed-codes-stage-pin Sec
-  3.1), every tree's code already at its byte offset in the value.
+  3.1), every tree's code already at its bit offset in the value (decision 4.4).
   field_bits: None, or resolved field name -> its DECLARED bits (decision 4.3:
   a joint / disjoint / per-task code field is declared at its containers' full
   width); each parameter writing that field takes that width, so the action
@@ -1740,7 +1741,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       threshold on the feature.
     PER_TREE_ENCODING: resolve_per_tree_plan, the same tables, each writing
       ONE packed field meta.code_pk_<feature> that holds the code of every
-      TREE with a threshold on the feature at its own byte offset (spec
+      TREE with a threshold on the feature at its own bit offset (decision 4.4; spec
       2026-11-11-packed-codes-stage-pin Sec 3.1; per_tree_layout, the layout
       the training pool prices). The field is declared at its containers'
       bits, pinned @pa_no_overlay + @pa_container_size (low container first),

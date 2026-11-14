@@ -53,6 +53,45 @@ def test_replay_rebuilds_the_layouts_key_bytes_from_the_text(tmp_path, seed):
     assert tree_key_bytes(program, name) == expected, name      # the order is recoverable too
 
 
+def _shared_bytes(layout):
+  """{(feature, field byte): [code bits]} for every byte holding codes of two or more trees."""
+  byte_codes = {}
+  for (_, _, feature), (offset, bits) in layout.place.items():
+    for byte in range(offset // 8, (offset + bits - 1) // 8 + 1):
+      byte_codes.setdefault((feature, byte), []).append(bits)
+  return {key: codes for key, codes in byte_codes.items() if len(codes) > 1}
+
+
+def test_replay_rebuilds_shared_bytes(tmp_path):
+  """Decision 4.4 (Review Focus 4): codes of <= 8 bits share bytes, so the replay rebuilds
+  each code's BIT offset from its slices; on 50 designs every tree's rebuilt key equals
+  packed.key_bytes, container identities included. Seed 1 puts six codes of 1-2 bits (two
+  app trees, four ddos trees) into one byte."""
+  shared_designs = 0
+  for seed in range(50):
+    program = parse_program_text(_generate(tmp_path, seed))
+    layout = _layout(seed)
+    shared_designs += bool(_shared_bytes(layout))
+    for name in (name for name in program.tables if _TREE.match(name)):
+      task, index = _TREE.match(name).groups()
+      assert tree_key_bytes(program, name) == packed.key_bytes(layout, task, int(index)), (seed, name)
+  assert shared_designs >= 25
+  assert any(len(codes) >= 3 and max(codes) <= 4 for codes in _shared_bytes(_layout(1)).values())
+
+
+def test_a_straddling_slice_is_refused(tmp_path):
+  text = _generate(tmp_path, 1)
+  program = parse_program_text(text)
+  name, key = next((table, key) for (table, key), runs in program.key_slices.items()
+                   if runs[0][0] - runs[0][1] < 7 and runs[0][1] % 8 < 7)
+  hi, lo = program.key_slices[(name, key)][0]
+  moved = text.replace("meta.%s[%d:%d] : ternary;" % (key, hi, lo),
+                       "meta.%s[%d:%d] : ternary;" % (key, 8 * (lo // 8) + 8, 8 * (lo // 8) + 7))
+  assert moved != text
+  with pytest.raises(ValueError, match="straddles"):
+    tree_key_bytes(parse_program_text(moved), name)
+
+
 def test_the_program_parses_into_containers_and_slices(tmp_path):
   program = parse_program_text(_generate(tmp_path, 0))
   layout = _layout(0)

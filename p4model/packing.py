@@ -336,13 +336,22 @@ def _place_in_order(units, admit, seed_at, last_seed):
 # The packed classification pool: keys with a known layout (spec 2026-11-11)
 # --------------------------------------------------------------------------
 
-@functools.lru_cache(maxsize=16384)
 def packed_alone_blocks(key):
   """A packed tree key's price per 512-row word ALONE in a stage: the blocks
   of p4c's crossbar allocation of its bytes (xbar.tree_key) in an empty
-  stage, or None when no allocation in 12 groups exists. Memoised. The lane
-  count lanes.standalone priced it until 2026-11-13 (equal on 1,581 of
-  1,591 development keys)."""
+  stage, or None when no allocation in 12 groups exists. Memoised on the key's
+  shape: a byte's container identity (packed.key_bytes' 4th element) only
+  matters between tables, so it is renamed to its first appearance in the key
+  first. The lane count lanes.standalone priced it until 2026-11-13 (equal on
+  1,581 of 1,591 development keys)."""
+  names = {}
+  return _packed_alone_blocks(tuple(
+      item[:3] + (names.setdefault(item[3], len(names)),) if len(item) > 3 else item
+      for item in key))
+
+
+@functools.lru_cache(maxsize=16384)
+def _packed_alone_blocks(key):
   key_bytes = xbar.tree_key(key, 0)
   if not xbar.StageXbar(tie='whole_first').allocate(key_bytes):
     return None
@@ -377,8 +386,10 @@ def _crossbar_stage(seed_fields, units, mode='packed'):
   the seed's range keys first (seed_fields, sorted), then each tree TABLE's key
   in placement order, each on top of the ones before. `units` is a tuple of
   (table_idx, key byte tuple, rows) in placement order; units of one table
-  share one allocation. mode 'packed': a key is a packed tree's lanes.py byte
-  tuples (xbar.tree_key: containers of its own); mode 'fields': a key is
+  share one allocation. mode 'packed': a key is a packed tree's byte tuples
+  (packed.key_bytes -> xbar.tree_key), container identities shared across the
+  stage's keys, so two trees keying codes in one container byte (decision
+  4.4) share its slot as in p4c; mode 'fields': a key is
   (field id, slices) per code field (xbar.field_key), container numbers shared
   across the stage's keys, so tables keying the same field share its slots
   as in p4c. Returns {table_idx: blocks per 512-row word}, or None when a
@@ -410,7 +421,7 @@ def _stage_state(seed_fields, units, mode):
   if table_idx in per_row:
     return previous
   crossbar, numbering = crossbar.clone(), dict(numbering)
-  key_bytes = (xbar.tree_key(key, table_idx) if mode == 'packed'
+  key_bytes = (xbar.tree_key(key, table_idx, numbering) if mode == 'packed'
                else xbar.field_key(key, numbering))
   placed = crossbar.find_alloc(key_bytes)
   if placed is None:

@@ -508,20 +508,41 @@ def blocks_per_row(table_bytes):
 
 # ---- the model's keys -----------------------------------------------------------------------------------------
 
-def tree_key(key, table_idx):
-  """A packed tree key, as lanes.py byte tuples (kind 'W' | 'H' | 'B', byte index k in its container, nibble_only)
-  in key order, -> Bytes. The tuples carry the container SIZE but not its identity: a new container starts whenever
-  the kind changes, k does not follow the previous byte's k + 1, or the kind is 'B'. Every table gets container
-  numbers of its own (1000 * (table_idx + 1) + i, increasing in key order): packed trees never key the same
-  container byte, so they never share a slot."""
-  out, count, prev, name = [], {'W': 0, 'H': 0, 'B': 0}, None, None
+def tree_key(key, table_idx, numbering=None):
+  """A packed tree key, as packed.key_bytes tuples (kind 'W' | 'H' | 'B', byte index k in its container,
+  nibble_only, container identity) in key order, -> Bytes.
+
+  Container identity (design review P14, decision 4.4). Codes of <= 8 bits share bytes, so two trees can key the
+  same container byte (each its own bits of it); the crossbar moves whole bytes, so both keys hold the byte, and in
+  a stage the later table finds the earlier one's slot (found path) as p4c does. With `numbering` (one dict shared by
+  a stage's keys, as field_key's) a container is named by its identity, so equal identities name one container
+  byte; without it (a key priced alone) by the table's own numbers 1000 * (table_idx + 1) + i. The container SORT
+  order is the container's first appearance in this key either way (Byte `order`), which is the key's own order,
+  so a key that shares nothing allocates exactly as before 4.4.
+
+  A 3-tuple (no identity: a hand-made key) gets the pre-4.4 inference: a new container starts whenever the kind
+  changes, k does not follow the previous byte's k + 1, or the kind is 'B'; such a key shares no byte."""
+  out, count, prev, seen = [], {'W': 0, 'H': 0, 'B': 0}, None, {}
   base = 1000 * (table_idx + 1)
-  for kind, k, nibble_only in key:
-    if prev is None or prev[0] != kind or k != prev[1] + 1 or kind == 'B':
-      name = '%s%d' % (kind, base + count[kind])
-      count[kind] += 1
-    out.append(Byte(name, 8 * k, 0x0F if nibble_only else 0xFF))
-    prev = (kind, k)
+  for item in key:
+    kind, k, nibble_only = item[:3]
+    shared = len(item) > 3
+    if shared:
+      ident = item[3]
+    elif prev is None or prev[0] != kind or k != prev[1] + 1 or kind == 'B':
+      ident = ('<own>', len(seen))
+    else:
+      ident = prev[2]
+    if ident not in seen:
+      if numbering is not None and shared:
+        name = '%s%d' % (kind, 500000 + numbering.setdefault(ident, len(numbering)))
+      else:
+        name = '%s%d' % (kind, base + count[kind])
+        count[kind] += 1
+      seen[ident] = (len(seen), name)
+    order, name = seen[ident]
+    out.append(Byte(name, 8 * k, 0x0F if nibble_only else 0xFF, order=(order,)))
+    prev = (kind, k, ident)
   return out
 
 

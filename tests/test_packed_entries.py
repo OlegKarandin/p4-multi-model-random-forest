@@ -1,6 +1,6 @@
 """The control-plane entries of the packed per-tree program (spec docs/superpowers/specs/
 2026-11-11-packed-codes-stage-pin-design.md Sec 3.1, 3.2, 8): each range entry writes ONE
-value, every tree's code at its byte offset in code_pk_<f> (packed.range_value); each tree
+value, every tree's code at its bit offset in code_pk_<f> (packed.range_value); each tree
 table keys its own slices of that field (packed.key_slices), value and mask cut at the code's
 bits.
 
@@ -116,7 +116,7 @@ def _inputs(tasks, names, top, seed):
 
 
 def _multi_slice_keys_at_an_offset(tasks):
-  """[(task, tree, feature)] whose code sits at a non-zero byte offset and is keyed as more
+  """[(task, tree, feature)] whose code sits at a non-zero (bit) offset and is keyed as more
   than one slice."""
   table_plan, _, own = bps.resolve_per_tree_plan(tasks)
   layout = bps.per_tree_layout(table_plan, own, tasks)
@@ -131,9 +131,9 @@ def test_the_deep_design_has_a_multi_slice_key_at_a_non_zero_offset():
 
 # Case 0 under both discounts reaches every line and branch cases 0-5 did
 # (results/encoding_evidence_2026_11/model8/out/tests_parametrize.csv); "deep" adds a
-# multi-slice key at a non-zero offset.
+# multi-slice key at a non-zero offset; case 1 six codes of 1-2 bits sharing one byte (decision 4.4).
 @pytest.mark.parametrize("discount", [False, True])
-@pytest.mark.parametrize("case", [0, "deep"])
+@pytest.mark.parametrize("case", [0, 1, "deep"])
 def test_per_tree_entries_classify_every_input_exactly_as_each_tree(case, discount):
   tasks, app, ddos, names, top = _design(case)
   entries = bps.generate_table_entries(tasks, use_default_action_discount=discount,
@@ -150,7 +150,7 @@ def test_per_tree_entries_classify_every_input_exactly_as_each_tree(case, discou
         vote_winner(list(trees[APP_TASK][:, s]), 3)
 
 
-@pytest.mark.parametrize("case", [0, 3, "deep"])
+@pytest.mark.parametrize("case", [0, 1, 3, "deep"])
 def test_each_tree_writes_its_own_thermometer_code_at_its_offset(case):
   tasks = _design(case)[0]
   table_plan, _, own = bps.resolve_per_tree_plan(tasks)
@@ -169,8 +169,8 @@ def test_each_tree_writes_its_own_thermometer_code_at_its_offset(case):
       iv = own[task][tree][feature]
       idx = next(j for j, (lo, hi) in enumerate(iv) if lo <= x <= hi)
       code = int(bps.thermometer_code(len(iv), idx), 2)
-      assert (value >> (8 * offset)) & ((1 << bits) - 1) == code
-      expected |= code << (8 * offset)
+      assert (value >> offset) & ((1 << bits) - 1) == code
+      expected |= code << offset
     assert value == expected        # nothing written outside the trees' codes
 
 
