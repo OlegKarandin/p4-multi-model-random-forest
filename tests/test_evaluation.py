@@ -2130,3 +2130,18 @@ def test_pool_prices_each_tree_on_the_fields_it_splits(encoding):
     # some tree keys fewer fields than its task has
     assert any(len(bits) < len(own[task]) for bits, (task, _) in
                zip(pool["ternary_key_bits"], trees))
+
+
+def test_a_shared_stage_over_its_limits_is_a_placement_failure(monkeypatch):
+    # Decision 7.4, S29: the post-placement check of stages both pools use
+    # refuses (PlacementFailed) instead of asserting.
+    from p4model import usage as usage_module
+    from p4model.errors import PlacementFailed
+    from p4model.program import APP_TASK, DDOS_TASK
+
+    pool = _c1_pool([APP_TASK, DDOS_TASK, DDOS_TASK], [4, 5, 8],
+                    [APP_TASK, DDOS_TASK], tree_blocks=2)
+    usage_module.assemble_usage(pool)                       # shares stage 8: fine
+    monkeypatch.setattr(usage_module, "stage_load_fits", lambda loads: False)
+    with pytest.raises(PlacementFailed, match="share stage 8"):
+        usage_module.assemble_usage(pool)

@@ -31,7 +31,7 @@ from p4gen.evaluation import (
     CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES, multi_model_memory_evaluation)
 from p4gen.switch_semantics import switch_predict
 from p4model.errors import (ActionDataTooWide, NoSplitTree, PhvContainersExhausted,
-                            RangeEntriesDoNotFit)
+                            PlacementFailed, RangeEntriesDoNotFit)
 from p4model.program import PER_TREE_ENCODING
 from p4model.target import ACTION_DATA_BUS_BYTES, MAX_KEY_BYTES
 from src.training.threshold_alignment import align_with_policy
@@ -393,6 +393,14 @@ def train_multi_RF_Optuna_multi_constrained(
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
+        except PlacementFailed:
+            # The placement simulation has no placement for this design (decision
+            # 7.4, S29/S30): infeasible, not a crash. Reported through the crossbar
+            # attribute, magnitude 1, until the constraint attributes are renamed.
+            trial.set_user_attr('crossbar_violation', 1.0)
+            trial.set_user_attr('blocks_violation', 0.0)
+            trial.set_user_attr('stages_violation', 0.0)
+            return -1.0, -1.0, float('inf')
         except NoSplitTree:
             # Every encoding (spec 9.4; R6 since decision 2.3, 2026-11-14): a tree
             # with no threshold has a table with no key. Counted in the per-tree
@@ -499,8 +507,9 @@ def train_multi_RF_Optuna_multi_constrained(
     # catch=() deliberately: the ONLY expected RuntimeErrors are the crossbar-width
     # (CrossbarKeyTooWide), range-entry (RangeEntriesDoNotFit), no-split-tree
     # (NoSplitTree, every encoding) and, under per-tree codes, action-width
-    # (ActionDataTooWide) and PHV (PhvContainersExhausted) violations, and the objective already handles
-    # all five itself. The previous
+    # (ActionDataTooWide) and PHV (PhvContainersExhausted) violations, plus the
+    # placement refusal (PlacementFailed), and the objective already handles
+    # all six itself. The previous
     # catch=(RuntimeError,) also swallowed align_rf_thresholds' own
     # AlignmentInvariantError (raised as a bare RuntimeError("Smth is
     # very-very wrong") before it was given its own type), hiding corrupted

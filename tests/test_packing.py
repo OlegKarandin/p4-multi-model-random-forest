@@ -743,3 +743,74 @@ def test_a_second_key_or_a_reachable_seed_switches_the_simulation_on():
         [(11, 60)], readiness_levels=[0], key_fields=[wide],
         key_field_bits=[(480,)], seed_stages=[seed])
     assert seeded.blocks == 12
+
+
+# --------------------------------------------------------------------------
+# Decision 7.4 (S12, S22, S29, S30): no load score, seeds in placement order,
+# placement failures are refusals.
+# --------------------------------------------------------------------------
+
+def test_range_pool_orders_a_level_by_readers_then_later_listed_not_by_size():
+    # S12: the `load` score is gone; a level's shards go by readers (more
+    # first), then the table listed LATER first. The 8-table cap leaves the
+    # LAST placed one behind, whatever its size.
+    from p4model.packing import crossbar_stages_needed
+
+    specs = [(5, 4), (1, 4), (1, 4)] + [(1, 4)] * 6
+    fields = [frozenset({(("val", i), 4)}) for i in range(len(specs))]
+    plan = crossbar_stages_needed(specs, readiness_levels=[0] * 9, key_fields=fields,
+                                  table_dependents=[0] * 9)
+    # later-listed first: tables 8..1 fill stage 0 (8 tables), table 0 -- the
+    # big one, which `load` used to put first -- spills to stage 1
+    assert plan.table_stages == (1,) + (0,) * 8
+
+
+def test_range_pool_records_the_placement_order_of_a_stages_fields():
+    # S22: StageLoad.field_order is the order tables were placed in the stage.
+    from p4model.packing import crossbar_stages_needed
+
+    fields = [frozenset({(("val", name), 4)}) for name in ("b", "a", "c")]
+    plan = crossbar_stages_needed([(1, 4)] * 3, readiness_levels=[0] * 3,
+                                  key_fields=fields, table_dependents=[0, 2, 1])
+    (load,) = plan.stage_loads
+    # most readers first: "a" (2), "c" (1), then "b" (0) -- not sorted, not listed
+    assert load.field_order == ((("val", "a"), 4), (("val", "c"), 4), (("val", "b"), 4))
+    assert set(load.field_order) == load.fields
+
+
+def test_seeded_range_keys_enter_the_stage_crossbar_in_placement_order(monkeypatch):
+    # S22: the seed's order, not repr order, reaches the crossbar simulation; a
+    # hand-built seed without an order falls back to sorted.
+    from p4model import packing
+    from p4model.packing import StageLoad, crossbar_stages_needed
+
+    seen = []
+    real = packing._crossbar_stage
+
+    def spy(seed_fields, units, mode='packed'):
+        seen.append(seed_fields)
+        return real(seed_fields, units, mode)
+
+    monkeypatch.setattr(packing, '_crossbar_stage', spy)
+    z, a = (("val", "z"), 4), (("val", "a"), 4)
+    spec = dict(readiness_levels=[0], key_fields=[frozenset({(("code", "t"), 5)})],
+                key_field_bits=[(40,)])
+    ordered = StageLoad(index=0, blocks=(1, 1), fields=frozenset({z, a}), tables=2,
+                        field_order=(z, a))
+    crossbar_stages_needed([(1, 5)], seed_stages=[ordered], **spec)
+    assert seen[-1] == (z, a)
+    plain = StageLoad(index=0, blocks=(1, 1), fields=frozenset({z, a}), tables=2)
+    crossbar_stages_needed([(1, 5)], seed_stages=[plain], **spec)
+    assert seen[-1] == tuple(sorted((z, a), key=repr))
+
+
+def test_a_classification_pool_that_never_places_is_a_placement_failure():
+    # S30: the horizon guard is a refusal, not a RuntimeError crash.
+    from p4model.errors import PlacementFailed
+    from p4model.packing import StageLoad, _Unit, _place_in_order
+
+    unit = _Unit(0, 0, 1, frozenset(), (), 0, 0)
+    never = lambda here, unit, seed: None
+    with pytest.raises(PlacementFailed, match="could not be placed"):
+        _place_in_order([unit], never,
+                        lambda i: StageLoad(index=i, blocks=(), fields=frozenset(), tables=0), 0)

@@ -7,6 +7,7 @@ the physics that produces one) can import it without pulling in the rest of
 the model."""
 from dataclasses import dataclass
 
+from p4model.errors import PlacementFailed
 from p4model.packing import crossbar_stages_needed, stage_load_fits
 from p4model.program import (
     FLOW_HASH_LEVEL,
@@ -326,11 +327,13 @@ def assemble_usage(pool):
   # A stage both pools use must satisfy every per-stage limit with both
   # pools' tables in it. The seeded placement above already guarantees this;
   # re-checked here because it is the property that makes the two plans'
-  # numbers mean anything together.
+  # numbers mean anything together. A failure is a refusal (decision 7.4,
+  # S29), not a crash.
   range_loads = {load.index: load for load in range_plan.stage_loads}
   for load in ternary_plan.stage_loads:
-    if load.index in range_loads:
-      assert stage_load_fits([range_loads[load.index], load]), (
+    if load.index in range_loads and not stage_load_fits(
+        [range_loads[load.index], load]):
+      raise PlacementFailed(
           "range and classification tables share stage {} beyond its "
           "table/column limits".format(load.index))
 

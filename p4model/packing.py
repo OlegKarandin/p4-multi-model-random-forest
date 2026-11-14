@@ -25,7 +25,7 @@ import math
 from dataclasses import dataclass
 
 from p4model import lanes, target, xbar
-from p4model.errors import CrossbarKeyTooWide
+from p4model.errors import CrossbarKeyTooWide, PlacementFailed
 from p4model.tables import check_key_bytes
 from p4model.target import (
     ACTION_DATA_BUS_WORDS,
@@ -57,11 +57,18 @@ class StageLoad:
            pairs -- the per-stage byte limit charges their union, not their sum.
   tables : tables placed in the stage -- what the 8-table cap counts (the
            range pool counts shards, which is the same number: no range table
-           is ever wider than one column)."""
+           is ever wider than one column).
+  field_order : `fields` in the order the pool PLACED them into the stage (a
+           field first appears with the first table keying it). The range pool
+           fills it; the classification pool seeded with those loads allocates
+           the range keys on its crossbar in this order (decision 7.4, S22),
+           as p4c allocated them. Empty for a hand-built load, whose fields
+           then go in sorted order."""
   index: int
   blocks: tuple
   fields: frozenset
   tables: int
+  field_order: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -320,7 +327,7 @@ def _place_in_order(units, admit, seed_at, last_seed):
              + max(last_seed, 0) + 2)
   while remaining:
     if stage > horizon:
-      raise RuntimeError(
+      raise PlacementFailed(
           "crossbar_stages_needed: %d classification table(s) could not be "
           "placed by stage %d" % (len(remaining), horizon))
     seed = seed_at(stage)
@@ -396,7 +403,8 @@ def _packed_units(table_specs, key_fields, key_bytes, levels, priorities):
 @functools.lru_cache(maxsize=65536)
 def _crossbar_stage(seed_fields, units, mode='packed'):
   """p4c's ternary crossbar allocation of one stage (xbar.py, spec 2026-11-13):
-  the seed's range keys first (seed_fields, sorted), then each tree TABLE's key
+  the seed's range keys first (seed_fields, in the range pool's placement
+  order), then each tree TABLE's key
   in placement order, each on top of the ones before. `units` is a tuple of
   (table_idx, key byte tuple, rows) in placement order; units of one table
   share one allocation. mode 'packed': a key is a packed tree's byte tuples
@@ -473,7 +481,7 @@ def _crossbar_stage_test(units, seed, mode='packed'):
   alone = (len(units) == 1 and seed.tables == 0 and not seed.blocks
            and not seed.fields)
   per_row = _crossbar_stage(
-      tuple(sorted(seed.fields, key=repr)),
+      seed.field_order or tuple(sorted(seed.fields, key=repr)),
       tuple((unit.table_idx, unit.bits, unit.rows) for unit in units), mode)
   if per_row is None:
     return None
@@ -539,15 +547,17 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
 
   THE RANGE POOL (key_field_bits=None) is packed as before: every table is
   charged its declared block count wherever it lands; with readiness_levels,
-  shards are placed eagerly in (level, largest-load-first) order at the
+  shards are placed eagerly in level order at the
   earliest legal stage with room (the compiler does not pack to the
   theoretical optimum, and neither does this -- M2's range pool really
-  occupies 2 stages); without them, first-fit-decreasing. A range table's
+  occupies 2 stages; a `load` score that once ordered a level's shards
+  largest first was vacuous on every range table and is gone, decision 7.4 /
+  S12); without them, first-fit-decreasing by blocks. A range table's
   key is one whole-byte 16-bit field, and 8 of them (the table cap) fill 16
   bytes, so no sharing price applies.
 
   table_dependents (2026-11-08, the range pool): one int per table, the
-  classification trees reading its code. Given, tables tied on (level, load)
+  classification trees reading its code. Given, tables of one level
   are placed in p4c's order -- more dependents first, then the table listed
   LATER -- instead of first-listed. p4c's own log over the range tables it
   compares (per_tree_model2/step12/range_reasons_out.txt): "fewer total
@@ -797,12 +807,6 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     for shard in _stage_shards(block_count, byte_width):
       shards.append((shard[0], shard[1], idx, fields))
 
-  def load(shard):
-    blocks, width, _, _ = shard
-    return max(blocks / TCAM_BLOCKS_PER_STAGE,
-               width / target.MAX_KEY_BYTES,
-               1 / TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
-
   def bus_words(table_idx):
     # whole action RAM words: the bus is fed in 16-byte words
     return (-(-action_bytes[table_idx] // ACTION_RAM_WORD_BYTES)
@@ -810,7 +814,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
 
   def fits(stage, blocks, fields, table_idx):
     # stage: [fields present, shard blocks in placement order, seed,
-    #         action-data bus words]
+    #         action-data bus words, fields in placement order]
     seed = stage[2]
     present = stage[0] | fields | seed.fields
     return (sum(field_bytes for _, field_bytes in present)
@@ -822,24 +826,28 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                  or stage[3] + bus_words(table_idx) <= ACTION_DATA_BUS_WORDS))
 
   def place(stage, blocks, fields, table_idx):
+    for field in sorted(fields, key=repr):
+      if field not in stage[0]:
+        stage[4].append(field)
     stage[0] |= fields
     stage[1].append(blocks)
     stage[3] += bus_words(table_idx)
 
   def empty(seed):
-    return [set(), [], seed, 0]
+    return [set(), [], seed, 0, []]
 
   def as_loads(stages_by_index):
     return [StageLoad(index=index, blocks=tuple(stage[1]),
-                      fields=frozenset(stage[0]), tables=len(stage[1]))
+                      fields=frozenset(stage[0]), tables=len(stage[1]),
+                      field_order=tuple(stage[4]))
             for index, stage in stages_by_index.items()]
 
   table_stages = {}
   table_blocks = {}
   if readiness_levels is None:
     stages = []
-    for blocks, _width, table_idx, fields in sorted(shards, key=load,
-                                                    reverse=True):
+    for blocks, _width, table_idx, fields in sorted(
+        shards, key=lambda s: (s[0], s[1]), reverse=True):
       for position, stage in enumerate(stages):
         if fits(stage, blocks, fields, table_idx):
           place(stage, blocks, fields, table_idx)
@@ -866,9 +874,9 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   # lowest level hold register/hash work, not tables from this pool.
   by_index = {}
   if table_dependents is None:
-    ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]], -load(s)))
+    ordered = sorted(shards, key=lambda s: readiness_levels[s[2]])
   else:
-    ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]], -load(s),
+    ordered = sorted(shards, key=lambda s: (readiness_levels[s[2]],
                                             -table_dependents[s[2]], -s[2]))
   for blocks, _width, table_idx, fields in ordered:
     index = readiness_levels[table_idx]

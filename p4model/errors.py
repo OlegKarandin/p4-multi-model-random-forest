@@ -30,6 +30,15 @@ class RangeEntriesDoNotFit(RuntimeError):
   short summed over the tables."""
 
 
+class PlacementFailed(RuntimeError):
+  """The placement simulation reached a state p4c's placer cannot reach, so the design
+  has no placement the model can price (decision 7.4, S29/S30): the classification pool
+  never placed a tree (packing._place_in_order's horizon), or a stage the range and
+  classification pools share broke its table cap or column packing
+  (usage.assemble_usage). A refusal, not a crash: training marks the trial infeasible
+  and the replay propagates it. args = (message,)."""
+
+
 class NoSplitTree(RuntimeError):
   """A tree with no threshold has no key field, so its table would have no key
   (spec 9.4). args = (message, tree label)."""

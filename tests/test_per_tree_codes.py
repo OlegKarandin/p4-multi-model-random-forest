@@ -886,3 +886,25 @@ def test_hardware_validation_reports_a_per_tree_refusal_as_unavailable(monkeypat
       "per_tree")
   assert fs._is_unavailable(handle)
   assert handle[1] == str(refusal)
+
+
+def test_a_placement_failure_is_an_infeasible_trial(monkeypatch):
+  from p4model.errors import PlacementFailed
+  from src.training import early_stopping
+
+  def replacement(real, call):
+    if call == 0:
+      def refuse(*args, **kwargs):
+        raise PlacementFailed("no placement")
+      return refuse
+    return real
+
+  trials, result = _search(monkeypatch, replacement)
+  first = trials[0]
+  assert first.user_attrs["crossbar_violation"] == 1.0
+  for attr in ("blocks_violation", "stages_violation"):
+    assert first.user_attrs[attr] == 0.0
+  assert first.values == [-1.0, -1.0, float("inf")]
+  assert not early_stopping.is_feasible(first)
+  assert len(trials) > 1                          # the search continued
+  assert result is not None
