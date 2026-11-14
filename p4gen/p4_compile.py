@@ -313,7 +313,8 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
                 target: str = "tofino",
                 include_path: str = DEFAULT_INCLUDE_PATH,
                 p4c_path: str = "~/open-p4studio/install/bin/p4c",
-                timeout_seconds: int = 300) -> CompileResult:
+                timeout_seconds: int = 300,
+                extra_args: tuple = ()) -> CompileResult:
     """Blocking: runs the real Tofino compiler and parses its resource
     report. The tool runs natively when `p4c` is on PATH (Linux/Codespace)
     and over WSL2 otherwise.
@@ -349,6 +350,9 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     installed compiler's own `--help-targets` output (reviews/
     t11_tofino_port_and_env.md Part L). `p4c` internally defines
     `__TARGET_TOFINO__` from `-b`, so no extra `-D` flag is needed here.
+
+    `extra_args` are extra p4c options placed before the output flag (e.g.
+    ("-Tauto_init_metadata:1",)); each is shell-quoted on the WSL route.
 
     Raises RuntimeError if the compiler times out or fails to run (no output line
     containing error/warning count despite nonzero exit code).
@@ -394,10 +398,10 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
         shutil.copyfile(p4_path, program)
         cmd = [native, '-b', target, '-a', architecture,
                '-I', _resolve_repo_relative(include_path),
-               '-g', '--verbose', '2', '-o', output_dir, program]
+               '-g', '--verbose', '2', *extra_args, '-o', output_dir, program]
     else:
         cmd = _wsl_command(p4_path, output_dir, architecture, target,
-                           include_path, p4c_path)
+                           include_path, p4c_path, extra_args)
     # stdin explicitly closed rather than inherited from the caller: standard
     # practice for a non-interactive subprocess invocation (avoids ever
     # blocking on unexpected input).
@@ -415,7 +419,8 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     return _finish_compile(proc, output_dir)
 
 
-def _wsl_command(p4_path, output_dir, architecture, target, include_path, p4c_path):
+def _wsl_command(p4_path, output_dir, architecture, target, include_path, p4c_path,
+                 extra_args=()):
     wsl_p4_path = _to_wsl_path(p4_path)
     wsl_output_dir = _to_wsl_path(output_dir)
     wsl_include_path = _to_wsl_path(_resolve_repo_relative(include_path))
@@ -425,9 +430,10 @@ def _wsl_command(p4_path, output_dir, architecture, target, include_path, p4c_pa
         f"cp {shlex.quote(wsl_p4_path)} \"$SCRATCH/prog.p4\" && "
         f"cp {shlex.quote(wsl_include_path)}/*.p4 \"$SCRATCH/include/\""
     )
+    extra = "".join(f"{shlex.quote(arg)} " for arg in extra_args)
     p4c_invocation = (
         f"{p4c_path} -b {target} -a {architecture} -I \"$SCRATCH/include\" "
-        "-g --verbose 2 -o \"$SCRATCH/output\" \"$SCRATCH/prog.p4\""
+        f"-g --verbose 2 {extra}-o \"$SCRATCH/output\" \"$SCRATCH/prog.p4\""
     )
     full_command = (
         f"{setup} && {p4c_invocation}; P4C_STATUS=$?; "
