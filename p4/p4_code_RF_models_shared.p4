@@ -33,8 +33,8 @@ struct metadata_t {
     bit<32> flow_hash;
     bit<1>  fwd;
     bit<16> now_pseudo_us;
-    bit<16> current_iat;
 
+	bit<16> flow_current_iat;
 	bit<2> class_tree_app_0;
 	bit<2> class_tree_app_1;
 	bit<2> classification_app;
@@ -138,8 +138,8 @@ control SwitchIngress(
 
 	RegisterAction<bit<16>, bit<32>, bit<16>>(flow_iat_max_reg) flow_iat_max_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
-			if (meta.current_iat > value) {
-				value = meta.current_iat;
+			if (meta.flow_current_iat > value) {
+				value = meta.flow_current_iat;
 			}
 			rv = value;
 		}
@@ -300,7 +300,7 @@ control SwitchIngress(
 
 			meta.fwd = flow_orientation_action.execute(meta.flow_hash);
 
-			meta.current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);
+			meta.flow_current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);
 			meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);
 
 			meta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);

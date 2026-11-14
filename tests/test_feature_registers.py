@@ -292,7 +292,10 @@ def test_register_action_bodies_match_spike():
     for reg in entry["registers"]:
       spike_action_name = _SPIKE_ACTION_NAME_BY_REGISTER[reg["name"]]
       spike_body = _extract_action_body(SPIKE_CONTROL, spike_action_name)
-      generated_body = bps._REGISTER_ACTION_BODIES[reg["body"]].format(width=reg["width"])
+      # the spike's single scratch field was meta.current_iat; the generator
+      # now substitutes the chain's own field (iat_field_name)
+      generated_body = bps._REGISTER_ACTION_BODIES[reg["body"]].format(
+          width=reg["width"], iat="current_iat")
       assert _normalize(generated_body) == _normalize(spike_body), (
           "feature '{0}' register '{1}' (body kind '{2}') diverges from "
           "spike action '{3}'".format(feature, reg["name"], reg["body"], spike_action_name)
@@ -372,21 +375,27 @@ def test_fwd_owned_call_sites_follow_the_ungated_ones(m1_generated):
   assert "if (meta.fwd" not in apply_code
 
   # flow_iat_max is ungated ("gated_by": None).
-  flow_dep_idx = apply_code.index("\t\t\tmeta.current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);")
+  flow_dep_idx = apply_code.index("\t\t\tmeta.flow_current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);")
   flow_val_idx = apply_code.index("\t\t\tmeta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);")
 
   # fwd_iat_max and fwd_packet_length_max are "gated_by": "fwd".
-  fwd_dep_idx = apply_code.index("\t\t\tmeta.current_iat = fwd_last_arrival_time_action.execute(meta.flow_hash);")
+  fwd_dep_idx = apply_code.index("\t\t\tmeta.fwd_current_iat = fwd_last_arrival_time_action.execute(meta.flow_hash);")
   fwd_val_idx = apply_code.index("\t\t\tmeta.fwd_iat_max_val = fwd_iat_max_action.execute(meta.flow_hash);")
   fwd_pktlen_idx = apply_code.index("\t\t\tmeta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);")
   assert max(flow_dep_idx, flow_val_idx) < min(fwd_dep_idx, fwd_val_idx, fwd_pktlen_idx)
 
 
-def test_dependency_registers_assigned_to_current_iat(m1_generated):
-  _, _, apply_code, _ = m1_generated
+def test_dependency_registers_assigned_to_their_own_iat_fields(m1_generated):
+  _, actions, apply_code, _ = m1_generated
   # Both IAT features' dependency registers (flow_last_arrival_time,
-  # fwd_last_arrival_time) feed the shared meta.current_iat scratch field.
-  assert apply_code.count("meta.current_iat = ") == 2
+  # fwd_last_arrival_time) feed their own chain's scratch field, and each
+  # value register reads its own chain's field (no shared current_iat).
+  assert apply_code.count("meta.flow_current_iat = ") == 1
+  assert apply_code.count("meta.fwd_current_iat = ") == 1
+  assert "current_iat = " not in apply_code.replace("flow_current_iat = ", "").replace(
+      "fwd_current_iat = ", "")
+  assert "meta.flow_current_iat" in _extract_action_body(actions, " flow_iat_max_action")
+  assert "meta.fwd_current_iat" in _extract_action_body(actions, " fwd_iat_max_action")
 
 
 def test_value_registers_assigned_with_val_suffix(m1_generated):
@@ -418,7 +427,8 @@ def test_mathunit_ewma_body_matches_spike(m2_mean_generated):
   # mathunit_ewma register wouldn't collide on one shared MathUnit instance)
   # -- substitute that one identifier before comparing body content.
   spike_body = _extract_action_body(M2_MEAN_SPIKE, "flow_iat_mean_ewma_action")
-  generated_body = bps._REGISTER_ACTION_BODIES["mathunit_ewma"].format(width=16, name="flow_iat_mean")
+  generated_body = bps._REGISTER_ACTION_BODIES["mathunit_ewma"].format(
+      width=16, name="flow_iat_mean", iat="current_iat")  # the spike's field name
   normalized_spike = [line.replace("halve_unit", "flow_iat_mean_halve_unit") for line in _normalize(spike_body)]
   assert _normalize(generated_body) == normalized_spike
 
@@ -433,11 +443,11 @@ def test_shared_dependency_register_executed_exactly_once(m2_mean_generated):
   assert apply_code.count("flow_last_arrival_time_action.execute(meta.flow_hash)") == 1
 
   # Both features' own "value" registers must still each get their own
-  # execute call site, both consuming the single shared meta.current_iat
-  # the deduped dependency execution produced.
+  # execute call site, both consuming the one meta.flow_current_iat the
+  # deduped dependency execution produced.
   assert "meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);" in apply_code
   assert "meta.flow_iat_mean_val = flow_iat_mean_action.execute(meta.flow_hash);" in apply_code
-  assert apply_code.count("meta.current_iat = ") == 1
+  assert apply_code.count("meta.flow_current_iat = ") == 1
 
 
 def test_mathunit_declaration_emitted_before_register_action(m2_mean_generated):
@@ -464,9 +474,10 @@ def test_dedup_does_not_cross_contaminate_flow_and_fwd_namespaces(m2_mean_plus_f
   assert apply_code.count("flow_last_arrival_time_action.execute(meta.flow_hash)") == 1
   assert apply_code.count("fwd_last_arrival_time_action.execute(meta.flow_hash)") == 1
   # Two distinct dependency registers (flow_*, fwd_*), each executed once =
-  # two meta.current_iat assignments total (not three, which is what the
+  # two scratch-field assignments total (not three, which is what the
   # pre-fix double-execute bug would have produced).
-  assert apply_code.count("meta.current_iat = ") == 2
+  assert apply_code.count("meta.flow_current_iat = ") == 1
+  assert apply_code.count("meta.fwd_current_iat = ") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +592,9 @@ def test_shared_dependency_register_deduplicated_across_many_sharers():
       "name": "shared_synthetic_reg",
       "role": "value",
       "width": 16,
-      "body": "running_max_iat",
+      # a body that reads no inter-arrival time: an iat body needs its own
+      # dependency register (test_an_iat_body_without_a_dependency_register_raises)
+      "body": "running_max_packet_length",
   }
   synthetic_catalog = {
       "synthetic_feature_{0}".format(i): {"registers": [shared_register], "gated_by": None}
@@ -623,6 +636,11 @@ def test_bwd_owned_feature_tests_meta_fwd_equals_0_in_its_body():
   synthetic_catalog = {
       "synthetic_bwd_feature": {
           "registers": [{
+              "name": "synthetic_bwd_dep",
+              "role": "dependency",
+              "width": 16,
+              "body": "iat_delta",
+          }, {
               "name": "synthetic_bwd_reg",
               "role": "value",
               "width": 16,
@@ -642,7 +660,7 @@ def test_bwd_owned_feature_tests_meta_fwd_equals_0_in_its_body():
   assert ("\t\t\tmeta.synthetic_bwd_feature_val = "
           "synthetic_bwd_reg_action.execute(meta.flow_hash);") in apply_code
   body = _extract_action_body(actions, " synthetic_bwd_reg_action")
-  assert "if (meta.fwd == 0 && meta.current_iat > value) {" in body
+  assert "if (meta.fwd == 0 && meta.synthetic_bwd_dep_current_iat > value) {" in body
 
 
 def test_register_shared_across_gate_classes_raises():
@@ -837,10 +855,11 @@ def _without_direction_test(lines):
 
 @pytest.mark.parametrize("body_kind", sorted(bps._REGISTER_ACTION_BODIES))
 def test_direction_read_template_updates_as_the_literal_body(body_kind):
-  literal = _normalize(bps._REGISTER_ACTION_BODIES[body_kind].format(width=16, name="x"))
+  literal = _normalize(bps._REGISTER_ACTION_BODIES[body_kind].format(width=16, name="x",
+                                                                       iat="x_iat"))
   for owner in (0, 1):
     template = _normalize(bps._DIRECTION_READ_BODIES[body_kind].format(
-        width=16, name="x", owner=owner))
+        width=16, name="x", owner=owner, iat="x_iat"))
     assert template[0] == literal[0]  # the apply(...) signature
     assert sum("meta.fwd == %d" % owner in line for line in template) == 1
     assert "meta.fwd == %d" % (1 - owner) not in "\n".join(template)
@@ -853,7 +872,8 @@ def test_direction_owned_bodies_test_their_own_direction():
     body = _extract_action_body(actions, " " + name + "_action")
     if gate is None:
       assert _normalize(body)[1:-1] == _normalize(
-          bps._REGISTER_ACTION_BODIES[body_kind].format(width=16, name=name))[1:-1], name
+          bps._REGISTER_ACTION_BODIES[body_kind].format(
+              width=16, name=name, iat="flow_current_iat"))[1:-1], name
       assert "meta.fwd" not in body, name
     elif gate == "fwd":
       assert "meta.fwd == 1" in body and "meta.fwd == 0" not in body, name
@@ -874,3 +894,42 @@ def test_value_bodies_always_write_rv():
         assert body[-2:] == ["rv = value;", "}"], (reg["name"], body)
       else:
         assert any(line.startswith("rv = 0") for line in body), (reg["name"], body)
+
+
+def test_no_two_dependency_registers_write_the_same_field():
+  """Each chain's dependency register writes its own scratch field, so no
+  write-after-read edge joins two chains (controller ruling 2026-11-14)."""
+  _, actions, apply_code, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
+  written = re.findall(r"meta\.(\w+) = (\w+)_action\.execute\(", apply_code)
+  dependency = {reg["name"] for entry in FEATURE_REGISTER_CATALOG.values()
+                for reg in entry["registers"] if reg["role"] == "dependency"}
+  fields = [field for field, register in written if register in dependency]
+  assert len(fields) == len(dependency) == 3
+  assert len(set(fields)) == len(fields)
+  assert set(fields) == {"flow_current_iat", "fwd_current_iat", "bwd_current_iat"}
+  # every field any register writes is written by exactly one register
+  all_fields = [field for field, _ in written]
+  assert len(set(all_fields)) == len(all_fields)
+  assert "current_iat" not in {field for field, _ in written}
+  # a value register reads only its own chain's field
+  for entry in FEATURE_REGISTER_CATALOG.values():
+    deps = [r["name"] for r in entry["registers"] if r["role"] == "dependency"]
+    for reg in entry["registers"]:
+      body = _extract_action_body(actions, " " + reg["name"] + "_action")
+      read = set(re.findall(r"meta\.(\w+_current_iat)", body))
+      assert read <= {bps.iat_field_name(d) for d in deps}, reg["name"]
+
+
+def test_iat_scratch_fields_are_declared_only_when_used(tmp_path):
+  assert bps.iat_scratch_fields({"fwd_packet_length_max": None, "min_packet_length": None}) == []
+  assert bps.iat_scratch_fields({"bwd_iat_max": None, "flow_iat_min": None,
+                                 "flow_iat_mean": None}) == ["bwd_current_iat", "flow_current_iat"]
+  template = open(bps.PATH_P4_CODE_TEMPLATE_INPUT, encoding="utf-8").read()
+  assert "current_iat" not in template
+
+
+def test_an_iat_body_without_a_dependency_register_raises():
+  catalog = {"lonely": {"registers": [{"name": "lonely_reg", "role": "value", "width": 16,
+                                       "body": "running_max_iat"}], "gated_by": "fwd"}}
+  with pytest.raises(ValueError, match="dependency register"):
+    generate_P4_registers_and_apply({"lonely": None}, catalog=catalog)

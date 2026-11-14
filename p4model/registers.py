@@ -44,7 +44,8 @@ def feature_readiness_level(feature_name, catalog=None):
           + one per RegisterAction in the feature's chain
 
   Each chain entry is a genuinely sequential stage: a "dependency" register
-  produces meta.current_iat, which the paired "value" register consumes.
+  produces its chain's inter-arrival time (a scratch field of its own), which
+  the paired "value" register consumes.
   A register shared between two features (flow_last_arrival_time, executed
   once for both flow_iat_max and flow_iat_mean) still sits on both features'
   critical paths, so it counts for both.
@@ -139,10 +140,12 @@ def register_stage_schedule(features, catalog=None,
   (register_names_for dedupes by name), so a shared register is scheduled
   once and both its features read the same stage.
 
-  Not modelled: the dependency registers of different chains all write the
-  one scratch field meta.current_iat, which p4c orders (write after read) in
-  program order. See results/encoding_evidence_2026_11/model8/impl/log.md
-  (Task 2) for its measured effect on the probe 7.1 programs.
+  Each chain's dependency register writes its own scratch field
+  (build_p4_script.iat_field_name, since 2026-11-14), so no write-after-read
+  edge joins two chains. With the one shared meta.current_iat field before
+  that, p4c ordered every later chain's writer after the earlier chains'
+  readers, which this schedule does not model (results/encoding_evidence_2026_11/
+  model8/impl/log.md, Task 2).
   """
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG

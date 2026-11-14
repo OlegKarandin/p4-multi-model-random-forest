@@ -16,7 +16,6 @@ struct metadata_t {
     bit<32> flow_hash;
     bit<1>  fwd;
     bit<16> now_pseudo_us;
-    bit<16> current_iat;
 
 /* METADATA */
 }

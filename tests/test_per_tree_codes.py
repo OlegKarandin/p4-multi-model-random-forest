@@ -180,24 +180,25 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # commits). ("joint", seed): joint intervals, flag off; ("disjoint", seed): each task's own
 # intervals, flag off; ("per_task", seed): own intervals, flag on; "three": _three_tasks().
 # Re-frozen 2026-11-14 after decisions 1a / 7.1 option B, which rewrote every program's
-# register bodies and apply block (seed 3 has no direction-owned feature and kept its sha);
-# on the 210 identity-harness designs (model8/impl) every changed text is exactly that
-# rewrite of its old text (impl/scripts/t2_text_diff.py).
+# register bodies and apply block, and again for the per-chain IAT scratch fields (no shared
+# current_iat, which also leaves the template); on the 210 identity-harness designs
+# (model8/impl) every changed text is exactly those rewrites of its old text
+# (impl/scripts/t2_text_diff.py, t2b_text_diff.py).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "3bb9264aa297a12e77cdb95275b92f98592bbc54f92d936f0760423e3623ef64",
-    ("disjoint", 0): "6d1cb30cb16771763e4f45cd7eb09f450a4ba63c87e940e400bc23873d7a424e",
-    ("per_task", 0): "e2fdf17cb7b563d938fdc03f20e4c2bbe92818951f373991b714476374bcc768",
-    ("joint", 1): "7e9de1155ff2c4006a8023709c64cfc14776ef1fc1ef2f6ad2b3c792c62e02e9",
-    ("disjoint", 1): "09d54af3bf04087f6097bc5dd4b8a2dc13a7b441e5092806289f3e3c7b4d6604",
-    ("per_task", 1): "539a1cd1b96b1c386e6eb659daba76eb6b9a2cfb74c8965219df0a205bd23b82",
-    ("joint", 2): "ae8b10b1a5cb48574d20e1e9b9024e7500e4d78f3ed6c9d722fb523ebd7875e1",
-    ("disjoint", 2): "bbd18d53874bf448f30646dc07c5bc1bd9b6ff6e551ba3ef22bafbaccdd7b2f7",
-    ("per_task", 2): "8c059530fc0ecadcd9454dfe3be04e0d50261f8564084c50b584debeebc6579d",
-    ("joint", 3): "3fe693dd280e151ba36332b34a668c514295c9df47615281f489bd6ccee6b17a",
-    ("disjoint", 3): "f2863d59d205e2645d14083ca9454bc1fd9fe79548a21bc4c8e848435e6d4cf0",
-    ("per_task", 3): "f7d0a2526da4dda5aa01bbf2568ba733c5d9a5f9714ecd834af762752de6551e",
-    ("disjoint", "three"): "94304a1005f6d6dd967c7029658e489fcc92e9de168a0643f625d8ceb487a366",
-    ("per_task", "three"): "fd880cd1528be799f8ab3d555d9d086d66da77cc0d6e0ed44370743bf302e0bf",
+    ("joint", 0): "6190a78398411104c69a77430c1149423f46cc9c3bbeffff3077cb9faf033e0b",
+    ("disjoint", 0): "d659829b02e07daf3063e21eba588dabd31696ad6991562e354fc0122bf2b833",
+    ("per_task", 0): "f7aa8c527dd9f6103b77605343c432418d0598fc906735d449a75796eb754ede",
+    ("joint", 1): "5e0f6d150d6f971720723f500cf3d7f469f1d60dc1d21187a2ab88eb46ec4765",
+    ("disjoint", 1): "16849d738517aa8242a7312533242bf232959b20aeec528e88bf52ad30fc304e",
+    ("per_task", 1): "2774d29592c61f20388232938a5fa12258069bededa817eba49e8602ea464847",
+    ("joint", 2): "c1ffee6fbf4e933f125b91c5ba8deefdde6fd6e167ade4d2aceacf891ec6a6b7",
+    ("disjoint", 2): "0090699fe3ee907cae60649dcd1a3e2e00e96b83c5582e326776f0e817adf47d",
+    ("per_task", 2): "ae20c11b4689154e725b3bc57abccc292554461a16422889769c7de69d2b0fda",
+    ("joint", 3): "3b7dd2abd9c94161c9e26fcd9eb89010bce13627cac504ad89bd1e142b2a43d3",
+    ("disjoint", 3): "c327cea721e0362e1a9c5da8349a198245f9e688769e20d224a96eeadb51aa40",
+    ("per_task", 3): "7ea654fadb2a7d1aafb0850222c1454e12db808da05cbe8cbab7f1f356f42edb",
+    ("disjoint", "three"): "2315c5990aec6d571951ea58987139be2174189dc3bde48669a979c133b910c0",
+    ("per_task", "three"): "a1ec8870dc32d8ea54bad940f8523496c8234c3773f2c0ec43cfeacd3f7f13a1",
 }
 
 

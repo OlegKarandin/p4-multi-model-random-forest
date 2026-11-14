@@ -41,9 +41,10 @@ FEATURE_REGISTER_CATALOG maps a lowercase feature name to:
             "role": "dependency" | "value",
                 # "dependency": this register's value never itself becomes
                 #   a codeword feature value (e.g. a *_last_arrival_time
-                #   register) -- its `.execute()` result feeds
-                #   `meta.current_iat`, consumed by a paired "value"
-                #   register.
+                #   register) -- its `.execute()` result feeds its own
+                #   scratch field (build_p4_script.iat_field_name, e.g.
+                #   `meta.flow_current_iat`), consumed by the paired "value"
+                #   register(s).
                 # "value": this register's `.execute()` result IS the
                 #   feature value later consumed by feature-encoding
                 #   tables, assigned to `meta.<feature>_val` (matching the
@@ -80,7 +81,7 @@ FEATURE_REGISTER_CATALOG maps a lowercase feature name to:
 
 A feature's "registers" list is ordered: a "dependency" register (if any)
 always precedes the "value" register(s) that consume its
-`meta.current_iat` output, matching the order the generator emits them
+scratch-field output (`meta.<chain>_current_iat`), matching the order the generator emits them
 into the apply block.
 
 Scope
@@ -211,7 +212,7 @@ FEATURE_REGISTER_CATALOG = {
     # generate_P4_registers_and_apply() dedupes shared dependency registers
     # by name, so this is safe: whichever selected feature is resolved first
     # .execute()s flow_last_arrival_time_reg once, and both features'
-    # "value" registers consume that single meta.current_iat result.
+    # "value" registers consume that single meta.flow_current_iat result.
     # A catalog entry that lists its own dependency register can safely stand
     # alone -- its dependency will be executed when that feature is resolved.
     "flow_iat_mean": {

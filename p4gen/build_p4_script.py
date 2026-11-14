@@ -2002,6 +2002,10 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # resolved entries share it.
   registers_code, register_actions_code, feature_update_apply_code, resolved = (
       generate_P4_registers_and_apply(raw_feature_intervals))
+  # One bit<16> scratch field per dependency register used (iat_field_name),
+  # declared first, where the template's single current_iat used to be.
+  metadata_code = "".join("\tbit<16> " + field + ";\n"
+                          for field in iat_scratch_fields(raw_feature_intervals)) + metadata_code
 
   # F2: a feature with no FEATURE_REGISTER_CATALOG entry is silently skipped
   # by generate_P4_registers_and_apply above, but everything else in this
@@ -2216,8 +2220,8 @@ _REGISTER_ACTION_BODIES = {
   ),
   "running_max_iat": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tif (meta.current_iat > value) {{\n"
-      "\t\t\t\tvalue = meta.current_iat;\n"
+      "\t\t\tif (meta.{iat} > value) {{\n"
+      "\t\t\t\tvalue = meta.{iat};\n"
       "\t\t\t}}\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
@@ -2241,14 +2245,14 @@ _REGISTER_ACTION_BODIES = {
   # (below) causes to be declared immediately before this RegisterAction.
   "mathunit_ewma": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tvalue = {name}_halve_unit.execute(value + meta.current_iat);\n"
+      "\t\t\tvalue = {name}_halve_unit.execute(value + meta.{iat});\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
   # Task 8: the packet-length equivalent of mathunit_ewma, for the three
   # packet-length-mean features (fwd_packet_length_mean,
   # bwd_packet_length_mean, packet_length_mean). Folds hdr.ipv4.total_len
-  # (a header field, not meta.current_iat) into the same MathUnit<>-based
+  # (a header field, not meta.{iat}) into the same MathUnit<>-based
   # alpha=0.5 EWMA. A separate body kind rather than parameterising
   # mathunit_ewma's operand, per task-8-brief.md: _REGISTER_ACTION_BODIES is
   # a table of compiler-validated literals, one entry per validated program
@@ -2273,8 +2277,8 @@ _REGISTER_ACTION_BODIES = {
   # needed. Bodies transcribed verbatim from that compile.
   "running_min_iat": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tif (meta.current_iat < value) {{\n"
-      "\t\t\t\tvalue = meta.current_iat;\n"
+      "\t\t\tif (meta.{iat} < value) {{\n"
+      "\t\t\t\tvalue = meta.{iat};\n"
       "\t\t\t}}\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
@@ -2298,7 +2302,7 @@ _REGISTER_ACTION_BODIES = {
 # unchanged and only reads it (`rv = value`), so every <feature>_val field is
 # written on every packet. A dependency (iat_delta) register returns 0 in the
 # read direction: its only reader there is its chain's value register, which
-# ignores meta.current_iat on that packet. Ungated registers keep the literal
+# ignores meta.{iat} on that packet. Ungated registers keep the literal
 # bodies above. Probe 7.1 (results/encoding_evidence_2026_11/model8/impl/
 # probe_7_1.md): p4c accepts every template; each costs one more SALU
 # instruction (the meta.fwd compare) and no stage.
@@ -2315,8 +2319,8 @@ _DIRECTION_READ_BODIES = {
   ),
   "running_max_iat": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tif (meta.fwd == {owner} && meta.current_iat > value) {{\n"
-      "\t\t\t\tvalue = meta.current_iat;\n"
+      "\t\t\tif (meta.fwd == {owner} && meta.{iat} > value) {{\n"
+      "\t\t\t\tvalue = meta.{iat};\n"
       "\t\t\t}}\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
@@ -2332,7 +2336,7 @@ _DIRECTION_READ_BODIES = {
   "mathunit_ewma": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.fwd == {owner}) {{\n"
-      "\t\t\t\tvalue = {name}_halve_unit.execute(value + meta.current_iat);\n"
+      "\t\t\t\tvalue = {name}_halve_unit.execute(value + meta.{iat});\n"
       "\t\t\t}}\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
@@ -2347,8 +2351,8 @@ _DIRECTION_READ_BODIES = {
   ),
   "running_min_iat": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tif (meta.fwd == {owner} && meta.current_iat < value) {{\n"
-      "\t\t\t\tvalue = meta.current_iat;\n"
+      "\t\t\tif (meta.fwd == {owner} && meta.{iat} < value) {{\n"
+      "\t\t\t\tvalue = meta.{iat};\n"
       "\t\t\t}}\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
@@ -2386,6 +2390,38 @@ _REGISTER_INITIAL_VALUES = {
 }
 
 
+# Decisions 1a / 7.1 option B follow-up (controller ruling 2026-11-14): each
+# dependency register (an iat_delta "last arrival time") writes its OWN 16-bit
+# scratch field, named from the register, and the value registers of its chain
+# read that field. One shared meta.current_iat made every later chain's writer
+# wait (write after read) for the earlier chains' readers, which p4c serialised
+# and the register schedule does not model (model8/impl/log.md, Task 2).
+_DEPENDENCY_SUFFIX = "_last_arrival_time"
+
+
+def iat_field_name(dependency_register):
+  """The metadata scratch field a dependency register's .execute() writes:
+  flow_last_arrival_time -> flow_current_iat (likewise fwd_, bwd_); any other
+  name -> <name>_current_iat."""
+  base = (dependency_register[:-len(_DEPENDENCY_SUFFIX)]
+          if dependency_register.endswith(_DEPENDENCY_SUFFIX) else dependency_register)
+  return base + "_current_iat"
+
+
+def iat_scratch_fields(feature_intervals, catalog=None):
+  """The scratch fields generate_P4_registers_and_apply writes for these
+  features, in first-seen order: one per distinct dependency register (only
+  declared when used)."""
+  if catalog is None:
+    catalog = FEATURE_REGISTER_CATALOG
+  fields = []
+  for feature in (name.lower() for name in feature_intervals):
+    for reg in catalog.get(feature, {}).get("registers", ()):
+      if reg["role"] == "dependency" and iat_field_name(reg["name"]) not in fields:
+        fields.append(iat_field_name(reg["name"]))
+  return fields
+
+
 def _register_declaration(name, width, initial_value=None):
   if initial_value is None:
     return "\tRegister<bit<{width}>, bit<32>>(MAX_NUM_FLOWS) {name}_reg;\n".format(
@@ -2394,17 +2430,19 @@ def _register_declaration(name, width, initial_value=None):
       width=width, name=name, init=initial_value)
 
 
-def _register_action_declaration(name, width, body_kind, owner=None):
+def _register_action_declaration(name, width, body_kind, owner=None, iat=None):
   # `name=name` is only consumed by body kinds that reference an
   # extra-declaration identifier of their own (e.g. "mathunit_ewma"'s
   # `{name}_halve_unit`); body kinds that don't reference `{name}` simply
   # ignore the extra format() kwarg. owner: None for the literal body (an
   # ungated register), else the owner direction's meta.fwd value
-  # (_DIRECTION_READ_BODIES).
-  if owner is None:
-    body = _REGISTER_ACTION_BODIES[body_kind].format(width=width, name=name)
-  else:
-    body = _DIRECTION_READ_BODIES[body_kind].format(width=width, name=name, owner=owner)
+  # (_DIRECTION_READ_BODIES). iat: the scratch field (iat_field_name) the
+  # chain's dependency register writes, for the body kinds that read one.
+  template = (_REGISTER_ACTION_BODIES if owner is None else _DIRECTION_READ_BODIES)[body_kind]
+  if "{iat}" in template and iat is None:
+    raise ValueError("register {!r} (body {!r}) reads an inter-arrival time, but its "
+                     "feature lists no dependency register before it".format(name, body_kind))
+  body = template.format(width=width, name=name, owner=owner, iat=iat)
   return (
       "\tRegisterAction<bit<{width}>, bit<32>, bit<{width}>>({name}_reg) {name}_action = {{\n"
       "{body}"
@@ -2505,7 +2543,9 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       result into `meta.<feature_lower>_val` (e.g. `meta.flow_iat_max_val`,
       matching the spike's `metadata_t` field naming; a "dependency"
       register's result is not itself a feature value, so it is assigned
-      into the shared `meta.current_iat` scratch field instead, exactly
+      into its chain's own scratch field (iat_field_name, e.g.
+      `meta.flow_current_iat`; one shared `meta.current_iat` until
+      2026-11-14) instead, much
       like the spike). This is applied consistently to every "value"
       register, including `fwd_packet_length_max` -- the spike itself
       discards that one register's `.execute()` result (its classification
@@ -2522,7 +2562,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       first-encountered feature (in feature_intervals iteration order)
       gets an `.execute()` call site for that register; every later
       feature that references the same name reuses the value the first
-      call already produced (e.g. the shared `meta.current_iat`) instead
+      call already produced (e.g. `meta.flow_current_iat`) instead
       of re-invoking `.execute()` on it. This models the real hardware
       constraint that a given RegisterAction's call site represents one
       physical register touch meant to fire (at most) once per packet --
@@ -2606,9 +2646,9 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # ---- Resolve the deduplicated, ordered register set ----
 
   register_order = []  # ordered list of register names (first-seen)
-  register_info = {}   # name -> {"width":, "body":, "gated_by":}
+  register_info = {}   # name -> {"width":, "body":, "gated_by":, "iat":}
 
-  def _note_touch(name, width=None, body=None, gated_by=None):
+  def _note_touch(name, width=None, body=None, gated_by=None, iat=None):
     # Plain first-seen recorder: the first time a register name is noted,
     # it is added to register_order/register_info; every later call for an
     # already-seen name (e.g. a second feature that also lists the same
@@ -2617,7 +2657,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     # another .execute() line for it.
     if name not in register_info:
       register_order.append(name)
-      register_info[name] = {"width": width, "body": body, "gated_by": gated_by}
+      register_info[name] = {"width": width, "body": body, "gated_by": gated_by,
+                             "iat": iat}
 
   feature_registers = {}  # feature -> ordered list of its catalog register dicts
   needs_timestamp = False
@@ -2632,8 +2673,12 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       )
 
     regs = []
+    iat = None  # the scratch field of the chain's latest dependency register
     for reg in entry["registers"]:
-      _note_touch(reg["name"], width=reg["width"], body=reg["body"], gated_by=gated_by)
+      if reg["role"] == "dependency":
+        iat = iat_field_name(reg["name"])
+      _note_touch(reg["name"], width=reg["width"], body=reg["body"], gated_by=gated_by,
+                  iat=None if reg["role"] == "dependency" else iat)
       regs.append(reg)
       if reg["body"] == "iat_delta":
         needs_timestamp = True
@@ -2732,7 +2777,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       register_actions_code += "\n" + extra_declaration.format(width=info["width"], name=name)
     owner = _DIRECTION_OWNER.get(info["gated_by"])
     register_actions_code += "\n" + _register_action_declaration(
-        name, info["width"], info["body"], owner=owner)
+        name, info["width"], info["body"], owner=owner, iat=info["iat"])
 
   # ---- /* FEATURE_UPDATE_APPLY */ ----
 
@@ -2757,7 +2802,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # flow_iat_max and flow_iat_mean) must still be .execute()'d exactly once
   # per packet. Whichever feature reaches that register name first (in
   # matched_features order) emits its call site and produces the value
-  # (meta.current_iat, for a "dependency" register); every later feature
+  # (its own scratch field, iat_field_name, for a "dependency" register); every later feature
   # that lists the same register name reuses that already-produced value
   # instead of re-invoking .execute() on it.
   already_executed_registers = set()
@@ -2770,7 +2815,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
         if name in already_executed_registers:
           continue
         already_executed_registers.add(name)
-        target = "meta.current_iat" if reg["role"] == "dependency" else "meta." + feature + "_val"
+        target = ("meta." + iat_field_name(name) if reg["role"] == "dependency"
+                  else "meta." + feature + "_val")
         lines.append("{indent}{target} = {name}_action.execute(meta.flow_hash);".format(
             indent=indent, target=target, name=name))
     return lines
