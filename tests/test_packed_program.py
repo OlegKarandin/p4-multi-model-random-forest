@@ -95,10 +95,10 @@ def test_the_generator_builds_the_layout_the_training_pool_builds(tmp_path, monk
   key only if both call it with the same orders. Spy on every call and compare."""
   real, calls = packed.layout_for, []
 
-  def spy(widths, features, task_order):
-    layout = real(widths, features, task_order)
+  def spy(widths, features, task_order, n_scratch=0):
+    layout = real(widths, features, task_order, n_scratch)
     calls.append((widths, [f for f in features if f in layout.containers], list(task_order),
-                  layout))
+                  layout, n_scratch))
     return layout
 
   monkeypatch.setattr(packed, "layout_for", spy)
@@ -107,8 +107,8 @@ def test_the_generator_builds_the_layout_the_training_pool_builds(tmp_path, monk
   bps.generate_p4_program(_specs(app, ddos, names, names), output_dir=str(tmp_path) + os.sep,
                           encoding=PER_TREE_ENCODING)
   assert len(calls) == 2
-  (w_pool, f_pool, t_pool, pool), (w_gen, f_gen, t_gen, gen) = calls
-  assert (w_gen, f_gen, t_gen) == (w_pool, f_pool, t_pool)
+  (w_pool, f_pool, t_pool, pool, s_pool), (w_gen, f_gen, t_gen, gen, s_gen) = calls
+  assert (w_gen, f_gen, t_gen, s_gen) == (w_pool, f_pool, t_pool, s_pool)
   assert t_gen == [APP_TASK, DDOS_TASK]
   assert list(gen.containers.items()) == list(pool.containers.items())
   assert gen.place == pool.place

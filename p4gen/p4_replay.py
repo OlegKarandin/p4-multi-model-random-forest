@@ -16,7 +16,7 @@ from p4model.program import (ORIENTATION_REGISTER, PLACEMENT_PRIORITY, SHARED_TA
                                  feature_of_per_tree_field)
 from p4model.ranges import compiler_range_rows
 from p4model.registers import readiness_levels_for
-from p4model import lanes, packed, xbar
+from p4model import lanes, packed, phv, xbar
 from p4model.tables import tree_entries_to_blocks
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 from p4model.usage import tree_readiness_levels
@@ -43,7 +43,11 @@ class Program:
     port lays the field's key bytes in (tree_key_slices).
 
     action_writes: range action name (set_code_<r>) -> the code fields its body
-    assigns, in body order (range_action_bytes)."""
+    assigns, in body order (range_action_bytes).
+
+    scratch_fields / class_fields: the declared IAT scratch fields
+    (`<chain>_current_iat`) and `class_tree_<task>_<i>` fields, which only the PHV
+    count reads (p4model.phv.from_program)."""
     tables: dict
     widths: dict
     bits: dict
@@ -54,6 +58,8 @@ class Program:
     code_containers: dict = field(default_factory=dict)
     register_calls: tuple = ()
     action_writes: dict = field(default_factory=dict)
+    scratch_fields: tuple = ()
+    class_fields: tuple = ()
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -183,6 +189,11 @@ _PACKED_CONTAINERS = re.compile(
 _CODE_CONTAINERS = re.compile(
     r'^@pa_container_size\("ingress", "ig_md\.(code_\w+)", ([\d, ]+)\)\s*$', re.M)
 
+# The IAT scratch fields (build_p4_script.iat_field_name) and the per-tree class
+# fields a program declares: one PHV container each (p4model.phv).
+_SCRATCH_FIELD = re.compile(r'^\s*bit<\d+>\s+(\w+_current_iat)\s*;', re.M)
+_CLASS_FIELD = re.compile(r'^\s*bit<\d+>\s+(class_tree_\w+)\s*;', re.M)
+
 # A table's @stage(n) line. Per-tree programs generated under spec 2026-11-11
 # Sec 4.3 (heldout runs up to heldout8, before the crossbar port of spec
 # 2026-11-13) carry them; nothing generates them now, and the model does not
@@ -257,7 +268,9 @@ def parse_program_text(text):
                                     for name, sizes in _CODE_CONTAINERS.findall(text)
                                     if not name.startswith(_PACKED_FIELD)},
                    register_calls=register_calls(text),
-                   action_writes=action_writes(text))
+                   action_writes=action_writes(text),
+                   scratch_fields=tuple(_SCRATCH_FIELD.findall(text)),
+                   class_fields=tuple(_CLASS_FIELD.findall(text)))
 
 
 def parse_program(p4_path):
@@ -708,7 +721,11 @@ def model_breakdown(program, row_id=''):
     the program's own table names -- so spec sec 6.3's per-table comparison with
     p4c's mau.resources.log is a name join, not a mapping. The model side of
     every campaign verdict (plan O3): the path the 60/60 calibration gate
-    validates, and the one --rescore reruns from a saved program."""
+    validates, and the one --rescore reruns from a saved program.
+
+    Raises PhvContainersExhausted for a program over the PHV container budget
+    (p4model.phv, decision 8.3), as training does for the same design."""
+    phv.check(phv.containers_used(program))
     plans = replay_plans(row_id, program, declared_prices(program))
     tables = []
     for kind, plan, names in (('range', plans.range_plan, plans.range_names),

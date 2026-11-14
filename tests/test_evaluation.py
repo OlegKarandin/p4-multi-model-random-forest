@@ -1838,6 +1838,8 @@ POOL_KEYS = {
     # 2026-11-14 (decision 2.3): every encoding's trees key only their own
     # features, so every pool carries each tree's range-table reads (rule E).
     "tree_reads",
+    # 2026-11-14 (decision 8.3): the inputs of p4model.phv.count, for the PHV check.
+    "phv_fields",
 }
 
 

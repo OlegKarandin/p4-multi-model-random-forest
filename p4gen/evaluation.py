@@ -9,6 +9,8 @@
 import sklearn.metrics as mt
 from p4gen.build_p4_script import (
     _reject_colliding_feature_names,
+    code_field_container_sizes,
+    iat_scratch_fields,
     plan_key_order,
     resolve_feature_plan,
     resolve_per_task_plan,
@@ -99,7 +101,7 @@ from p4model.tables import (
     codeword_fields_to_bytes_from_bits,
 )
 from p4model import tables as _tables
-from p4model import lanes, packed
+from p4model import lanes, packed, phv
 from p4model.registers import (
     feature_readiness_level,
     readiness_levels_for,
@@ -516,7 +518,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
                         for feature, intervals in feature_intervals_from_nodes({0: nodes}).items()
                         if len(intervals) >= 2})
     layout = packed.layout_for(packed.widths_of(own), list(feature_intervals),
-                               [APP_TASK, DDOS_TASK])
+                               [APP_TASK, DDOS_TASK],
+                               len(iat_scratch_fields(feature_intervals)))
 
     position = {feature: index for index, feature in enumerate(feature_intervals)}
     ternary_entries, codeword_length = 0, 0
@@ -691,6 +694,23 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     range_dependents = classification["range_dependents"]
     range_task = classification["range_task"]
 
+  # PHV containers (p4model.phv, decision 8.3): the program's own fields and every
+  # code field's pinned containers, counted by the one function the replay of the
+  # program text counts with, and refused over the ingress budget in EVERY
+  # encoding (PhvContainersExhausted; per-tree's layout already refuses a
+  # canonical container it cannot place).
+  if encoding == PER_TREE_ENCODING:
+    code_containers = list(layout.containers.values())
+  else:
+    code_containers = [tuple(sizes) for sizes in
+                       code_field_container_sizes(plan, [APP_TASK, DDOS_TASK]).values()]
+  raw_features = set(emitted_features)
+  phv_fields = {"vals": len(raw_features),
+                "scratch": len(iat_scratch_fields(raw_features)),
+                "trees": len(ternary_table_specs),
+                "code_containers": code_containers}
+  phv.check(phv.from_pool({"phv_fields": phv_fields}))
+
   # ternary_blocks (the naive per-table sum) is deliberately NOT one of the
   # keys below -- see this function's own docstring.
   pool = {
@@ -714,6 +734,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       # Every encoding: each tree reads only the range tables of the features
       # it keys (rule E per tree, usage.tree_readiness_levels).
       "tree_reads": tree_reads,
+      # The inputs of p4model.phv.count (phv.containers_used(pool)); assemble_usage
+      # does not read them.
+      "phv_fields": phv_fields,
   }
   # Only the per-tree branch: packed keys, placed by their bytes.
   if encoding == PER_TREE_ENCODING:

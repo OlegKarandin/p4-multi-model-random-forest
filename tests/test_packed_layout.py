@@ -11,6 +11,22 @@ def _w(app=(), ddos=()):
 def test_budgets_are_ingress_containers_minus_the_programs_own_fields():
   assert packed.budgets(n_features=7, n_trees=6) == {32: 43, 16: 80 - 7 - 5, 8: 48 - 6 - 4}
 
+def test_budgets_count_the_scratch_fields():
+  assert packed.budgets(n_features=7, n_trees=6, n_scratch=3)[16] == 80 - 7 - 3 - 5
+
+def test_no_fall_through(monkeypatch):
+  """A wanted size with no container left is refused, never replaced by another size
+  (decision 4.2): a 32-bit field used to fall to 16 then 8 bits and now raises."""
+  from p4model import phv
+  tight = dict(phv.PHV_INGRESS_CONTAINERS)
+  tight[32] = len(phv.PHV_TEMPLATE_FIELDS[32])                          # no 32-bit container left
+  monkeypatch.setattr(phv, "PHV_INGRESS_CONTAINERS", tight)
+  with pytest.raises(PhvContainersExhausted) as refused:
+    packed.layout_for(_w(app=[{"f": 12}, {"f": 12}, {"f": 12}]), ["f"], ["app", "ddos"])   # 6 bytes: wants 32 + 16
+  assert refused.value.args[1] == 1                                      # one container short
+  monkeypatch.undo()
+  assert packed.layout_for(_w(app=[{"f": 12}, {"f": 12}, {"f": 12}]), ["f"], ["app", "ddos"]).containers["f"] == (32, 16)
+
 @pytest.mark.parametrize("bits, containers", [
     ([6], (8,)), ([12], (16,)), ([12, 6], (16, 8)),
     ([12, 9, 6], (32,)),                           # 4 bytes: the 6-bit code sits in the 9-bit one's last byte
@@ -106,12 +122,12 @@ def test_bus_bytes_are_the_fields_container_bytes():
   layout = packed.layout_for(_w(app=[{"f": 12}, {"f": 12}], ddos=[{"f": 5}]), ["f"], ["app", "ddos"])
   assert packed.field_bits(layout, "f") == 40 and packed.bus_bytes(layout, "f") == 5
 
-def test_a_budget_that_runs_out_mid_field_falls_to_the_next_size(monkeypatch):   # Review Focus 1
-  monkeypatch.setattr(packed, "budgets", lambda n_features, n_trees: {32: 3, 16: 80, 8: 40})
-  layout = packed.layout_for(_w(app=[{"f": 32}] * 5), ["f"], ["app", "ddos"])     # 20 bytes
-  assert layout.containers["f"] == (32, 32, 32, 16, 16, 16, 16)
-  kinds = [item[0] for item in packed.key_bytes(layout, "app", 4)]
-  assert set(kinds) <= {"W", "H"} and len(kinds) == 4
+def test_a_budget_that_runs_out_mid_field_is_refused_not_filled_with_smaller_ones(monkeypatch):
+  # decision 4.2 (was: falls to the next size). 20 bytes want five 32-bit containers, 3 left
+  monkeypatch.setattr(packed, "budgets", lambda n_features, n_trees, n_scratch=0: {32: 3, 16: 80, 8: 40})
+  with pytest.raises(PhvContainersExhausted) as refused:
+    packed.layout_for(_w(app=[{"f": 32}] * 5), ["f"], ["app", "ddos"])
+  assert refused.value.args[1] == 2
 
 def test_two_trees_keying_one_byte_share_its_crossbar_slot():
   # the crossbar moves whole bytes: in one stage the second tree finds the first one's slot
