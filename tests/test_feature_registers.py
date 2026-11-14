@@ -365,26 +365,21 @@ def test_calc_timestamp_emitted_and_matches_spike(m1_generated):
   assert ">> 10" in generated_body
 
 
-def test_fwd_gating_structure(m1_generated):
+def test_fwd_owned_call_sites_follow_the_ungated_ones(m1_generated):
+  # Decisions 1a / 7.1 option B: no gated block; the fwd-owned registers'
+  # call sites are unconditional and follow the ungated ones.
   _, _, apply_code, _ = m1_generated
+  assert "if (meta.fwd" not in apply_code
 
-  fwd_block_idx = apply_code.index("if (meta.fwd == 1) {")
+  # flow_iat_max is ungated ("gated_by": None).
+  flow_dep_idx = apply_code.index("\t\t\tmeta.current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);")
+  flow_val_idx = apply_code.index("\t\t\tmeta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);")
 
-  # flow_iat_max is ungated ("gated_by": None) -- its execute call sites
-  # must precede (be outside) the fwd-gated block.
-  flow_dep_idx = apply_code.index("meta.current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);")
-  flow_val_idx = apply_code.index("meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);")
-  assert flow_dep_idx < fwd_block_idx
-  assert flow_val_idx < fwd_block_idx
-
-  # fwd_iat_max and fwd_packet_length_max are "gated_by": "fwd" -- their
-  # execute call sites must follow (be inside) the fwd-gated block.
-  fwd_dep_idx = apply_code.index("meta.current_iat = fwd_last_arrival_time_action.execute(meta.flow_hash);")
-  fwd_val_idx = apply_code.index("meta.fwd_iat_max_val = fwd_iat_max_action.execute(meta.flow_hash);")
-  fwd_pktlen_idx = apply_code.index("meta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);")
-  assert fwd_dep_idx > fwd_block_idx
-  assert fwd_val_idx > fwd_block_idx
-  assert fwd_pktlen_idx > fwd_block_idx
+  # fwd_iat_max and fwd_packet_length_max are "gated_by": "fwd".
+  fwd_dep_idx = apply_code.index("\t\t\tmeta.current_iat = fwd_last_arrival_time_action.execute(meta.flow_hash);")
+  fwd_val_idx = apply_code.index("\t\t\tmeta.fwd_iat_max_val = fwd_iat_max_action.execute(meta.flow_hash);")
+  fwd_pktlen_idx = apply_code.index("\t\t\tmeta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);")
+  assert max(flow_dep_idx, flow_val_idx) < min(fwd_dep_idx, fwd_val_idx, fwd_pktlen_idx)
 
 
 def test_dependency_registers_assigned_to_current_iat(m1_generated):
@@ -624,7 +619,7 @@ def test_unsupported_gated_by_raises():
     generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
 
 
-def test_bwd_gated_feature_wrapped_in_meta_fwd_equals_0_block():
+def test_bwd_owned_feature_tests_meta_fwd_equals_0_in_its_body():
   synthetic_catalog = {
       "synthetic_bwd_feature": {
           "registers": [{
@@ -638,16 +633,16 @@ def test_bwd_gated_feature_wrapped_in_meta_fwd_equals_0_block():
   }
   feature_intervals = {"Synthetic_Bwd_Feature": None}
 
-  _, _, apply_code, _ = generate_P4_registers_and_apply(
+  _, actions, apply_code, _ = generate_P4_registers_and_apply(
       feature_intervals, catalog=synthetic_catalog)
 
-  assert "if (meta.fwd == 0) {" in apply_code
-  assert "synthetic_bwd_reg_action.execute(meta.flow_hash)" in apply_code
-  # The execute call site must be textually inside the fwd==0 block, not
-  # emitted unconditionally.
-  gate_index = apply_code.index("if (meta.fwd == 0) {")
-  execute_index = apply_code.index("synthetic_bwd_reg_action.execute(meta.flow_hash)")
-  assert execute_index > gate_index
+  # Decisions 1a / 7.1 option B: the call site is unconditional, and the
+  # body updates only when meta.fwd == 0.
+  assert "if (meta.fwd" not in apply_code
+  assert ("\t\t\tmeta.synthetic_bwd_feature_val = "
+          "synthetic_bwd_reg_action.execute(meta.flow_hash);") in apply_code
+  body = _extract_action_body(actions, " synthetic_bwd_reg_action")
+  assert "if (meta.fwd == 0 && meta.current_iat > value) {" in body
 
 
 def test_register_shared_across_gate_classes_raises():
@@ -766,21 +761,12 @@ def test_register_names_for_catalog_miss_is_silently_skipped():
 
 
 # ---------------------------------------------------------------------------
-# Decision 7.1 option B: direction-read register bodies (direction_reads=True)
+# Decisions 1a / 7.1 option B: no gated blocks. Every register's .execute() is
+# unconditional; a direction-owned register's body updates only in its own
+# direction and only reads in the other.
 # ---------------------------------------------------------------------------
 
 _ALL_FEATURES = {name: None for name in FEATURE_REGISTER_CATALOG}
-
-# sha256 of registers + actions + apply text at commit 28a6c7c (before the
-# flag existed), for three sample designs.
-_HEAD_REGISTER_TEXT_SHA256 = {
-    ("flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"):
-        "dec74079ae07f8a5fea0e41d9fcbf24df7fb90fc3f6c0e0f408b4d1c1ab005d7",
-    ("bwd_iat_mean", "flow_iat_min", "bwd_packet_length_max", "fwd_iat_min"):
-        "749f9910b8b72265feb6d77235245ae449431fa93b1e3992ebf7a247f0a14e5e",
-    tuple(FEATURE_REGISTER_CATALOG):
-        "b70f6cdcdb0122b1166a482eb66ecc17dc61b04bec1171ead292265e34c69d17",
-}
 
 
 def _register_gates(catalog=FEATURE_REGISTER_CATALOG):
@@ -789,28 +775,85 @@ def _register_gates(catalog=FEATURE_REGISTER_CATALOG):
           for entry in catalog.values() for reg in entry["registers"]}
 
 
-def test_direction_reads_emits_no_gated_blocks():
-  _, _, apply_code, _ = generate_P4_registers_and_apply(_ALL_FEATURES, direction_reads=True)
+def test_no_gated_register_blocks():
+  _, _, apply_code, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
   assert "if (meta.fwd" not in apply_code
   for name in _register_gates():
     assert len(re.findall(r"\b" + name + r"_action\.execute\(", apply_code)) == 1, name
+  # every call site at one indent: the apply block's outer sequence
+  calls = [line for line in apply_code.splitlines() if ".execute(" in line]
+  assert {line[:len(line) - len(line.lstrip())] for line in calls} == {"\t\t\t"}
+  import inspect
+  assert "direction_reads" not in inspect.signature(generate_P4_registers_and_apply).parameters
+  assert "direction_reads" not in inspect.signature(bps.generate_P4_code).parameters
+  assert "direction_reads" not in inspect.signature(bps.generate_p4_program).parameters
 
 
-def test_direction_reads_keeps_the_execute_order():
-  """Same call sites, same order as the gated program: only the if-blocks go."""
-  _, _, gated, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
-  _, _, flat, _ = generate_P4_registers_and_apply(_ALL_FEATURES, direction_reads=True)
-  calls = lambda text: [line.strip() for line in text.splitlines() if ".execute(" in line]
-  assert calls(gated) == calls(flat)
+def test_execute_order_is_ungated_then_fwd_then_bwd_features():
+  """The call-site order the gated program had: ungated features, then fwd-owned,
+  then bwd-owned, each register at its first feature (first-seen dedup)."""
+  _, _, apply_code, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
+  expected = []
+  for gate in (None, "fwd", "bwd"):
+    for entry in FEATURE_REGISTER_CATALOG.values():
+      if entry.get("gated_by") != gate:
+        continue
+      for reg in entry["registers"]:
+        if reg["name"] not in expected:
+          expected.append(reg["name"])
+  got = re.findall(r"(\w+)_action\.execute\(", apply_code)
+  assert got == ["flow_orientation"] + expected
 
 
-def test_direction_reads_body_tests_fwd():
-  _, plain_actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
-  _, actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES, direction_reads=True)
-  for name, (gate, _body) in _register_gates().items():
+def test_every_gated_body_kind_has_a_direction_read_template():
+  gated_kinds = {body for gate, body in _register_gates().values() if gate is not None}
+  assert gated_kinds <= set(bps._DIRECTION_READ_BODIES)
+  assert set(bps._DIRECTION_READ_BODIES) == set(bps._REGISTER_ACTION_BODIES)
+
+
+def _without_direction_test(lines):
+  """A direction-read body's update statements, with its direction test taken
+  out: `if (meta.fwd == D) {...}` unwrapped, `meta.fwd == D && ` dropped, and
+  the read-direction `else` branch removed."""
+  out, skip = [], 0
+  for line in lines:
+    if re.fullmatch(r"if \(meta\.fwd == [01]\) \{", line):
+      skip += 1
+      continue
+    if skip and line == "} else {":
+      out.append("ELSE")
+      continue
+    out.append(re.sub(r"meta\.fwd == [01] && ", "", line))
+  if "ELSE" in out:  # drop from the else marker to its closing brace
+    start = out.index("ELSE")
+    out = out[:start] + out[start + 3:]
+  elif skip:
+    # the unwrapped if's closing brace: the first "}" after the last statement
+    # that belonged inside it is the one directly before `rv = value;`
+    closing = len(out) - 1 - out[::-1].index("}", 1)
+    out = out[:closing] + out[closing + 1:]
+  return out
+
+
+@pytest.mark.parametrize("body_kind", sorted(bps._REGISTER_ACTION_BODIES))
+def test_direction_read_template_updates_as_the_literal_body(body_kind):
+  literal = _normalize(bps._REGISTER_ACTION_BODIES[body_kind].format(width=16, name="x"))
+  for owner in (0, 1):
+    template = _normalize(bps._DIRECTION_READ_BODIES[body_kind].format(
+        width=16, name="x", owner=owner))
+    assert template[0] == literal[0]  # the apply(...) signature
+    assert sum("meta.fwd == %d" % owner in line for line in template) == 1
+    assert "meta.fwd == %d" % (1 - owner) not in "\n".join(template)
+    assert _without_direction_test(template) == literal, (body_kind, owner)
+
+
+def test_direction_owned_bodies_test_their_own_direction():
+  _, actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
+  for name, (gate, body_kind) in _register_gates().items():
     body = _extract_action_body(actions, " " + name + "_action")
     if gate is None:
-      assert body == _extract_action_body(plain_actions, " " + name + "_action"), name
+      assert _normalize(body)[1:-1] == _normalize(
+          bps._REGISTER_ACTION_BODIES[body_kind].format(width=16, name=name))[1:-1], name
       assert "meta.fwd" not in body, name
     elif gate == "fwd":
       assert "meta.fwd == 1" in body and "meta.fwd == 0" not in body, name
@@ -818,10 +861,10 @@ def test_direction_reads_body_tests_fwd():
       assert "meta.fwd == 0" in body and "meta.fwd == 1" not in body, name
 
 
-def test_direction_reads_value_bodies_always_write_rv():
+def test_value_bodies_always_write_rv():
   """A value register's rv is written on every packet (rv = value outside the
   direction test), so every <f>_val field is written on every packet."""
-  _, actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES, direction_reads=True)
+  _, actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
   for entry in FEATURE_REGISTER_CATALOG.values():
     if entry.get("gated_by") is None:
       continue
@@ -831,13 +874,3 @@ def test_direction_reads_value_bodies_always_write_rv():
         assert body[-2:] == ["rv = value;", "}"], (reg["name"], body)
       else:
         assert any(line.startswith("rv = 0") for line in body), (reg["name"], body)
-
-
-def test_direction_reads_off_is_byte_identical():
-  import hashlib
-  for features, expected in _HEAD_REGISTER_TEXT_SHA256.items():
-    regs, actions, apply_code, _ = generate_P4_registers_and_apply(
-        {f: None for f in features}, direction_reads=False)
-    assert hashlib.sha256((regs + actions + apply_code).encode()).hexdigest() == expected, features
-    assert generate_P4_registers_and_apply({f: None for f in features}) == \
-        generate_P4_registers_and_apply({f: None for f in features}, direction_reads=False)

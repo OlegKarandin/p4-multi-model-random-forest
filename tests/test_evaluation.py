@@ -1083,24 +1083,17 @@ def test_readiness_levels_for_real_dataset_feature_names():
     a real catalog entry too (Task 9): bwd-gated (+1) with a dependency
     register (bwd_last_arrival_time) plus its own value register (+2).
 
-    Bwd.IAT.Min is a level LATER than the symmetric Fwd.IAT.Max, and the
-    asymmetry is real: generate_P4_registers_and_apply emits
-    `if (meta.fwd == 1) { ... }` before `if (meta.fwd == 0) { ... }`, and
-    p4c's placer cannot reach the second block until the first is fully
-    placed (see register_stage_schedule's per-block floor). Chain depth alone
-    would report 6 for both.
-
-    With the meta.fwd pin (every program since 2026-11-09) p4c takes the
-    block with the deeper chain first; here the two tie (two registers each),
-    so the order stays fwd then bwd. Without the pin (fwd_pinned=False) it is
-    emission order whatever the chains."""
+    Since decisions 1a / 7.1 option B (2026-11-14) there are no gated blocks,
+    so Bwd.IAT.Min and the symmetric Fwd.IAT.Max get the same level (chain
+    depth 6 each): one register schedule, no block order. (p4c also orders
+    the dependency registers' writes of meta.current_iat, which the schedule
+    does not model -- register_stage_schedule's docstring.)"""
     feature_intervals = {
         "Fwd.IAT.Max": [(0, 10), (11, 65535)],
         "Flow.IAT.Max": [(0, 20), (21, 65535)],
         "Bwd.IAT.Min": [(0, 30), (31, 65535)],
     }
-    assert ev.readiness_levels_for(feature_intervals, fwd_pinned=False) == [6, 5, 7]
-    assert ev.readiness_levels_for(feature_intervals) == [6, 5, 7]
+    assert ev.readiness_levels_for(feature_intervals) == [6, 5, 6]
 
 
 def test_crossbar_stages_needed_separates_tables_by_readiness_level():
@@ -1631,49 +1624,37 @@ def test_readiness_levels_are_independent_of_feature_order():
 
 def test_readiness_levels_schedule_both_models_registers_on_one_pipeline():
     # Under 'disjoint' each model keeps its own intervals, but there is only
-    # ONE register block and one set of stateful ALUs: a register a feature
+    # ONE register sequence and one set of stateful ALUs: a register a feature
     # needs is emitted once however many models select that feature
     # (register_names_for dedupes by name). So the levels for one model's
     # features have to be read off a schedule built from the UNION -- pricing
     # each model's registers against a private pipeline would understate the
     # pressure whenever the two models select different features.
-    #
-    # The app features here are bwd-gated and the ddos ones fwd-gated on
-    # purpose: `if (meta.fwd == 0)` is emitted after `if (meta.fwd == 1)`, so
-    # the other model's registers push this one's whole block later, which is
-    # ALU pressure and control-flow order compounding rather than either
-    # alone. That emission order is a program without the meta.fwd pin
-    # (fwd_pinned=False); with the pin the gated block with the deeper chain
-    # goes first.
+    # The other model's (later-listed) registers win the ALU ties, so this
+    # one's value registers spill a stage.
     app = {"bwd_iat_max": [(0, 5)], "bwd_iat_mean": [(0, 5)]}
     ddos = {"fwd_iat_max": [(0, 5)], "fwd_iat_min": [(0, 5)],
             "fwd_iat_mean": [(0, 5)], "fwd_packet_length_max": [(0, 5)],
             "fwd_packet_length_min": [(0, 5)], "fwd_packet_length_mean": [(0, 5)]}
     union = list(app) + list(ddos)
 
-    alone = ev.readiness_levels_for(app, fwd_pinned=False)
-    together = ev.readiness_levels_for(app, emitted_features=union, fwd_pinned=False)
+    alone = ev.readiness_levels_for(app)
+    together = ev.readiness_levels_for(app, emitted_features=union)
 
     assert len(together) == len(app)
     assert max(together) > max(alone)
 
 
 # ---------------------------------------------------------------------------
-# Mechanism B: a gated register sub-block starves the table pools that follow
-# it. Tofino has no program counter -- each table hands the next stage a
-# next-table pointer -- so p4c's placer walks the control block with a work-
-# list CURSOR, and a table is a placement candidate only once the cursor
-# reaches it. generate_P4_registers_and_apply emits the unconditional
-# registers, then `if (meta.fwd == 1) {...}`, then `if (meta.fwd == 0) {...}`,
-# and every match table AFTER both blocks. While the cursor is inside a gated
-# block, those tables are out of reach. See reviews/p4_tofino_reference.md
-# Sec 7, "Residual root-caused -- Mechanisms A/B/C".
+# One register sequence (decisions 1a / 7.1 option B, 2026-11-14). The gated
+# register blocks, their order, the cursor floor between them and the
+# "interior" stages no table could use (Mechanism B) are gone: every register
+# is one candidate of one list schedule.
 # ---------------------------------------------------------------------------
 
-_BLOCK_ORDER_CATALOG = {
-    # One fwd-gated feature whose three-register chain necessarily spans three
-    # stages, and one bwd-gated leaf that could run in the very first of them
-    # if the placer were free to reorder across the two `if` blocks.
+_CHAIN_CATALOG = {
+    # One fwd-owned feature whose three-register chain necessarily spans three
+    # stages, and one bwd-owned leaf that can run in the very first of them.
     "fwd_chain": {"registers": [
         {"name": "fwd_a", "role": "dependency", "width": 16, "body": "iat"},
         {"name": "fwd_b", "role": "dependency", "width": 16, "body": "iat"},
@@ -1685,33 +1666,16 @@ _BLOCK_ORDER_CATALOG = {
 }
 
 
-def test_register_schedule_orders_the_gated_blocks_against_each_other():
-    # The cursor is a SEQUENCE position: it only reaches `if (meta.fwd == 0)`
-    # once the preceding `if (meta.fwd == 1)` block is fully placed. bwd_a's
-    # own dependency chain is one register deep and stages 4 and 5 have three
-    # free ALUs each, so nothing but that ordering keeps it out of them.
-    placed = ev.register_stage_schedule(list(_BLOCK_ORDER_CATALOG),
-                                        catalog=_BLOCK_ORDER_CATALOG)
+def test_register_schedule_has_no_block_order():
+    # The gated program held bwd_a behind the whole fwd block (stage 6); now it
+    # waits only for the orientation register (stage 3).
+    placed = ev.register_stage_schedule(list(_CHAIN_CATALOG), catalog=_CHAIN_CATALOG)
 
     assert [placed["fwd_a"], placed["fwd_b"], placed["fwd_c"]] == [4, 5, 6]
-    assert placed["bwd_a"] == 6
+    assert placed["bwd_a"] == 4
 
 
-def test_gated_block_spanning_three_stages_has_one_interior_stage():
-    # fwd_a/fwd_b/fwd_c occupy stages 4, 5 and 6. Stage 4 is where the placer
-    # DESCENDS into the block (outer tables can still be back-filled there)
-    # and stage 6 is where it POPS OUT (free again). Only stage 5 is fully
-    # interior, and nothing after the block can enter it.
-    interior = ev.gated_block_interior_stages(list(_BLOCK_ORDER_CATALOG),
-                                               catalog=_BLOCK_ORDER_CATALOG)
-
-    assert interior == frozenset({5})
-
-
-def test_gated_block_spanning_two_stages_costs_nothing():
-    # Descend and pop out with no stage in between. This is what keeps the
-    # penalty from being a flat per-gated-block constant: on the calibration
-    # sample the `if (meta.fwd == 0)` block usually spans exactly two stages.
+def test_a_two_register_chain_spans_two_stages():
     catalog = {"fwd_pair": {"registers": [
         {"name": "fwd_a", "role": "dependency", "width": 16, "body": "iat"},
         {"name": "fwd_b", "role": "value", "width": 16, "body": "running_max_iat"},
@@ -1719,46 +1683,6 @@ def test_gated_block_spanning_two_stages_costs_nothing():
 
     placed = ev.register_stage_schedule(list(catalog), catalog=catalog)
     assert [placed["fwd_a"], placed["fwd_b"]] == [4, 5]
-    assert ev.gated_block_interior_stages(list(catalog), catalog=catalog) == frozenset()
-
-
-def test_ungated_registers_never_make_a_stage_interior():
-    # The unconditional registers sit in the OUTER sequence, so the cursor is
-    # never "inside" anything while placing them and a following table can
-    # share their stage. Only a gated `if` block hides the rest of the program.
-    catalog = {
-        "chain": {"registers": [
-            {"name": "a", "role": "dependency", "width": 16, "body": "iat"},
-            {"name": "b", "role": "dependency", "width": 16, "body": "iat"},
-            {"name": "c", "role": "value", "width": 16, "body": "running_max_iat"},
-        ], "gated_by": None},
-    }
-    assert ev.gated_block_interior_stages(list(catalog), catalog=catalog) == frozenset()
-
-
-def test_packer_refuses_to_place_a_table_in_an_interior_stage():
-    # The stage is not full -- it is unreachable. In independent_high_sd10's
-    # empty stage 5 the TCAM is 0/24, the ternary crossbar 0/66 and the
-    # logical table IDs 4/16; the table simply is not a candidate yet.
-    specs, levels = [(1, 4)], [3]
-
-    assert ev.crossbar_stages_needed(specs, readiness_levels=levels).indices == frozenset({3})
-    pushed = ev.crossbar_stages_needed(specs, readiness_levels=levels,
-                                        unavailable_stages=frozenset({3}))
-    assert pushed.indices == frozenset({4})
-    assert pushed.depth == 5
-
-
-def test_interior_stage_below_a_tables_readiness_level_costs_nothing():
-    # A gated block that finishes before the pool's first table could have
-    # been placed anyway changes nothing -- which is why two of the five
-    # calibration rows carrying an interior stage show a gap of +0. The
-    # mechanism has to produce that for free; a flat penalty cannot.
-    specs, levels = [(1, 4)], [7]
-
-    blocked = ev.crossbar_stages_needed(specs, readiness_levels=levels,
-                                         unavailable_stages=frozenset({5}))
-    assert blocked.indices == frozenset({7})
 
 
 def test_stage_depth_counts_the_vote_epilogue_stage():
@@ -1900,7 +1824,7 @@ def test_ternary_key_field_bits_reports_every_code_field_width():
 
 POOL_KEYS = {
     "range_table_specs", "ternary_table_specs", "range_levels", "range_fields",
-    "ternary_fields", "ternary_key_bits", "ternary_key_slices", "interior_stages",
+    "ternary_fields", "ternary_key_bits", "ternary_key_slices",
     "emitted_features",
     "register_names", "range_entries", "range_blocks", "ternary_entries",
     "codeword_length", "range_task", "ternary_task",
@@ -1997,7 +1921,6 @@ def _c1_pool(range_task, range_levels, ternary_task, tree_blocks):
         "range_fields": range_fields,
         "ternary_fields": [keys[task == APP_TASK] for task in ternary_task],
         "ternary_key_bits": [(40,)] * len(ternary_task),
-        "interior_stages": frozenset(),
         "register_names": (),
         "range_entries": 0,
         "range_blocks": len(range_levels),

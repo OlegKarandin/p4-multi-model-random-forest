@@ -37,19 +37,11 @@ VOTE_EPILOGUE_STAGES = 1
 # meta.fwd. generate_P4_registers_and_apply emits its .execute() call
 # UNCONDITIONALLY into the apply block (build_p4_script.py:2092), not just
 # when a gated feature is selected, so it always claims one stateful ALU in
-# the first register stage and every fwd-/bwd-gated register waits a stage on
-# it. It lives outside FEATURE_REGISTER_CATALOG (no feature owns it), so the
-# schedule has to add it by hand.
+# the first register stage and every fwd-/bwd-owned register (whose body tests
+# meta.fwd, decisions 1a / 7.1 option B) waits a stage on it. It lives outside
+# FEATURE_REGISTER_CATALOG (no feature owns it), so the schedule has to add it
+# by hand.
 ORIENTATION_REGISTER = "flow_forward_srcaddr"
-
-# The order generate_P4_registers_and_apply lays the RegisterAction .execute()
-# call sites down in: the unconditional ones straight into the apply block,
-# then `if (meta.fwd == 1) { ... }`, then `if (meta.fwd == 0) { ... }`
-# (build_p4_script.py's three _execute_lines calls, in exactly this order).
-# It is a real ordering, not a presentation choice: p4c's table placer walks
-# the control block with a work-list CURSOR, so it cannot begin the second
-# gated block before the first one is fully placed.
-REGISTER_BLOCK_ORDER = (None, "fwd", "bwd")
 
 # The two classification tasks this program serves, spelled exactly as the
 # generator spells them in table names (get_classification_tree_app_3,

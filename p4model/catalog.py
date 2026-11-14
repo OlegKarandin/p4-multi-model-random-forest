@@ -60,12 +60,16 @@ FEATURE_REGISTER_CATALOG maps a lowercase feature name to:
         ...
     ],
     "gated_by": None | "fwd" | "bwd",
-        # None: this feature's registers are touched unconditionally
+        # None: this feature's registers update on every packet
         #   (whole-flow feature).
-        # "fwd": this feature's registers are only touched when
+        # "fwd": this feature's registers update only when
         #   meta.fwd == 1 (forward-direction-only feature).
-        # "bwd": this feature's registers are only touched when
-        #   meta.fwd == 0 (backward-direction-only feature). Support for
+        # "bwd": this feature's registers update only when
+        #   meta.fwd == 0 (backward-direction-only feature).
+        # Since decisions 1a / 7.1 option B (2026-11-14) every register is
+        #   executed on every packet; a fwd/bwd register tests meta.fwd in its
+        #   own body and only reads in the other direction
+        #   (build_p4_script._DIRECTION_READ_BODIES). Support for
         #   this gate class was added in Task 6 (see
         #   generate_P4_registers_and_apply in build_p4_script.py) and
         #   validated by compiling p4/tofino_spike/tna_m3_bwd_gate_spike.p4

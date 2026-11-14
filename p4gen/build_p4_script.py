@@ -1607,8 +1607,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
                       use_default_action_discount=False,
                       selected_features_app=None, selected_features_ddos=None,
                       config: "p4_gen_config.P4GenConfig" = None,
-                      entries_filename=None, encoding=JOINT_ENCODING,
-                      direction_reads=False):
+                      entries_filename=None, encoding=JOINT_ENCODING):
   """The two-task program (spec 2026-10-11 compatibility wrapper):
   generate_p4_program with TaskSpecs in the order (ddos, app), which gives
   the C5 priorities ddos 2 / app 1 and today's program text byte for byte.
@@ -1629,8 +1628,7 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   return generate_p4_program(
       tasks, output_dir=output_dir, output_filename=output_filename,
       match_type=match_type, use_default_action_discount=use_default_action_discount,
-      config=config, entries_filename=entries_filename, encoding=encoding,
-      direction_reads=direction_reads)
+      config=config, entries_filename=entries_filename, encoding=encoding)
 
 
 class _Forest:
@@ -1643,8 +1641,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                         output_filename='p4_code_RF_models.p4',
                         match_type='ternary', use_default_action_discount=False,
                         config: "p4_gen_config.P4GenConfig" = None,
-                        entries_filename=None, encoding=JOINT_ENCODING,
-                        direction_reads=False):
+                        entries_filename=None, encoding=JOINT_ENCODING):
   """One P4 program serving every task in `tasks` (Sequence[TaskSpec], N >= 1,
   spec 2026-10-11). Task order sets @placement_priority (task i of N gets
   N - i, every range table N + 1, program.range_table_priority); the program
@@ -1847,6 +1844,10 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # that compiled both ways and one stage lower on one, blocks the same on
   # 269 of 271 (+2 on two); PHV containers unchanged on the 45 checked. Report
   # results/encoding_evidence_2026_11/model3/report.md, "I1b follow-up".
+  # Since decisions 1a / 7.1 option B (2026-11-14) there are no gated blocks
+  # (every register body reads meta.fwd instead); the pin stays, and the model
+  # no longer reads it. Whether it still matters is tested separately
+  # (design review K7, 3.1).
   phv_pragmas += '@pa_no_overlay("ingress", "ig_md.fwd")\n'
   for task in program_tasks:
     name, bits = task.name, bit_per_classes[task.name]
@@ -2000,7 +2001,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # a raw value register must not be generated twice just because two
   # resolved entries share it.
   registers_code, register_actions_code, feature_update_apply_code, resolved = (
-      generate_P4_registers_and_apply(raw_feature_intervals, direction_reads=direction_reads))
+      generate_P4_registers_and_apply(raw_feature_intervals))
 
   # F2: a feature with no FEATURE_REGISTER_CATALOG entry is silently skipped
   # by generate_P4_registers_and_apply above, but everything else in this
@@ -2288,15 +2289,19 @@ _REGISTER_ACTION_BODIES = {
   ),
 }
 
-# Decision 7.1 option B (generate_P4_registers_and_apply(direction_reads=True)):
-# the body of a direction-owned register, one template per body kind,
-# formatted with owner = 1 (fwd-owned) or 0 (bwd-owned). In the owner's
-# direction it updates exactly as the _REGISTER_ACTION_BODIES literal above;
-# in the other it leaves `value` unchanged and only reads it (`rv = value`), so
-# every <feature>_val field is written on every packet. A dependency
-# (iat_delta) register returns 0 in the read direction: its only reader there
-# is its chain's value register, which ignores meta.current_iat on that
-# packet. Ungated registers keep the literal bodies above.
+# Decisions 1a / 7.1 option B (2026-11-14): the body of a direction-owned
+# register (catalog gated_by "fwd" or "bwd"), one template per body kind,
+# formatted with owner = 1 (fwd-owned) or 0 (bwd-owned). Every register's
+# .execute() runs on every packet (there are no `if (meta.fwd == ...)` blocks
+# in the apply block). In the owner's direction the body updates exactly as
+# the _REGISTER_ACTION_BODIES literal above; in the other it leaves `value`
+# unchanged and only reads it (`rv = value`), so every <feature>_val field is
+# written on every packet. A dependency (iat_delta) register returns 0 in the
+# read direction: its only reader there is its chain's value register, which
+# ignores meta.current_iat on that packet. Ungated registers keep the literal
+# bodies above. Probe 7.1 (results/encoding_evidence_2026_11/model8/impl/
+# probe_7_1.md): p4c accepts every template; each costs one more SALU
+# instruction (the meta.fwd compare) and no stage.
 _DIRECTION_READ_BODIES = {
   "iat_delta": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
@@ -2393,8 +2398,9 @@ def _register_action_declaration(name, width, body_kind, owner=None):
   # `name=name` is only consumed by body kinds that reference an
   # extra-declaration identifier of their own (e.g. "mathunit_ewma"'s
   # `{name}_halve_unit`); body kinds that don't reference `{name}` simply
-  # ignore the extra format() kwarg. owner: None for the literal body, else
-  # the owner direction's meta.fwd value (_DIRECTION_READ_BODIES).
+  # ignore the extra format() kwarg. owner: None for the literal body (an
+  # ungated register), else the owner direction's meta.fwd value
+  # (_DIRECTION_READ_BODIES).
   if owner is None:
     body = _REGISTER_ACTION_BODIES[body_kind].format(width=width, name=name)
   else:
@@ -2406,15 +2412,16 @@ def _register_action_declaration(name, width, body_kind, owner=None):
   ).format(width=width, name=name, body=body)
 
 
-def generate_P4_registers_and_apply(feature_intervals, catalog=None, direction_reads=False):
+def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   """
-  direction_reads (decision 7.1 option B): when True, there are no
-  `if (meta.fwd == ...)` blocks. Every register's `.execute()` is emitted
-  unconditionally, in the same order as below (ungated, then fwd-gated, then
-  bwd-gated features, first-seen dedup), and each direction-owned register
-  gets a _DIRECTION_READ_BODIES body that updates only in its own direction
-  and only reads in the other. Ungated registers keep their literal bodies.
-  False (the default) emits exactly the gated program described below.
+  Decisions 1a / 7.1 option B (2026-11-14): there are no `if (meta.fwd ==
+  ...)` blocks. Every register's `.execute()` is emitted unconditionally, at
+  the apply block's outer indent, in the order ungated features, then
+  fwd-owned (catalog gated_by "fwd"), then bwd-owned features, first-seen
+  dedup; each direction-owned register gets a _DIRECTION_READ_BODIES body
+  that updates only in its own direction and only reads in the other, so
+  every <feature>_val field is written on every packet. Ungated registers
+  keep their literal bodies. "gated" below means direction-owned.
 
   Resolve a selected feature set to the TNA registers, RegisterActions, and
   per-packet update logic needed for Milestone 1's flow- and IAT-tracking
@@ -2492,10 +2499,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None, direction_r
     - feature_update_apply_code: the per-packet apply-block snippet: the
       hash-calc and (conditionally) timestamp calls, the single
       flow_orientation_action touch, then each *distinct register name*'s
-      `.execute()` call -- gated
-      inside `if (meta.fwd == 1) { ... }` for features whose catalog entry
-      says `"gated_by": "fwd"`, or inside a sibling `if (meta.fwd == 0) { ... }`
-      block for features whose catalog entry says `"gated_by": "bwd"` -- and
+      `.execute()` call, unconditionally (a `"gated_by": "fwd"` / `"bwd"`
+      register tests meta.fwd inside its own body instead) -- and
       assignment of each "value" register's
       result into `meta.<feature_lower>_val` (e.g. `meta.flow_iat_max_val`,
       matching the spike's `metadata_t` field naming; a "dependency"
@@ -2557,8 +2562,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None, direction_r
   (only None, "fwd", and "bwd" are implemented). Raises ValueError if a
   register name is shared by features in different gate classes -- e.g.
   one feature's entry lists it ungated and another's lists it "fwd" --
-  which would make it get `.execute()`d inside one gated block and read as
-  garbage from the other; see the cross-gate register-sharing hazard guard
+  which would give it one direction's body and feed the other class a
+  value that only that direction updates; see the cross-gate register-sharing hazard guard
   below for the full explanation. (An earlier design also capped the
   number of real, deduplicated `.execute()` call sites a single register
   could accumulate, on the theory a register might someday need more than
@@ -2640,12 +2645,13 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None, direction_r
   # fwd-gated, then bwd-gated -- sharing one `already_executed_registers`
   # set, so whichever call reaches a register name FIRST is the one that
   # actually emits its .execute() call site; every later call for that same
-  # name is a no-op that assumes the value was already produced. If a
-  # register were first executed inside a gated block (say, only for
-  # meta.fwd == 1 packets) and then reused by a feature in a DIFFERENT gate
-  # class (say, an ungated feature, or a meta.fwd == 0 feature), packets
-  # that skip the first block would read a garbage/unset register value.
-  # Catch that at generation time instead of emitting silently-wrong P4.
+  # name is a no-op that assumes the value was already produced. A register's
+  # body is chosen by its FIRST feature's gate class (a fwd-owned register
+  # updates only on meta.fwd == 1 packets, _DIRECTION_READ_BODIES), so a
+  # register reused by a feature in a DIFFERENT gate class (say, an ungated
+  # feature, or a bwd-owned one) would hand that feature a value only the
+  # other direction updates. Catch that at generation time instead of
+  # emitting silently-wrong P4.
   # This is the guard that actually protects register-sharing correctness
   # here -- an earlier "touch-count" guard (deleted; see git history) tried
   # to bound how many real .execute() call sites a single register could
@@ -2662,8 +2668,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None, direction_r
       if previous != gate:
         raise ValueError(
             "register {!r} is shared by features in different gate classes "
-            "({!r} and {!r}); it would be .execute()d inside one gated block and "
-            "read as garbage from the other. Promote it to an ungated register "
+            "({!r} and {!r}); its body would update in one gate class's direction "
+            "and be read as garbage by the other. Promote it to an ungated register "
             "or give each gate class its own.".format(reg["name"], previous, gate))
 
   # ---- /* REGISTERS */ ----
@@ -2724,7 +2730,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None, direction_r
     extra_declaration = _EXTRA_ACTION_DECLARATIONS.get(info["body"])
     if extra_declaration is not None:
       register_actions_code += "\n" + extra_declaration.format(width=info["width"], name=name)
-    owner = _DIRECTION_OWNER.get(info["gated_by"]) if direction_reads else None
+    owner = _DIRECTION_OWNER.get(info["gated_by"])
     register_actions_code += "\n" + _register_action_declaration(
         name, info["width"], info["body"], owner=owner)
 
@@ -2775,18 +2781,14 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None, direction_r
 
   apply_lines += _execute_lines(ungated_features, "\t\t\t")
 
-  for features, owner in ((fwd_gated_features, 1), (bwd_gated_features, 0)):
+  # Decisions 1a / 7.1 option B: the direction-owned call sites follow at the
+  # same outer indent, unconditionally; the direction test lives in each
+  # register's body (_DIRECTION_READ_BODIES).
+  for features in (fwd_gated_features, bwd_gated_features):
     if not features:
       continue
     apply_lines.append("")
-    if direction_reads:
-      # Option B: the same call sites, in the same order, at the outer
-      # indent; the direction test lives in each register body.
-      apply_lines += _execute_lines(features, "\t\t\t")
-    else:
-      apply_lines.append("\t\t\tif (meta.fwd == {}) {{".format(owner))
-      apply_lines += _execute_lines(features, "\t\t\t\t")
-      apply_lines.append("\t\t\t}")
+    apply_lines += _execute_lines(features, "\t\t\t")
 
   apply_code = "\n".join(apply_lines) + "\n"
 

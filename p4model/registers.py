@@ -2,25 +2,24 @@
 Register<> runs in, and the readiness levels every match table is placed
 against.
 
-Three constraints drive the schedule, and none of them is a capacity limit:
+Two constraints drive the schedule:
 
   * A stage has 4 stateful ALUs (`METER_ALUS_PER_STAGE`), and every emitted
     RegisterAction holds one for a whole stage -- so 16-20 registers need
     ceil(n/4) stages regardless of how deep any single feature's dependency
     chain runs.
-  * Registers are emitted unconditional -> `if (meta.fwd == 1)` ->
-    `if (meta.fwd == 0)` (REGISTER_BLOCK_ORDER), and p4c's placer has one
-    work-list cursor, so each block is floored at the last stage the
-    previous one used. In a program that pins meta.fwd (every one since
-    2026-11-09) the gated block with the deeper chain goes first, ties in
-    that order (register_stage_schedule), so on a tie a bwd-gated feature
-    still prices one stage later than the symmetric fwd-gated one.
-  * A stage the cursor spends fully INTERIOR to a gated block can hold no
-    table from the outer sequence (`gated_block_interior_stages`): the
-    cursor is not "inside" anything while placing the outer sequence's
-    unconditional tables, but every stage strictly between where it enters
-    and leaves a gated block is unreachable regardless of how empty it is.
-    There is no range-pool fill limit; do not look for one.
+  * A register runs only after the register it waits on (its chain
+    predecessor, or the orientation register for the first register of a
+    direction-owned chain, whose body reads meta.fwd).
+
+Since decisions 1a / 7.1 option B (2026-11-14) the generator emits every
+RegisterAction unconditionally, in ONE sequence (a direction-owned register
+tests meta.fwd inside its body), so the schedule is one list schedule over all
+registers. The gated-block apparatus it replaced -- the block order, the
+cursor floor between blocks and the "interior" stages no table could use
+(inventory S6-S8, reviews/p4_tofino_reference.md Mechanism B) -- is gone with
+the blocks; a program that still carries them is refused by the replay
+(p4_replay.parse_program_text).
 
 Every per-flow register is indexed by meta.flow_hash, so `FLOW_HASH_LEVEL`
 (defined in program.py) is the earliest stage any RegisterAction can run --
@@ -30,7 +29,7 @@ import collections
 
 from p4model.catalog import FEATURE_REGISTER_CATALOG
 from p4model.names import normalise_feature_name
-from p4model.program import FLOW_HASH_LEVEL, ORIENTATION_REGISTER, REGISTER_BLOCK_ORDER
+from p4model.program import FLOW_HASH_LEVEL, ORIENTATION_REGISTER
 from p4model.target import METER_ALUS_PER_STAGE
 
 
@@ -39,9 +38,9 @@ def feature_readiness_level(feature_name, catalog=None):
   its range-matching table -- can possibly be placed.
 
     level = FLOW_HASH_LEVEL
-          + 1 if the feature is fwd- or bwd-gated (flow_orientation_action has
-            to resolve meta.fwd before the gated block can run, regardless of
-            which direction the gate checks)
+          + 1 if the feature is fwd- or bwd-owned (flow_orientation_action has
+            to resolve meta.fwd before a register body that tests it can run,
+            regardless of which direction it tests)
           + one per RegisterAction in the feature's chain
 
   Each chain entry is a genuinely sequential stage: a "dependency" register
@@ -73,121 +72,85 @@ def feature_readiness_level(feature_name, catalog=None):
   return FLOW_HASH_LEVEL + gate_cost + len(entry["registers"])
 
 
-def _register_blocks(features, catalog):
-  """(register name -> which of REGISTER_BLOCK_ORDER's blocks emits it,
-  register name -> the register it waits on).
+def _register_chains(features, catalog):
+  """register name -> the register it waits on (None for none), every
+  register the generator emits for `features` plus the orientation register.
 
-  Walks the features once per block, which is what
-  generate_P4_registers_and_apply does -- it filters matched_features into
-  ungated/fwd-gated/bwd-gated lists and calls _execute_lines on each in turn,
-  sharing one already_executed_registers set. Grouping cannot change which
-  block claims a shared register: build_p4_script raises ValueError outright
-  for a register named by features in two different gate classes ("it would
-  be .execute()d inside one gated block and read as garbage from the other"),
-  so every register has exactly one well-defined block."""
-  gate = {ORIENTATION_REGISTER: None}
+  First writer wins, mirroring generate_P4_registers_and_apply's
+  already_executed_registers: a register shared between two features is
+  emitted once, at its first call site. That function emits the ungated
+  features' registers first, then the fwd-owned, then the bwd-owned ones;
+  which feature claims a shared register cannot depend on that order, because
+  build_p4_script raises ValueError for a register named by features in two
+  different gate classes, so the walk below is in `features` order."""
   predecessor = {ORIENTATION_REGISTER: None}
-  for block in REGISTER_BLOCK_ORDER:
-    for feature in features:
-      entry = catalog.get(normalise_feature_name(feature))
-      if entry is None:
-        continue
-      # An unrecognised gated_by is treated as ungated here rather than
-      # dropped -- build_p4_script raises RuntimeError for it, and this
-      # function must not silently price such a design as register-free.
-      gated_by = entry.get("gated_by")
-      if (gated_by if gated_by in ("fwd", "bwd") else None) != block:
-        continue
-      # First register of a gated chain waits on the orientation register:
-      # meta.fwd has to resolve before the block it guards can run.
-      previous = ORIENTATION_REGISTER if block in ("fwd", "bwd") else None
-      for register in entry["registers"]:
-        name = register["name"]
-        # First writer wins, mirroring already_executed_registers: a register
-        # shared between two features is emitted at its first call site.
-        if name not in gate:
-          gate[name] = block
-          predecessor[name] = previous
-        previous = name
-  return gate, predecessor
+  for feature in features:
+    entry = catalog.get(normalise_feature_name(feature))
+    if entry is None:
+      continue
+    # The first register of a direction-owned chain waits on the orientation
+    # register: its body tests meta.fwd. An unrecognised gated_by is treated
+    # as ungated here rather than dropped -- build_p4_script raises
+    # RuntimeError for it, and this function must not silently price such a
+    # design as register-free.
+    previous = (ORIENTATION_REGISTER if entry.get("gated_by") in ("fwd", "bwd")
+                else None)
+    for register in entry["registers"]:
+      name = register["name"]
+      if name not in predecessor:
+        predecessor[name] = previous
+      previous = name
+  return predecessor
 
 
 def register_stage_schedule(features, catalog=None,
                             alus_per_stage=METER_ALUS_PER_STAGE,
-                            dependents=None, fwd_pinned=True):
+                            dependents=None):
   """Register base name -> the pipeline stage its RegisterAction runs in, for
   the whole set of features whose registers the generator will emit.
 
-  REVISED 2026-11-08 (results/encoding_evidence_2026_11/per_tree_model2,
-  notes.md): Pass 4 below is a STAGE-BY-STAGE list schedule over the READY
-  registers, ranked the way p4c's placer ranks two candidates for one stage
-  (table_placement.cpp DecidePlacement::is_better, read in p4c's own
-  placement log): the longer dependence chain first ("longer downward prop
-  ... tail chain", the `height` below), then the one more trees depend on
-  ("fewer total dependencies in dominance frontier"), then the one listed
-  LATER in the program ("default choice"). `features` is in program order,
-  and `dependents` maps a feature (as spelled in `features`) to the number of
-  classification trees whose key reads that feature's code; a register's
-  dependents are the sum over the features it serves. Without `dependents`
-  every register ties there and the later-listed one goes first. Measured
-  (designs whose every register lands in p4c's stage, k>=9): per-tree
-  programs 37 -> 182 of 191, campaign_2026_11d independent 82 -> 296 of 300,
-  joint-task 65 -> 294 of 300. The level-first greedy it replaces let a
-  low-level register take a stage p4c gives to a ready higher-level one with
-  more dependents. The old docstring paragraphs below describe the floor and
-  the ALU cap, both unchanged.
-
-  fwd_pinned (2026-11-09): whether the program pins meta.fwd out of PHV
-  overlays, which every program the generator writes since then does. True:
-  the gated block with the deeper chain goes first, ties fwd then bwd
-  (Pass 4). False, for a
-  program generated before the pin (p4_replay reads which): emission order,
-  fwd then bwd -- there p4c's order follows an overlay edge the model cannot
-  see, and taking p4c's chain order anyway cost the 73-design calibration
-  archive 6 stage misses.
+  ONE list schedule over every register (decisions 1a / 7.1 option B,
+  2026-11-14: the generator emits no gated blocks, so there is no block order
+  and no cursor floor between blocks any more). Stage by stage, a register is
+  READY once its dependency level is reached (FLOW_HASH_LEVEL, +1 per chain
+  step) and its predecessor ran in an EARLIER stage; the ready registers take
+  the stage's `alus_per_stage` stateful ALUs in the order p4c's placer ranks
+  two candidates for one stage (table_placement.cpp DecidePlacement::
+  is_better, read in p4c's own placement log, 2026-11-08,
+  results/encoding_evidence_2026_11/per_tree_model2 notes.md): the longer
+  dependence chain first ("longer downward prop ... tail chain", the `height`
+  below), then the one more trees depend on ("fewer total dependencies in
+  dominance frontier"), then the one listed LATER in the program ("default
+  choice"), then the name. `features` is in program order, and `dependents`
+  maps a feature (as spelled in `features`) to the number of classification
+  trees whose key reads that feature's code; a register's dependents are the
+  sum over the features it serves. Without `dependents` every register ties
+  there and the later-listed one goes first.
 
   feature_readiness_level models a register chain's DEPTH -- how many stages
   a single feature's registers must run back to back. This models the
-  pipeline's register WIDTH, which is the constraint that actually binds at
-  campaign scale: only `alus_per_stage` RegisterActions can issue per stage,
-  so a design needing 16-20 registers cannot run them in the two or three
-  stages its dependency chains alone would allow. The compiler spills the
-  surplus forward and every range table keyed on a spilled register's output
-  slides with it.
+  pipeline's register WIDTH, which binds at campaign scale: only
+  `alus_per_stage` RegisterActions can issue per stage, so a design needing
+  16-20 registers cannot run them in the two or three stages its dependency
+  chains alone would allow. The compiler spills the surplus forward and every
+  range table keyed on a spilled register's output slides with it.
 
   Registers are emitted once however many features share them
-  (register_names_for dedupes by name, matching
-  generate_P4_registers_and_apply's `already_executed_registers` set), so a
-  shared register is scheduled once and both its features read the same
-  stage.
+  (register_names_for dedupes by name), so a shared register is scheduled
+  once and both its features read the same stage.
 
-  A greedy earliest-level-first list schedule, run once per _REGISTER_BLOCK_
-  ORDER block with each block floored at the last stage the previous one
-  used. That floor is the control-flow half of the story: p4c's placer holds
-  a single work-list cursor, so it only reaches `if (meta.fwd == 0)` once
-  `if (meta.fwd == 1)` is fully placed, and a bwd register cannot run in a
-  stage the fwd block has already moved past however many ALUs sit idle
-  there. Inside one block the placer IS free -- every register in it is a
-  candidate at once -- so the greedy runs unconstrained there.
-
-  Ties inside a level do move individual registers around, but never the
-  makespan -- the only quantity readiness levels take from this: verified
-  over 300 random feature-order shuffles of every calibration row, where the
-  last-register stage never moved. Measured against the 18 committed
-  placements, the makespan matches the compiler's own on EVERY row
-  (7,7,7,7,4,5,4,4,4,4,7,7,7,4,4,4,4,4), where chain depth alone reports 5 on
-  each of the six k>=13 rows. Adding the per-block floor left all 18 of those
-  intact while raising per-register agreement from 88 to 148 of 170, and it
-  is what makes gated_block_interior_stages exact -- see
-  reviews/p4_tofino_reference.md §4.6.
+  Not modelled: the dependency registers of different chains all write the
+  one scratch field meta.current_iat, which p4c orders (write after read) in
+  program order. See results/encoding_evidence_2026_11/model8/impl/log.md
+  (Task 2) for its measured effect on the probe 7.1 programs.
   """
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
 
-  # Pass 1: collect every register the generator will emit, which block emits
-  # it, and the register each one waits on -- its predecessor inside its own
-  # feature's chain, or the orientation register for a gated feature's first.
-  gate, predecessor = _register_blocks(features, catalog)
+  # Pass 1: every register the generator will emit and the register each one
+  # waits on -- its predecessor inside its own feature's chain, or the
+  # orientation register for a direction-owned feature's first.
+  predecessor = _register_chains(features, catalog)
 
   # Pass 2: dependency level (what feature_readiness_level already charges).
   def level_of(name, seen=()):
@@ -204,10 +167,9 @@ def register_stage_schedule(features, catalog=None,
   # Pass 3: how many stages of work still hang off each register. Standard
   # critical-path list scheduling: among registers ready in the same stage,
   # the one with the longest chain behind it goes first. It matters here for
-  # one register in particular -- ORIENTATION_REGISTER carries every gated
-  # feature's whole chain, so delaying it to make room for some leaf register
-  # would push that entire subtree back a stage. The compiler agrees: it sits
-  # in the first register stage in all 18 committed placements.
+  # one register in particular -- ORIENTATION_REGISTER carries every
+  # direction-owned feature's whole chain, so delaying it to make room for
+  # some leaf register would push that entire subtree back a stage.
   # A predecessor always has a strictly lower level than the register that
   # waits on it, so walking levels downward visits every child before its
   # parent and one pass suffices.
@@ -217,15 +179,7 @@ def register_stage_schedule(features, catalog=None,
     if parent is not None:
       height[parent] = max(height[parent], height[name] + 1)
 
-  # Pass 4: list schedule, one block at a time (the order below), one STAGE at
-  # a time inside a block. A register is ready in a stage once its level is
-  # reached and its predecessor ran in an EARLIER stage; the ready ones take
-  # the stage's free ALUs in p4c's order (docstring head): -height, -trees
-  # depending on it, later program position, then name so the result is a
-  # function of the arguments alone. `floor` carries the cursor forward: no
-  # register of a later block may precede the last stage an earlier one used.
-  # ALU load is shared across blocks -- there is one set of four stateful
-  # ALUs per stage, whichever block's register claims it.
+  # Pass 4: the list schedule, one STAGE at a time (docstring head).
   order = list(dict.fromkeys(features))
   served = collections.defaultdict(list)
   for position, feature in enumerate(order):
@@ -241,108 +195,31 @@ def register_stage_schedule(features, catalog=None,
             -max(positions, default=-1),
             name)
 
-  # Which gated block the cursor enters first (2026-11-09): the one whose
-  # deepest register chain is longer -- p4c's is_better ("longer tail chain")
-  # between the two gated blocks' first tables, read in its placement log --
-  # ties in emission order, fwd then bwd. Both blocks are candidates at once
-  # only because the generator pins ig_md.fwd out of PHV overlays
-  # (@pa_no_overlay): an overlay of fwd with a bwd register's value makes p4c
-  # add an edge holding the bwd block behind the fwd gateway
-  # (table_injected_deps.cpp, ANTI_NEXT_TABLE_METADATA), in 119 of the 272
-  # per-tree pilot compiles. With the pin, this order gives p4c's stage depth
-  # on all 272 recompiled pilot designs; ties to bwd instead gave 15 stage
-  # over-prices and 1 under at k>=9, emission order alone 3 under and 1 over
-  # (report results/encoding_evidence_2026_11/model3/report.md, "I1b
-  # follow-up"). The unconditional registers come first as before: they are
-  # the outer sequence.
-  block_height = {block: max((height[name] for name, owner in gate.items()
-                              if owner == block), default=-1)
-                  for block in REGISTER_BLOCK_ORDER}
-  gated = [block for block in REGISTER_BLOCK_ORDER if block is not None]
-  if fwd_pinned:
-    gated.sort(key=lambda block: (-block_height[block],
-                                  REGISTER_BLOCK_ORDER.index(block)))
-  placed, load, floor = {}, collections.Counter(), 0
-  for block in [None] + gated:
-    names = [name for name, owner in gate.items() if owner == block]
-    if not names:
-      continue
-    todo = set(names)
-    stage = max(floor, min(levels[name] for name in names))
-    # A register becomes ready at most len(gate) stages after the block
-    # starts unless its predecessor can never be placed (a catalog cycle,
-    # which level_of already tolerates); fail loudly instead of spinning.
-    limit = stage + len(gate) + max(levels.values()) + 1
-    while todo:
-      if stage > limit:
-        raise ValueError("register_stage_schedule: registers never become "
-                         "ready: %s" % sorted(todo))
-      ready = [name for name in todo
-               if levels[name] <= stage
-               and (predecessor.get(name) is None
-                    or placed.get(predecessor[name], stage) < stage)]
-      for name in sorted(ready, key=rank)[:max(0, alus_per_stage - load[stage])]:
-        placed[name] = stage
-        load[stage] += 1
-        todo.discard(name)
-      stage += 1
-    floor = max(placed[name] for name in names)
+  placed, load = {}, collections.Counter()
+  todo = set(levels)
+  stage = min(levels.values())
+  # A register becomes ready at most len(levels) stages after the first
+  # unless its predecessor can never be placed (a catalog cycle, which
+  # level_of already tolerates); fail loudly instead of spinning.
+  limit = stage + len(levels) + max(levels.values()) + 1
+  while todo:
+    if stage > limit:
+      raise ValueError("register_stage_schedule: registers never become "
+                       "ready: %s" % sorted(todo))
+    ready = [name for name in todo
+             if levels[name] <= stage
+             and (predecessor.get(name) is None
+                  or placed.get(predecessor[name], stage) < stage)]
+    for name in sorted(ready, key=rank)[:max(0, alus_per_stage - load[stage])]:
+      placed[name] = stage
+      load[stage] += 1
+      todo.discard(name)
+    stage += 1
   return placed
 
 
-def gated_block_interior_stages(features, catalog=None,
-                                alus_per_stage=METER_ALUS_PER_STAGE,
-                                dependents=None, fwd_pinned=True):
-  """The stage indices no match table can be placed in, because the placer
-  spends the whole of each of them inside a gated register block.
-
-  Tofino has no program counter: every table hands the next stage a
-  next-table pointer, so p4c's placer walks the control block with a work-
-  list cursor and a table is a placement candidate only once the cursor
-  reaches it. generate_P4_registers_and_apply emits the gated register blocks
-  BEFORE every match table, so while the cursor is inside `if (meta.fwd ==
-  1) { ... }` the entire range and classification pools are out of reach --
-  regardless of how empty the stage is. In independent_high_sd10's stage 5
-  the TCAM is 0/24, the ternary crossbar 0/66 and the logical table IDs 4/16.
-  This is a control-flow constraint, not a capacity one; there is no
-  range-pool fill limit.
-
-  A block costs a stage only where the cursor is fully INTERIOR to it. In the
-  stage the cursor descends into the block, outer tables can still be
-  back-filled (p4c logs them verbatim as "potential backfill ... before
-  tbl_prog951"), and in the stage it pops back out they are candidates
-  again -- so a block spanning stages [first, last] blocks exactly
-  range(first + 1, last), and a two-stage block costs nothing at all.
-
-  Measured against all 18 calibration rows: the range pool's committed
-  occupancy has a hole on exactly 5 of them, and this returns precisely those
-  holes -- right rows, right indices, nothing on the other 13. Two of the
-  five (independent_high_sd6, joint_high_sd8) still cost +0 stages overall
-  because their range tables were not going to occupy that stage anyway,
-  which is why the caller must apply this as a placement constraint and never
-  as a per-row penalty. See reviews/p4_tofino_reference.md Appendix B,
-  "Mechanism B"."""
-  if catalog is None:
-    catalog = FEATURE_REGISTER_CATALOG
-
-  gate, _ = _register_blocks(features, catalog)
-  placed = register_stage_schedule(features, catalog, alus_per_stage,
-                                   dependents=dependents, fwd_pinned=fwd_pinned)
-
-  interior = set()
-  for block in REGISTER_BLOCK_ORDER:
-    # The unconditional registers sit in the OUTER sequence; the cursor is
-    # never "inside" anything while placing them, so they hide nothing.
-    if block is None:
-      continue
-    stages = [placed[name] for name, owner in gate.items() if owner == block]
-    if len(stages) > 1:
-      interior.update(range(min(stages) + 1, max(stages)))
-  return frozenset(interior)
-
-
 def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None,
-                         dependents=None, fwd_pinned=True):
+                         dependents=None):
   """One readiness level per feature, positionally aligned with
   range_matching_resource_usage's range_table_specs (both follow
   feature_intervals iteration order).
@@ -356,17 +233,16 @@ def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None,
   emitted_features names the features whose registers the generator will
   actually emit, when that is a SUPERSET of feature_intervals. Under
   'disjoint' encoding each model keeps its own intervals but both share one
-  register block and one set of stateful ALUs, so each model's levels must be
+  register sequence and one set of stateful ALUs, so each model's levels must be
   read off a schedule built from the union; pricing a model against a private
   pipeline would understate the pressure. Defaults to feature_intervals
   itself, which is already the merged set on the 'joint' branch.
 
   dependents: {feature: trees reading its code}, handed to
-  register_stage_schedule (its tie order); None treats every register alike.
-  fwd_pinned: register_stage_schedule's, the gated blocks' order."""
+  register_stage_schedule (its tie order); None treats every register alike."""
   placed = register_stage_schedule(
       list(emitted_features if emitted_features is not None else feature_intervals),
-      catalog, dependents=dependents, fwd_pinned=fwd_pinned)
+      catalog, dependents=dependents)
   entries = FEATURE_REGISTER_CATALOG if catalog is None else catalog
 
   levels = []

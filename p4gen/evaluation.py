@@ -99,7 +99,6 @@ from p4model import tables as _tables
 from p4model import lanes, packed
 from p4model.registers import (
     feature_readiness_level,
-    gated_block_interior_stages,
     readiness_levels_for,
     register_stage_schedule,
 )
@@ -606,16 +605,6 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
         "multi_model_memory_evaluation: unknown encoding {!r}; "
         "expected one of {}".format(encoding, ENCODINGS))
 
-  # interior_stages depends on gated_block_interior_stages
-  # (p4model.registers), so it is computed here rather than in
-  # assemble_usage: assemble_usage is deliberately import-light (no
-  # registers, no catalog, no sklearn -- see its own docstring), and pooling
-  # this value is what lets it stay that way while still packing both pools
-  # dependency-aware. See assemble_usage's Mechanism B comment for why the
-  # value itself matters.
-  interior_stages = gated_block_interior_stages(emitted_features,
-                                                dependents=dependents)
-
   # ternary_blocks (the naive per-table sum each branch computed above) is
   # deliberately NOT one of the 15 keys below -- see this function's own
   # docstring.
@@ -629,7 +618,6 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       "ternary_fields": ternary_fields,
       "ternary_key_bits": ternary_key_bits,
       "ternary_key_slices": ternary_key_slices,
-      "interior_stages": interior_stages,
       "emitted_features": emitted_features,
       "register_names": register_names,
       "range_entries": range_entries,

@@ -1,6 +1,7 @@
-"""The range pool's action-data bus budget and the gated register blocks' order (2026-11-09,
-report results/encoding_evidence_2026_11/model3/report.md, I1a and "I1b follow-up")."""
-import dataclasses
+"""The range pool's action-data bus budget (2026-11-09, report
+results/encoding_evidence_2026_11/model3/report.md, I1a) and the one-block register
+schedule (decisions 1a, 7.1 option B, 2026-11-14)."""
+import inspect
 import os
 
 import pytest
@@ -96,41 +97,57 @@ def test_training_and_replay_give_each_range_table_the_same_bus_bytes(tmp_path, 
   assert sorted(pool["range_action_bytes"]) == sorted(written[name] for name in ranges)
 
 
-# --- the gated register blocks' order -------------------------------------------------
+# --- the register schedule: one block (decisions 1a, 7.1 option B) ----------------------
 
-# fwd_iat_max and bwd_iat_min: each a dependency register plus a value register, so the two
-# gated blocks tie on chain depth; fwd_packet_length_max: one value register.
-_TIED = ["fwd_iat_max", "bwd_iat_min", "flow_iat_max"]
-_FWD_DEEPER = ["fwd_iat_max", "bwd_packet_length_max", "flow_iat_max"]
-_BWD_DEEPER = ["fwd_packet_length_max", "bwd_iat_min", "flow_iat_max"]
-
-
-def _last(placed, prefix):
-  return max(stage for name, stage in placed.items() if name.startswith(prefix))
-
-
-def test_tied_gated_blocks_keep_the_emission_order():
-  # p4c's stage depth on all 272 pinned pilot designs; ties to bwd over-priced 15 at k>=9
-  pinned = register_stage_schedule(_TIED)
-  assert pinned == register_stage_schedule(_TIED, fwd_pinned=False)
-  assert _last(pinned, "fwd") < _last(pinned, "bwd")
-
-
-def test_the_deeper_gated_block_goes_first():
-  # bwd deeper: first with the pin (fwd floored at its last stage), second in emission order
-  assert register_stage_schedule(_BWD_DEEPER) == {
-      "flow_forward_srcaddr": 3, "flow_last_arrival_time": 3, "flow_iat_max": 4,
-      "bwd_last_arrival_time": 4, "bwd_iat_min": 5, "fwd_packet_length_max": 5}
-  assert register_stage_schedule(_BWD_DEEPER, fwd_pinned=False) == {
-      "flow_forward_srcaddr": 3, "flow_last_arrival_time": 3, "flow_iat_max": 4,
-      "fwd_packet_length_max": 4, "bwd_last_arrival_time": 4, "bwd_iat_min": 5}
-  # fwd deeper: first either way
-  for fwd_pinned in (True, False):
-    placed = register_stage_schedule(_FWD_DEEPER, fwd_pinned=fwd_pinned)
-    assert _last(placed, "fwd") <= min(s for n, s in placed.items() if n.startswith("bwd"))
+def test_schedule_single_block():
+  from p4model import registers
+  from p4model.program import ORIENTATION_REGISTER
+  import p4model.program as program
+  # The block order, cursor floor and gated interiors are gone.
+  assert not hasattr(registers, "gated_block_interior_stages")
+  assert not hasattr(program, "REGISTER_BLOCK_ORDER")
+  for function in (registers.register_stage_schedule, registers.readiness_levels_for):
+    assert "fwd_pinned" not in inspect.signature(function).parameters
+  # fwd and bwd chains share stages: no bwd register waits for the fwd ones.
+  assert register_stage_schedule(["fwd_iat_max", "bwd_iat_max"]) == {
+      ORIENTATION_REGISTER: 3, "fwd_last_arrival_time": 4, "bwd_last_arrival_time": 4,
+      "fwd_iat_max": 5, "bwd_iat_max": 5}
+  # Four stateful ALUs per stage; ready registers ranked longer tail chain first, then
+  # more dependent trees, then later in program order (S5).
+  features = ["min_packet_length", "packet_length_mean", "max_packet_length", "flow_iat_max",
+              "fwd_packet_length_max"]
+  assert register_stage_schedule(features) == {
+      ORIENTATION_REGISTER: 3, "flow_last_arrival_time": 3, "max_packet_length": 3,
+      "packet_length_mean": 3, "min_packet_length": 4, "flow_iat_max": 4,
+      "fwd_packet_length_max": 4}
+  favoured = register_stage_schedule(features, dependents={"min_packet_length": 5})
+  assert favoured["min_packet_length"] == 3 and favoured["packet_length_mean"] == 4
 
 
-def test_the_replay_reads_the_order_from_the_programs_fwd_pin(tmp_path):
+def test_a_direction_owned_register_still_waits_for_the_orientation_register():
+  # Its body reads meta.fwd. Four ungated two-register chains with more dependents
+  # than the orientation register push it to the second register stage; the
+  # fwd-owned register follows it, one stage later.
+  from p4model.program import ORIENTATION_REGISTER
+  catalog = {"u%d" % i: {"registers": [{"name": "u%d_dep" % i}, {"name": "u%d_val" % i}],
+                         "gated_by": None} for i in range(4)}
+  catalog["g"] = {"registers": [{"name": "g_val"}], "gated_by": "fwd"}
+  features = ["g", "u0", "u1", "u2", "u3"]
+  placed = register_stage_schedule(features, catalog=catalog,
+                                   dependents={"u%d" % i: 9 for i in range(4)})
+  assert placed[ORIENTATION_REGISTER] == 4
+  assert placed["g_val"] == 5
+  for features in (["fwd_iat_max", "bwd_packet_length_min", "flow_iat_min"],
+                   ["bwd_iat_mean", "fwd_packet_length_mean", "packet_length_mean"]):
+    placed = register_stage_schedule(features)
+    for feature in features:
+      entry = ev.FEATURE_REGISTER_CATALOG[feature]
+      if entry["gated_by"] is not None:
+        first = entry["registers"][0]["name"]
+        assert placed[first] > placed[ORIENTATION_REGISTER], (features, first)
+
+
+def test_the_model_ignores_the_programs_fwd_pin(tmp_path):
   app, ddos, names = _rng_design(2)
   joint = bps.get_joint_feature_intervals(app, names, ddos, names)
   path = bps.generate_P4_code(3, 2, app, ddos, feature_intervals_app=joint,
@@ -139,8 +156,29 @@ def test_the_replay_reads_the_order_from_the_programs_fwd_pin(tmp_path):
                               selected_features_app=names, selected_features_ddos=names)
   with open(path, encoding="utf-8") as handle:
     text = handle.read()
-  pinned = parse_program_text(text)
-  unpinned = parse_program_text(text.replace('@pa_no_overlay("ingress", "ig_md.fwd")\n', ""))
-  assert pinned.fwd_pinned and not unpinned.fwd_pinned
-  assert model_breakdown(unpinned) == model_breakdown(
-      dataclasses.replace(pinned, fwd_pinned=False))
+  pin = '@pa_no_overlay("ingress", "ig_md.fwd")\n'
+  assert pin in text
+  assert not hasattr(parse_program_text(text), "fwd_pinned")
+  assert model_breakdown(parse_program_text(text.replace(pin, ""))) == model_breakdown(
+      parse_program_text(text))
+
+
+def test_replay_refuses_a_gated_register_block():
+  # A program generated before decision 1a wrapped direction-owned registers'
+  # .execute() calls in `if (meta.fwd == 1) {...}` / `if (meta.fwd == 0) {...}`;
+  # the model no longer prices that placement.
+  text = ("control SwitchIngress() {\n\tapply {\n"
+          "\t\t\tmeta.fwd = flow_orientation_action.execute(meta.flow_hash);\n\n"
+          "\t\t\tif (meta.fwd == %d) {\n"
+          "\t\t\t\tmeta.current_iat = x_action.execute(meta.flow_hash);\n"
+          "\t\t\t}\n\t}\n}\n")
+  for owner in (0, 1):
+    with pytest.raises(ValueError, match="gated register block"):
+      parse_program_text(text % owner)
+  # a direction test inside a RegisterAction body is not a gated block
+  body = ("\tRegisterAction<bit<16>, bit<32>, bit<16>>(x_reg) x_action = {\n"
+          "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
+          "\t\t\tif (meta.fwd == 1) {\n"
+          "\t\t\t\tvalue = x_halve_unit.execute(value + meta.current_iat);\n"
+          "\t\t\t}\n\t\t\trv = value;\n\t\t}\n\t};\n")
+  parse_program_text(body)

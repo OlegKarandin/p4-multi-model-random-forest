@@ -276,23 +276,22 @@ def _row_chunks(idx, block_count, per_row, fields, bits, level, priority):
   return units
 
 
-def _ordered_stage_simulation(units, mode, unavailable_stages, seed_at,
-                              last_seed):
+def _ordered_stage_simulation(units, mode, seed_at, last_seed):
   """The classification pool's placement: p4c's table placer, stage by
   stage. At stage s, repeatedly take the FIRST remaining table, in the order
   (placement priority descending, then the table listed LAST first), whose
   level is <= s and that fits the stage as it now stands
   (_crossbar_stage_test in `mode`: 'fields' for keys of whole code fields,
   _field_units; 'packed' for packed per-tree keys, _packed_units); when none
-  does, move to s + 1. A stage in unavailable_stages is skipped.
+  does, move to s + 1.
   Returns ({stage index: [(unit, charge), ...]}, {table_idx: latest stage})."""
   return _place_in_order(
       units,
       lambda here, unit, seed: _crossbar_stage_test(here + [unit], seed, mode),
-      unavailable_stages, seed_at, last_seed)
+      seed_at, last_seed)
 
 
-def _place_in_order(units, admit, unavailable_stages, seed_at, last_seed):
+def _place_in_order(units, admit, seed_at, last_seed):
   """The ordered placement loop of _ordered_stage_simulation.
   `admit(here, unit, seed)` returns the charges of `here + [unit]` in
   placement order, or None when the stage holding `seed` refuses the unit."""
@@ -301,19 +300,16 @@ def _place_in_order(units, admit, unavailable_stages, seed_at, last_seed):
     return {}, {}
   placed, charges = {}, {}
   stage = min(unit.level for unit in remaining)
-  # Past every level, seed and unavailable stage, an empty stage takes any
+  # Past every level and seed, an empty stage takes any
   # remaining unit alone (one key, charged its own blocks, <= one stage wide),
   # so the loop always ends; the bound only turns a bug into an error.
   horizon = (max(unit.level for unit in remaining) + len(units)
-             + max(list(unavailable_stages) + [last_seed, 0]) + 2)
+             + max(last_seed, 0) + 2)
   while remaining:
     if stage > horizon:
       raise RuntimeError(
           "crossbar_stages_needed: %d classification table(s) could not be "
           "placed by stage %d" % (len(remaining), horizon))
-    if stage in unavailable_stages:
-      stage += 1
-      continue
     seed = seed_at(stage)
     here = placed.get(stage, [])
     for unit in remaining:
@@ -480,7 +476,7 @@ def _crossbar_stage_test(units, seed, mode='packed'):
 
 
 def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
-                           unavailable_stages=frozenset(), key_field_bits=None,
+                           key_field_bits=None,
                            seed_stages=(), placement_priority=None,
                            table_dependents=None, action_bytes=None,
                            key_bytes=None, key_slices=None):
@@ -507,11 +503,6 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   private synthetic field, so the union reduces to the per-table sum. In the
   classification pool the field SET is also the key's identity: tables with
   equal key_fields are one key.
-
-  unavailable_stages (optional) names stage indices no table may occupy,
-  whatever their capacity -- gated_block_interior_stages produces them. It
-  is only meaningful alongside readiness_levels: without those the returned
-  plan has no absolute stage indices to exclude, so it is ignored.
 
   seed_stages (optional) is an iterable of StageLoad -- another pool's
   StagePlan.stage_loads -- naming stages that are already partly full. It
@@ -618,7 +609,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   tuple per table, packed.key_bytes -- spec
   docs/superpowers/specs/2026-11-11-packed-codes-stage-pin-design.md Sec 4.2,
   4.3, Sec 5 rules 1-2) is placed in the same order as the ordered stage
-  simulation, with unavailable_stages honoured the same way, but priced and
+  simulation, but priced and
   admitted differently (_crossbar_stage_test): each stage's ternary crossbar
   is simulated as p4c allocates it (xbar.py, spec 2026-11-13: p4c's slot
   assignment reproduced on every ternary table of 2,481 compiles), the
@@ -764,7 +755,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     by_index, table_stages = _ordered_stage_simulation(
         _packed_units(table_specs, key_fields, key_bytes,
                       list(readiness_levels), priorities),
-        'packed', frozenset(unavailable_stages), seed_at, max(seeds, default=0))
+        'packed', seed_at, max(seeds, default=0))
     return unit_plan(by_index, table_stages)
 
   if key_field_bits is not None:
@@ -782,9 +773,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     by_index, table_stages = _ordered_stage_simulation(
         _field_units(table_specs, key_fields,
                      [tuple(key) for key in key_slices], levels, priorities),
-        'fields',
-        frozenset(unavailable_stages) if readiness_levels is not None
-        else frozenset(), seed_at, max(seeds, default=0))
+        'fields', seed_at, max(seeds, default=0))
     return unit_plan(by_index, table_stages)
 
   # ---- the range pool (and a caller passing neither key_field_bits nor
@@ -852,17 +841,13 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
       table_blocks[table_idx] = table_blocks.get(table_idx, 0) + blocks
     return plan(as_loads(dict(enumerate(stages))), table_stages, table_blocks)
 
-  # Dependency-aware placement. Three differences from the packer above, all
+  # Dependency-aware placement. Two differences from the packer above, both
   # chosen to track the REAL compiler rather than the theoretical optimum:
   #   1. A table may not occupy a stage index below its readiness level --
   #      its key value literally does not exist yet.
   #   2. Placement is EAGER (earliest legal stage with room), not "pack as
   #      few stages as possible". Measured: M2's range pool really occupies 2
   #      stages, which only eager placement reproduces.
-  #   3. A table may not occupy an unavailable_stages index at all -- stages
-  #      the placer spends entirely inside a gated register block
-  #      (gated_block_interior_stages); checked before `fits`, since an
-  #      interior stage stays unusable however empty it is.
   # A seeded stage this pool has not opened yet is tested through `fits`
   # with its seed; an unseeded empty stage always takes a lone shard.
   # The result counts OCCUPIED stages, not the index span -- stages below the
@@ -875,9 +860,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
                                             -table_dependents[s[2]], -s[2]))
   for blocks, _width, table_idx, fields in ordered:
     index = readiness_levels[table_idx]
-    while (index in unavailable_stages or
-           not fits(by_index.get(index) or empty(seed_at(index)),
-                    blocks, fields, table_idx)):
+    while not fits(by_index.get(index) or empty(seed_at(index)),
+                   blocks, fields, table_idx):
       index += 1
     if index not in by_index:
       by_index[index] = empty(seed_at(index))

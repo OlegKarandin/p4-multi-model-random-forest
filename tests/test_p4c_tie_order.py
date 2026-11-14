@@ -8,10 +8,12 @@ range pool (crossbar_stages_needed's table_dependents), and a tree waits only fo
 (usage.tree_readiness_levels, rule E).
 
 The three fixture programs are campaign_2026_11d designs, byte-identical to what p4c compiled (sha256 prefixes in
-FIXTURES). Each was mispriced by one of the partial fixes on the way, so together they pin the whole rule:
+FIXTURES). Each was mispriced by one of the partial fixes on the way, so together they pinned the whole rule:
   independent_M075_s20_k10  register tie-break alone (no range-pool order): 11 stages, p4c 12
   independent_M075_s20_k09  range-pool order with a level-first register greedy: 13 stages, p4c 12
   joint-task_M075_s20_k12   the old model: 53 blocks, p4c 51
+They carry gated register blocks (`if (meta.fwd == ...)`), so since decisions 1a / 7.1 option B (2026-11-14) the
+replay refuses them; the register tie order is now pinned by synthetic schedules below.
 """
 import hashlib
 import os
@@ -19,7 +21,7 @@ import os
 import pytest
 
 from p4gen import p4_replay
-from p4gen.p4_replay import model_breakdown, parse_program, tree_range_reads
+from p4gen.p4_replay import parse_program, tree_range_reads
 from p4model import registers
 from p4model.packing import crossbar_stages_needed
 from p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
@@ -44,34 +46,25 @@ def _program(row_id):
 
 
 @pytest.mark.parametrize('row_id', sorted(FIXTURES))
-def test_replay_matches_p4c_on_the_designs_that_pinned_the_tie_order(row_id):
-    stage_depth, blocks, _ = FIXTURES[row_id]
-    got = model_breakdown(_program(row_id), row_id)
-    assert (got['stage_depth'], got['blocks']) == (stage_depth, blocks)
+def test_the_designs_that_pinned_the_tie_order_are_refused_as_gated_programs(row_id):
+    with pytest.raises(ValueError, match='gated register block'):
+        _program(row_id)
 
 
-def test_register_schedule_follows_p4cs_committed_stages():
-    # independent_M075_s20_k09: five bwd registers are ready at stage 6 for four ALUs. p4c keeps bwd_iat_max (7 trees
-    # read its feature) and defers bwd_packet_length_min (3 trees), although the latter's level is lower -- "fewer total
-    # dependencies in dominance frontier" in its log. Stages as p4c committed them (mau.resources.log).
-    program = _program('independent_M075_s20_k09')
-    reads = tree_range_reads(program.tables)
-    dependents, features = {}, []
-    for tables_read in reads.values():
-        for table in tables_read:
-            feature = program.tables[table][0][:-len('_val')]
-            dependents[feature] = dependents.get(feature, 0) + 1
-    for name, keys in program.tables.items():
-        if name.startswith('table_') and keys and keys[0][:-len('_val')] not in features:
-            features.append(keys[0][:-len('_val')])
-    assert dependents['bwd_iat_max'] == 7 and dependents['bwd_packet_length_min'] == 3
-    # compiled before the meta.fwd pin (2026-11-09): the gated blocks in emission order
-    assert not program.fwd_pinned
-    placed = registers.register_stage_schedule(features, dependents=dependents,
-                                               fwd_pinned=program.fwd_pinned)
-    p4c = {'fwd_packet_length_min': 4, 'fwd_packet_length_max': 5, 'bwd_packet_length_mean': 5, 'bwd_iat_max': 6,
-           'bwd_iat_min': 6, 'bwd_packet_length_max': 6, 'bwd_packet_length_min': 7}
-    assert {feature: placed[feature] for feature in p4c} == p4c  # register base names; p4c's tables add _reg
+def test_a_newly_ready_register_with_more_dependents_beats_one_spilled_from_earlier():
+    # The rule independent_M075_s20_k09 showed in p4c's log ("fewer total dependencies in dominance frontier"): the
+    # rank ignores how long a register has been ready. Seven candidates at the first register stage spill four
+    # (the orientation register and the three earliest-listed); at the next stage c_val, ready only now but read by
+    # seven trees, goes first, and the orientation register (no feature lists it, so it is "earliest") waits again.
+    from p4model.program import FLOW_HASH_LEVEL, ORIENTATION_REGISTER
+    catalog = {f'a{i}': {'registers': [{'name': f'a{i}_reg'}]} for i in range(6)}
+    catalog['c'] = {'registers': [{'name': 'c_dep'}, {'name': 'c_val'}]}
+    features = ['c'] + [f'a{i}' for i in range(6)]
+    placed = registers.register_stage_schedule(features, catalog=catalog, dependents={'c': 7})
+    first = FLOW_HASH_LEVEL
+    assert {name for name, stage in placed.items() if stage == first} == {'c_dep', 'a5_reg', 'a4_reg', 'a3_reg'}
+    assert placed['c_val'] == first + 1
+    assert {name for name, stage in placed.items() if stage == first + 2} == {ORIENTATION_REGISTER}
 
 
 def test_without_dependents_the_later_listed_register_goes_first():

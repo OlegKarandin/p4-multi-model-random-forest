@@ -255,6 +255,39 @@ _JOINT_ORDER_2026_11_13 = {
 }
 
 
+# Decisions 1a / 7.1 option B (2026-11-14): one register schedule, no gated-block order.
+# Seed 2's fwd_packet_length_max no longer waits for the bwd registers, so its range
+# table(s) move from stage 6 to 5 in every encoding; stage depth and blocks unchanged.
+_OPTION_B_2026_11_14 = {
+    (JOINT_ENCODING, 2): (
+        'table_1_bwd_packet_length_max:1@5 table_2_fwd_packet_length_max:1@5 '
+        'table_0_bwd_iat_mean:1@6 get_classification_tree_ddos_2:8@7 '
+        'get_classification_tree_ddos_3:8@7 get_classification_tree_ddos_0:8@8 '
+        'get_classification_tree_ddos_1:8@8 get_classification_tree_app_5:8@9 '
+        'get_classification_tree_app_6:8@9 get_classification_tree_app_3:8@10 '
+        'get_classification_tree_app_4:8@10 get_classification_tree_app_1:8@11 '
+        'get_classification_tree_app_2:8@11 get_classification_tree_app_0:8@12'),
+    (PER_TASK_ENCODING, 2): (
+        'table_1_bwd_packet_length_max:1@5 table_2_fwd_packet_length_max:1@5 '
+        'table_0_bwd_iat_mean:1@6 get_classification_tree_app_5:6@7 '
+        'get_classification_tree_app_6:6@7 get_classification_tree_ddos_0:3@7 '
+        'get_classification_tree_ddos_1:3@7 get_classification_tree_ddos_2:3@7 '
+        'get_classification_tree_ddos_3:3@7 get_classification_tree_app_1:6@8 '
+        'get_classification_tree_app_2:6@8 get_classification_tree_app_3:6@8 '
+        'get_classification_tree_app_4:6@8 get_classification_tree_app_0:6@9'),
+    (DISJOINT_ENCODING, 2): (
+        'table_1_app_bwd_packet_length_max:1@5 table_2_app_fwd_packet_length_max:1@5 '
+        'table_4_ddos_bwd_packet_length_max:1@5 table_5_ddos_fwd_packet_length_max:1@5 '
+        'table_0_app_bwd_iat_mean:1@6 table_3_ddos_bwd_iat_mean:1@6 '
+        'get_classification_tree_app_5:6@7 get_classification_tree_app_6:6@7 '
+        'get_classification_tree_ddos_0:3@7 get_classification_tree_ddos_1:3@7 '
+        'get_classification_tree_ddos_2:3@7 get_classification_tree_ddos_3:3@7 '
+        'get_classification_tree_app_1:6@8 get_classification_tree_app_2:6@8 '
+        'get_classification_tree_app_3:6@8 get_classification_tree_app_4:6@8 '
+        'get_classification_tree_app_0:6@9'),
+}
+
+
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, PER_TASK_ENCODING, DISJOINT_ENCODING])
 def test_other_encodings_replay_as_before(tmp_path, encoding):
   for seed in range(6):
@@ -264,4 +297,6 @@ def test_other_encodings_replay_as_before(tmp_path, encoding):
     recorded = _RECORDED_ON_39D83D6[encoding][seed]
     if encoding == JOINT_ENCODING and seed in _JOINT_ORDER_2026_11_13:
       recorded = recorded[:2] + (_JOINT_ORDER_2026_11_13[seed],)
+    if (encoding, seed) in _OPTION_B_2026_11_14:
+      recorded = recorded[:2] + (_OPTION_B_2026_11_14[(encoding, seed)],)
     assert (breakdown["stage_depth"], breakdown["blocks"], tables) == recorded, seed

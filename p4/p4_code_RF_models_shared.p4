@@ -147,7 +147,7 @@ control SwitchIngress(
 
 	RegisterAction<bit<16>, bit<32>, bit<16>>(fwd_packet_length_max_reg) fwd_packet_length_max_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
-			if (hdr.ipv4.total_len > value) {
+			if (meta.fwd == 1 && hdr.ipv4.total_len > value) {
 				value = hdr.ipv4.total_len;
 			}
 			rv = value;
@@ -303,9 +303,7 @@ control SwitchIngress(
 			meta.current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);
 			meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);
 
-			if (meta.fwd == 1) {
-				meta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);
-			}
+			meta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);
 
 
 			table_0_app_flow_iat_max.apply();

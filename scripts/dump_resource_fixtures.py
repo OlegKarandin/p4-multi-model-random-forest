@@ -200,8 +200,8 @@ def serialize_pool(pool):
 
 def serialize_row(row_id, group, encoding, pool, usage, range_plan, ternary_plan):
     """One fixture row: row_id/group/encoding, the interned key-field sets,
-    the pool inputs (assemble_usage's own 15-key contract, plus
-    emitted_features for the interior-stages replay test), and the outputs
+    the pool inputs (assemble_usage's own key contract, plus
+    emitted_features), and the outputs
     (every ResourceUsage field, both StagePlans' occupied/depth/blocks/
     sorted indices)."""
     key_field_sets, field_names, range_ids, ternary_ids = serialize_pool(pool)
@@ -214,7 +214,6 @@ def serialize_row(row_id, group, encoding, pool, usage, range_plan, ternary_plan
         'range_levels': list(pool['range_levels']),
         'range_task': list(pool['range_task']),
         'ternary_task': list(pool['ternary_task']),
-        'interior_stages': sorted(pool['interior_stages']),
         'emitted_features': list(pool['emitted_features']),
         'register_names': list(pool['register_names']),
         'range_entries': pool['range_entries'],

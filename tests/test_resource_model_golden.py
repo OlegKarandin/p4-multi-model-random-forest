@@ -11,7 +11,6 @@ import os
 import pytest
 
 from p4model.packing import crossbar_stages_needed
-from p4model.registers import gated_block_interior_stages
 from p4model.usage import assemble_usage
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -43,7 +42,6 @@ def rebuild_pool(row):
         "ternary_fields": [sets[i] for i in src["ternary_key_field_set_ids"]],
         "ternary_key_bits": [bit_sets[i]
                              for i in src["ternary_key_field_set_ids"]],
-        "interior_stages": frozenset(src["interior_stages"]),
         "emitted_features": src["emitted_features"],
         "register_names": tuple(src["register_names"]),
         "range_entries": src["range_entries"],
@@ -112,18 +110,6 @@ def test_golden_resource_usage_is_unchanged(row_id, row):
         assert plan.depth == want["depth"], (row_id, name, "depth")
         assert plan.blocks == want["blocks"], (row_id, name, "blocks")
         assert sorted(plan.indices) == want["indices"], (row_id, name, "indices")
-
-
-@pytest.mark.parametrize("row_id,row", fixture_rows(), ids=IDS)
-def test_gated_block_interior_stages_still_derives_from_emitted_features(row_id, row):
-    # The fixture stores interior_stages as an INPUT (assemble_usage takes it
-    # ready-made), so without this the registers.py schedule would go
-    # unexercised by the golden replay. Deriving it here pins that half too.
-    # The calibration programs predate the meta.fwd pin (2026-11-09), so their
-    # gated blocks run in emission order (register_stage_schedule's fwd_pinned).
-    derived = gated_block_interior_stages(row["inputs"]["emitted_features"],
-                                          fwd_pinned=False)
-    assert sorted(derived) == row["inputs"]["interior_stages"], row_id
 
 
 def test_classification_stages_are_derivable_from_the_block_factor():

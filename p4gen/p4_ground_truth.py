@@ -37,8 +37,9 @@ def committed_table_stages(logs_dir):
     """table basename -> the stage the compiler placed it in, from the
     COMMITTED allocation in mau.resources.log.
 
-    The measurement Mechanism B is checked against: a stage the placer spends
-    entirely inside a gated register block can hold no table of the outer
+    The measurement Mechanism B was checked against (programs generated
+    before decisions 1a / 7.1 option B, 2026-11-14): a stage the placer spent
+    entirely inside a gated register block held no table of the outer
     sequence, so it shows up here as a HOLE in the range pool's occupancy --
     a stage index between two occupied ones that no table landed in. Returns
     None when the backend never allocated resources, exactly as

@@ -12,13 +12,12 @@ def _key(n):                      # n bytes, each in an 8-bit container of its o
   return tuple(("B", 0, False) for _ in range(n))
 
 
-def _plan(byte_counts, rows=None, seeds=(), levels=None, priorities=None, unavailable=frozenset()):
+def _plan(byte_counts, rows=None, seeds=(), levels=None, priorities=None):
   rows = rows or [1] * len(byte_counts)
   keys = [_key(n) for n in byte_counts]
   specs = [(packing.packed_alone_blocks(tuple(k)) * r, n) for k, r, n in zip(keys, rows, byte_counts)]
   return crossbar_stages_needed(specs, readiness_levels=levels or [5] * len(specs), key_bytes=keys,
-                                placement_priority=priorities or [1] * len(specs), seed_stages=seeds,
-                                unavailable_stages=unavailable)
+                                placement_priority=priorities or [1] * len(specs), seed_stages=seeds)
 
 
 def _range_seed(tables):          # `tables` range tables in stage 5, a 2-byte value key each
@@ -75,11 +74,6 @@ def test_the_8_table_cap():
 def test_readiness_and_priority_order_with_a_full_stage():
   plan = _plan([22] * 5, levels=[5, 5, 5, 6, 6], priorities=[1, 1, 1, 2, 2])
   assert plan.table_stages == (5, 5, 5, 6, 6)
-
-
-def test_unavailable_stages_are_skipped_in_key_bytes_mode():
-  plan = _plan([20, 20, 20], unavailable=frozenset({5, 6}))
-  assert plan.table_stages == (7, 7, 7)
 
 
 def test_a_key_with_no_allocation_in_12_groups_raises():

@@ -8,7 +8,6 @@ from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
 from p4model.packing import StagePlan, crossbar_stages_needed, fits_two_columns
 from p4model.ranges import range_entry_count
 from p4model.registers import (
-    gated_block_interior_stages,
     readiness_levels_for,
     register_stage_schedule,
 )

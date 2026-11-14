@@ -15,7 +15,7 @@ from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
                                  VOTE_EPILOGUE_STAGES, feature_of_per_task_field,
                                  feature_of_per_tree_field)
 from p4model.ranges import compiler_range_rows
-from p4model.registers import gated_block_interior_stages, readiness_levels_for
+from p4model.registers import readiness_levels_for
 from p4model import lanes, packed, xbar
 from p4model.tables import tree_entries_to_blocks
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
@@ -27,8 +27,7 @@ class Program:
     """One parsed generated program: tables (name -> key fields), widths /
     bits (field -> crossbar bytes / declared bits), sizes (table -> declared
     entries), priorities (table -> its @placement_priority, for every table
-    that carries one), fwd_pinned (the program pins meta.fwd out of PHV
-    overlays, _FWD_PIN: the register blocks' order, register_stage_schedule).
+    that carries one).
 
     A packed per-tree program (spec 2026-11-11-packed-codes-stage-pin Sec 3.1)
     fills two more: containers (code_pk_<f> -> its @pa_container_size sizes in
@@ -45,7 +44,6 @@ class Program:
     bits: dict
     sizes: dict
     priorities: dict = field(default_factory=dict)
-    fwd_pinned: bool = False
     containers: dict = field(default_factory=dict)
     key_slices: dict = field(default_factory=dict)
     code_containers: dict = field(default_factory=dict)
@@ -135,8 +133,13 @@ def _parse_priorities(text):
             for priority, name in _PLACEMENT_PRIORITY.findall(text)}
 
 
-# The generator's meta.fwd pin (build_p4_script, every program since 2026-11-09).
-_FWD_PIN = re.compile(r'^@pa_no_overlay\("ingress",\s*"ig_md\.fwd"\)\s*$', re.M)
+# A gated register block: an `if (meta.fwd == 0|1) { ... }` in the apply block
+# whose body executes a RegisterAction (`<name>_action.execute(`), which every
+# program generated before decisions 1a / 7.1 option B (2026-11-14) carries.
+# A direction test inside a RegisterAction body (`if (meta.fwd == 1) { value =
+# ..._halve_unit.execute(...); }`) is not one.
+_GATED_BLOCK = re.compile(
+    r'if\s*\(\s*meta\.fwd\s*==\s*[01]\s*\)\s*\{[^{}]*?\b\w+_action\.execute\(')
 
 
 # A packed code field's container pin (build_p4_script, spec 2026-11-11 Sec 3.1):
@@ -162,17 +165,32 @@ def carries_stage_pins(text):
     return bool(_STAGE_PIN.search(text))
 
 
+def carries_gated_register_blocks(text):
+    """True when the program executes RegisterActions inside `if (meta.fwd ==
+    ...)` blocks (_GATED_BLOCK), which parse_program_text refuses."""
+    return bool(_GATED_BLOCK.search(text))
+
+
 def parse_program_text(text):
     """Raises ValueError for a program with @stage lines: the model no longer
     prices pinned placements, so such a program is replayed at the commit that
-    generated it, never silently priced as if unpinned."""
+    generated it, never silently priced as if unpinned. Likewise for a program
+    with a gated register block (carries_gated_register_blocks): the register
+    schedule models one unconditional register sequence (decisions 1a / 7.1
+    option B), not the block order, cursor floor and interior stages of the
+    gated program."""
     if carries_stage_pins(text):
         raise ValueError('program carries @stage pins, which the model no longer '
                          'prices (spec 2026-11-13); replay it at the commit that '
                          'generated it')
+    if carries_gated_register_blocks(text):
+        raise ValueError('program carries a gated register block (`if (meta.fwd '
+                         '== ...)` around RegisterAction executes), which the model '
+                         'no longer prices (decisions 1a / 7.1 option B, '
+                         '2026-11-14); replay it at the commit that generated it')
     tables, widths, bits, slices = _parse_keys(text)
     return Program(tables, widths, bits, _parse_sizes(text),
-                   _parse_priorities(text), bool(_FWD_PIN.search(text)),
+                   _parse_priorities(text),
                    containers={name: tuple(int(size) for size in sizes.split(','))
                                for name, sizes in _PACKED_CONTAINERS.findall(text)},
                    key_slices=slices,
@@ -501,8 +519,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     dependents = feature_readers if reads is not None else None
     if readiness_levels is None:
         levels = dict(zip(row_features, readiness_levels_for(
-            row_features, dependents=dependents,
-            fwd_pinned=program.fwd_pinned)))
+            row_features, dependents=dependents)))
     else:
         missing = [f for f in row_features if f not in readiness_levels]
         if missing:
@@ -511,11 +528,6 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
                 'a range table must have one or the packer would place it at an '
                 'arbitrary stage' % (row_id, ', '.join(sorted(missing))))
         levels = readiness_levels
-    # Mechanism B: stages the placer spends wholly inside a gated register
-    # block hold no table from the outer sequence, however empty they are.
-    interior = gated_block_interior_stages(row_features, dependents=dependents,
-                                           fwd_pinned=program.fwd_pinned)
-
     tasks = table_tasks(tables)
     bytes_written = range_action_bytes(program)
     packed_program = is_packed(program)
@@ -566,7 +578,6 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
 
     range_plan = crossbar_stages_needed(
         range_specs, readiness_levels=range_levels, key_fields=range_fields,
-        unavailable_stages=interior,
         table_dependents=([table_readers.get(name, 0) for name in range_names]
                           if reads is not None else None),
         action_bytes=[bytes_written[name] for name in range_names])
@@ -594,7 +605,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     if not packed_program:
         ternary_plan = crossbar_stages_needed(
             ternary_specs, readiness_levels=ternary_levels,
-            key_fields=ternary_fields, unavailable_stages=interior,
+            key_fields=ternary_fields,
             key_field_bits=ternary_key_bits, key_slices=ternary_key_slices,
             seed_stages=range_plan.stage_loads,
             placement_priority=priorities)
@@ -605,7 +616,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     # The packed pool, placed by key_bytes exactly as usage.assemble_usage
     # places it.
     ternary_plan = crossbar_stages_needed(
-        ternary_specs, readiness_levels=ternary_levels, unavailable_stages=interior,
+        ternary_specs, readiness_levels=ternary_levels,
         key_bytes=ternary_key_bytes, seed_stages=range_plan.stage_loads,
         placement_priority=priorities)
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)

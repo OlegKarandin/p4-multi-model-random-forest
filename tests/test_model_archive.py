@@ -127,18 +127,23 @@ def _find_pragmas_archive():
         here = parent
 
 
-def test_the_model_matches_p4c_on_the_pragmas_archive(capsys):
-    """The model gate itself (`python -m src.verify --model-archive`): every
-    miss on the 73 archived compiles is in KNOWN_MISSES with the same numbers,
-    and no KNOWN_MISSES entry is stale."""
+def test_the_pragmas_archive_programs_are_refused_as_gated_programs():
+    """The model gate's archive (`python -m src.verify --model-archive`) holds
+    73 compiles of programs generated before decisions 1a / 7.1 option B
+    (2026-11-14): every one carries a gated register block, which the replay
+    now refuses, so the model can no longer be scored on it (a gate on
+    option-B programs needs new compiles)."""
+    from p4gen.p4_replay import parse_program
     archive = _find_pragmas_archive()
     if archive is None:
         pytest.skip("calibration archive %s not found in this checkout or any "
                     "parent directory (it is not in git)" % PRAGMAS_ARCHIVE)
-    code = cli.main(["--model-archive", archive])
-    out = capsys.readouterr().out
-    assert code == 0, out
-    assert "designs 73 " in out, out
+    sources = sorted(name for name in os.listdir(os.path.join(archive, "p4_src"))
+                     if name.endswith(".p4"))
+    assert len(sources) == 73
+    for name in sources:
+        with pytest.raises(ValueError, match="gated register block"):
+            parse_program(os.path.join(archive, "p4_src", name))
 
 
 def test_cli_model_archive_exit_code(tmp_path, monkeypatch):

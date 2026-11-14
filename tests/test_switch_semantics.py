@@ -120,3 +120,171 @@ def test_the_scorer_is_usable_by_permutation_importance():
         rf, X, y, scoring=ss.switch_accuracy_scorer, n_repeats=2, random_state=0)
 
     assert result.importances_mean.shape == (X.shape[1],)
+
+
+# ---------------------------------------------------------------------------
+# Decision 1a / 7.1 option B: the feature registers' per-packet semantics.
+# A small interpreter runs the GENERATED register logic (the apply block's
+# .execute() call sites and every RegisterAction body, as P4 text) over a
+# packet trace, and every <feature>_val is compared with the statistic computed
+# directly from the flow's packets.
+# ---------------------------------------------------------------------------
+
+import random
+import re
+
+from p4gen.build_p4_script import generate_P4_registers_and_apply
+from p4model.catalog import FEATURE_REGISTER_CATALOG
+
+# The 17 features every saved forest pool has (the catalog's 18 minus
+# max_packet_length, which no pool contains).
+_POOL_FEATURES = [f for f in FEATURE_REGISTER_CATALOG if f != "max_packet_length"]
+_MASK = 0xFFFF
+
+
+def _p4_expr(text):
+    text = text.replace("(bit<16>)", "")
+    text = re.sub(r"\w+_halve_unit\.execute\(", "_halve(", text)
+    text = re.sub(r"(\w+)_action\.execute\(meta\.flow_hash\)", r'_run("\1")', text)
+    text = text.replace("&&", " and ").replace("hdr.ipv4.total_len", 'pkt["len"]')
+    return re.sub(r"meta\.(\w+)", r'meta["\1"]', text)
+
+
+def _p4_to_python(lines):
+    """P4 statements (one per line) -> Python source: if / else / assignments /
+    calls, every assignment wrapped to 16 bits."""
+    out, depth = [], 0
+    for line in (line.strip() for line in lines):
+        if not line:
+            continue
+        if line == "}":
+            depth -= 1
+            continue
+        if line == "} else {":
+            out.append("  " * (depth - 1) + "else:")
+            continue
+        opened = re.match(r"^if \((.*)\) \{$", line)
+        if opened:
+            out.append("  " * depth + "if " + _p4_expr(opened.group(1)) + ":")
+            depth += 1
+            continue
+        assert line.endswith(";"), line
+        assign = re.match(r"^([\w.]+) = (.*);$", line)
+        if assign:
+            out.append("  " * depth + "%s = _w(%s)" % (_p4_expr(assign.group(1)),
+                                                      _p4_expr(assign.group(2))))
+        else:
+            out.append("  " * depth + _p4_expr(line[:-1]))
+    assert depth == 0
+    return "\n".join(out) or "pass"
+
+
+class _Switch:
+    """The generated register logic for one feature set, interpreted."""
+
+    def __init__(self, features):
+        regs, actions, apply_code, _ = generate_P4_registers_and_apply(
+            {f: None for f in features})
+        self.initial = {name: int(init or 0) for init, name in re.findall(
+            r"Register<bit<16>, bit<32>>\(MAX_NUM_FLOWS(?:, (\d+))?\) (\w+)_reg;", regs)}
+        self.bodies = {}
+        for name, body in re.findall(
+                r"\((\w+)_reg\) \w+_action = \{\n\t\tvoid apply\(inout bit<16> value, "
+                r"out bit<16> rv\) \{\n(.*?)\n\t\t\}\n\t\};", actions, re.S):
+            source = "def body(value, meta, pkt):\n  rv = None\n%s\n  return value, rv\n" % (
+                "\n".join("  " + line for line in _p4_to_python(body.splitlines()).splitlines()))
+            scope = {"_w": lambda x: x & _MASK, "_halve": lambda x: (x & _MASK) // 2}
+            exec(source, scope)
+            self.bodies[name] = scope["body"]
+        self.apply = compile(_p4_to_python(apply_code.splitlines()), "<apply>", "exec")
+        self.state = {}
+        self.first_src = {}
+
+    def packet(self, pkt):
+        meta = {}
+
+        def run(name):
+            if name == "flow_orientation":
+                first = self.first_src.setdefault(pkt["flow"], pkt["src"])
+                return int(first == pkt["src"])
+            key = (name, pkt["flow"])
+            value, rv = self.bodies[name](self.state.get(key, self.initial[name]), meta, pkt)
+            self.state[key] = value
+            return rv
+
+        def calc_flow_hash():
+            meta["flow_hash"] = pkt["flow"]
+
+        def calc_timestamp():
+            meta["now_pseudo_us"] = pkt["now"]
+
+        exec(self.apply, {"_w": lambda x: x & _MASK, "_run": run, "meta": meta, "pkt": pkt,
+                          "calc_flow_hash": calc_flow_hash, "calc_timestamp": calc_timestamp})
+        return meta
+
+
+def _trace(n=40, flows=3, seed=7):
+    rng = random.Random(seed)
+    now, packets = 100, []
+    ends = {flow: (10 + 2 * flow, 11 + 2 * flow) for flow in range(flows)}
+    for i in range(n):
+        flow = i % flows if i < 2 * flows else rng.randrange(flows)
+        # the first two packets of every flow go one each way
+        src = ends[flow][0 if i < flows else 1] if i < 2 * flows else rng.choice(ends[flow])
+        now += rng.randint(1, 50)
+        packets.append({"flow": flow, "src": src, "now": now, "len": rng.randint(40, 1500)})
+    return packets
+
+
+def _expected(feature, history):
+    """The statistic of `feature` over its own direction's packets of the flow so
+    far (history: [(fwd, now, len)]): registers start at 0 (a first IAT is the
+    packet's timestamp) except minimums, which start at 65535; means are the
+    alpha = 1/2 EWMA the catalog documents."""
+    entry = FEATURE_REGISTER_CATALOG[feature]
+    gate = entry.get("gated_by")
+    own = [(now, length) for fwd, now, length in history
+           if gate is None or fwd == (gate == "fwd")]
+    value_body = [r for r in entry["registers"] if r["role"] == "value"][0]["body"]
+    if "packet_length" in value_body:
+        samples = [length for _, length in own]
+    else:
+        samples = [now - previous for (now, _), previous
+                   in zip(own, [0] + [now for now, _ in own])]
+    if value_body.startswith("running_max"):
+        return max(samples, default=0)
+    if value_body.startswith("running_min"):
+        return min(samples, default=0xFFFF)
+    mean = 0
+    for sample in samples:
+        mean = (mean + sample) // 2
+    return mean
+
+
+def test_option_b_switch_semantics():
+    switch = _Switch(_POOL_FEATURES)
+    histories = {}
+    first_src = {}
+    directions = set()
+    for pkt in _trace():
+        fwd = first_src.setdefault(pkt["flow"], pkt["src"]) == pkt["src"]
+        directions.add((pkt["flow"], fwd))
+        history = histories.setdefault(pkt["flow"], [])
+        history.append((fwd, pkt["now"], pkt["len"]))
+        before = dict(switch.state)
+        meta = switch.packet(pkt)
+        assert meta["fwd"] == int(fwd)
+        for feature in _POOL_FEATURES:
+            # written on every packet, both directions
+            assert feature + "_val" in meta, (feature, pkt)
+            assert meta[feature + "_val"] == _expected(feature, history), (feature, pkt)
+        # the other direction's registers are read, never updated
+        for entry in FEATURE_REGISTER_CATALOG.values():
+            gate = entry.get("gated_by")
+            if gate is None or (gate == "fwd") == fwd:
+                continue
+            for reg in entry["registers"]:
+                key = (reg["name"], pkt["flow"])
+                if key in before:
+                    assert switch.state[key] == before[key], (reg["name"], pkt)
+    assert len(directions) == 6  # 3 flows, both directions each

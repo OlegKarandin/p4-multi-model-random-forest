@@ -237,7 +237,6 @@ def assemble_usage(pool):
   # (packing.crossbar_stages_needed). Packed trees never share crossbar bytes,
   # so no key_fields (private placeholders) either.
   ternary_key_bytes = pool.get("ternary_key_bytes")
-  interior_stages = pool["interior_stages"]
   register_names = pool["register_names"]
   range_entries = pool["range_entries"]
   range_blocks = pool["range_blocks"]
@@ -268,14 +267,6 @@ def assemble_usage(pool):
   # table forward past its level, and reusing max(range_levels) + 1 would
   # then schedule a classification table into a stage a range table still
   # occupies.
-  #
-  # Mechanism B (reviews/p4_tofino_reference.md §4.6, Appendix B
-  # "Mechanism B") on top of that: both pools are emitted AFTER the gated
-  # register blocks, so neither can occupy a stage the placer spends wholly
-  # inside one -- a control-flow constraint, not a capacity one, and the
-  # reason a stage can sit at 0/24 TCAM blocks and still take no table. It is
-  # a placement constraint rather than a penalty precisely so that it costs
-  # nothing on the rows whose tables were not going to land there anyway.
   # Range-pool tie order (2026-11-08): among tables ready in one stage, the
   # one more trees read first, then the later-listed one -- p4c's
   # DOWNWARD_TD then DEFAULT (crossbar_stages_needed's table_dependents). A
@@ -286,7 +277,6 @@ def assemble_usage(pool):
   range_plan = crossbar_stages_needed(range_table_specs,
                                       readiness_levels=range_levels,
                                       key_fields=range_fields,
-                                      unavailable_stages=interior_stages,
                                       table_dependents=pool.get("range_dependents"),
                                       action_bytes=pool.get("range_action_bytes"))
   # Per-task tree readiness (audit C1): a tree waits for the range tables of
@@ -323,7 +313,6 @@ def assemble_usage(pool):
       ternary_table_specs,
       readiness_levels=ternary_levels,
       key_fields=ternary_fields,
-      unavailable_stages=interior_stages,
       key_field_bits=None if ternary_key_bytes is not None else ternary_key_bits,
       key_bytes=ternary_key_bytes,
       key_slices=(None if ternary_key_bytes is not None

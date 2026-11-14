@@ -671,9 +671,8 @@ def _single_key_config(rng, dist):
     specs = [(per_row * rows(), width) for _ in range(trees)]
     key = frozenset({(("code", i), -(-b // 8)) for i, b in enumerate(bits)})
     level = rng.randint(3, 8)
-    unavailable = frozenset(s for s in range(level, level + 4) if rng.random() < 0.15)
     priority = [rng.choice([1, 2]) for _ in range(trees)]
-    return specs, key, bits, [level] * trees, unavailable, priority
+    return specs, key, bits, [level] * trees, priority
 
 
 @pytest.mark.parametrize("dist", ["mix", "small"])
@@ -691,7 +690,7 @@ def test_a_single_key_pool_is_never_charged_above_its_stand_alone_prices(dist):
 
     rng = random.Random("single-key-" + dist)
     for case in range(40):
-        specs, key, bits, levels, unavailable, priority = _single_key_config(rng, dist)
+        specs, key, bits, levels, priority = _single_key_config(rng, dist)
         kwargs = dict(key_fields=[key] * len(specs), key_field_bits=[bits] * len(specs),
                       placement_priority=priority)
         if case % 4 == 0:
@@ -701,7 +700,6 @@ def test_a_single_key_pool_is_never_charged_above_its_stand_alone_prices(dist):
                              fields=frozenset({(("val", 0), 2), (("val", 1), 2)}),
                              tables=2)
             plan = crossbar_stages_needed(specs, readiness_levels=levels,
-                                          unavailable_stages=unavailable,
                                           seed_stages=[seed], **kwargs)
         assert all(charged <= declared for charged, (declared, _)
                    in zip(plan.table_blocks, specs)), (dist, case)
