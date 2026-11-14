@@ -481,8 +481,11 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
 
   Each tree gets its own independent classification table
   (build_p4_script.py:636-659), so ternary_table_specs is one
-  (block_count, byte_width) pair per tree. All of those tables key on the
-  same set of per-feature fields, so they share one byte width.
+  (block_count, byte_width) pair per tree, every tree priced on the key of
+  feature_intervals. Since decision 2.3 each tree keys only the fields of the
+  features it splits on, so evaluation._pruned_trees calls this once per tree
+  with that tree's own intervals; a call with several trees prices them all on
+  one key.
 
   dropped_per_tree: optional sequence of ints, positionally aligned with
   `codewords`, giving how many of each tree's entries the generator folds into

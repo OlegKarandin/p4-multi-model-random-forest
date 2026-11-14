@@ -162,9 +162,11 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
                        tree wait for nothing.
   Returns one level per tree, aligned with ternary_task.
 
-  Under 'joint' every range table is SHARED_TASK, so every tree's level is
-  1 + the latest range stage = the range pool's StagePlan.depth -- exactly the
-  single level every tree was given before C1. Evidence for the per-task rule
+  Since decision 2.3 (2026-11-14) every encoding's pool passes tree_reads, so
+  under 'joint' too a tree waits only for the tables of the features it splits
+  on: its level lies between the last range table's stage and the range pool's
+  StagePlan.depth (the single level every joint tree had before 2.3, when every
+  joint tree keyed every table). Evidence for the per-task rule
   (reviews/model_audit_2026-09-27.md §10 C1, per_task_variant.py, 28 disjoint
   compiles): p4c places 8/168 trees before the other task's last range table,
   never one before its own."""

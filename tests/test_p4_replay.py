@@ -109,6 +109,72 @@ def test_declared_prices_charge_classification_tables_with_table_blocks():
     assert declared_prices(program) == {'get_classification_tree_ddos_0': 6}
 
 
+# --- per-tree key order: training lists a tree's fields as the program text does ---
+
+def _two_feature_forest(names, n_classes, seed):
+    """Depth-2 trees over two features, the first binary (every split at threshold 0, so
+    two such forests discretize it identically: a shared disjoint field)."""
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+    from p4gen import build_p4_script as bps
+    rng = np.random.RandomState(seed)
+    X = rng.randint(0, 3000, size=(400, 2))
+    X[:, 0] = rng.randint(0, 2, size=400)
+    y = ((1500 * X[:, 0] + X[:, 1]) // (4500 // n_classes)).clip(0, n_classes - 1)
+    return bps.dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=4, max_depth=2, random_state=seed).fit(X, y))
+
+
+def test_disjoint_key_order_is_the_texts_with_a_shared_feature_after_a_ddos_only_one(tmp_path):
+    """Disjoint: a ddos tree keying a shared field (flow_iat_max, listed with the app
+    fields) and a ddos-only one that sorts before it (bwd_iat_mean, listed after them)
+    keys them in the program's order, and training's key slices list them in that order
+    too (the order decides the crossbar container numbering by first use)."""
+    from p4gen import build_p4_script as bps
+    from p4gen.evaluation import _pool_inputs
+    names_app, names_ddos = ["flow_iat_max", "fwd_packet_length_max"], ["flow_iat_max", "bwd_iat_mean"]
+    app, ddos = _two_feature_forest(names_app, 3, 2), _two_feature_forest(names_ddos, 2, 5)
+    ia, idd = bps.get_feature_intervals(app, names_app), bps.get_feature_intervals(ddos, names_ddos)
+    assert ia["flow_iat_max"] == idd["flow_iat_max"] and "bwd_iat_mean" in idd
+    written = bps.generate_P4_code(
+        3, 2, app, ddos, feature_intervals_app=ia, feature_intervals_ddos=idd,
+        output_dir=str(tmp_path) + os.sep, output_filename="order.p4",
+        selected_features_app=names_app, selected_features_ddos=names_ddos, encoding="disjoint")
+    program = rp.parse_program(written)
+    pool = _pool_inputs(app, ddos, names_app, names_ddos, "disjoint")
+    plan = bps._resolve_disjoint_feature_plan(ia, idd)
+    raw = {"code_" + name: feature for name, (feature, _, _) in plan.items()}
+    trees = ["get_classification_tree_app_%d" % i for i in range(len(app.estimators_))] + [
+        "get_classification_tree_ddos_%d" % i for i in range(len(ddos.estimators_))]
+    both = False
+    for name, slices in zip(trees, pool["ternary_key_slices"]):
+        text_order = [raw[field] for field, _ in rp.tree_key_slices(program, name)]
+        assert [field_id[0] for field_id, _ in slices] == text_order, name
+        both |= text_order == ["flow_iat_max", "bwd_iat_mean"]
+    assert both      # some ddos tree keys the shared field and the ddos-only one
+
+
+def test_a_split_on_a_feature_without_a_code_field_is_refused():
+    """A tree splitting a feature its task has no code field for (intervals that are not
+    its trees') would be keyed on nothing for that split: ValueError in the generator and
+    in training."""
+    import pytest as _pytest
+    from p4gen import build_p4_script as bps
+    from p4gen.evaluation import _tree_keys
+    from p4model.program import APP_TASK, TaskSpec
+    names = ["flow_iat_max", "fwd_packet_length_max"]
+    forest = _two_feature_forest(names, 3, 2)
+    own = bps.get_feature_intervals(forest, names)
+    missing = {f: iv for f, iv in own.items() if f != "flow_iat_max"}
+    task = TaskSpec(APP_TASK, 3, list(forest.estimators_), names, missing)
+    with _pytest.raises(ValueError, match="flow_iat_max"):
+        bps.tree_key_features(task, missing.__contains__)
+    nodes = bps.tree_nodes_for(forest, names)
+    trees = [(APP_TASK, i, n) for i, n in enumerate(nodes.values())]
+    with _pytest.raises(ValueError, match="flow_iat_max"):
+        _tree_keys(trees, {APP_TASK: missing}, {APP_TASK: list(missing)})
+
+
 # --- training == replay on saved DEV forests (decision 2.3, key pruning) -------
 
 _ROW = re.compile(r'^(?P<arm>.+)_M\w+_s(?P<split>\d+)_k(?P<k>\d+)$')

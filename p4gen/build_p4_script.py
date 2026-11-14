@@ -903,18 +903,34 @@ def tree_key_features(task, has_field):
   the task (has_field(raw)), in the order of the task's intervals -- the order
   its codewords are concatenated in. A feature the tree never splits is '*' in
   every one of its codewords, so leaving its field out of the key changes no
-  match. Raises NoSplitTree (args: message, '<task>_<i>') for the first tree
-  with no such feature: its table would have no key (R6, as
+  match. Raises ValueError for a tree that splits a feature the task has no
+  code field for (task intervals that are not its trees': the split would be
+  keyed on nothing), and NoSplitTree (args: message, '<task>_<i>') for the
+  first tree with no feature at all: its table would have no key (R6, as
   packed.layout_for refuses it under the per-tree encoding).'''
   intervals = task.intervals or {}
   keyed = []
   for index, own in enumerate(per_tree_intervals(task)):
-    features = [raw for raw in intervals if raw in own and has_field(raw)]
+    unkeyed = sorted(raw for raw in own if raw not in intervals or not has_field(raw))
+    if unkeyed:
+      raise ValueError("tree %s_%d splits %s, which its task has no code field for: the "
+                       "task's intervals must be its trees' own" % (task.name, index, unkeyed))
+    features = [raw for raw in intervals if raw in own]
     if not features:
       raise NoSplitTree("tree %s_%d has no threshold, so its table would have no key"
                         % (task.name, index), "%s_%d" % (task.name, index))
     keyed.append(features)
   return keyed
+
+
+def plan_key_order(resolved_plan, task):
+  '''[(resolved name, raw feature)] of every code field `task`'s trees may key,
+  in the plan's order, which is the program text's: every tree key lists its
+  fields in this order, restricted to the features the tree splits on
+  (decision 2.3). Training (evaluation._tree_keys) orders each tree's key by
+  the same function, because the crossbar's container numbering follows key
+  order (xbar.field_key, first use).'''
+  return [(name, raw) for name, (raw, _, models) in resolved_plan.items() if task in models]
 
 
 def tree_codewords(task, keyed):
@@ -1873,8 +1889,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   if not tree_codes:
     for task in program_tasks:
       if task.trees and task.features is not None:
-        field_of = {raw: name for name, (raw, _, models) in resolved_plan.items()
-                    if task.name in models}
+        field_of = dict((raw, name) for name, raw in plan_key_order(resolved_plan, task.name))
         tree_keys[task.name] = (field_of, tree_key_features(task, field_of.__contains__))
 
   metadata_code = ""
@@ -2129,13 +2144,13 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
     # fields of the features it splits on (tree_key_features).
     key_names = {}
     for task in tasks:
-      names = [name for name, (_, _, models) in resolved_plan.items() if task.name in models]
+      order = plan_key_order(resolved_plan, task.name)
       if task.name in tree_keys:
-        field_of, keyed = tree_keys[task.name]
-        key_names[task.name] = {i: [name for name in names if resolved_plan[name][0] in raws]
+        _, keyed = tree_keys[task.name]
+        key_names[task.name] = {i: [name for name, raw in order if raw in raws]
                                 for i, raws in enumerate(keyed)}
       else:
-        key_names[task.name] = names
+        key_names[task.name] = [name for name, _ in order]
   raw_feature_names = ({feature: feature for feature in table_plan}
                        if task_codes or tree_codes
                        else {name: raw for name, (raw, _, _) in resolved_plan.items()})

@@ -9,6 +9,9 @@
 import sklearn.metrics as mt
 from p4gen.build_p4_script import (
     _reject_colliding_feature_names,
+    plan_key_order,
+    resolve_feature_plan,
+    resolve_per_task_plan,
     feature_intervals_from_nodes,
     generate_codewords,
     get_feature_intervals,
@@ -232,19 +235,31 @@ def _code_fields(feature_intervals, task=None):
   return out
 
 
-def _tree_keys(trees, intervals_of):
+def _key_orders(resolved_plan):
+  """{task: [raw feature]} in the order the program text lists each task's code
+  fields (build_p4_script.plan_key_order), for _tree_keys."""
+  return {task: [raw for _, raw in plan_key_order(resolved_plan, task)]
+          for task in (APP_TASK, DDOS_TASK)}
+
+
+def _tree_keys(trees, intervals_of, orders):
   """Per tree of `trees` ([(task, index, nodes)], program order), the intervals
   its classification key reads under the joint, disjoint and per-task
   encodings (decision 2.3): intervals_of[task] restricted to the features the
-  tree splits on, in that dict's order -- build_p4_script.tree_key_features,
-  which the generator keys the program with. Raises NoSplitTree, as the
-  generator does, for the first tree with none (R6)."""
+  tree splits on, in the program text's field order orders[task]
+  (_key_orders) -- build_p4_script.tree_key_features, which the generator keys
+  the program with. Raises ValueError for a tree that splits a feature with no
+  code field of its task, and NoSplitTree, as the generator does, for the first
+  tree with no split (R6)."""
   keys = []
   for task, index, nodes in trees:
     split = {feature for feature, intervals in feature_intervals_from_nodes({0: nodes}).items()
              if len(intervals) >= 2}
-    key = {feature: intervals for feature, intervals in intervals_of[task].items()
-           if feature in split}
+    unkeyed = sorted(f for f in split if f not in orders[task] or f not in intervals_of[task])
+    if unkeyed:
+      raise ValueError("tree %s_%d splits %s, which its task has no code field for: the "
+                       "task's intervals must be its trees' own" % (task, index, unkeyed))
+    key = {feature: intervals_of[task][feature] for feature in orders[task] if feature in split}
     if not key:
       raise NoSplitTree("tree %s_%d has no threshold, so its table would have no key"
                         % (task, index), "%s_%d" % (task, index))
@@ -252,7 +267,7 @@ def _tree_keys(trees, intervals_of):
   return keys
 
 
-def _pruned_trees(trees, keys, codewords, table_of, n_range_tables, per_task_ids,
+def _pruned_trees(trees, keys, codewords, table_of, n_range_tables, per_task_fields,
                   use_default_action_discount):
   """The classification side of a pool whose trees key only their own features
   (_tree_keys): per tree, its table spec (blocks, crossbar bytes) priced on its
@@ -265,7 +280,7 @@ def _pruned_trees(trees, keys, codewords, table_of, n_range_tables, per_task_ids
   (a field the tree does not key is '*' in all of them), so ternary_entries
   and codeword_length (the longest; R1, CodewordTooLong) are the full
   codewords'. A key over a stage's crossbar bytes raises CrossbarKeyTooWide,
-  per tree. per_task_ids: the per-task encoding's field ids
+  per tree. per_task_fields: the per-task encoding's field ids
   (tables.per_task_key_fields), which two tasks never share."""
   out = {"ternary_table_specs": [], "ternary_fields": [], "ternary_key_bits": [],
          "ternary_key_slices": [], "tree_reads": [], "ternary_entries": 0,
@@ -277,11 +292,11 @@ def _pruned_trees(trees, keys, codewords, table_of, n_range_tables, per_task_ids
     out["ternary_entries"] += entries
     out["codeword_length"] = max(out["codeword_length"], length)
     out["ternary_table_specs"].append(spec)
-    out["ternary_fields"].append(per_task_key_fields(task, key) if per_task_ids
+    out["ternary_fields"].append(per_task_key_fields(task, key) if per_task_fields
                                  else ternary_key_fields(key))
     out["ternary_key_bits"].append(ternary_key_field_bits(key))
     out["ternary_key_slices"].append(
-        _key_slices(_code_fields(key, task if per_task_ids else None)))
+        _key_slices(_code_fields(key, task if per_task_fields else None)))
     reads = [table_of(task, feature) for feature in key]
     out["tree_reads"].append(reads)
     for position in reads:
@@ -350,7 +365,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   only checked against the task names there (usage.tree_readiness_levels).
 
   ternary_blocks (the naive per-table block sum each branch computes below)
-  is deliberately NOT one of the 15 keys: it is already dead after the branch
+  is deliberately NOT one of the pool's keys: it is already dead after the branch
   converges -- assemble_usage's ResourceUsage.blocks uses ternary_plan.blocks,
   the StagePlan total from p4model.packing, charged by its ordered stage
   simulation (every table pays its crossbar allocation on what the earlier
@@ -385,7 +400,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # one code field per feature, but each tree keys only the fields of the
     # features it splits on (decision 2.3; _tree_keys refuses a stump first).
     trees = _program_trees(tree_nodes_app, tree_nodes_ddos)
-    keys = _tree_keys(trees, {APP_TASK: feature_intervals, DDOS_TASK: feature_intervals})
+    keys = _tree_keys(trees, {APP_TASK: feature_intervals, DDOS_TASK: feature_intervals},
+                      _key_orders(resolve_feature_plan([(DDOS_TASK, feature_intervals),
+                                                        (APP_TASK, feature_intervals)])))
     codewords = generate_codewords(get_root_to_leaf_paths(tree_nodes), feature_intervals)
     position = {feature: index for index, feature in enumerate(feature_intervals)}
     classification = _pruned_trees(
@@ -425,7 +442,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # never share a crossbar id. Two independent codewords, as under
     # 'disjoint': see ResourceUsage.codeword_length.
     trees = _program_trees(tree_nodes_app, tree_nodes_ddos)
-    keys = _tree_keys(trees, own)
+    keys = _tree_keys(trees, own, _key_orders(resolve_per_task_plan(
+        [(DDOS_TASK, feature_intervals_ddos), (APP_TASK, feature_intervals_app)])[1]))
     codewords = {APP_TASK: generate_codewords(get_root_to_leaf_paths(tree_nodes_app),
                                               feature_intervals_app),
                  DDOS_TASK: generate_codewords(get_root_to_leaf_paths(tree_nodes_ddos),
@@ -579,7 +597,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # why max and not sum.
     own = {APP_TASK: feature_intervals_app, DDOS_TASK: feature_intervals_ddos}
     trees = _program_trees(tree_nodes_app, tree_nodes_ddos)
-    keys = _tree_keys(trees, own)
+    keys = _tree_keys(trees, own, _key_orders(resolve_feature_plan(
+        [(DDOS_TASK, feature_intervals_ddos), (APP_TASK, feature_intervals_app)])))
     codewords = {APP_TASK: generate_codewords(get_root_to_leaf_paths(tree_nodes_app),
                                               feature_intervals_app),
                  DDOS_TASK: generate_codewords(get_root_to_leaf_paths(tree_nodes_ddos),
