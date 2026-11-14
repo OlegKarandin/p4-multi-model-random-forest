@@ -2013,7 +2013,7 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
   assert len(solitary) == len(set(solitary)), "duplicate @pa_solitary is a p4c error"
   assert "classification_app" not in set(solitary)
   assert "classification_ddos" not in set(solitary)
-  assert not re.search(r"bit<d+> classification_", text)
+  assert not re.search(r"bit<\d+> classification_", text)
 
 
 # ---------------------------------------------------------------------------

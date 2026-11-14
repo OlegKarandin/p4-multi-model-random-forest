@@ -153,7 +153,7 @@ def test_three_task_program_generates_parses_and_prices(tmp_path, encoding):
         ("app", 0), ("app", 1), ("ddos", 0), ("ddos", 1), ("third", 0)]
     for task in ("ddos", "app", "third"):
         assert "table vote_%s" % task in text
-        assert not re.search(r"bit<d+> classification_%s;" % task, text)
+        assert not re.search(r"bit<\d+> classification_%s;" % task, text)
         assert "set_classification_%s(bit<%d> winner)" % (
             task, {"ddos": 1, "app": 2, "third": 2}[task]) in text
     program = parse_program(path)

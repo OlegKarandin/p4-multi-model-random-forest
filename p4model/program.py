@@ -58,7 +58,11 @@ TASKS = (APP_TASK, DDOS_TASK)
 # action writes it straight into a TM intrinsic field, so the result leaves the
 # ingress pipe and is not computed and discarded. A task with trees whose name
 # is not a key here cannot be generated (ValueError). VOTE_EXPORT_BITS is the
-# Tofino-1 TNA width of each destination (qid is QueueId_t = bit<5>).
+# Tofino-1 TNA width of each destination (qid is QueueId_t = bit<5>,
+# ingress_cos is bit<3>; both widths are Tofino-1's, not Tofino-2's).
+# VOTE_EXPORT supports ONLY the two tasks named here. The N-task tests
+# monkeypatch it to give synthetic task names one shared destination; such a
+# program (several tasks writing one field) would not be a compilable design.
 VOTE_EXPORT = {'app': 'ig_tm_md.qid', 'ddos': 'ig_tm_md.ingress_cos'}
 VOTE_EXPORT_BITS = {'ig_tm_md.qid': 5, 'ig_tm_md.ingress_cos': 3}
 
