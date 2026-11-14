@@ -1515,7 +1515,7 @@ def appendix_6_capacity_ceiling(ceiling_csv=DEFAULT_CEILING_CSV,
 
     # Imported inside the function: `scripts/` is a script directory, not a
     # dependency of the reporting path, and its import pulls in
-    # p4gen.build_p4_script (sklearn) for MAX_CODEWORD_LENGTH.
+    # p4gen.build_p4_script (sklearn).
     from scripts.capacity_ceiling import per_cell, report
 
     frame = pd.read_csv(ceiling_csv)

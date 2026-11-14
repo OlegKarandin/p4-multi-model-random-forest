@@ -42,8 +42,7 @@ import math
 import numpy as np
 import pytest
 
-from p4model.tables import (codeword_bits_to_blocks, codeword_bytes_to_blocks,
-                                codeword_to_blocks, codeword_to_blocks_headline,
+from p4model.tables import (codeword_bits_to_blocks, codeword_to_blocks,
                                 crossbar_capacity, tail_is_isolatable)
 
 
@@ -79,9 +78,8 @@ def test_sd5_ddos_key_needs_a_third_block_because_neither_tail_is_isolatable():
     # 4 bytes) + code_ddos_packet_length_mean (52 bits, 7 bytes) = 11 crossbar
     # bytes, which is EXACTLY two groups' 2 x 5.5 bytes. resources.json stage 6
     # shows all three of them at 3 TCAM blocks where the byte width alone buys
-    # 2 (codeword_bytes_to_blocks), because neither field's tail is isolatable
+    # 2 (ceil(11 * 8 / 44)), because neither field's tail is isolatable
     # (27 % 32 = 27 and 52 % 32 = 20 both land in the Sec 2.3 "NOT" cells).
-    assert codeword_bytes_to_blocks(11) == 2
     assert codeword_to_blocks((27, 52)) == 3
 
 
@@ -150,7 +148,6 @@ def test_an_empty_key_costs_one_block():
     # test_factor_of_an_empty_width_dict_is_the_empty_key_factor, which pins
     # the same fact against src/training/align_budget.py's own call site).
     assert codeword_to_blocks(()) == 1
-    assert codeword_to_blocks_headline(()) == 1
 
 
 def test_the_entry_to_block_arithmetic_has_a_name():
@@ -235,22 +232,6 @@ def test_the_bit_width_bound_never_exceeds_the_composed_cost():
         len(failures), len(PROPERTY_SEEDS), failures[:5])
 
 
-def test_the_isolation_refinement_never_raises_the_headline_price():
-    """The Sec 2.3 isolation credit is a REFINEMENT: it can only lower a key's
-    price relative to the Sec 13.1 headline (`S = 0`) ladder, never raise it,
-    because the credit only ever subtracts from the nibble test's left-hand
-    side. codeword_to_blocks_headline is codeword_to_blocks with the credit
-    switched off, so this is the direct comparison."""
-    failures = []
-    for seed in PROPERTY_SEEDS:
-        # seed + 1_000_000: a stream disjoint from the test above
-        widths = _random_field_widths(np.random.default_rng(seed + 1_000_000))
-        if codeword_to_blocks(widths) > codeword_to_blocks_headline(widths):
-            failures.append((seed, widths))
-    assert not failures, "%d of %d seeds fail, first (seed, widths): %r" % (
-        len(failures), len(PROPERTY_SEEDS), failures[:5])
-
-
 # --------------------------------------------------------------------------
 # The ladder's fixed points: B = 10, 16, 21, 27, 32, 38, 43, 49, 54, 60 --
 # exactly where crossbar_capacity(g) == B for each g -- map to consecutive
@@ -262,6 +243,5 @@ def test_the_ladders_fixed_points_match_crossbar_capacity(byte_width):
     blocks = next(g for g in range(1, 20) if crossbar_capacity(g) == byte_width)
     # One solid field of byte_width bytes (bit width a clean multiple of 8,
     # so codeword_fields_to_bytes_from_bits's ceil is exact) exercises the
-    # headline ladder with no isolation credit in play.
-    assert codeword_to_blocks_headline((byte_width * 8,)) == blocks
+    # ladder with no isolation credit in play.
     assert codeword_to_blocks((byte_width * 8,)) == blocks

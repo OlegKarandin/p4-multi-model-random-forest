@@ -17,13 +17,12 @@ from p4gen import switch_semantics
 # the path they always have. Explicit names, not `import *`, so the mapping
 # stays greppable.
 from p4model.target import (
-    MAX_CODEWORD_LENGTH,
+    MAX_KEY_BYTES,
     MAX_KEY_SLICE_BITS,
     TCAM_BLOCK_KEY_LENGTH,
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
     TCAM_ROWS_PER_STAGE,
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )

@@ -586,7 +586,7 @@ def test_the_row_writer_writes_no_stage_pin(tmp_path):
   assert not {"stage_pins", "stage_pin_first_refusal", "unpinnable_tables"} & set(stored)
 
 
-@pytest.mark.parametrize("error", ["CodewordTooLong", "CrossbarKeyTooWide"])
+@pytest.mark.parametrize("error", ["RangeEntriesDoNotFit", "CrossbarKeyTooWide"])
 def test_a_pricing_refusal_while_generating_is_a_generator_error_row(tmp_path, monkeypatch, error):
   """Defensive (unreachable today: training refuses these designs before selection)."""
   from p4model import errors
@@ -722,7 +722,7 @@ def test_a_field_wider_than_the_bus_is_an_infeasible_trial_with_its_overflow(mon
   trials, result = _search(monkeypatch, replacement)
   first = trials[0]
   assert first.user_attrs["crossbar_violation"] == 5.0
-  for attr in ("codeword_violation", "blocks_violation", "stages_violation"):
+  for attr in ("blocks_violation", "stages_violation"):
     assert first.user_attrs[attr] == 0.0
   assert first.values == [-1.0, -1.0, float("inf")]
   assert not early_stopping.is_feasible(first)
@@ -744,7 +744,7 @@ def test_a_phv_refusal_is_an_infeasible_trial_with_its_overflow(monkeypatch):
   trials, result = _search(monkeypatch, replacement)
   first = trials[0]
   assert first.user_attrs["crossbar_violation"] == 4.0
-  for attr in ("codeword_violation", "blocks_violation", "stages_violation"):
+  for attr in ("blocks_violation", "stages_violation"):
     assert first.user_attrs[attr] == 0.0
   assert first.values == [-1.0, -1.0, float("inf")]
   assert not early_stopping.is_feasible(first)
@@ -777,7 +777,7 @@ def test_a_no_split_tree_is_an_infeasible_trial_and_counted(monkeypatch):
   first = trials[0]
   assert first.user_attrs["no_split_tree"] is True
   assert first.user_attrs["crossbar_violation"] == 1.0
-  for attr in ("codeword_violation", "blocks_violation", "stages_violation"):
+  for attr in ("blocks_violation", "stages_violation"):
     assert first.user_attrs[attr] == 0.0
   assert first.values == [-1.0, -1.0, float("inf")]
   assert not early_stopping.is_feasible(first)

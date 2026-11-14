@@ -2,11 +2,11 @@
 64-byte-per-stage cap?
 
 WHY THIS EXISTS. Finding 1.5b: `packing.crossbar_stages_needed` checks
-`TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE` (64 bytes) but no per-stage GROUP
+`MAX_KEY_BYTES` (64 bytes) but no per-stage GROUP
 cap. Verified live against current code:
 
     codeword_bytes_to_blocks(34) = 7 groups,  codeword_bytes_to_blocks(30) = 6 groups
-    34 + 30 = 64 bytes  ->  passes TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE (64)
+    34 + 30 = 64 bytes  ->  passes MAX_KEY_BYTES (64)
     crossbar_stages_needed([(7, 34), (6, 30)])
         -> StagePlan(occupied=1, depth=1, indices=frozenset({0}), blocks=13)
 
@@ -59,7 +59,17 @@ import pandas as pd
 from scripts.tcam_stretch_sweep import measure, synthetic_program
 from p4gen.p4_compile import compile_p4
 from p4model.packing import crossbar_stages_needed
-from p4model.tables import codeword_bytes_to_blocks
+from p4model.target import TCAM_BLOCK_KEY_LENGTH
+import math
+
+
+def codeword_bytes_to_blocks(key_bytes):
+    """TCAM blocks a SINGLE key_bytes-byte solid crossbar field spans under the
+    pre-2026-09-21 model, ceil(key_bytes * 8 / 44): the one shape that model and
+    the crossbar-byte ledger price identically. Moved here from p4model.tables
+    (design review decision 6j): no production code used it."""
+    return math.ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH)
+
 
 DEFAULT_OUT = 'results/tcam_group_cap_probe.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_group_cap_probe'

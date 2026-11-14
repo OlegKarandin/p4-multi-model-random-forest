@@ -35,7 +35,7 @@ from p4gen.p4_compile import P4CompileTimeout, compile_p4, read_compilation_succ
 from p4gen.p4_ground_truth import (
     committed_blocks, committed_stages_real, p4c_numbers)
 from p4gen.p4_replay import carries_stage_pins, model_breakdown, parse_program
-from p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
+from p4model.target import TOFINO_PIPELINE_STAGES
 from src.reporting.manifest import git_provenance
 from src.training.campaign_run import (
     atomic_write_bytes, atomic_write_text, canonical_json, run_paths)
@@ -437,8 +437,7 @@ def _rescored_model(paths, row_id, model):
         'model_paths_differ': ((fresh['stage_depth'], fresh['blocks'])
                                != (model.get('training_stage_depth'),
                                    model.get('training_blocks'))),
-        'hw_feasible': bool(fresh['stage_depth'] <= TOFINO_PIPELINE_STAGES
-                            and (model.get('codeword_bits') or 0) <= MAX_CODEWORD_LENGTH),
+        'hw_feasible': bool(fresh['stage_depth'] <= TOFINO_PIPELINE_STAGES),
         'budget_feasible': model.get('M') is None or fresh['blocks'] <= model['M'],
     })
     return model

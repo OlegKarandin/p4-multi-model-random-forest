@@ -59,7 +59,18 @@ import pandas as pd
 from scripts.tcam_stretch_sweep import as_fields, key_bytes_for, synthetic_program
 from scripts.tcam_version_sweep import measured_start_group, read_committed
 from p4gen.p4_compile import compile_p4
-from p4model.tables import codeword_bytes_to_blocks, codeword_to_blocks
+from p4model.tables import codeword_to_blocks
+from p4model.target import TCAM_BLOCK_KEY_LENGTH
+import math
+
+
+def codeword_bytes_to_blocks(key_bytes):
+    """TCAM blocks a SINGLE key_bytes-byte solid crossbar field spans under the
+    pre-2026-09-21 model, ceil(key_bytes * 8 / 44): the one shape that model and
+    the crossbar-byte ledger price identically. Moved here from p4model.tables
+    (design review decision 6j): no production code used it."""
+    return math.ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH)
+
 
 DEFAULT_OUT = 'results/tcam_spacer_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_spacer_sweep'

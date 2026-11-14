@@ -37,8 +37,8 @@ class ResourceUsage:
                   actually shrinks, and the one src/training/align_budget.py
                   gates on. Under 'disjoint' the two models keep independent
                   codewords and no single value is "the" codeword: the MAX of
-                  the two is reported, because that is the one the 512-bit
-                  MAX_CODEWORD_LENGTH limit binds on. Do NOT derive disjoint
+                  the two is reported, because that is the widest
+                  code any one key carries (reporting only; no limit reads it). Do NOT derive disjoint
                   block counts from it -- each model's own factor is applied
                   to its own trees (see the disjoint branch below).
 
@@ -310,8 +310,8 @@ def assemble_usage(pool):
   # cost a block less than alone). This runs once per call, i.e. once per trial; it is
   # never inside threshold alignment's loop, which prices keys with
   # the ladder codeword_to_blocks alone. A range table keys one meta.<feature>_val field
-  # of FEATURE_VALUE_BIT_WIDTH bits -- 2 bytes -- so the range pool needs none
-  # of this.
+  # of FEATURE_VALUE_BIT_WIDTH bits -- 4 crossbar byte slots (tables.range_key_fields_for)
+  # -- so the range pool needs none of this.
   ternary_plan = crossbar_stages_needed(
       ternary_table_specs,
       readiness_levels=ternary_levels,

@@ -26,16 +26,14 @@ from sklearn.metrics import accuracy_score
 
 import numpy as np
 
-from p4gen.build_p4_script import (
-    dt_thresholds_float_to_int, MAX_CODEWORD_LENGTH,
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+from p4gen.build_p4_script import dt_thresholds_float_to_int
 from p4gen.evaluation import (
-    CodewordTooLong, CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
-    multi_model_memory_evaluation)
+    CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES, multi_model_memory_evaluation)
 from p4gen.switch_semantics import switch_predict
-from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
+from p4model.errors import (ActionDataTooWide, NoSplitTree, PhvContainersExhausted,
+                            RangeEntriesDoNotFit)
 from p4model.program import PER_TREE_ENCODING
-from p4model.target import ACTION_DATA_BUS_BYTES
+from p4model.target import ACTION_DATA_BUS_BYTES, MAX_KEY_BYTES
 from src.training.threshold_alignment import align_with_policy
 from src.training import early_stopping
 from src.training import trial_selection
@@ -242,11 +240,11 @@ def rf_params_from_params(params, suffix):
 
 def _crossbar_violation(byte_width):
     """crossbar_violation for a CrossbarKeyTooWide trial: the byte overflow,
-    floored at 1. lanes.table_blocks also raises for a key of <= 64 bytes
+    floored at 1. lanes.table_blocks also raises for a key of <= MAX_KEY_BYTES bytes
     with no crossbar allocation (xbar.alone_blocks), whose overflow would
     read <= 0 -- i.e.
     feasible -- to early_stopping.constraint_values."""
-    return max(1, byte_width - TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+    return max(1, byte_width - MAX_KEY_BYTES)
 
 
 def train_multi_RF_Optuna_multi_constrained(
@@ -359,16 +357,19 @@ def train_multi_RF_Optuna_multi_constrained(
         try:
             usage = multi_model_memory_evaluation(
                 model_A, model_B, features_A, features_B, encoding)
-        except CodewordTooLong as e:
-            trial.set_user_attr('codeword_violation', e.args[1] - MAX_CODEWORD_LENGTH)
-            trial.set_user_attr('blocks_violation', 0.0)
-            trial.set_user_attr('crossbar_violation', 0.0)
-            trial.set_user_attr('stages_violation', 0.0)
-            return -1.0, -1.0, float('inf')
         except CrossbarKeyTooWide as e:
             trial.set_user_attr('crossbar_violation',
                                 _crossbar_violation(e.args[1]))
-            trial.set_user_attr('codeword_violation', 0.0)
+            trial.set_user_attr('blocks_violation', 0.0)
+            trial.set_user_attr('stages_violation', 0.0)
+            return -1.0, -1.0, float('inf')
+        except RangeEntriesDoNotFit as e:
+            # A range table whose real entries need more rows than the blocks p4c
+            # commits for its declared size can hold (decision 6d,
+            # tables.range_deployment_overflow): undeployable. Reported through the
+            # crossbar attribute until the constraint attributes are renamed; the
+            # violation is the rows short.
+            trial.set_user_attr('crossbar_violation', float(max(1, e.args[1])))
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
@@ -380,7 +381,6 @@ def train_multi_RF_Optuna_multi_constrained(
             # is the bytes over the bus, at least 1.
             trial.set_user_attr('crossbar_violation',
                                 float(max(1, e.args[1] - ACTION_DATA_BUS_BYTES)))
-            trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
@@ -390,7 +390,6 @@ def train_multi_RF_Optuna_multi_constrained(
             # the crossbar attribute like the action-width refusal; the violation
             # is the number of containers short.
             trial.set_user_attr('crossbar_violation', float(max(1, e.args[1])))
-            trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
@@ -400,13 +399,11 @@ def train_multi_RF_Optuna_multi_constrained(
             # arm's trial table (`no_split_tree`); the other arms keep their header.
             trial.set_user_attr('no_split_tree', True)
             trial.set_user_attr('crossbar_violation', 1.0)
-            trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
 
         if usage.blocks > max_blocks:
-            trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', usage.blocks - max_blocks)
             trial.set_user_attr('crossbar_violation', 0.0)
             trial.set_user_attr('stages_violation', 0.0)
@@ -427,7 +424,6 @@ def train_multi_RF_Optuna_multi_constrained(
         # stages than predicted, never fewer); passing this check is NOT a
         # guarantee the real compile fits within TOFINO_PIPELINE_STAGES.
         if usage.stage_depth > TOFINO_PIPELINE_STAGES:
-            trial.set_user_attr('codeword_violation', 0.0)
             trial.set_user_attr('blocks_violation', 0.0)
             trial.set_user_attr('crossbar_violation', 0.0)
             trial.set_user_attr('stages_violation', usage.stage_depth - TOFINO_PIPELINE_STAGES)
@@ -465,7 +461,6 @@ def train_multi_RF_Optuna_multi_constrained(
         # ResourceUsage already carries both; only the recording was missing.
         trial.set_user_attr('stages', int(usage.stages))
         trial.set_user_attr('stage_depth', int(usage.stage_depth))
-        trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 0.0)
         trial.set_user_attr('crossbar_violation', 0.0)
         trial.set_user_attr('stages_violation', 0.0)
@@ -501,8 +496,8 @@ def train_multi_RF_Optuna_multi_constrained(
         except Exception:
             pass  # Ignore if enqueue fails (e.g. bounds changed between k)
 
-    # catch=() deliberately: the ONLY expected RuntimeErrors are the codeword
-    # (CodewordTooLong), crossbar-width (CrossbarKeyTooWide), no-split-tree
+    # catch=() deliberately: the ONLY expected RuntimeErrors are the crossbar-width
+    # (CrossbarKeyTooWide), range-entry (RangeEntriesDoNotFit), no-split-tree
     # (NoSplitTree, every encoding) and, under per-tree codes, action-width
     # (ActionDataTooWide) and PHV (PhvContainersExhausted) violations, and the objective already handles
     # all five itself. The previous

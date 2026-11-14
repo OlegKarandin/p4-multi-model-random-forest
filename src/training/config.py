@@ -107,7 +107,7 @@ class TrainConfig:
         boxed warning is that codeword length is essentially total leaf
         count across both forests, and `joint` pools both models' leaves
         into one 512-bit codeword while `independent` never pools, so
-        raising max_depth would push `joint` toward CodewordTooLong faster
+        raising max_depth would push `joint` toward CrossbarKeyTooWide faster
         than `independent`, widening a dimension that structurally
         disadvantages the arm under study -- raising it is therefore a
         separate, explicit decision, not an automatic consequence of this

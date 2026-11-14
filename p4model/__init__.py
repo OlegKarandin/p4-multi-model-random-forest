@@ -4,7 +4,7 @@ Predicts TCAM block usage and pipeline stage depth for the table topology this
 project's generator emits, without invoking the compiler. Imports stdlib only:
 no sklearn, no numpy, no pandas, no CWD-relative file reads -- see
 tests/test_package_layout.py, which enforces exactly that."""
-from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
+from p4model.errors import CrossbarKeyTooWide, RangeEntriesDoNotFit
 from p4model.packing import StagePlan, crossbar_stages_needed, fits_two_columns
 from p4model.ranges import range_entry_count
 from p4model.registers import (

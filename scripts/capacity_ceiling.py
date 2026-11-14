@@ -121,16 +121,20 @@ from sklearn.ensemble import RandomForestClassifier
 # mattered; that module is gone, but the import-cost argument stands on its
 # own.)
 from p4gen.build_p4_script import (
-    INFINITE, MAX_CODEWORD_LENGTH, dt_thresholds_float_to_int,
+    INFINITE, MAX_KEY_BYTES, dt_thresholds_float_to_int,
     get_feature_intervals, get_joint_feature_intervals)
 from p4gen.evaluation import (
-    CodewordTooLong, CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
+    CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
     multi_model_memory_evaluation)
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.training.splits import make_task_splits
 from src.training.train_model import (
     CCP_ALPHA_MIN, MIN_SAMPLES_SPLIT_MULT_MAX, MIN_SAMPLES_SPLIT_MULT_MIN,
     min_samples_split_from_mult)
+
+# The 512-bit codeword limit the model no longer has (decision 6b: it was 8 x the
+# 64-byte key limit): this analysis script keeps the figure as its own yardstick.
+MAX_CODEWORD_LENGTH = MAX_KEY_BYTES * 8
 
 SELECTED_FEATURES = [
     'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
@@ -228,20 +232,6 @@ def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
         # Not a codeword-length problem -- many narrow features can trip this
         # well under codeword_length's limit -- so there is nothing to
         # cross-check codeword_length against here.
-        return None
-    except CodewordTooLong as e:
-        reported = e.args[1]
-        if encoding == 'joint' and reported != codeword_length:
-            raise AssertionError(
-                'joint codeword length {} disagrees with the evaluator\'s {}'
-                .format(codeword_length, reported))
-        if encoding == 'disjoint' and reported > codeword_length:
-            # Under disjoint encoding the evaluator raises on whichever model
-            # it reaches first, so its number is one of the two per-model
-            # lengths -- never longer than the larger of them.
-            raise AssertionError(
-                'disjoint codeword length {} is below the evaluator\'s {}'
-                .format(codeword_length, reported))
         return None
 
 

@@ -45,7 +45,7 @@ from p4model.tables import (  # noqa: E402
     codeword_fields_to_bytes_from_bits, codeword_to_blocks, crossbar_capacity,
     ternary_key_field_bits)
 from p4model.target import (  # noqa: E402
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+    MAX_KEY_BYTES)
 
 SCREEN_OUT = 'results/tcam_margin_screen.csv'
 COMPILE_OUT = 'results/tcam_margin_screen_compiled.csv'
@@ -86,7 +86,7 @@ def screen(limit):
         usage = multi_model_memory_evaluation(model_app, model_ddos, names_app,
                                               names_ddos, 'disjoint')
         total = B_a + B_d
-        can_share = total <= TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+        can_share = total <= MAX_KEY_BYTES
         record = {
             'row_id': 'margin_%s_M%d_k%d_s%d' % (row['arm_slug'], row['M'], row['k'],
                                                  row['split']),

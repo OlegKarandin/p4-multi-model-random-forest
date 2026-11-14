@@ -5,6 +5,7 @@ import pathlib
 
 from p4gen import evaluation as ev
 from p4gen import build_p4_script as bps
+from p4model.errors import RangeEntriesDoNotFit
 from p4model.ranges import range_entry_count
 import pytest
 
@@ -43,7 +44,7 @@ def test_range_matching_resource_usage_uses_exact_real_interval_costs():
     assert entries == 4   # 4 physical rows, not 1 interval
     assert blocks == 1    # 4 rows fits comfortably in one 512-row block
     # one independent range table for the feature, keyed on its 16-bit value
-    assert specs == [(1, 2)]
+    assert specs == [(1, 4)]   # a 16-bit range key is 4 crossbar byte slots (6f)
 
 
 def test_expanded_rows_no_longer_drive_the_range_block_count():
@@ -55,14 +56,15 @@ def test_expanded_rows_no_longer_drive_the_range_block_count():
     # The 518 rows are real, but they are an INSERTION-time fact, and this is
     # precisely the case where the two disagree: see
     # test_range_deployment_overflow_flags_expansion_beyond_the_allocation,
-    # which keeps this fixture honest by catching the same 518-vs-512 problem
-    # in the constraint that actually owns it.
-    intervals = [(300 * i + 10, 300 * i + 300) for i in range(129)]
+    # which keeps this fixture honest by catching the same problem in the
+    # constraint that actually owns it. 126 intervals are the largest of this
+    # shape whose expansion still fits the block's 506 usable rows.
+    intervals = [(300 * i + 10, 300 * i + 300) for i in range(126)]
     feature_intervals = {"F": intervals}
     entries, blocks, specs = ev.range_matching_resource_usage(feature_intervals)
-    assert entries == 518   # still the exact expanded row count
+    assert entries == 506   # still the exact expanded row count
     assert blocks == 1      # what the compiler commits
-    assert specs == [(1, 2)]
+    assert specs == [(1, 4)]   # a 16-bit range key is 4 crossbar byte slots (6f)
 
 
 def test_range_matching_resource_usage_sums_across_features():
@@ -76,7 +78,7 @@ def test_range_matching_resource_usage_sums_across_features():
     assert entries == 6
     assert blocks == 2   # each feature's rows fit in its own 1 block
     # one independent table per feature, NOT one merged table
-    assert specs == [(1, 2), (1, 2)]
+    assert specs == [(1, 4), (1, 4)]
 
 
 def test_range_entries_counts_expanded_tcam_rows_not_intervals():
@@ -167,21 +169,6 @@ def test_ternary_matching_resource_usage_exposes_per_tree_table_specs():
     assert blocks == sum(spec[0] for spec in specs)
 
 
-def test_codeword_bytes_to_blocks_is_the_superseded_single_field_ladder():
-    # Ref 4.1 / Sec 7 "Mechanism D": one TCAM block is fed by ONE ternary
-    # crossbar group, and a group delivers 5 private bytes + 1 midbyte
-    # nibble = 44 bits = 5.5 bytes. This is codeword_bytes_to_blocks's OWN
-    # ladder, not the current per-table model (codeword_to_blocks) -- that
-    # model prices 11 crossbar bytes at 3 blocks, this one at 2 (doc §4.1).
-    # No production caller is left (audit C5 deleted packing.key_width, the
-    # last one); the probe scripts still size solid single-field keys with it,
-    # the one shape where the two rules agree.
-    assert ev.codeword_bytes_to_blocks(5) == 1
-    assert ev.codeword_bytes_to_blocks(6) == 2
-    assert ev.codeword_bytes_to_blocks(33) == 6
-    assert ev.codeword_bytes_to_blocks(34) == 7
-
-
 def test_ternary_blocks_charge_byte_rounded_key_fields_not_raw_bits():
     # Sec 7 "Mechanism D". Six features of 5 codeword bits each: 30 bits
     # total, so codeword_bits_to_blocks says ceil((30+4)/44) = 1 block. But
@@ -218,12 +205,38 @@ def test_range_deployment_overflow_flags_expansion_beyond_the_allocation():
     # fixed in the binary, so real control-plane insertion must fit INSIDE it
     # (Sec 4.2 -- the control plane gets "[Not enough space]", it never grows
     # the table). 129 intervals of this shape are priced at 1 block by the
-    # compiler, but expand to 518 physical rows at insertion time, 6 over the
-    # 512 that block holds.
+    # compiler, but expand to 518 physical rows at insertion time, 12 over the
+    # 506 usable rows that block holds (target.TCAM_USABLE_ROWS_PER_BLOCK).
     intervals = [(300 * i + 10, 300 * i + 300) for i in range(129)]
-    entries, blocks, _ = ev.range_matching_resource_usage({"F": intervals})
-    assert (entries, blocks) == (518, 1)
-    assert ev.range_deployment_overflow({"F": intervals}) == {"F": (518, 512)}
+    assert ev.range_deployment_overflow({"F": intervals}) == {"F": (518, 506)}
+    # range_matching_resource_usage enforces it (decision 6d).
+    with pytest.raises(RangeEntriesDoNotFit) as excinfo:
+        ev.range_matching_resource_usage({"F": intervals})
+    assert excinfo.value.args[1] == 12
+
+
+def test_range_entries_over_the_usable_rows_are_refused_below_512():
+    # 127 intervals expand to 510 rows: inside a block's 512 rows but past its
+    # 506 usable ones (insertion-order fragmentation), so refused; 126 expand to
+    # exactly 506 and fit.
+    fits = [(300 * i + 10, 300 * i + 300) for i in range(126)]
+    over = [(300 * i + 10, 300 * i + 300) for i in range(127)]
+    assert ev.range_matching_resource_usage({"F": fits})[0] == 506
+    with pytest.raises(RangeEntriesDoNotFit) as excinfo:
+        ev.range_matching_resource_usage({"F": over})
+    assert excinfo.value.args[1] == 4
+
+
+def test_a_478_interval_table_compiles_to_fewer_rows_than_it_really_needs():
+    # p4c commits ceil(1192 / 512) = 3 blocks for 478 declared intervals (1,518
+    # usable rows), but their real expansion is 1,609 rows: the compiler's
+    # allocation is smaller than the control plane's need, the case the check
+    # exists for.
+    intervals = [(130 * i + 3, 130 * i + 128) for i in range(478)]
+    assert ev.range_deployment_overflow({"F": intervals}) == {"F": (1609, 1518)}
+    with pytest.raises(RangeEntriesDoNotFit) as excinfo:
+        ev.range_matching_resource_usage({"F": intervals})
+    assert excinfo.value.args[1] == 91
 
 
 def test_range_deployment_overflow_is_empty_when_the_real_rows_fit():
@@ -235,7 +248,7 @@ def test_range_deployment_overflow_is_empty_when_the_real_rows_fit():
 def test_stage_shards_rejects_a_key_wider_than_one_stage_crossbar():
     # F3: splitting a table's ROWS across stages is real; splitting its KEY
     # is not -- a stage's crossbar cannot deliver more than
-    # TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes, and the compiler rejects
+    # MAX_KEY_BYTES bytes, and the compiler rejects
     # such a table outright rather than spreading it over stages.
     with pytest.raises(ev.CrossbarKeyTooWide) as excinfo:
         ev._stage_shards(1, 100)
@@ -253,8 +266,8 @@ def test_crossbar_stages_needed_propagates_key_too_wide():
 def test_ternary_matching_resource_usage_rejects_many_narrow_features():
     # Reachable shape: the crossbar allocates PER FIELD, so 100 features x 2
     # codeword bits each = 100 crossbar bytes, well under the separate
-    # MAX_CODEWORD_LENGTH (512-bit) guard (this codeword is only 200 bits) --
-    # so the codeword-length guard alone would not have caught this table.
+    # MAX_KEY_BYTES-bytes limit counted per field, not by raw codeword bits (this
+    # codeword is only 200 bits, which a bit limit would have let through).
     feature_intervals = {"F{}".format(i): [(0, 0), (0, 0), (0, 0)]
                           for i in range(100)}  # 3 intervals -> 2 bits each
     codewords = {0: {"0" * 200: 0}}
@@ -404,7 +417,7 @@ def test_crossbar_stages_needed_output_respects_all_three_limits():
     # emitted stage is a physically legal stage, so the count is an upper
     # bound on the optimum (never an under-count).
     #
-    # Byte width is capped at TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE (Task 10,
+    # Byte width is capped at MAX_KEY_BYTES (Task 10,
     # F3): a table whose key is wider than one stage's crossbar budget is not
     # a splittable-across-stages shape at all -- crossbar_stages_needed now
     # raises CrossbarKeyTooWide for it instead of pricing a design the
@@ -412,15 +425,15 @@ def test_crossbar_stages_needed_output_respects_all_three_limits():
     import random
     rnd = random.Random(1234)
     for _ in range(200):
-        specs = [(rnd.randint(1, 30), rnd.randint(1, bps.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE))
+        specs = [(rnd.randint(1, 30), rnd.randint(1, bps.MAX_KEY_BYTES))
                  for _ in range(rnd.randint(1, 20))]
         stages = ev.crossbar_stages_needed(specs).occupied
         # A valid packing can never use fewer stages than either
         # single-dimension lower bound.
         assert stages >= math.ceil(sum(b for b, _ in specs) / bps.TCAM_BLOCKS_PER_STAGE)
         assert stages >= math.ceil(
-            sum(min(w, bps.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE) for _, w in specs)
-            / bps.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+            sum(min(w, bps.MAX_KEY_BYTES) for _, w in specs)
+            / bps.MAX_KEY_BYTES)
         assert stages >= math.ceil(len(specs) / bps.TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
 
@@ -580,8 +593,9 @@ def test_single_model_memory_evaluation_tuple_is_self_consistent():
     assert ternary_blocks == sum(b for b, _ in ternary_table_specs)
     assert range_blocks == sum(b for b, _ in range_table_specs)
     assert range_entries >= len(range_table_specs)
-    assert all(width == ev.RANGE_TABLE_KEY_BYTES for _, width in range_table_specs)
-    assert 0 < codeword_length <= bps.MAX_CODEWORD_LENGTH
+    # a 16-bit range key is 4 crossbar byte slots: RANGE_LO + RANGE_HI per byte
+    assert all(width == 4 for _, width in range_table_specs)
+    assert 0 < codeword_length
 
 
 def test_single_model_memory_evaluation_raises_on_colliding_feature_names():
@@ -804,7 +818,7 @@ def test_exact_match_resource_usage_sums_across_multiple_trees():
 # printed from this exact fixture). Only this first value moved -- nothing
 # else in this tuple depends on range_entries.
 _PRE_TASK_SINGLE_APP = (52, 4, 11, 2, 9)          # range_entries, range_blocks, ternary_entries, ternary_blocks, codeword_length
-_PRE_TASK_SINGLE_APP_RANGE_SPECS = [(1, 2)] * 4
+_PRE_TASK_SINGLE_APP_RANGE_SPECS = [(1, 4)] * 4   # 4 crossbar byte slots each (6f)
 _PRE_TASK_SINGLE_APP_TERNARY_SPECS = [(1, 4), (1, 4)]
 # stage_depth moved 3 -> 6 on both when the readiness origin was corrected to
 # FLOW_HASH_LEVEL = 3 and stage_depth started counting VOTE_EPILOGUE_STAGES
@@ -964,8 +978,8 @@ def test_range_table_specs_report_the_real_key_byte_width():
 
     assert blocks_8 == 1
     assert blocks_16 == 1
-    assert specs_8 == [(1, 1)]                 # 1 block, 1 crossbar byte
-    assert specs_16 == [(1, 2)]                # 1 block, 2 crossbar bytes
+    assert specs_8 == [(1, 2)]                 # 1 block, 1 key byte = 2 crossbar byte slots
+    assert specs_16 == [(1, 4)]                # 1 block, 2 key bytes = 4 slots
 
 
 def test_range_matching_resource_usage_default_width_is_the_project_16_bit():
@@ -1432,7 +1446,6 @@ def test_resource_usage_carries_the_codeword_length_on_both_encodings():
     for encoding in ('joint', 'disjoint'):
         usage = ev.multi_model_memory_evaluation(clf_app, clf_ddos, names, names, encoding)
         assert usage.codeword_length > 0
-        assert usage.codeword_length <= bps.MAX_CODEWORD_LENGTH
 
 
 # ---------------------------------------------------------------------------

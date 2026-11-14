@@ -24,16 +24,17 @@ import functools
 import math
 from dataclasses import dataclass
 
-from p4model import lanes, xbar
+from p4model import lanes, target, xbar
 from p4model.errors import CrossbarKeyTooWide
+from p4model.tables import check_key_bytes
 from p4model.target import (
     ACTION_DATA_BUS_WORDS,
     ACTION_RAM_WORD_BYTES,
+    RANGE_KEY_SLOTS_PER_BYTE,
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
     TCAM_ROWS_PER_STAGE,
     TERNARY_CROSSBAR_GROUPS_PER_STAGE,
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE,
     TERNARY_CROSSBAR_STAGE_BYTES,
 )
@@ -174,7 +175,7 @@ def _stage_shards(block_count, byte_width):
   table's full key width. Splitting a table's KEY across stages is not real: a
   key is one indivisible match, TCAM compares a whole row in one clock, and a
   stage's crossbar physically cannot deliver more than
-  TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes -- a table whose key exceeds that
+  target.MAX_KEY_BYTES bytes -- a table whose key exceeds that
   budget is rejected by the compiler outright, not spread across stages. Raise
   rather than silently pricing that impossible design as
   `ceil(byte_width / budget)` stages.
@@ -197,11 +198,7 @@ def _stage_shards(block_count, byte_width):
   prediction. It is the one non-monotone (cost-lowering) change in this work,
   licensed because it corrects rounding rather than relaxing a measured
   limit."""
-  if byte_width > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
-    raise CrossbarKeyTooWide(
-        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
-        "compiler rejects this table rather than splitting it across stages"
-        % (byte_width, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), byte_width)
+  check_key_bytes(byte_width)
   shards, remaining = [], block_count
   while remaining > TCAM_ROWS_PER_STAGE:
     shards.append((TCAM_ROWS_PER_STAGE, byte_width))
@@ -248,7 +245,8 @@ def _field_units(table_specs, key_fields, key_slices, levels, priorities):
       raise CrossbarKeyTooWide(
           "table %d's key of %d bytes does not fit one stage's ternary crossbar"
           % (idx, byte_width), byte_width)
-    units.extend(_row_chunks(idx, block_count, max(1, per_row), fields, key,
+    units.extend(_row_chunks(idx, _rows_of(block_count, max(1, per_row)),
+                             max(1, per_row), fields, key,
                              levels[idx], priorities[idx]))
   return units
 
@@ -258,12 +256,27 @@ def _alone_blocks(key):
   return xbar.alone_blocks(key) if key else 1
 
 
-def _row_chunks(idx, block_count, per_row, fields, bits, level, priority):
-  """One table's _Units: the whole table, or -- charged more than one stage's
-  TCAM_BLOCKS_PER_STAGE -- chunks of whole 512-row words (per_row blocks
-  each) that each fit a stage; every chunk keeps the full key."""
+def _rows_of(block_count, per_row):
+  """A table's 512-row words: its declared blocks over its key's price per word."""
+  return max(1, math.ceil(block_count / per_row))
+
+
+def _row_chunks(idx, rows, per_row, fields, bits, level, priority):
+  """One table's _Units: the whole table (`rows` 512-row words, each costing
+  `per_row` blocks), or -- charged more than one stage's TCAM_BLOCKS_PER_STAGE --
+  chunks of whole words that each fit a stage; every chunk keeps the full key.
+
+  Two splits exist and neither is exercised by the campaign: a table of more
+  than 24 blocks (more than one stage's TCAM_BLOCKS_PER_STAGE) is cut into
+  stage-sized chunks of floor(24 / per_row) words -- unreachable at this
+  project's scale, no design has a tree that wide; and a chunk of more than
+  12 blocks (a column, TCAM_ROWS_PER_STAGE) is cut again into 12-block column
+  shards by _stage_shards, which rests on ONE compile
+  (scripts/tcam_stage_shard_probe.py: a 13-block table places 12 | 1 in one
+  stage). The paths are kept so an unusually wide table is still priced, not
+  refused."""
   units = []
-  remaining_rows = max(1, math.ceil(block_count / per_row))
+  remaining_rows = rows
   rows_per_chunk = max(1, TCAM_BLOCKS_PER_STAGE // per_row)
   chunk = 0
   while True:
@@ -375,8 +388,8 @@ def _packed_units(table_specs, key_fields, key_bytes, levels, priorities):
           % (idx, len(key), TERNARY_CROSSBAR_GROUPS_PER_STAGE), byte_width)
     fields = (key_fields[idx] if key_fields is not None
               else frozenset({(("<private>", idx), byte_width)}))
-    units.extend(_row_chunks(idx, block_count, per_row, fields, key,
-                             levels[idx], priorities[idx]))
+    units.extend(_row_chunks(idx, _rows_of(block_count, per_row), per_row, fields,
+                             key, levels[idx], priorities[idx]))
   return units
 
 
@@ -409,8 +422,11 @@ def _stage_state(seed_fields, units, mode):
   mutated once cached -- or None as _crossbar_stage does."""
   if not units:
     crossbar = xbar.StageXbar(tie='whole_first')
-    for index, (_, field_bytes) in enumerate(seed_fields):
-      if not crossbar.allocate(xbar.range_key(index, field_bytes)):
+    for index, (_, field_slots) in enumerate(seed_fields):
+      # A range field's size is counted in crossbar byte SLOTS (RANGE_LO + RANGE_HI
+      # per key byte, tables.range_key_fields_for), xbar.range_key takes key bytes.
+      if not crossbar.allocate(
+          xbar.range_key(index, field_slots // RANGE_KEY_SLOTS_PER_BYTE)):
         return None
     return crossbar, {}, {}
   previous = _stage_state(seed_fields, units[:-1], mode)
@@ -430,23 +446,6 @@ def _stage_state(seed_fields, units, mode):
   per_row = dict(per_row)
   per_row[table_idx] = xbar.blocks_per_row(key_bytes)
   return crossbar, numbering, per_row
-
-
-def stage_key_prices(keys):
-  """Blocks per 512-row word of each of `keys` (field-bit tuples, distinct
-  keys sharing no field) placed in that order in one empty stage, as p4c's
-  ternary crossbar allocates them (_crossbar_stage, mode 'fields'; each key
-  laid out by lanes.key_fields), or None when some key does not fit. For the
-  scripts that score single stages (tcam_table_scoreboard,
-  tcam_mixed_key_cap_sweep); the lane function _stage_key_prices it replaces
-  was deleted with the lane stage simulation (2026-11-13)."""
-  units = tuple((index, tuple(((index, field), slices) for field, slices
-                              in lanes.key_fields(bits)), 1)
-                for index, bits in enumerate(keys))
-  per_row = _crossbar_stage((), units, 'fields')
-  if per_row is None:
-    return None
-  return tuple(per_row[index] for index in range(len(keys)))
 
 
 def _crossbar_stage_test(units, seed, mode='packed'):
@@ -801,7 +800,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   def load(shard):
     blocks, width, _, _ = shard
     return max(blocks / TCAM_BLOCKS_PER_STAGE,
-               width / TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
+               width / target.MAX_KEY_BYTES,
                1 / TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
   def bus_words(table_idx):

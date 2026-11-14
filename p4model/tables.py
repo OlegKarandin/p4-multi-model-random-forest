@@ -8,7 +8,8 @@ range_entry_count gives -- those answer different questions, and
 range_deployment_overflow exists to keep them apart."""
 import math
 
-from p4model.errors import CodewordTooLong, CrossbarKeyTooWide
+from p4model import target
+from p4model.errors import CrossbarKeyTooWide, RangeEntriesDoNotFit
 from p4model.names import normalise_feature_name
 from p4model.program import FEATURE_VALUE_BIT_WIDTH, per_task_field
 from p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_count
@@ -16,11 +17,19 @@ from p4model.target import (
     ACTION_RAM_WORD_BYTES,
     CODEWORD_KEY_OVERHEAD_BITS,
     CROSSBAR_PRIVATE_BYTES_PER_GROUP,
-    MAX_CODEWORD_LENGTH,
+    RANGE_KEY_SLOTS_PER_BYTE,
     TCAM_BLOCK_KEY_LENGTH,
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
+    TCAM_USABLE_ROWS_PER_BLOCK,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
+
+
+def _usable_range_rows(interval_count, key_bit_width):
+  """Rows a range table of `interval_count` declared intervals can actually hold:
+  the blocks p4c commits for it (compiler_range_rows) x usable rows per block."""
+  return (math.ceil(compiler_range_rows(interval_count, key_bit_width)
+                    / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
+          * TCAM_USABLE_ROWS_PER_BLOCK)
 
 
 def range_deployment_overflow(feature_intervals,
@@ -42,21 +51,16 @@ def range_deployment_overflow(feature_intervals,
   the calibration study clears its allocation by at least 1.66x, so this is a
   guard against a tail, not a routine constraint.
 
-  Deliberately caller-less, the same precedent exact_match_resource_usage
-  sets: nothing in the Optuna loop or the P4 generator calls this as a
-  build-time assertion -- its only callers are the evaluation.py re-export
-  and tests/test_evaluation.py. It answers the deployability question
-  analytically and is kept for review and tests, not wired into the commit
-  path where a design is actually accepted. If the tail above is ever
-  observed to bind in practice, this is where the guard would be added;
-  until then it is a documented oracle, not an enforced one."""
+  A committed block holds TCAM_USABLE_ROWS_PER_BLOCK usable rows (506, not
+  512: insertion-order fragmentation can strand a few). range_matching_
+  resource_usage enforces this (decision 6d) and raises RangeEntriesDoNotFit
+  when any table overflows; this function is the oracle it shares with the
+  tests and the review scripts."""
   nibble_widths = nibble_widths_for(key_bit_width)
   overflow = {}
   for feature, intervals in feature_intervals.items():
     needed = sum(range_entry_count(lo, hi, nibble_widths) for lo, hi in intervals)
-    available = (math.ceil(compiler_range_rows(len(intervals), key_bit_width)
-                           / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
-                 * TERNARY_MATCHING_ENTRIES_PER_BLOCK)
+    available = _usable_range_rows(len(intervals), key_bit_width)
     if needed > available:
       overflow[feature] = (needed, available)
   return overflow
@@ -107,8 +111,11 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   range_entries, range_blocks = 0, 0
   range_table_specs = []
 
-  key_bytes = math.ceil(key_bit_width / 8)
+  # A range key's crossbar byte SLOTS: RANGE_LO + RANGE_HI per key byte, the unit
+  # the port's range_key uses (decision 6f).
+  key_bytes = math.ceil(key_bit_width / 8) * RANGE_KEY_SLOTS_PER_BYTE
   nibble_widths = nibble_widths_for(key_bit_width)
+  rows_over, overflowing = 0, []
 
   for feature in feature_intervals:
     total_rows = 0
@@ -123,9 +130,21 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
         compiler_range_rows(len(feature_intervals[feature]), key_bit_width)
         / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
 
+    usable = _usable_range_rows(len(feature_intervals[feature]), key_bit_width)
+    if total_rows > usable:
+      rows_over += total_rows - usable
+      overflowing.append(feature)
+
     range_entries += total_rows
     range_blocks += feature_blocks
     range_table_specs.append((feature_blocks, key_bytes))
+
+  if rows_over:
+    raise RangeEntriesDoNotFit(
+        "the real range entries of %s need %d more TCAM rows than the blocks p4c "
+        "commits for them hold (%d usable rows per block); the control plane "
+        "could not install them" % (', '.join(overflowing), rows_over,
+                                    TCAM_USABLE_ROWS_PER_BLOCK), rows_over)
 
   return range_entries, range_blocks, range_table_specs
 
@@ -172,10 +191,11 @@ def codeword_bits_to_blocks(codeword_length):
   would span under the retired band model (raw bits, version overhead
   included) -- NOT what alignment optimises against any more;
   codeword_to_blocks prices per-feature crossbar bytes instead (see its own
-  docstring). This function survives for two reasons only: codeword_to_blocks
-  and codeword_to_blocks_headline both special-case the empty key to
-  codeword_bits_to_blocks(0), since a version field still needs a physical
-  block even when the key claims none; and src/reporting/replay_scoring.py
+  docstring). This function survives for two reasons only: it is the
+  empty-key floor (codeword_to_blocks and lanes.table_blocks special-case the
+  empty key to codeword_bits_to_blocks(0), since a version field still needs a
+  physical block even when the key claims none, and this is the only place
+  target.TCAM_BLOCK_KEY_LENGTH is read); and src/reporting/replay_scoring.py
   still derives its (unread) band_factor_before/after columns from it.
 
   (Was `band_factor` until 2026-09-14. Renamed, not changed: the name now
@@ -233,46 +253,11 @@ def crossbar_capacity(g):
   is exactly `crossbar_capacity(g)` for its g, i.e. the largest key that g
   blocks still hold (test_the_ladders_fixed_points_match_crossbar_capacity).
 
-  g = 0 deliberately returns -1, not 0: `codeword_to_blocks_headline`'s
-  empty-key note depends on the g = 0 candidate failing outright (a B = 0 key
-  still needs a physical block for --version--, so "0 blocks satisfy B = 0"
+  g = 0 deliberately returns -1, not 0: the empty-key case of
+  `codeword_to_blocks` depends on the g = 0 candidate failing outright (a B = 0
+  key still needs a physical block for --version--, so "0 blocks satisfy B = 0"
   must never look true here)."""
   return CROSSBAR_PRIVATE_BYTES_PER_GROUP * g + (g - 1) // 2
-
-
-def codeword_to_blocks_headline(field_bit_widths):
-  """The Sec 13.1 headline model, `S = 0` form -- the one sentence the paper
-  states: `blocks(B) = min g : 5g + floor((g - 1) / 2) >= B`, i.e. the
-  smallest `g` for which `crossbar_capacity(g) >= B`.
-
-  This is `codeword_to_blocks` with the Sec 2.3 isolation credit switched
-  off -- the conservative arm of the refinement layer (Sec 13.1's "Off" row):
-  exact on 92 of the 100 archived classification tables, over by exactly one
-  block per tree on the other 8 (the two 33-byte, 15-feature keys), and NEVER
-  observed to under-predict across 405 table observations as a first or only key (12 scoreboard rows
-  are priced as later keys beside another key, 7 of them inside the 389; the
-  stage simulation -- the ternary crossbar port, packing._crossbar_stage, since
-  2026-11-13 -- handles those, not this function --
-  scripts/tcam_table_scoreboard.py).
-  `codeword_to_blocks`
-  never returns MORE than this function does -- see
-  test_the_isolation_refinement_never_raises_the_headline_price.
-
-  The empty-key case (`field_bit_widths == ()`, or any width multiset whose
-  bytes sum to 0) is special-cased rather than left to the ladder: `g = 0` is
-  the only candidate the ladder would try before `g = 1`, and
-  `crossbar_capacity(0) == -1 < 0` is false however B = 0 is compared against
-  it, so the ladder's own domain has no g = 0 answer to B = 0 -- a version
-  field still needs a physical block even when the key itself claims none.
-  `codeword_bits_to_blocks(0)` is that answer (1), kept in exactly one place
-  so this function and codeword_to_blocks agree on it by construction."""
-  key_bytes = codeword_fields_to_bytes_from_bits(field_bit_widths)
-  if key_bytes == 0:
-    return codeword_bits_to_blocks(0)
-  g = 1
-  while crossbar_capacity(g) < key_bytes:
-    g += 1
-  return g
 
 
 def tail_is_isolatable(field_bits):
@@ -348,13 +333,26 @@ def tail_is_isolatable(field_bits):
   return False                        # index == 3
 
 
+def check_key_bytes(table_bytes):
+  """CrossbarKeyTooWide when one table's key exceeds target.MAX_KEY_BYTES (the one
+  key limit, decision 6a; read through the module so a test can move it)."""
+  if table_bytes > target.MAX_KEY_BYTES:
+    raise CrossbarKeyTooWide(
+        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
+        "compiler rejects this table rather than splitting it across stages"
+        % (table_bytes, target.MAX_KEY_BYTES), table_bytes)
+
+
 def codeword_to_blocks(field_bit_widths):
   """TCAM blocks ONE table word of this key spans, version field included --
-  THE LADDER: a byte-count estimate (Sec 2.2/13.1's ledger, headline ladder
-  codeword_to_blocks_headline plus the Sec 2.3 isolation credit, capped at one
-  nibble-clean field per Sec 6.1 amendment 2). Used by threshold alignment
-  (align_budget). The production per-table
-  price is lanes.table_blocks (2026-10-04).
+  THE LADDER: a byte-count estimate (Sec 2.2/13.1's ledger: the smallest g
+  with crossbar_capacity(g) >= B, plus the Sec 2.3 isolation credit, capped at
+  one nibble-clean field per Sec 6.1 amendment 2). Used by threshold alignment
+  (align_budget). The production per-table price is lanes.table_blocks
+  (2026-10-04). Pure arithmetic: it does NOT apply target.MAX_KEY_BYTES, because
+  threshold alignment prices pooled keys with it and its property tests probe keys
+  past the limit; the refusals (check_key_bytes) sit in the pricing paths that
+  production takes. crossbar_capacity(12) = 65 is the ladder's own top step.
 
   (This replaces the retired offset-taking `codeword_to_blocks` of
   2026-09-14: reading p4c's own assembly (2026-09-20 rewrite design Sec 2)
@@ -402,8 +400,8 @@ def codeword_to_blocks(field_bit_widths):
   clause present or absent.
 
   The empty-key case is a real early return, not something the ladder
-  happens to produce -- see codeword_to_blocks_headline's docstring for why
-  `g = 0` cannot answer `B = 0` within the ladder's own domain."""
+  happens to produce -- see crossbar_capacity's docstring for why `g = 0`
+  cannot answer `B = 0` within the ladder's own domain."""
   key_bytes = codeword_fields_to_bytes_from_bits(field_bit_widths)
   if key_bytes == 0:
     return codeword_bits_to_blocks(0)
@@ -418,38 +416,6 @@ def codeword_to_blocks(field_bit_widths):
     if 2 * overflow - credit + 1 <= g:
       return g
     g += 1
-
-
-def codeword_bytes_to_blocks(key_bytes):
-  """TCAM blocks a SINGLE key_bytes-byte-wide crossbar field would span,
-  under the pre-2026-09-21 model: ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH).
-
-  SUPERSEDED for classification tables, which key several per-feature fields
-  at once and are priced by lanes.table_blocks (ladder: codeword_to_blocks's
-  crossbar-byte ledger) instead: doc §4.1's measured ladder disagrees with this function from 11
-  bytes up (11 -> 3 blocks there, 2 here; 33 needs the Sec 2.3 isolation
-  credit to reach 6, which this function reaches only because its own
-  rounding is cruder). No production code calls it since audit C5
-  (2026-09-28) deleted its last caller, packing.key_width's range-pool
-  branch; the probe scripts (tcam_offset_harvest, tcam_spacer_sweep,
-  tcam_version_sweep, tcam_group_cap_probe) still use it to size SOLID
-  single-field keys, the one shape both rules price identically, since there
-  is no second field for the crossbar-byte ledger's per-field rounding to
-  diverge on.
-
-  (Was `crossbar_block_width` until 2026-09-14. Renamed, not changed: the name
-  now states what it takes -- crossbar key BYTES -- so the decomposition
-  fields -> bytes -> blocks reads in one direction. It carries NO version
-  charge: this function prices a key standalone, and what a key pays when it
-  is placed behind a different key in its stage is a different quantity
-  computed by a different module -- see packing.crossbar_stages_needed's
-  ordered stage simulation, which since 2026-11-13 is the ternary crossbar
-  port (packing._crossbar_stage, xbar.py).)
-
-  One block is fed by exactly one crossbar group, and a group delivers 5
-  private bytes + 1 midbyte nibble = TCAM_BLOCK_KEY_LENGTH bits = 5.5 BYTES
-  (reviews/p4_tofino_reference.md §4.1.1)."""
-  return math.ceil(key_bytes * 8 / TCAM_BLOCK_KEY_LENGTH)
 
 
 def tree_entries_to_blocks(entries):
@@ -516,22 +482,15 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
         "tree, or a tree would be discounted against another tree's count"
         % (len(dropped_per_tree), len(codewords)))
 
-  if codeword_length > MAX_CODEWORD_LENGTH:
-    raise CodewordTooLong("Codewords are too long", codeword_length)
-
   table_bytes = codeword_fields_to_bytes(feature_intervals)
 
-  if table_bytes > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
-    # Checked here, where the key width is already known, rather than deep
-    # inside crossbar_stages_needed/_stage_shards: a trial should be rejected
-    # with a clear reason at the point that has the clearest context, not
-    # crash mid-estimate several calls later. _stage_shards keeps its own
-    # copy of this check too (defense in depth for any other caller that
-    # reaches it directly).
-    raise CrossbarKeyTooWide(
-        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
-        "compiler rejects this table rather than splitting it across stages"
-        % (table_bytes, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), table_bytes)
+  # Checked here, where the key width is already known, rather than deep
+  # inside crossbar_stages_needed/_stage_shards: a trial should be rejected
+  # with a clear reason at the point that has the clearest context, not
+  # crash mid-estimate several calls later. _stage_shards keeps its own
+  # copy of this check too (defense in depth for any other caller that
+  # reaches it directly).
+  check_key_bytes(table_bytes)
 
   # The per-tree block width: lanes.table_blocks, xbar.alone_blocks of the
   # table's pinned crossbar key layout (2026-11-13; the lane count from
@@ -619,7 +578,7 @@ def range_key_fields_for(feature_intervals, key_bit_width=FEATURE_VALUE_BIT_WIDT
   independent_high_sd6 stage 5: four range tables, three distinct value
   fields (app and ddos both read flow_iat_min_val), 12 crossbar bytes
   reported rather than 16."""
-  key_bytes = math.ceil(key_bit_width / 8)
+  key_bytes = math.ceil(key_bit_width / 8) * RANGE_KEY_SLOTS_PER_BYTE
   return [frozenset({(normalise_feature_name(feature), key_bytes)})
           for feature in feature_intervals]
 

@@ -17,9 +17,9 @@ from p4gen.build_p4_script import generate_P4_code
 from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.program import JOINT_ENCODING
 from p4model.errors import (
-    ActionDataTooWide, CodewordTooLong, CrossbarKeyTooWide, NoSplitTree,
-    PhvContainersExhausted)
-from p4model.target import MAX_CODEWORD_LENGTH, TOFINO_PIPELINE_STAGES
+    ActionDataTooWide, CrossbarKeyTooWide, NoSplitTree,
+    PhvContainersExhausted, RangeEntriesDoNotFit)
+from p4model.target import TOFINO_PIPELINE_STAGES
 from src.training.campaign_run import (
     atomic_write_text, canonical_json, run_paths)
 
@@ -114,13 +114,13 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
         p4_path = _generate(ctx, row_id, model_app, model_ddos,
                                        names_app, names_ddos, encoding)
     except (ValueError, ActionDataTooWide, NoSplitTree, PhvContainersExhausted,
-            CodewordTooLong, CrossbarKeyTooWide) as exc:
+            CrossbarKeyTooWide, RangeEntriesDoNotFit) as exc:
         # The three pool refusals (NoSplitTree in every encoding, the other two
         # per-tree only) are RuntimeErrors (p4model.errors), like the
         # other model refusals; the search records them as infeasible trials
         # (train_model.objective), so selection should never reach one, but a
         # design that does is a generator_error row, not a crashed job.
-        # CodewordTooLong and CrossbarKeyTooWide are caught the same way
+        # CrossbarKeyTooWide and RangeEntriesDoNotFit are caught the same way
         # defensively: training refuses those designs before selection.
         message = str(exc)
         atomic_write_text(os.path.join(paths.designs, row_id + '.generator_error.txt'),
@@ -136,8 +136,7 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
             'tables': replay['tables'],
             'model_paths_differ': ((replay['stage_depth'], replay['blocks'])
                                    != (usage.stage_depth, usage.blocks)),
-            'hw_feasible': bool(replay['stage_depth'] <= TOFINO_PIPELINE_STAGES
-                                and model['codeword_bits'] <= MAX_CODEWORD_LENGTH),
+            'hw_feasible': bool(replay['stage_depth'] <= TOFINO_PIPELINE_STAGES),
             'budget_feasible': (not budgeted) or replay['blocks'] <= ctx.M,
             'generator_error': None,
         })

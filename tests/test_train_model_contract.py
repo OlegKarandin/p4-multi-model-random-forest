@@ -161,17 +161,14 @@ def test_every_feasible_trial_records_the_attrs_the_selection_rule_reads(monkeyp
     assert feasible, 'the tiny problem should admit at least one feasible trial'
     for trial in feasible:
         for attr in ('acc_app', 'acc_ddos', 'blocks', 'stages',
-                     'codeword_violation', 'blocks_violation', 'crossbar_violation',
-                     'stages_violation'):
+                     'blocks_violation', 'crossbar_violation', 'stages_violation'):
             assert attr in trial.user_attrs, (trial.number, attr)
 
 
-def test_crossbar_key_too_wide_records_crossbar_violation_not_codeword(monkeypatch):
+def test_crossbar_key_too_wide_records_crossbar_violation(monkeypatch):
     """Task 10 (F3): a table whose key exceeds the stage crossbar is a
-    distinct failure from a too-long codeword -- computing
-    `e.args[1] - MAX_CODEWORD_LENGTH` on it would be a nonsense violation
-    number. The objective must instead record `crossbar_violation`, leave
-    the other two violation attrs at 0.0, and return the infeasible triple
+    distinct failure from an over-budget model. The objective must record
+    `crossbar_violation`, leave the other two violation attrs at 0.0, and return the infeasible triple
     rather than crash the search."""
     import optuna
     import src.training.train_model as tm
@@ -201,8 +198,43 @@ def test_crossbar_key_too_wide_records_crossbar_violation_not_codeword(monkeypat
     assert trials, 'the search should have run at least one trial'
     for trial in trials:
         assert trial.user_attrs['crossbar_violation'] == (
-            reported_width - tm.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
-        assert trial.user_attrs['codeword_violation'] == 0.0
+            reported_width - tm.MAX_KEY_BYTES)
+        assert trial.user_attrs['blocks_violation'] == 0.0
+        assert trial.user_attrs['stages_violation'] == 0.0
+        assert trial.values == [-1.0, -1.0, float('inf')]
+
+
+def test_range_entries_that_do_not_fit_record_the_rows_over_as_crossbar_violation(monkeypatch):
+    """Decision 6d: a design whose real range entries need more rows than the compiled
+    blocks hold is an infeasible trial, magnitude = rows over, carried by the
+    crossbar attribute until the constraint attributes are renamed."""
+    import optuna
+    import src.training.train_model as tm
+    from p4model.errors import RangeEntriesDoNotFit
+    from src.training.errors import NoFeasibleSolution
+
+    optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+    captured = {}
+    real_create = optuna.create_study
+
+    def capture(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        captured['study'] = study
+        return study
+
+    monkeypatch.setattr(tm.optuna, 'create_study', capture)
+    monkeypatch.setattr(
+        tm, 'multi_model_memory_evaluation',
+        lambda *a, **k: (_ for _ in ()).throw(RangeEntriesDoNotFit('no room', 12)))
+
+    with pytest.raises(NoFeasibleSolution):
+        _call(cfg=TrainConfig(n_trials=5, min_feasible_before_stop=2, lookback=2))
+
+    trials = captured['study'].trials
+    assert trials
+    for trial in trials:
+        assert trial.user_attrs['crossbar_violation'] == 12.0
         assert trial.user_attrs['blocks_violation'] == 0.0
         assert trial.user_attrs['stages_violation'] == 0.0
         assert trial.values == [-1.0, -1.0, float('inf')]
@@ -242,7 +274,7 @@ def test_stage_depth_over_the_tofino_ceiling_records_stages_violation_not_the_ot
             range_tables=1, ternary_tables=1))
 
     # Every trial is over-ceiling, so nothing is feasible -- same shape as
-    # test_crossbar_key_too_wide_records_crossbar_violation_not_codeword.
+    # test_crossbar_key_too_wide_records_crossbar_violation.
     with pytest.raises(NoFeasibleSolution):
         _call(cfg=TrainConfig(n_trials=5, min_feasible_before_stop=2, lookback=2))
 
@@ -251,7 +283,6 @@ def test_stage_depth_over_the_tofino_ceiling_records_stages_violation_not_the_ot
     for trial in trials:
         assert trial.user_attrs['stages_violation'] == (
             over_ceiling_depth - tm.TOFINO_PIPELINE_STAGES)
-        assert trial.user_attrs['codeword_violation'] == 0.0
         assert trial.user_attrs['blocks_violation'] == 0.0
         assert trial.user_attrs['crossbar_violation'] == 0.0
         assert trial.values == [-1.0, -1.0, float('inf')]
@@ -737,7 +768,7 @@ def test_a_key_with_no_lane_fit_inside_64_bytes_is_still_a_violation(monkeypatch
 
 def test_crossbar_violation_is_the_overflow_floored_at_one():
     import src.training.train_model as tm
-    assert tm._crossbar_violation(100) == 100 - tm.TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE
+    assert tm._crossbar_violation(100) == 100 - tm.MAX_KEY_BYTES
     assert tm._crossbar_violation(64) == 1
     assert tm._crossbar_violation(11) == 1
 

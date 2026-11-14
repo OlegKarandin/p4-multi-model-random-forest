@@ -20,8 +20,8 @@ def _plan(byte_counts, rows=None, seeds=(), levels=None, priorities=None):
                                 placement_priority=priorities or [1] * len(specs), seed_stages=seeds)
 
 
-def _range_seed(tables):          # `tables` range tables in stage 5, a 2-byte value key each
-  return StageLoad(index=5, blocks=(1,) * tables, fields=frozenset((("r", i), 2) for i in range(tables)),
+def _range_seed(tables):          # `tables` range tables in stage 5, a 2-byte value key = 4 byte slots each (6f)
+  return StageLoad(index=5, blocks=(1,) * tables, fields=frozenset((("r", i), 4) for i in range(tables)),
                    tables=tables)
 
 

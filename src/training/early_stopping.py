@@ -21,23 +21,22 @@ import optuna
 # constrained TPE sampler can order infeasible trials by how badly they miss.
 #
 # crossbar_violation (Task 10, F3): a table whose key exceeds the per-stage
-# crossbar's byte budget is a third, distinct failure from a too-long
-# codeword or an over-block-budget model. Without it here, a trial that hit
-# CrossbarKeyTooWide -- which sets codeword_violation and blocks_violation to
-# 0.0 precisely because it isn't either of those -- would read as feasible
+# crossbar's byte budget is a distinct failure from an over-block-budget model
+# (it also carries the other width refusals and RangeEntriesDoNotFit). Without
+# it here, a trial that hit CrossbarKeyTooWide -- which sets blocks_violation
+# to 0.0 precisely because it isn't over budget -- would read as feasible
 # (both tracked magnitudes <= 0) despite never having set acc_app/acc_ddos/
 # blocks/stages, crashing trial_selection.select_best_trial with a KeyError
 # instead of correctly excluding the trial.
 #
 # stages_violation (Task 13, F5): the hard 12-stage Tofino-1 pipeline-depth
-# ceiling is a fourth, distinct failure -- a trial can be within both the
-# codeword and block budgets and still predict a pipeline deeper than
+# ceiling is a further, distinct failure -- a trial can be within the
+# block budget and still predict a pipeline deeper than
 # TOFINO_PIPELINE_STAGES. Without it here, such a trial would read as
 # feasible despite objective() having returned the infeasible triple
 # (-1.0, -1.0, inf) for it, letting trial_selection.select_best_trial pick a
 # trial whose acc_app/acc_ddos are the -1.0 sentinel rather than a real score.
-_VIOLATION_ATTRS = ('codeword_violation', 'blocks_violation', 'crossbar_violation',
-                    'stages_violation')
+_VIOLATION_ATTRS = ('blocks_violation', 'crossbar_violation', 'stages_violation')
 
 
 def constraint_values(trial):

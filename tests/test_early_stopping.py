@@ -16,7 +16,6 @@ def _converged_objective(trial):
     """Every trial lands on the SAME single Pareto point: a converged search.
     The front is stable from trial 0, so a correct stopper must stop."""
     trial.suggest_int('x', 0, 100)
-    trial.set_user_attr('codeword_violation', 0.0)
     trial.set_user_attr('blocks_violation', 0.0)
     trial.set_user_attr('crossbar_violation', 0.0)
     trial.set_user_attr('stages_violation', 0.0)
@@ -42,7 +41,6 @@ def test_stopper_keeps_searching_while_the_front_still_moves():
 
     def objective(trial):
         trial.suggest_int('x', 0, 100)
-        trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 0.0)
         trial.set_user_attr('crossbar_violation', 0.0)
         trial.set_user_attr('stages_violation', 0.0)
@@ -62,7 +60,6 @@ def test_infeasible_trials_never_satisfy_the_feasible_minimum():
 
     def objective(trial):
         trial.suggest_int('x', 0, 100)
-        trial.set_user_attr('codeword_violation', 0.0)
         trial.set_user_attr('blocks_violation', 5.0)
         trial.set_user_attr('crossbar_violation', 0.0)
         trial.set_user_attr('stages_violation', 0.0)
@@ -83,5 +80,5 @@ def test_a_trial_missing_its_violation_attrs_reads_as_infeasible():
         values=[0.9, 10.0]))
     trial = study.trials[0]
 
-    assert early_stopping.constraint_values(trial) == [float('inf')] * 4
+    assert early_stopping.constraint_values(trial) == [float('inf')] * 3
     assert early_stopping.is_feasible(trial) is False

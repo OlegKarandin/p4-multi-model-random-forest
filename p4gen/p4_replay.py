@@ -18,7 +18,7 @@ from p4model.ranges import compiler_range_rows
 from p4model.registers import readiness_levels_for
 from p4model import lanes, packed, phv, xbar
 from p4model.tables import tree_entries_to_blocks
-from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
+from p4model.target import RANGE_KEY_SLOTS_PER_BYTE, TERNARY_MATCHING_ENTRIES_PER_BLOCK
 from p4model.usage import tree_readiness_levels
 
 
@@ -642,7 +642,10 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             ternary_task.append(tasks[name])
             ternary_names.append(name)
             continue
-        fields = frozenset((key, widths[key]) for key in keys)
+        # A range key's size is its crossbar byte slots, RANGE_LO + RANGE_HI per
+        # key byte (tables.range_key_fields_for; decision 6f).
+        slots = RANGE_KEY_SLOTS_PER_BYTE if name.startswith('table_') else 1
+        fields = frozenset((key, widths[key] * slots) for key in keys)
         width = sum(field_bytes for _, field_bytes in fields)
         if name.startswith('table_'):
             range_specs.append((blocks[name], width))

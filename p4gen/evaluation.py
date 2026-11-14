@@ -53,10 +53,8 @@ from p4gen.build_p4_script import (
 #   most_common_class_and_dropped_codewords   -- codegen policy, not physics
 # ---------------------------------------------------------------------------
 from p4model.usage import ResourceUsage, assemble_usage
-from p4model.errors import CodewordTooLong, CrossbarKeyTooWide, NoSplitTree
+from p4model.errors import CrossbarKeyTooWide, NoSplitTree, RangeEntriesDoNotFit
 from p4model.target import (
-    MAX_CODEWORD_LENGTH,
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
     METER_ALUS_PER_STAGE,
     TOFINO_PIPELINE_STAGES,
 )
@@ -69,7 +67,6 @@ from p4model.program import (
     SHARED_TASK,
     FLOW_HASH_LEVEL,
     ORIENTATION_REGISTER,
-    RANGE_TABLE_KEY_BYTES,
     VOTE_EPILOGUE_STAGES,
     per_task_field,
 )
@@ -84,8 +81,8 @@ from p4model.ranges import (
     range_entry_count,
 )
 from p4model.tables import (
+    check_key_bytes,
     codeword_bits_to_blocks,
-    codeword_bytes_to_blocks,
     codeword_to_blocks,
     entries_across_trees_to_blocks,
     exact_match_resource_usage,
@@ -196,20 +193,15 @@ def _packed_tree_entries(codewords, key, use_default_action_discount):
   codeword dict, WITHOUT p4model.tables' block pricing: that prices the OLD
   unpacked layout (lanes.table_blocks of ternary_key_field_bits) and would refuse
   a design for a key the program never emits. The refusals kept are the packed
-  key's own: a codeword over MAX_CODEWORD_LENGTH bits, and a key over the
-  stage's crossbar bytes (len(key), the packed byte count). The packer adds the
+  key's own: a key over target.MAX_KEY_BYTES crossbar bytes (len(key), the
+  packed byte count). The packer adds the
   crossbar-allocation refusal on the packed key (CrossbarKeyTooWide, when
   packing.packed_alone_blocks finds no allocation)."""
   entries = len(codewords[0])
   if use_default_action_discount and entries > 0:
     entries -= len(most_common_class_and_dropped_codewords(codewords[0])[1])
   length = len(next(iter(codewords[0].items()))[0])
-  if length > MAX_CODEWORD_LENGTH:
-    raise CodewordTooLong("Codewords are too long", length)
-  if len(key) > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
-    raise CrossbarKeyTooWide(
-        "table key is %d crossbar bytes; no stage supplies more than %d"
-        % (len(key), TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), len(key))
+  check_key_bytes(len(key))
   return entries, length
 
 
@@ -285,7 +277,7 @@ def _pruned_trees(trees, keys, codewords, table_of, n_range_tables, per_task_fie
   the replay's p4_replay.table_tasks rule). codewords: one codeword dict per
   tree, against its task's full intervals; only its count and length are read
   (a field the tree does not key is '*' in all of them), so ternary_entries
-  and codeword_length (the longest; R1, CodewordTooLong) are the full
+  and codeword_length (the longest) are the full
   codewords'. A key over a stage's crossbar bytes raises CrossbarKeyTooWide,
   per tree. per_task_fields: the per-task encoding's field ids
   (tables.per_task_key_fields), which two tasks never share. field_names:

@@ -17,6 +17,8 @@ TCAM_BLOCKS_PER_STAGE = 24
 TCAM_ROWS_PER_STAGE = 12
 TCAM_COLUMNS_PER_STAGE = 2
 TCAM_BLOCK_KEY_LENGTH = 44
+# Used only by tables.codeword_bits_to_blocks, the empty-key floor (a key with no
+# bytes still takes one block for the version field); nothing else prices by it.
 # ...and those 44 bits are 5 PRIVATE bytes plus one nibble of a MIDBYTE (5 x 8 + 4
 # = 44). The ternary input crossbar is 12 groups x 5 private bytes + 6 midbytes =
 # 66 bytes total. The split matters because the mandatory 2-bit --version-- field
@@ -56,10 +58,16 @@ TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 # Provenance: mau/tofino/memories.h:54, TERNARY_TABLES_MAX (model_audit_2026-
 # 09-27.md Appendix C).
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
-TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE = 64    # byte budget, binds for wider keys
+# The one limit on a LONE table key, in crossbar bytes (decision 6a): the training refusal,
+# the replay, tables' ladder and the packer's stage test all read it, via this module.
+# 64 is a measured Tofino-1 figure (a key-width sweep of 8..512 bits with two exact
+# saturations, one table at exactly 64 bytes; reviews/p4_tofino_reference.md 4.3); whether
+# p4c also accepts 65 or 66 is the open probe of design-review decision 6a (GATE G3). The
+# 512-bit codeword limit that used to sit beside it was this number times 8 and is gone
+# (decision 6b).
+MAX_KEY_BYTES = 64
 # What one stage's crossbar holds across ALL its keys, as opposed to the limit
-# above, which MAX_CODEWORD_LENGTH and CrossbarKeyTooWide read for a lone key and
-# which has only been validated at 64. 12 groups x 5 private bytes + 6 midbytes
+# above, which is for one table's key. 12 groups x 5 private bytes + 6 midbytes
 # (p4c's input_xbar.cpp:1319 says 66), and real stages of 65 and 66 distinct bytes
 # were built. Replay of 691 designs: 5 stage depths corrected, 0 regressions.
 # Bytes alone do not admit a stage at 65-66: the ternary crossbar port
@@ -82,18 +90,10 @@ TERNARY_CROSSBAR_STAGE_BYTES = 66
 # docs/superpowers/specs/2026-09-29-overlay-and-layout-pragmas-design.md
 # Sec 5.2. THE RETIREMENT HOLDS ONLY WHILE THOSE PINS ARE EMITTED -- a
 # generator change that drops them re-exposes M150_k7_s11.
-# MAX_CODEWORD_LENGTH is a CONSEQUENCE of TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE, not an
-# independent limit: a single-stage ternary table can occupy at most the 64-byte-per-stage
-# crossbar budget above, so a codeword wider than 64 bytes (512 bits) could never fit in one
-# stage's crossbar regardless of TCAM row/block capacity. That 64-byte figure is a measured
-# hardware constant -- validated by a sweep of key widths from 8 to 512 bits with two exact
-# saturations observed (including one table at exactly 64 bytes); see
-# reviews/p4_tofino_reference.md §4.3. (No repo history was found recording an earlier,
-# independent provenance for the 512-bit figure beyond this derivation.)
-MAX_CODEWORD_LENGTH = TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE * 8
 
-# §5's constants table (device.h:186); hard, per §7's real tofino2h compile
-# failure -- a 9-stage program is rejected outright by the backend assembler.
+# Tofino-1 has 12 ingress MAU stages (device.h:186, Tofino-1's device description); a
+# program that needs more is rejected outright by the backend assembler ("supports up to
+# 12 stages, using 13", p4_compile.read_compilation_succeeded).
 TOFINO_PIPELINE_STAGES = 12
 
 # p4c's compile-time sizing rule for a range table (§4.2, Appendix B "Mechanism
@@ -106,6 +106,19 @@ TOFINO_PIPELINE_STAGES = 12
 RANGE_WORST_CASE_ENTRY_FRACTION = 4
 RANGE_WORST_CASE_ROWS_CAP = 8
 
+
+# Usable rows of a TCAM block when entries are installed by the control plane: 512 minus
+# up to 6 stranded by insertion-order fragmentation (multi-row range entries need
+# contiguous free rows, pipe_mgr_tcam_find_next_free; CLAUDE.md "Real usable capacity is
+# 506-512 rows/block"). tables.range_deployment_overflow checks real range entries against
+# the blocks p4c committed at THIS capacity (decision 6d). Measured to cost nothing at the
+# scale seen so far (largest range table 375 rows), so the margin is a guard, not a fit.
+TCAM_USABLE_ROWS_PER_BLOCK = 506
+
+# A range key is matched on both nibbles of every byte of its value field, so each byte
+# takes two crossbar byte slots, RANGE_LO and RANGE_HI (xbar.range_key); the range pool
+# counts a 16-bit key as 4 slots (decision 6f).
+RANGE_KEY_SLOTS_PER_BYTE = 2
 
 MAX_RANGE_KEY_BITS = 19   # §4.2: a 20-bit range key does not compile at all
 

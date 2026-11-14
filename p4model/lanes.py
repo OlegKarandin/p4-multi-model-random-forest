@@ -50,13 +50,11 @@ import math
 from p4model import xbar
 from p4model.errors import CrossbarKeyTooWide
 from p4model.tables import (
+    check_key_bytes,
     codeword_bits_to_blocks,
     codeword_fields_to_bytes_from_bits,
 )
-from p4model.target import (
-    TERNARY_CROSSBAR_GROUPS_PER_STAGE,
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
-)
+from p4model.target import TERNARY_CROSSBAR_GROUPS_PER_STAGE
 
 _GROUPS = TERNARY_CROSSBAR_GROUPS_PER_STAGE       # 12
 _SLOTS_PER_GROUP = 5
@@ -171,7 +169,7 @@ def table_blocks(field_bit_widths):
 
   Order-insensitive. The empty key returns the ladder's floor. Raises
   CrossbarKeyTooWide(message, byte_width) when the key exceeds the stage's
-  TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE bytes (checked before enumerating --
+  target.MAX_KEY_BYTES bytes (checked before enumerating --
   66-72-byte keys would otherwise pay the full 1..12-block search) or when
   p4c's crossbar allocation (xbar.alone_blocks) finds no place for it in an
   empty stage."""
@@ -183,11 +181,7 @@ def _table_blocks(widths):
   byte_width = codeword_fields_to_bytes_from_bits(widths)
   if byte_width == 0:
     return codeword_bits_to_blocks(0)
-  if byte_width > TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE:
-    raise CrossbarKeyTooWide(
-        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
-        "compiler rejects this table rather than splitting it across stages"
-        % (byte_width, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE), byte_width)
+  check_key_bytes(byte_width)
   price = xbar.alone_blocks(key_fields(widths))
   if price is None:
     raise CrossbarKeyTooWide(

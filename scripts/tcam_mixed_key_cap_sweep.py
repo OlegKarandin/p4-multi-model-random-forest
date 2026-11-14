@@ -35,7 +35,7 @@ import pandas as pd  # noqa: E402
 from scripts.tcam_offset_scan import collect  # noqa: E402
 from scripts.tcam_stretch_sweep import key_bytes_for  # noqa: E402
 from p4model.tables import codeword_to_blocks  # noqa: E402
-from p4model.packing import stage_key_prices  # noqa: E402
+from scripts.tcam_table_scoreboard import stage_key_prices  # noqa: E402
 
 DEFAULT_OUT = 'results/tcam_mixed_key_cap_sweep.csv'
 DEFAULT_OUTPUT_ROOT = 'results/tcam_mixed_key_cap_sweep'

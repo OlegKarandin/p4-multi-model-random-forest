@@ -61,7 +61,7 @@ from p4gen.build_p4_script import (
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
     TCAM_ROWS_PER_STAGE,
-    TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
+    MAX_KEY_BYTES,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
 # Re-exported, not redefined: this sweep is what MEASURED the column geometry,
@@ -119,7 +119,7 @@ def key_bits_for(block_width):
         raise ValueError('block_width must be >= 1, got %r' % (block_width,))
     bits = TCAM_BLOCK_KEY_LENGTH * block_width - TERNARY_ENTRY_OVERHEAD_BITS
     bits = 8 * (bits // 8)
-    return min(bits, 8 * TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE)
+    return min(bits, 8 * MAX_KEY_BYTES)
 
 
 def blocks_for_key_bits(key_bits):

@@ -8,9 +8,9 @@ from typing import Mapping, Optional, Sequence
 # Width of every per-feature value field the range-matching tables key on
 # (build_p4_script.py:775 emits "bit<16> <feature>_val" for each selected
 # feature). 16 bits is the project's decided feature precision; one range
-# table keys on exactly one such field, hence 2 crossbar bytes per table.
+# table keys on exactly one such field, which takes 4 crossbar byte slots
+# (RANGE_LO + RANGE_HI per byte, target.RANGE_KEY_SLOTS_PER_BYTE; decision 6f).
 FEATURE_VALUE_BIT_WIDTH = 16
-RANGE_TABLE_KEY_BYTES = math.ceil(FEATURE_VALUE_BIT_WIDTH / 8)
 
 # Every per-flow register in this design is indexed by meta.flow_hash, so the
 # hash occupies whole stages ahead of any register touch -- THREE of them, not

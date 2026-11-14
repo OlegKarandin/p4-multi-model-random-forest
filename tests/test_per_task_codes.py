@@ -24,8 +24,7 @@ from p4model.errors import CrossbarKeyTooWide
 from p4model.packing import StageLoad, _stage_shards, crossbar_stages_needed
 from p4model.program import (APP_TASK, DDOS_TASK, PER_TASK_ENCODING, SHARED_TASK, TaskSpec,
                              feature_of_per_task_field, per_task_field, range_table_priority)
-from p4model.target import (MAX_CODEWORD_LENGTH, TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE,
-                            TERNARY_CROSSBAR_STAGE_BYTES)
+from p4model.target import MAX_KEY_BYTES, TERNARY_CROSSBAR_STAGE_BYTES
 
 FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
             "flow_iat_min", "bwd_packet_length_max"]
@@ -495,8 +494,7 @@ def _load(index, fields, blocks=(1,), tables=1):
 
 def test_the_stage_limit_is_66_while_the_single_key_limit_stays_64():
     assert TERNARY_CROSSBAR_STAGE_BYTES == 66
-    assert TERNARY_CROSSBAR_MAX_BYTES_PER_STAGE == 64
-    assert MAX_CODEWORD_LENGTH == 512
+    assert MAX_KEY_BYTES == 64
     with pytest.raises(CrossbarKeyTooWide):
         _stage_shards(1, 65)
     with pytest.raises(CrossbarKeyTooWide):

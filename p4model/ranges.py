@@ -107,8 +107,10 @@ def compiler_range_rows(entry_count, key_bit_width=FEATURE_VALUE_BIT_WIDTH):
   Provenance: transcribes p4c's own compile-time estimate,
   RangeEntries::preorder/postorder (bf-p4c mau/resource_estimate.cpp:1628-
   1693, mau/resource_estimate.h:213-214) -- MULTIRANGE_DISTRIBUTION_LIMIT = 8
-  is RANGE_WORST_CASE_ENTRY_FRACTION, RANGE_ENTRY_PERCENTAGE = 25 is its
-  reciprocal (model_audit_2026-09-27.md Appendix C and §5 "Step 4").
+  is RANGE_WORST_CASE_ROWS_CAP (the most rows one entry is priced at),
+  RANGE_ENTRY_PERCENTAGE = 25 is the share priced that way, one entry in
+  RANGE_WORST_CASE_ENTRY_FRACTION = 4 (model_audit_2026-09-27.md Appendix C and
+  §5 "Step 4").
 
   Reproduces all five of §4.2's independently measured per-block
   capacities as the largest entry_count whose rows still fit 512: 512 (4-bit

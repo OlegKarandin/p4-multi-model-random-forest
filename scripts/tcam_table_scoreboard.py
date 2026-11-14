@@ -15,7 +15,7 @@ under-predict by one on 24-remainder fields -- listed in the test, not a model
 error on generated designs.
 
 THREE PREDICTED QUANTITIES, per row:
-  blocks_headline -- tables.codeword_to_blocks_headline(field_bit_widths),
+  blocks_headline -- this script's codeword_to_blocks_headline(field_bit_widths),
                       the Sec 13.1 "S = 0" ladder, the one sentence the paper
                       states.
   blocks_refined  -- tables.codeword_to_blocks(field_bit_widths), the
@@ -88,13 +88,43 @@ if ROOT not in sys.path:
 
 import pandas as pd  # noqa: E402
 
+from p4model import lanes  # noqa: E402
+from p4model.packing import _crossbar_stage  # noqa: E402
 from p4model.tables import (  # noqa: E402
+    codeword_bits_to_blocks,
     codeword_fields_to_bytes_from_bits,
     codeword_to_blocks,
-    codeword_to_blocks_headline,
     crossbar_capacity,
 )
-from p4model.packing import stage_key_prices  # noqa: E402
+
+
+def codeword_to_blocks_headline(field_bit_widths):
+    """The Sec 13.1 headline price: the smallest g with crossbar_capacity(g) >= B
+    (the isolation credit of codeword_to_blocks switched off). Moved here from
+    p4model.tables (design review decision 6j): only this scoreboard used it."""
+    key_bytes = codeword_fields_to_bytes_from_bits(field_bit_widths)
+    if key_bytes == 0:
+        return codeword_bits_to_blocks(0)
+    g = 1
+    while crossbar_capacity(g) < key_bytes:
+        g += 1
+    return g
+
+
+def stage_key_prices(keys):
+    """Blocks per 512-row word of each of `keys` (field-bit tuples, distinct keys
+    sharing no field) placed in that order in one empty stage, as p4c's ternary
+    crossbar allocates them (packing._crossbar_stage, mode 'fields'; each key laid
+    out by lanes.key_fields), or None when some key does not fit. Moved here from
+    p4model.packing (design review decision 6j): only the scripts that score single
+    stages (this one, tcam_mixed_key_cap_sweep) used it."""
+    units = tuple((index, tuple(((index, field), slices) for field, slices
+                                in lanes.key_fields(bits)), 1)
+                  for index, bits in enumerate(keys))
+    per_row = _crossbar_stage((), units, 'fields')
+    if per_row is None:
+        return None
+    return tuple(per_row[index] for index in range(len(keys)))
 
 RESULTS_DIR = os.path.join(ROOT, "results")
 DEFAULT_OUT = os.path.join(RESULTS_DIR, "tcam_table_scoreboard.csv")
