@@ -763,3 +763,81 @@ def test_register_names_for_catalog_miss_is_silently_skipped():
   # All-unknown case should return empty tuple
   result_all_unknown = fr.register_names_for(["unknown_a", "unknown_b", "unknown_c"])
   assert result_all_unknown == ()
+
+
+# ---------------------------------------------------------------------------
+# Decision 7.1 option B: direction-read register bodies (direction_reads=True)
+# ---------------------------------------------------------------------------
+
+_ALL_FEATURES = {name: None for name in FEATURE_REGISTER_CATALOG}
+
+# sha256 of registers + actions + apply text at commit 28a6c7c (before the
+# flag existed), for three sample designs.
+_HEAD_REGISTER_TEXT_SHA256 = {
+    ("flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"):
+        "dec74079ae07f8a5fea0e41d9fcbf24df7fb90fc3f6c0e0f408b4d1c1ab005d7",
+    ("bwd_iat_mean", "flow_iat_min", "bwd_packet_length_max", "fwd_iat_min"):
+        "749f9910b8b72265feb6d77235245ae449431fa93b1e3992ebf7a247f0a14e5e",
+    tuple(FEATURE_REGISTER_CATALOG):
+        "b70f6cdcdb0122b1166a482eb66ecc17dc61b04bec1171ead292265e34c69d17",
+}
+
+
+def _register_gates(catalog=FEATURE_REGISTER_CATALOG):
+  """register name -> (gated_by, body kind), over every catalog entry."""
+  return {reg["name"]: (entry.get("gated_by"), reg["body"])
+          for entry in catalog.values() for reg in entry["registers"]}
+
+
+def test_direction_reads_emits_no_gated_blocks():
+  _, _, apply_code, _ = generate_P4_registers_and_apply(_ALL_FEATURES, direction_reads=True)
+  assert "if (meta.fwd" not in apply_code
+  for name in _register_gates():
+    assert len(re.findall(r"\b" + name + r"_action\.execute\(", apply_code)) == 1, name
+
+
+def test_direction_reads_keeps_the_execute_order():
+  """Same call sites, same order as the gated program: only the if-blocks go."""
+  _, _, gated, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
+  _, _, flat, _ = generate_P4_registers_and_apply(_ALL_FEATURES, direction_reads=True)
+  calls = lambda text: [line.strip() for line in text.splitlines() if ".execute(" in line]
+  assert calls(gated) == calls(flat)
+
+
+def test_direction_reads_body_tests_fwd():
+  _, plain_actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
+  _, actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES, direction_reads=True)
+  for name, (gate, _body) in _register_gates().items():
+    body = _extract_action_body(actions, " " + name + "_action")
+    if gate is None:
+      assert body == _extract_action_body(plain_actions, " " + name + "_action"), name
+      assert "meta.fwd" not in body, name
+    elif gate == "fwd":
+      assert "meta.fwd == 1" in body and "meta.fwd == 0" not in body, name
+    else:
+      assert "meta.fwd == 0" in body and "meta.fwd == 1" not in body, name
+
+
+def test_direction_reads_value_bodies_always_write_rv():
+  """A value register's rv is written on every packet (rv = value outside the
+  direction test), so every <f>_val field is written on every packet."""
+  _, actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES, direction_reads=True)
+  for entry in FEATURE_REGISTER_CATALOG.values():
+    if entry.get("gated_by") is None:
+      continue
+    for reg in entry["registers"]:
+      body = _normalize(_extract_action_body(actions, " " + reg["name"] + "_action"))
+      if reg["role"] == "value":
+        assert body[-2:] == ["rv = value;", "}"], (reg["name"], body)
+      else:
+        assert any(line.startswith("rv = 0") for line in body), (reg["name"], body)
+
+
+def test_direction_reads_off_is_byte_identical():
+  import hashlib
+  for features, expected in _HEAD_REGISTER_TEXT_SHA256.items():
+    regs, actions, apply_code, _ = generate_P4_registers_and_apply(
+        {f: None for f in features}, direction_reads=False)
+    assert hashlib.sha256((regs + actions + apply_code).encode()).hexdigest() == expected, features
+    assert generate_P4_registers_and_apply({f: None for f in features}) == \
+        generate_P4_registers_and_apply({f: None for f in features}, direction_reads=False)
