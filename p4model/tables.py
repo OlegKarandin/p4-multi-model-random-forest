@@ -200,12 +200,16 @@ def ternary_key_field_bits(feature_intervals):
 
 
 def range_action_bytes_for(feature_intervals):
-  """Plain action-data bytes per range table, ceil(bits / 8), one per feature in
+  """Action-data bus bytes per range table, one per feature in
   feature_intervals' order, for a table writing the one `code_<feature>`
-  field of `len(intervals) - 1` bits (ternary_key_field_bits' width).
-  packing.crossbar_stages_needed turns them into whole 16-byte bus words."""
-  return [-(-max(len(intervals) - 1, 0) // 8)
-          for intervals in feature_intervals.values()]
+  field of `len(intervals) - 1` live bits (ternary_key_field_bits' width): the
+  bytes of the containers the field is pinned to and declared at
+  (lanes.container_bytes; decision 4.3, design review S14), since the bus
+  carries whole containers. packing.crossbar_stages_needed turns them into
+  whole 16-byte bus words."""
+  # lanes imports this module, so it is imported here, at call time.
+  from p4model.lanes import container_bytes
+  return [container_bytes(len(intervals) - 1) for intervals in feature_intervals.values()]
 
 
 def crossbar_capacity(g):

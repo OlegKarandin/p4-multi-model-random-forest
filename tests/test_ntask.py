@@ -20,6 +20,7 @@ from p4gen.p4_replay import (model_breakdown, parse_program,
 from p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
                                  SHARED_TASK, TaskSpec, placement_priorities)
 from p4model.usage import tree_readiness_levels
+from tests.test_per_task_codes import _key_value
 
 @pytest.fixture(autouse=True)
 def _synthetic_vote_exports(monkeypatch):
@@ -307,8 +308,8 @@ def _switch_tree_classes(entries, row):
         if not table.startswith("get_classification_tree_"):
             continue
         hits = [e for e in rows if not e["is_default_action"]
-                and all(codes[field] & int(spec["mask"], 16) == int(spec["value"], 16)
-                        for field, spec in e["key_fields"].items())]
+                and all(_key_value(codes, name) & int(spec["mask"], 16) == int(spec["value"], 16)
+                        for name, spec in e["key_fields"].items())]
         assert len(hits) <= 1, (table, row)
         if not hits:
             hits = [e for e in rows if e["is_default_action"]]
@@ -336,11 +337,17 @@ def test_entries_classify_every_input_exactly_as_each_tree_does(tmp_path, encodi
     assert entries == bps.generate_table_entries(tasks, use_default_action_discount=discount)
     # Every table the entries address is one the program declares, and the
     # key fields are the ones it declares for that table.
-    declared = parse_program(path).tables
+    # Tree keys are slices of their code fields (decision 4.3), named by bf_rt.
+    program = parse_program(path)
+    declared = program.tables
     for entry in entries:
         assert entry["table_name"] in declared
         if not entry["is_default_action"]:
-            assert sorted(entry["key_fields"]) == sorted(declared[entry["table_name"]])
+            table = entry["table_name"]
+            keys = [bps.bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo))
+                    for field in declared[table]
+                    for hi, lo in program.key_slices.get((table, field), ())]
+            assert sorted(entry["key_fields"]) == sorted(keys or declared[table])
     rng = np.random.RandomState(7)
     X = rng.randint(0, 2000, size=(200, len(FEATURES)))
     expected = {}

@@ -471,11 +471,13 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     register_names = register_names_for(feature_intervals)
     range_fields = range_key_fields_for(feature_intervals)
     ternary_task = [task for task, _, _ in trees]
-    # A table's action writes the code of each task with a threshold on it.
+    # A table's action writes the code of each task with a threshold on it,
+    # each field whole at its containers' width (decision 4.3, S14): the bus
+    # carries the containers of both fields, not their bits pooled.
     range_action_bytes = [
-        -(-sum(max(len(task_intervals[feature]) - 1, 0)
-               for task_intervals in (feature_intervals_app, feature_intervals_ddos)
-               if feature in task_intervals) // 8)
+        sum(lanes.container_bytes(len(task_intervals[feature]) - 1)
+            for task_intervals in (feature_intervals_app, feature_intervals_ddos)
+            if feature in task_intervals)
         for feature in feature_intervals]
 
   elif encoding == PER_TREE_ENCODING:

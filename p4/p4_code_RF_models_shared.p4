@@ -40,9 +40,9 @@ struct metadata_t {
 	bit<1> class_tree_ddos_0;
 	bit<16> flow_iat_max_val;
 	bit<16> fwd_packet_length_max_val;
-	bit<1> code_app_flow_iat_max;
-	bit<1> code_ddos_flow_iat_max;
-	bit<1> code_fwd_packet_length_max;
+	bit<8> code_app_flow_iat_max;
+	bit<8> code_ddos_flow_iat_max;
+	bit<8> code_fwd_packet_length_max;
 
 }
 
@@ -166,15 +166,15 @@ control SwitchIngress(
 	}
 
     
-    action set_code_app_flow_iat_max (bit<1> code) {
+    action set_code_app_flow_iat_max (bit<8> code) {
         meta.code_app_flow_iat_max = code;
     }
     
-    action set_code_ddos_flow_iat_max (bit<1> code) {
+    action set_code_ddos_flow_iat_max (bit<8> code) {
         meta.code_ddos_flow_iat_max = code;
     }
     
-    action set_code_fwd_packet_length_max (bit<1> code) {
+    action set_code_fwd_packet_length_max (bit<8> code) {
         meta.code_fwd_packet_length_max = code;
     }
 
@@ -183,7 +183,7 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_0 {
         key = {
-            meta.code_app_flow_iat_max : ternary;
+            meta.code_app_flow_iat_max[0:0] : ternary;
         }
         actions = {
             classify_flow_codeword_app_0;        
@@ -194,7 +194,7 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_1 {
         key = {
-            meta.code_app_flow_iat_max : ternary;
+            meta.code_app_flow_iat_max[0:0] : ternary;
         }
         actions = {
             classify_flow_codeword_app_1;        
@@ -205,8 +205,8 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_0 {
         key = {
-            meta.code_ddos_flow_iat_max : ternary;
-            meta.code_fwd_packet_length_max : ternary;
+            meta.code_ddos_flow_iat_max[0:0] : ternary;
+            meta.code_fwd_packet_length_max[0:0] : ternary;
         }
         actions = {
             classify_flow_codeword_ddos_0;        

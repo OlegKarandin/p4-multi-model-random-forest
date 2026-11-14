@@ -124,7 +124,8 @@ def test_program_declares_and_pins_every_code_field(tmp_path):
         lay = lanes.layout
         for feature, width in zip(names, widths):
             field = "code_tk_%s_%s" % (task, feature)
-            assert "bit<%d> %s;" % (width, field) in text
+            # declared at its containers' full width (decision 4.3)
+            assert "bit<%d> %s;" % (sum(lanes.container_sizes(width, lay)), field) in text
             # All three pragmas: dropping @pa_solitary let p4c pack code fields of
             # different tables into one container and made stage results false.
             assert '@pa_solitary("ingress", "ig_md.%s")' % field in text
@@ -140,8 +141,10 @@ def test_a_range_action_writes_each_tasks_code_and_each_tree_keys_only_its_own(t
     _, text = _generate(tmp_path, app, ddos)
     own_app, own_ddos = _own(app), _own(ddos)
     shared = sorted(set(own_app) & set(own_ddos))[0]
+    # each parameter at its field's full container width (decision 4.3)
     params = ("bit<%d> code_app, bit<%d> code_ddos"
-              % (len(own_app[shared]) - 1, len(own_ddos[shared]) - 1))
+              % (sum(lanes.container_sizes(len(own_app[shared]) - 1)),
+                 sum(lanes.container_sizes(len(own_ddos[shared]) - 1))))
     assert "action set_code_%s (%s) {" % (shared, params) in text
     assert "meta.code_tk_app_%s = code_app;" % shared in text
     assert "meta.code_tk_ddos_%s = code_ddos;" % shared in text
@@ -257,6 +260,34 @@ def test_training_prices_exactly_what_the_generated_program_replays(tmp_path, se
     assert (breakdown["stage_depth"], breakdown["blocks"]) == (usage.stage_depth, usage.blocks)
 
 
+def _stair_forest(n_thresholds, n_classes, feature_count=1):
+    """One fully grown tree with exactly n_thresholds splits on the first feature
+    (one point per interval, neighbours in different classes)."""
+    X = np.array([[100 * i] + [0] * (feature_count - 1) for i in range(n_thresholds + 1)])
+    y = np.arange(n_thresholds + 1) % n_classes
+    return bps.dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=1, bootstrap=False, max_features=None, random_state=0).fit(X, y))
+
+
+def test_per_task_action_bus_is_container_bytes(tmp_path):
+    # Decision 4.3 / S14: a range action writing a 3-bit (one B) and a 20-bit (one W)
+    # code puts both containers on the bus, 1 + 4 = 5 bytes, not ceil(23 / 8) = 3 --
+    # in training and in the replay of the generated program alike.
+    names = FEATURES[:1]
+    app, ddos = _stair_forest(3, 3), _stair_forest(20, 2)
+    assert [len(iv) - 1 for iv in _own(app, names).values()] == [3]
+    assert [len(iv) - 1 for iv in _own(ddos, names).values()] == [20]
+    pool = _pool_inputs(app, ddos, names, names, PER_TASK_ENCODING)
+    assert pool["range_action_bytes"] == [5]
+    path, text = _generate(tmp_path, app, ddos, names, names)
+    feature = names[0]
+    assert "bit<8> code_tk_app_%s;" % feature in text
+    assert "bit<32> code_tk_ddos_%s;" % feature in text
+    assert "action set_code_%s (bit<8> code_app, bit<32> code_ddos) {" % feature in text
+    from p4gen.p4_replay import range_action_bytes
+    assert range_action_bytes(parse_program(path)) == {"table_0_" + feature: 5}
+
+
 def test_forests_with_no_common_feature_label_each_range_table_with_its_task(tmp_path):
     """Trees wait only for the range tables writing their own task's codes, the
     readiness rule 'disjoint' has, on one table per feature: labels must agree
@@ -302,6 +333,17 @@ def test_per_task_keys_never_cost_more_blocks_on_a_lone_table_than_the_union():
 
 # --- control-plane entries ----------------------------------------------------
 
+# bf_rt's name of a key slice meta.<field>[hi:lo] (build_p4_script.bfrt_key_name).
+_KEY_SLICE = re.compile(r"^(code_\w+)_(\d+)_(\d+)_$")
+
+
+def _key_value(codes, name):
+    """The bits a key slice reads of the field value the range action wrote."""
+    field, hi, lo = _KEY_SLICE.match(name).groups()
+    hi, lo = int(hi), int(lo)
+    return (codes[field] >> lo) & ((1 << (hi - lo + 1)) - 1)
+
+
 def _switch_tree_classes(entries, row):
     """Each tree table's class for one input, by interpreting the entries as the
     switch does: a range table's action writes code_tk_<task>_<f> from its
@@ -325,8 +367,8 @@ def _switch_tree_classes(entries, row):
         if not table.startswith("get_classification_tree_"):
             continue
         hits = [e for e in rows if not e["is_default_action"]
-                and all(codes[field] & int(spec["mask"], 16) == int(spec["value"], 16)
-                        for field, spec in e["key_fields"].items())]
+                and all(_key_value(codes, name) & int(spec["mask"], 16) == int(spec["value"], 16)
+                        for name, spec in e["key_fields"].items())]
         assert len(hits) <= 1, (table, row)
         if not hits:
             hits = [e for e in rows if e["is_default_action"]]
@@ -355,11 +397,17 @@ def test_entries_classify_every_input_exactly_as_each_tree_and_the_forest(tmp_pa
     assert entries == bps.generate_table_entries(
         tasks, use_default_action_discount=discount, encoding=PER_TASK_ENCODING)
     # Every table the entries address exists, with the key fields it declares.
-    declared = parse_program(path).tables
+    program = parse_program(path)
+    declared = program.tables
     for entry in entries:
         assert entry["table_name"] in declared
         if not entry["is_default_action"]:
-            assert sorted(entry["key_fields"]) == sorted(declared[entry["table_name"]])
+            table = entry["table_name"]
+            # range keys by field; tree keys by bf_rt slice name (decision 4.3)
+            keys = [bps.bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo))
+                    for field in declared[table]
+                    for hi, lo in program.key_slices.get((table, field), ())]
+            assert sorted(entry["key_fields"]) == sorted(keys or declared[table])
     rng = np.random.RandomState(seed)
     # Every boundary of every feature and its neighbours, then random values.
     X = rng.randint(0, 65536, size=(150, len(names)))

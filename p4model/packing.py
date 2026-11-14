@@ -549,7 +549,9 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   placement below; a classification pool (key_field_bits) refuses it.
 
   action_bytes (2026-11-09, the range pool): one int per table, the bytes
-  its action puts on the action data bus (plain bytes, ceil(bits / 8)).
+  its action puts on the action data bus: the bytes of the containers of
+  every code field it writes (decision 4.3, design review S14;
+  tables.range_action_bytes_for, packed.bus_bytes, p4_replay.range_action_bytes).
   Given, the tables sharing a stage take at most target.ACTION_DATA_BUS_WORDS
   (8) action RAM words between them, each table rounded up to whole 16-byte
   words: sum(ceil(bytes / 16)) <= 8 (spec 2026-11-11-packed-codes-stage-pin

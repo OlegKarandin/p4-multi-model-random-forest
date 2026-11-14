@@ -220,6 +220,16 @@ def container_sizes(w, lay=layout):
   return [CONTAINER_BITS[kind] for kind, _ in lay(w)]
 
 
+def container_bytes(w):
+  """Bytes of the containers a `w`-bit joint / disjoint / per-task code field is
+  pinned to (container_sizes with this module's layout, the generator's
+  @pa_container_size), which is also the field's declared width in bytes
+  (decision 4.3). The action data bus carries containers, not bits, so this is
+  what a range action writing the field puts on the bus (design review S14): a
+  17-bit code in a W is 4 bytes, a 3-bit code in a B is 1."""
+  return sum(container_sizes(w)) // 8
+
+
 # --------------------------------------------------------------------------
 # Layer 2: lane feasibility by counting (fastlane.py)
 # --------------------------------------------------------------------------

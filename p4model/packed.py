@@ -147,7 +147,16 @@ def key_slices(layout, task, tree, feature):
   """[(hi, lo)] in the field's bit positions of the tree's code on `feature`, cut
   into slices of at most MAX_KEY_SLICE_BITS from the code's bit 0, low first."""
   offset, bits = layout.place[(task, tree, feature)]
-  base = 8 * offset
+  return bit_slices(bits, 8 * offset)
+
+
+def bit_slices(bits, base=0):
+  """[(hi, lo)] field bit positions of a `bits`-bit code starting at field bit
+  `base`, cut into slices of at most MAX_KEY_SLICE_BITS (p4c's ternary key-slice
+  limit) from the code's bit 0, low first. Every encoding's tree keys read their
+  codes this way: a packed tree its code at its byte offset (key_slices), any
+  other tree the live bits of a code field declared at its containers' full width
+  (base 0; decision 4.3)."""
   return [(base + min(bits, lo + MAX_KEY_SLICE_BITS) - 1, base + lo)
           for lo in range(0, bits, MAX_KEY_SLICE_BITS)]
 

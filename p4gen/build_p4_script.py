@@ -806,8 +806,8 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
     "is_default_action": false,
     "priority": 3,
     "key_fields": {
-      "code_flow_iat_max": {"value": "0x5", "mask": "0x7"},
-      "code_flow_iat_mean": {"value": "0x0", "mask": "0x0"}
+      "code_flow_iat_max_2_0_": {"value": "0x5", "mask": "0x7"},
+      "code_flow_iat_mean_2_0_": {"value": "0x0", "mask": "0x0"}
     },
     "action_params": {"class": "1"}
   }
@@ -861,7 +861,9 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
     keyed = tree_key_features(task, field_of.__contains__)
     codewords = tree_codewords(task, keyed)
     for i in range(len(task.trees)):
-      fields = [("code_"+field_of[raw], len(intervals[raw])-1) for raw in keyed[i]]
+      # Each code keyed as the slices of its live bits (decision 4.3).
+      fields = [code_key_fields("code_"+field_of[raw], len(intervals[raw])-1)
+                for raw in keyed[i]]
       entries += _tree_table_entries(
           "get_classification_tree_"+task.name+"_"+str(i),
           "classify_flow_codeword_"+task.name+"_"+str(i),
@@ -880,6 +882,24 @@ def bfrt_key_name(expression):
                    (']', '_'), ('__', '_')):
     expression = expression.replace(old, new)
   return expression[expression.rfind('.') + 1:]
+
+
+def code_key_slices(bits):
+  '''[(hi, lo)] of a tree key on a `bits`-bit joint / disjoint / per-task code:
+  the field is declared at its containers' full width and holds the code in its
+  low bits (decision 4.3), so the key reads bits [bits-1:0], cut into slices of
+  at most MAX_KEY_SLICE_BITS from bit 0, low first -- the packed per-tree key's
+  convention (packed.bit_slices). A code that fills its containers exactly is
+  still keyed as a slice, so every key of every encoding has one form.'''
+  return packed.bit_slices(bits)
+
+
+def code_key_fields(field, bits):
+  '''One tree-key code field as _tree_table_entries takes it: (field, live bits,
+  [(bf_rt key name, hi, lo)] per slice of code_key_slices), the slice names
+  bf_rt gives `meta.<field>[hi:lo]` (bfrt_key_name).'''
+  return (field, bits, [(bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo)), hi, lo)
+                        for hi, lo in code_key_slices(bits)])
 
 
 def per_tree_intervals(task):
@@ -1225,7 +1245,7 @@ def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_pe
 
 
 def generate_actions(feature_intervals, task_trees, per_task_writes=None,
-                     packed_bits=None):
+                     packed_bits=None, field_bits=None):
   """
       action <ACTION_NAME> (bit<<ACTION_CODE_LENGTH>> code) {
           meta.code_<FEATURE_NAME> = code;
@@ -1240,7 +1260,16 @@ def generate_actions(feature_intervals, task_trees, per_task_writes=None,
   of its packed field: the action takes ONE parameter `bit<N> code` and writes
   it whole to meta.code_pk_<entry> (spec 2026-11-11-packed-codes-stage-pin Sec
   3.1), every tree's code already at its byte offset in the value.
+  field_bits: None, or resolved field name -> its DECLARED bits (decision 4.3:
+  a joint / disjoint / per-task code field is declared at its containers' full
+  width); each parameter writing that field takes that width, so the action
+  writes the field whole, its live code in the low bits and 0 above (the
+  entries' values are the live codes). A field it does not name keeps its live
+  width.
   """
+  def declared(name, live):
+    return live if field_bits is None else field_bits.get(name, live)
+
 
   # Calculate nºbits per feature in the codeword
   feature_names = feature_intervals.keys()
@@ -1283,8 +1312,8 @@ def generate_actions(feature_intervals, task_trees, per_task_writes=None,
                            + "> code) {\n        meta.code_"+packed_field(feature)+" = code;\n    }\n")
       continue
     if per_task_writes is not None:
-      params = ", ".join("bit<"+str(width)+"> code_"+task
-                         for task, _, width in per_task_writes[feature])
+      params = ", ".join("bit<"+str(declared(field, width))+"> code_"+task
+                         for task, field, width in per_task_writes[feature])
       body = "".join("        meta.code_"+field+" = code_"+task+";\n"
                      for task, field, _ in per_task_writes[feature])
       action_templates += ("    \n    action set_code_"+feature+" ("+params+") {\n"
@@ -1292,7 +1321,8 @@ def generate_actions(feature_intervals, task_trees, per_task_writes=None,
       continue
     action_template = _ACTION_TEMPLATE
     action_template = action_template.replace("<ACTION_NAME>", "set_code_" + feature)
-    action_template = action_template.replace("<ACTION_CODE_LENGTH>", str(codeword_bits_per_feature[feature]))
+    action_template = action_template.replace(
+        "<ACTION_CODE_LENGTH>", str(declared(feature, codeword_bits_per_feature[feature])))
     action_template = action_template.replace("<FEATURE_NAME>", feature)
     action_templates += action_template
 
@@ -1722,7 +1752,12 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
     In every encoding a tree keys only the code fields of the features it
     splits on (decision 2.3; tree_key_features), so the encodings differ only in
     their code scheme; every code field is still declared, pinned and written by
-    its range table. A tree that splits on nothing raises NoSplitTree (R6)
+    its range table. In every encoding a code field is declared at its
+    containers' full width and a tree keys slices of it (decision 4.3): under
+    joint, disjoint and per-task codes the field holds its live code in the low
+    bits, the range action's parameter is as wide as the field (the code
+    zero-extended), and each tree keys `meta.code_<f>[w-1:0]` (code_key_slices,
+    at most 64 bits per slice). A tree that splits on nothing raises NoSplitTree (R6)
     before anything is written. Under joint, disjoint and per-task codes a task
     passed without its feature list keys all of its fields on every tree.
 
@@ -2038,12 +2073,23 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # Every other encoding: each field's @pa_solitary, then its @pa_no_overlay and
   # @pa_container_size. (The groupby once also gathered the per-field per-tree
   # program's codes of one (feature, reader); every group here is one field.)
+  # Decision 4.3 (uniformity with the packed per-tree field): a pinned field is
+  # DECLARED at its containers' full width, its live code in the low bits and 0
+  # above (the range action writes it whole), and every tree keys the live bits
+  # as slices from bit 0 (code_key_slices). The bus then carries exactly the
+  # containers (S14) and p4c's action format has no padding bits in which to
+  # condense another code (the per-tree ADB finding, inventory Q7). A field no
+  # tree reads has no pin and keeps its live width.
+  code_field_bits = {} if tree_codes else {
+      name: (sum(code_container_sizes[name]) if name in code_container_sizes
+             else len(intervals) - 1)
+      for name, (_, intervals, _) in resolved_plan.items()}
   for _, group in groupby(resolved_plan.items() if not tree_codes else (),
                           key=lambda item: (item[1][0], frozenset(item[1][2]))):
     group = [resolved_name for resolved_name, _ in group]
     for resolved_name in group:
-      codeword_width = len(resolved_plan[resolved_name][1]) - 1
-      metadata_code += "\tbit<"+str(codeword_width)+"> code_"+resolved_name+";\n"
+      metadata_code += ("\tbit<" + str(code_field_bits[resolved_name]) + "> code_"
+                        + resolved_name + ";\n")
       phv_pragmas += '@pa_solitary("ingress", "ig_md.code_'+resolved_name+'")\n'
     for resolved_name in group:
       phv_pragmas += '@pa_no_overlay("ingress", "ig_md.code_'+resolved_name+'")\n'
@@ -2124,7 +2170,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   action_templates = generate_actions(
       flat_resolved_intervals,
       [(task.name, n_trees[task.name], bit_per_classes[task.name]) for task in program_tasks],
-      per_task_writes=per_task_writes, packed_bits=packed_bits)
+      per_task_writes=per_task_writes, packed_bits=packed_bits,
+      field_bits=code_field_bits or None)
 
   # Task 3, point 4: each task's classification tables must key on
   # code_<resolved_name> only for resolved entries that task actually
@@ -2141,16 +2188,19 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                  for task in tasks}
   else:
     # Per tree too (decision 2.3): tree i keys, in the plan's field order, the
-    # fields of the features it splits on (tree_key_features).
+    # fields of the features it splits on (tree_key_features), each as the
+    # slices of its live bits (decision 4.3, code_key_slices).
+    def sliced(name):
+      return (name, code_key_slices(len(resolved_plan[name][1]) - 1))
     key_names = {}
     for task in tasks:
       order = plan_key_order(resolved_plan, task.name)
       if task.name in tree_keys:
         _, keyed = tree_keys[task.name]
-        key_names[task.name] = {i: [name for name, raw in order if raw in raws]
+        key_names[task.name] = {i: [sliced(name) for name, raw in order if raw in raws]
                                 for i, raws in enumerate(keyed)}
       else:
-        key_names[task.name] = [name for name, _ in order]
+        key_names[task.name] = [sliced(name) for name, _ in order]
   raw_feature_names = ({feature: feature for feature in table_plan}
                        if task_codes or tree_codes
                        else {name: raw for name, (raw, _, _) in resolved_plan.items()})

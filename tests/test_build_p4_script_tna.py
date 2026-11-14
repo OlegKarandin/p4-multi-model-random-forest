@@ -1227,13 +1227,13 @@ def test_generate_P4_code_match_type_exact_propagates_to_generated_p4(tmp_path):
   with open(written_path, "r") as f:
     generated = f.read()
   # The classification table's own field key must be exact...
-  assert "meta.code_flow_iat_max : exact;" in generated
+  assert "meta.code_flow_iat_max[0:0] : exact;" in generated
   # ...and no leftover ternary classification key text. (Note:
   # generate_voting_code's vote_ddos table also legitimately uses
   # ": exact;" on meta.class_tree_ddos_0 -- that table is unrelated to
   # match_type and always exact, so this test checks the classification
   # key specifically rather than asserting ": ternary;" is wholly absent.)
-  assert "meta.code_flow_iat_max : ternary;" not in generated
+  assert "meta.code_flow_iat_max[0:0] : ternary;" not in generated
 
 
 def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
@@ -1249,10 +1249,10 @@ def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
   )
   with open(written_path, "r") as f:
     generated = f.read()
-  assert "meta.code_flow_iat_max : ternary;" in generated
+  assert "meta.code_flow_iat_max[0:0] : ternary;" in generated
   # (generate_voting_code's vote_ddos table legitimately uses ": exact;" on
   # meta.class_tree_ddos_0 regardless of match_type -- see note above.)
-  assert "meta.code_flow_iat_max : exact;" not in generated
+  assert "meta.code_flow_iat_max[0:0] : exact;" not in generated
 
 
 # ---------------------------------------------------------------------------
@@ -1828,7 +1828,7 @@ def test_generate_P4_code_selected_features_without_flag_changes_only_sizes(tmp_
   def _stripped(text):
     return [l for l in text.splitlines()
             if not re.match(r"size\s*=\s*\d+\s*;", l.strip())
-            and not re.match(r"meta\.code_\w+ : ternary;", l.strip())]
+            and not re.match(r"meta\.code_\w+\[\d+:\d+\] : ternary;", l.strip())]
   assert _stripped(without) == _stripped(with_lists)
   full, pruned = parse_program_text(without).tables, parse_program_text(with_lists).tables
   assert full.keys() == pruned.keys()
@@ -2372,7 +2372,8 @@ def _assert_trees_key_only_their_features(text, entries, app, ddos, field_of):
   in the program's field order, and its entries carry no other field. Some tree
   must key fewer fields than its task has, or nothing was pruned."""
   from p4gen.p4_replay import parse_program_text
-  tables = parse_program_text(text).tables
+  program = parse_program_text(text)
+  tables = program.tables
   declared = re.findall(r"bit<\d+> (code_\w+);", text)
   pruned_somewhere = False
   for task, forest in ((APP_TASK, app), (DDOS_TASK, ddos)):
@@ -2386,8 +2387,15 @@ def _assert_trees_key_only_their_features(text, entries, app, ddos, field_of):
       pruned_somewhere |= len(want) < len(task_fields)
       rows = [e for e in entries if e["table_name"] == name and not e["is_default_action"]]
       assert rows
+      # each field keyed as the slices of its live bits (decision 4.3), and the
+      # entries name those slices as bf_rt does
+      slices = {field: program.key_slices[(name, field)] for field in keys}
+      assert all(runs == bps.code_key_slices(program.bits[field])
+                 for field, runs in slices.items())
+      want_keys = {bps.bfrt_key_name("meta.%s[%d:%d]" % (field, hi, lo))
+                   for field, runs in slices.items() for hi, lo in runs}
       for entry in rows:
-        assert set(entry["key_fields"]) == want
+        assert set(entry["key_fields"]) == want_keys
   assert pruned_somewhere
 
 
@@ -2403,9 +2411,10 @@ def test_joint_tree_keys_only_its_features(tmp_path):
   for name, keys in parse_program_text(text).tables.items():
     if name.startswith("get_classification_tree_app_"):
       assert not {"code_" + f for f in only_ddos} & set(keys)
-  # Every joint field is still declared and written by its range table.
+  # Every joint field is still declared (at its containers' full width, decision
+  # 4.3) and written by its range table.
   for f in union:
-    assert "bit<%d> code_%s;" % (len(union[f]) - 1, f) in text
+    assert "bit<%d> code_%s;" % (sum(lanes.container_sizes(len(union[f]) - 1)), f) in text
     assert "meta.code_%s = code;" % f in text
 
 
@@ -2465,3 +2474,111 @@ def test_stump_refused_every_encoding(tmp_path, encoding):
   with pytest.raises(NoSplitTree) as trained:
     multi_model_memory_evaluation(app, ddos, _PRUNE_FEATURES, _PRUNE_FEATURES, encoding)
   assert trained.value.args == generated.value.args
+
+
+# --- decision 4.3: code fields at their containers' full width, trees key live slices ---
+
+_FIELD_DECL = re.compile(r"bit<(\d+)> (code_\w+);")
+_FIELD_PIN = re.compile(r'@pa_container_size\("ingress", "ig_md\.(code_\w+)", ([\d, ]+)\)')
+_RANGE_ACTION = re.compile(r"action (set_code_\w+) \(([^)]*)\) \{([^}]*)\}")
+
+
+def _code_plan(encoding, ia, idd):
+  """resolved field name -> its intervals, as the program text was built."""
+  if encoding == "per_task":
+    _, plan = bps.resolve_per_task_plan([(DDOS_TASK, idd), (APP_TASK, ia)])
+  else:
+    plan = bps.resolve_feature_plan([(DDOS_TASK, idd), (APP_TASK, ia)])
+  return {name: intervals for name, (_, intervals, _) in plan.items()}
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint", "per_task"])
+def test_code_field_full_width(tmp_path, encoding):
+  app, ddos = _pruning_forest(3, 2), _pruning_forest(2, 5)
+  text, _, ia, idd = _pruned_program(tmp_path, encoding, app, ddos)
+  declared = {name: int(bits) for bits, name in _FIELD_DECL.findall(text)}
+  pins = {name: [int(size) for size in sizes.split(",")]
+          for name, sizes in _FIELD_PIN.findall(text)}
+  plan = _code_plan(encoding, ia, idd)
+  assert set(declared) == set(pins) == {"code_" + name for name in plan}
+  for name, intervals in plan.items():
+    field = "code_" + name
+    # declared width == the sum of its @pa_container_size values (the plain width rule's)
+    assert declared[field] == sum(pins[field]) == sum(lanes.container_sizes(len(intervals) - 1))
+    # the pins on the field stay (whether @pa_solitary is redundant is measured later)
+    assert '@pa_solitary("ingress", "ig_md.%s")' % field in text
+    assert '@pa_no_overlay("ingress", "ig_md.%s")' % field in text
+  # every range action parameter is as wide as the field it writes, so the action
+  # writes the field whole (the live code zero-extended)
+  actions = _RANGE_ACTION.findall(text)
+  assert actions
+  for _, params, body in actions:
+    width = {param: int(bits) for bits, param in re.findall(r"bit<(\d+)> (\w+)", params)}
+    writes = re.findall(r"meta\.(code_\w+) = (\w+);", body)
+    assert writes
+    for field, param in writes:
+      assert width[param] == declared[field], (field, param)
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint", "per_task"])
+def test_tree_keys_live_slice(tmp_path, encoding):
+  app, ddos = _pruning_forest(3, 2), _pruning_forest(2, 5)
+  text, _, ia, idd = _pruned_program(tmp_path, encoding, app, ddos)
+  plan = _code_plan(encoding, ia, idd)
+  # no tree keys a whole code field any more
+  assert not re.search(r"meta\.code_\w+ : ternary;", text)
+  keyed = re.findall(r"meta\.(code_\w+)\[(\d+):(\d+)\] : ternary;", text)
+  assert keyed
+  for field, hi, lo in keyed:
+    assert (int(hi), int(lo)) == (len(plan[field[len("code_"):]]) - 2, 0), field
+
+
+def _stair_tree_forest(n_thresholds, n_classes):
+  """One fully grown tree with exactly n_thresholds splits on _PRUNE_FEATURES[0]."""
+  import numpy as np
+  from sklearn.ensemble import RandomForestClassifier
+  X = np.zeros((n_thresholds + 1, len(_PRUNE_FEATURES)), dtype=int)
+  X[:, 0] = 100 * np.arange(n_thresholds + 1)
+  y = np.arange(n_thresholds + 1) % n_classes
+  return bps.dt_thresholds_float_to_int(RandomForestClassifier(
+      n_estimators=1, bootstrap=False, max_features=None, random_state=0).fit(X, y))
+
+
+def test_a_live_width_over_64_bits_is_keyed_as_slices_from_bit_0(tmp_path):
+  # p4c takes no ternary key slice over 64 bits (target.MAX_KEY_SLICE_BITS): a 70-bit
+  # code is keyed [63:0] then [69:64], packed.key_slices' convention; the field is
+  # declared at its containers' 8 + 32 + 32 = 72 bits; the replay reads 70 live bits.
+  import numpy as np
+  from p4gen.p4_replay import parse_program_text
+  from p4gen.switch_semantics import per_tree_class_indices
+  from tests.test_ntask import _switch_tree_classes
+  app, ddos = _stair_tree_forest(70, 3), _stair_tree_forest(3, 2)
+  text, entries, union, _ = _pruned_program(tmp_path, "joint", app, ddos)
+  feature = _PRUNE_FEATURES[0]
+  assert len(union[feature]) - 1 == 70
+  assert "bit<72> code_%s;" % feature in text
+  assert "action set_code_%s (bit<72> code) {" % feature in text
+  for task in (APP_TASK, DDOS_TASK):
+    table = "get_classification_tree_%s_0" % task
+    assert ("meta.code_%s[63:0] : ternary;\n            meta.code_%s[69:64] : ternary;"
+            % (feature, feature)) in text.split("table " + table)[1]
+  program = parse_program_text(text)
+  assert program.bits["code_" + feature] == 70 and program.widths["code_" + feature] == 9
+  assert program.key_slices[("get_classification_tree_app_0", "code_" + feature)] == [
+      (63, 0), (69, 64)]
+  # entries: range values are the live codes (below bit 70, so zero above in the
+  # 72-bit parameter); tree slices carry the code's own bits
+  for entry in entries:
+    if entry["table_name"].startswith("table_"):
+      assert int(entry["action_params"]["code"]) < 2 ** 70
+    elif not entry["is_default_action"]:
+      assert sorted(entry["key_fields"]) == sorted(
+          ["code_%s_63_0_" % feature, "code_%s_69_64_" % feature])
+      assert int(entry["key_fields"]["code_%s_69_64_" % feature]["mask"], 16) < 2 ** 6
+  # and they classify every input exactly as each tree does
+  X = np.zeros((200, len(_PRUNE_FEATURES)), dtype=int)
+  X[:, 0] = np.random.RandomState(0).randint(0, 7200, size=200)
+  for s, row in enumerate(X):
+    got = _switch_tree_classes(entries, dict(zip(_PRUNE_FEATURES, row)))
+    assert got["get_classification_tree_app_0"] == per_tree_class_indices(app, X)[0][s]
+    assert got["get_classification_tree_ddos_0"] == per_tree_class_indices(ddos, X)[0][s]

@@ -190,21 +190,25 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # "three" changed, each new text exactly its old text minus some classification-key lines, and
 # the seed-0 entries (fixtures/entries_by_encoding.json) exactly their old records minus
 # all-'*' key fields (impl/scripts/t5_fixture_compare.py); seeds 1-3 key every field on every tree.
+# Re-frozen 2026-11-14 for decision 4.3 (code fields declared at their containers' full width,
+# range action parameters as wide, tree keys the live-bit slices): every text is exactly its old
+# text with that rewrite, and every entries record its old one with each tree key field renamed
+# to its bf_rt slice names, values/masks unchanged (impl/scripts/t7_fixture_compare.py).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "62d9d28bfffd12839185ac736acfdee6a003a3b8d0031ace5933788236cd2566",
-    ("disjoint", 0): "cc5250a1fe16a9c70ba3c0dd122249946347a21868579897259d89951c6b3068",
-    ("per_task", 0): "e84c9031b72474e034fc594f7c89d91595c2cdb47f58f94e8d9cd0ce33bb86a9",
-    ("joint", 1): "6f49530f2b24e3866cda85f93f15963636c705f3a43360dfd0b8e556ea8105ad",
-    ("disjoint", 1): "47ade9093688efe9a814b7155d4eeaf1f2e90f04dba4ca9a34e6ed6a6f70f9e8",
-    ("per_task", 1): "33e3b02021e9be436ef6fa66d51240bf0c5013c8a4e2569edfd54915bbddd6d9",
-    ("joint", 2): "954f41af9b834e7b97c223ef34e9f0121a1cbaf90b2ba45dfcbe1850f8d766d0",
-    ("disjoint", 2): "06204c722f77b8e9072b7cc16010c21427186a656d766ffbf411da49b109997a",
-    ("per_task", 2): "626e167937af61fc52db30a7c3b405e94dec98eda1c7329ed4ae879ccf6407b6",
-    ("joint", 3): "a3008d7523202fd050b5aae4ccff0f6344c71b59c849d413b5f09d1aa3a35e35",
-    ("disjoint", 3): "add1b7bb2c52731d2d86e0a088ff81998daa21779d2a803e6b7bdc580d20fd85",
-    ("per_task", 3): "7b317a0e8f4071651271808a9c001ad41fec8e84ee444f424b5c59f431ff7b09",
-    ("disjoint", "three"): "c7a00a30a9c6a6160f47e4765777de1d856f02c922e3b5c91ea80d61d1417779",
-    ("per_task", "three"): "1e4554b38591ccaca4e52aae9195993a9eb2500e7fe76f5e322102e1f2996d3a",
+    ("joint", 0): "b056da9326fcf1e3939e3165132b2bde7a7256a55c7f5f28f44710ffdee25241",
+    ("disjoint", 0): "32d33a56f02b2e4953a1cba48477f727baeaa9023c8fccd33d33017ff9321991",
+    ("per_task", 0): "096c1bbe26e5c61146127bec6201f5630f8b2f777b3904d0792625eaa01ae17d",
+    ("joint", 1): "fdff4ad571f08a1f01e39aa1497fe11fae8cd7cf90084ed83a040715c83aa93e",
+    ("disjoint", 1): "20fb68aa0a49eff733c22169ebc7327acc58d82aa16f8603b7b0932403c53450",
+    ("per_task", 1): "7133c8d6ffefbfdee7b560e277b16fa78388ee2826aad1d967e9bcad242c7815",
+    ("joint", 2): "5cfc79d8127096fc006c03867276d8438e13fb212b87ca306b6d669175b3a3d1",
+    ("disjoint", 2): "c1b9c0a48e2b3c5a226041dbe5e67eb41edc429d7b35a01f888b811438851f3b",
+    ("per_task", 2): "f31b92035c122bfaa645f6934a89b739e39a1a3221e5378011e07af380285cae",
+    ("joint", 3): "5ac751671ac0caeef76d1f94bd3723bebec49a48fdc6b4998f4e777af87571c6",
+    ("disjoint", 3): "f5a5174d7ba2df06027027a00078ac12f8a88d600889b88732ddb66ed4a0e735",
+    ("per_task", 3): "6716e59770f666639e6b9f9eb08d00f6b2cb94b64db9f553616bb29ae449d81c",
+    ("disjoint", "three"): "6c72db7756a4df011798d7e2c23314e87534c675c0b15ba4f22c7c0465c0ed41",
+    ("per_task", "three"): "323e982f9f7071366a35b2a3a420027a90df0526d1dd9a81ba6823cea7c2eddc",
 }
 
 

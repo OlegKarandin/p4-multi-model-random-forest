@@ -57,7 +57,10 @@ def test_the_budget_is_for_the_range_pool_only():
     crossbar_stages_needed([(1, 2)] * 2, readiness_levels=[4, 4], action_bytes=[8])
 
 
-def test_the_replay_counts_the_keyed_bits_each_range_table_writes(tmp_path):
+def test_the_replay_counts_the_container_bytes_each_range_table_writes(tmp_path):
+  # S14 / decision 4.3: the bus carries whole containers, so a range action costs
+  # the containers of every field it writes, not its codes' bits pooled.
+  from p4model import lanes
   app, ddos, names = _rng_design(3)
   path = bps.generate_P4_code(3, 2, app, ddos, feature_intervals_app=_own(app, names),
                               feature_intervals_ddos=_own(ddos, names),
@@ -69,9 +72,11 @@ def test_the_replay_counts_the_keyed_bits_each_range_table_writes(tmp_path):
   written = range_action_bytes(program)
   for name, action_bytes in written.items():
     feature = name.split("_", 2)[2]
-    expected = sum(program.bits[field] for field in program.bits
-                   if field in ("code_tk_app_" + feature, "code_tk_ddos_" + feature))
-    assert expected > 0 and action_bytes == -(-expected // 8), name
+    fields = [field for field in ("code_tk_app_" + feature, "code_tk_ddos_" + feature)
+              if field in program.bits]
+    assert fields and program.action_writes["set_code_" + feature] == fields
+    assert action_bytes == sum(sum(program.code_containers[field]) // 8 for field in fields)
+    assert action_bytes == sum(lanes.container_bytes(program.bits[field]) for field in fields)
 
 
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING,

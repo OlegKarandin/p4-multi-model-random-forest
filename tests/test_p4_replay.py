@@ -98,6 +98,80 @@ def test_parse_program_text_prices_a_sliced_key_at_its_slice_width():
     assert program.widths == {"code_tr_app_0_a": 4, "code_tr_app_0_b": 1, "code_tr_app_0_c": 10}
 
 
+_FULL_WIDTH = """
+    struct metadata_t {
+        bit<8> code_tk_app_a;
+        bit<32> code_tk_ddos_a;
+        bit<16> a_val;
+    }
+@pa_container_size("ingress", "ig_md.code_tk_app_a", 8)
+@pa_container_size("ingress", "ig_md.code_tk_ddos_a", 32)
+    action set_code_a (bit<8> code_app, bit<32> code_ddos) {
+        meta.code_tk_app_a = code_app;
+        meta.code_tk_ddos_a = code_ddos;
+    }
+    table table_0_a {
+        key = {
+            meta.a_val : range;
+        }
+        size = 9;
+    }
+    table get_classification_tree_app_0 {
+        key = {
+            meta.code_tk_app_a[2:0] : ternary;
+        }
+        size = 4;
+    }
+    table get_classification_tree_app_1 {
+        key = {
+            meta.code_tk_app_a[2:0] : ternary;
+        }
+        size = 4;
+    }
+    table get_classification_tree_ddos_0 {
+        key = {
+            meta.code_tk_ddos_a[19:0] : ternary;
+        }
+        size = 21;
+    }
+"""
+
+
+def test_replay_live_width_from_slice():
+    # Decision 4.3: a code field is declared at its containers' full width and every
+    # tree keys the slice of its live bits; the replay prices the slice (the live
+    # width), lays it in the pinned containers, and counts the action's bus bytes as
+    # the containers it writes (S14): 1 + 4 = 5, not ceil((3 + 20) / 8) = 3.
+    program = rp.parse_program_text(_FULL_WIDTH)
+    assert program.bits["code_tk_app_a"] == 3 and program.widths["code_tk_app_a"] == 1
+    assert program.bits["code_tk_ddos_a"] == 20 and program.widths["code_tk_ddos_a"] == 3
+    assert program.action_writes == {"set_code_a": ["code_tk_app_a", "code_tk_ddos_a"]}
+    assert rp.range_action_bytes(program) == {"table_0_a": 5}
+    assert rp.tree_key_slices(program, "get_classification_tree_ddos_0") == (
+        ("code_tk_ddos_a", (("W", 20),)),)
+    # The same live bits declared at their live width price the same tables; only
+    # the declaration differs.
+    live = (_FULL_WIDTH.replace("bit<8> code_tk_app_a", "bit<3> code_tk_app_a")
+            .replace("bit<32> code_tk_ddos_a", "bit<20> code_tk_ddos_a"))
+    assert rp.model_breakdown(rp.parse_program_text(live)) == rp.model_breakdown(program)
+
+
+def test_replay_refuses_slices_that_do_not_hold_the_live_bits_from_bit_0():
+    with pytest.raises(ValueError, match="one run from bit 0"):
+        rp.parse_program_text(_FULL_WIDTH.replace("code_tk_app_a[2:0] : ternary;\n        }\n"
+                                                  "        size = 4;\n    }\n    table "
+                                                  "get_classification_tree_app_1",
+                                                  "code_tk_app_a[3:1] : ternary;\n        }\n"
+                                                  "        size = 4;\n    }\n    table "
+                                                  "get_classification_tree_app_1"))
+    with pytest.raises(ValueError, match="same live bits"):
+        rp.parse_program_text(_FULL_WIDTH.replace(
+            "meta.code_tk_app_a[2:0] : ternary;\n        }\n        size = 4;\n    }\n"
+            "    table get_classification_tree_ddos_0",
+            "meta.code_tk_app_a[1:0] : ternary;\n        }\n        size = 4;\n    }\n"
+            "    table get_classification_tree_ddos_0"))
+
+
 def test_declared_prices_charge_classification_tables_with_table_blocks():
     from p4gen.p4_replay import Program, declared_prices
     program = Program(

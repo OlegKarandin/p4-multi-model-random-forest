@@ -40,7 +40,10 @@ class Program:
     code_containers: every other code_<f> field's @pa_container_size sizes in
     bits, low container first (the generator pins every tree-key code field,
     build_p4_script.code_field_container_sizes) -- the containers the crossbar
-    port lays the field's key bytes in (tree_key_slices)."""
+    port lays the field's key bytes in (tree_key_slices).
+
+    action_writes: range action name (set_code_<r>) -> the code fields its body
+    assigns, in body order (range_action_bytes)."""
     tables: dict
     widths: dict
     bits: dict
@@ -50,6 +53,7 @@ class Program:
     key_slices: dict = field(default_factory=dict)
     code_containers: dict = field(default_factory=dict)
     register_calls: tuple = ()
+    action_writes: dict = field(default_factory=dict)
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -79,17 +83,21 @@ def _parse_keys(text):
             widths[match.group(2)] = math.ceil(int(match.group(1)) / 8)
             bits[match.group(2)] = int(match.group(1))
     # A key may read a slice of its field (`meta.code_x[26:0]`): a code field
-    # declared at its container's full width so that p4c's action format has
+    # declared at its containers' full width so that p4c's action format has
     # no padding bits to condense another code into (results/
-    # encoding_evidence_2026_11/adb_investigation). The crossbar sees the
-    # slice, so the slice width is the field's width for pricing. A field
-    # wider than 64 bits is keyed as several slices (p4c takes no wider
-    # slice): one key entry, the slices' widths summed.
+    # encoding_evidence_2026_11/adb_investigation; every joint / disjoint /
+    # per-task field since decision 4.3). The crossbar sees the slice, so the
+    # slice width is the field's LIVE width for pricing, whatever the
+    # declaration says. A field wider than 64 bits is keyed as several slices
+    # (p4c takes no wider slice): one key entry, the slices' widths summed.
+    # The slices must be one run from bit 0 (the code sits in the field's low
+    # bits, design review P13) and every table keying the field must key the
+    # same bits; anything else raises ValueError.
     # A packed field (code_pk_<f>) is the exception: every tree keys its OWN
     # slices of it, so its slices are no one key's width; they are kept per
     # (table, field) instead (tree_key_bytes) and its declared bits stay the
     # field's container bits.
-    tables, current, sliced, slices = {}, None, {}, {}
+    tables, current, slices = {}, None, {}
     for line in text.splitlines():
         opened = re.match(r"\s*table\s+(\w+)\s*\{", line)
         if opened:
@@ -103,12 +111,32 @@ def _parse_keys(text):
             if key.group(2) is not None:
                 hi, lo = int(key.group(2)), int(key.group(3))
                 slices.setdefault((current, key.group(1)), []).append((hi, lo))
-                if not key.group(1).startswith(_PACKED_FIELD):
-                    sliced[key.group(1)] = sliced.get(key.group(1), 0) + hi - lo + 1
-    for field, width in sliced.items():
-        bits[field] = width
-        widths[field] = math.ceil(width / 8)
+    live = {}
+    for (table, name), runs in slices.items():
+        if name.startswith(_PACKED_FIELD):
+            continue
+        width = _live_width(table, name, runs)
+        if live.setdefault(name, (width, table))[0] != width:
+            raise ValueError('%s keys %d bits of %s but %s keys %d; every table must key '
+                             'the same live bits of a code field'
+                             % (table, width, name, live[name][1], live[name][0]))
+    for name, (width, _) in live.items():
+        bits[name] = width
+        widths[name] = math.ceil(width / 8)
     return tables, widths, bits, slices
+
+
+def _live_width(table, name, runs):
+    """The live bits one table keys of a (non-packed) code field: its slices as
+    one contiguous run from bit 0 (low first or in any order), else ValueError."""
+    runs = sorted(runs, key=lambda run: run[1])
+    expected = 0
+    for hi, lo in runs:
+        if lo != expected or hi < lo:
+            raise ValueError('%s: the slices of %s are not one run from bit 0 (%s)'
+                             % (table, name, ', '.join('[%d:%d]' % run for run in runs)))
+        expected = hi + 1
+    return expected
 def _parse_sizes(text):
     """table name -> its declared `size = N`, the entry count the generator
     writes per table (build_p4_script: real per-tree and per-feature sizes)."""
@@ -174,6 +202,18 @@ _REGISTER_CALL = re.compile(r'\b(\w+)_action\.execute\(meta\.flow_hash\)')
 _ORIENTATION_ACTION = 'flow_orientation'
 
 
+# A range table's action (build_p4_script.generate_actions): `action set_code_<r>
+# (<params>) { meta.<code field> = <param>; ... }`, one assignment per field written.
+_RANGE_ACTION = re.compile(r'\baction\s+(set_code_\w+)\s*\([^)]*\)\s*\{([^{}]*)\}')
+_CODE_ASSIGN = re.compile(r'\bmeta\.(code_\w+)\s*(?:\[[^\]]*\])?\s*=(?!=)')
+
+
+def action_writes(text):
+    """{set_code_<r>: [code fields its body assigns]} (Program.action_writes)."""
+    return {name: _CODE_ASSIGN.findall(body)
+            for name, body in _RANGE_ACTION.findall(text)}
+
+
 def register_calls(text):
     """Register base names in call-site order (first call of each)."""
     names = []
@@ -216,7 +256,8 @@ def parse_program_text(text):
                    code_containers={name: tuple(int(size) for size in sizes.split(','))
                                     for name, sizes in _CODE_CONTAINERS.findall(text)
                                     if not name.startswith(_PACKED_FIELD)},
-                   register_calls=register_calls(text))
+                   register_calls=register_calls(text),
+                   action_writes=action_writes(text))
 
 
 def parse_program(p4_path):
@@ -338,34 +379,46 @@ def is_packed(program):
                for key in keys)
 
 
+def field_bus_bytes(program, field):
+    """Action-data bus bytes of one code field a range action writes: the bytes
+    of its containers, since the bus carries whole containers (design review
+    S14) -- its @pa_container_size pin (a packed field's: packed.bus_bytes;
+    any other's: lanes.container_bytes of its live bits, which is the pin the
+    generator writes and its declared width, decision 4.3), or, for a field
+    with no pin (a program generated before the pins), lanes.container_bytes
+    of its bits, what the pin would say."""
+    if field in program.containers:
+        return sum(program.containers[field]) // 8
+    if field in program.code_containers:
+        return sum(program.code_containers[field]) // 8
+    return lanes.container_bytes(int(program.bits[field]))
+
+
 def range_action_bytes(program):
     """{range table name: action-data bus bytes its action writes}, plain
     bytes (the range pool counts them in 16-byte words itself, packing.
-    crossbar_stages_needed's action_bytes): the code fields the trees read
-    from it (code_written_by). A packed field is written whole, so it counts
-    its container bytes, from its @pa_container_size pin -- packed.bus_bytes,
-    what evaluation._pool_inputs charges (spec 2026-11-11 Sec 5 rule 3). Any
-    other code counts its keyed bits, ceil(bits / 8) over the table's codes
-    together, as evaluation._pool_inputs does from the forests; a sliced key
-    counts its slices: an archived per-tree program (code_tr_, before
-    2026-11-11) declared a wide code at its containers' width (rule A), but
-    only the keyed bits carry data."""
-    tables, bits, containers = program.tables, program.bits, program.containers
-    written = {}
+    crossbar_stages_needed's action_bytes): field_bus_bytes summed over the
+    code fields the table's action set_code_<r> assigns (Program.action_writes;
+    two under the per-task encoding when both tasks split the feature), as
+    evaluation._pool_inputs charges them from the forests (tables.
+    range_action_bytes_for, lanes.container_bytes; packed.bus_bytes). A program
+    text with no such action (a hand-written fragment) falls back to the fields
+    the trees read from the table (code_written_by)."""
+    tables = program.tables
+    keyed = {}
     for name, keys in tables.items():
         match = _TREE_TASK.match(name)
         if match:
             for key in keys:
-                written.setdefault(code_written_by(key, match.group(1)), set()).add(key)
+                keyed.setdefault(code_written_by(key, match.group(1)), set()).add(key)
     action_bytes = {}
     for name in tables:
         match = _RANGE_TABLE_CODE.match(name)
         if match:
-            fields = written.get('code_' + match.group(1), ())
-            whole = sum(sum(containers[field]) // 8
-                        for field in fields if field in containers)
-            keyed = sum(int(bits[field]) for field in fields if field not in containers)
-            action_bytes[name] = whole + -(-keyed // 8)
+            fields = program.action_writes.get('set_code_' + match.group(1))
+            if fields is None:
+                fields = keyed.get('code_' + match.group(1), ())
+            action_bytes[name] = sum(field_bus_bytes(program, field) for field in fields)
     return action_bytes
 
 
