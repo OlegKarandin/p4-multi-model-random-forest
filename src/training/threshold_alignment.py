@@ -6,7 +6,7 @@ from src.training.align_budget import (_factor,
                                        blocks_bought_by,
                                        pooled_interval_count,
                                        pooled_key_bytes, total_blocks,
-                                       tree_multiplier)
+                                       tree_keys, tree_multiplier)
 from src.training.align_targets import (LOWER_EDGE, boundary_moves,
                                         boundary_moves_to, boundary_pairs,
                                         candidate_targets,
@@ -99,7 +99,7 @@ def _legacy_combined_order(intervals1, intervals2):
 
 
 def feature_order(intervals1, intervals2, *, multiplier, widths=None,
-                  floors=None, features=None):
+                  floors=None, features=None, price='ladder'):
     """The order features are offered to the alignment loop, cheapest first.
 
     Ranked by the BLOCKS a shed on that feature would actually buy and what it
@@ -160,6 +160,8 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
         align_rf_thresholds passes the BUDGET's live widths, not its entry
         copy.
     features : which features to rank. Defaults to the common set.
+    price : 'ladder' (default) or 'port' (decision 9.4); with 'port',
+        `multiplier` is align_budget.tree_keys(...).
     """
     if widths is None:
         widths = _pooled_widths(intervals1, intervals2)
@@ -169,7 +171,7 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
         features = set(intervals1) & set(intervals2)
 
     def key(feature):
-        bought, spent = blocks_bought_by(widths, floors, feature, multiplier)
+        bought, spent = blocks_bought_by(widths, floors, feature, multiplier, price)
         combined = len(intervals1[feature]) + len(intervals2[feature])
         return (-bought, spent, -combined, feature)
 
@@ -316,7 +318,7 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
 
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         delta_rel=0.0, align_stats=None,
-                        candidate_log=None):
+                        candidate_log=None, price='ladder'):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
 
@@ -327,6 +329,11 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
+    price : 'ladder' (default, tables.codeword_to_blocks of the union key)
+        or 'port' (decision 9.4: lanes.table_blocks of each tree's own key,
+        align_budget.tree_keys / port_price). Only the feature ORDER reads
+        the price -- acceptance is accuracy-only -- so the two can differ only
+        through which feature spends the shared accuracy slack first.
 
     Returns:
     --------
@@ -446,11 +453,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # charges: that factor times the tree multiplier, plus every feature's range
     # table. Two names because they are two quantities; archived CSVs carry the
     # factor under the old `blocks_*` name and must never be read as totals.
-    multiplier = tree_multiplier(rf1, rf2)
-    stats['factor_before'] = _factor(pooled_widths)
-    stats['factor_floor'] = _factor(own_floor_widths)
-    stats['total_blocks_before'] = total_blocks(pooled_widths, multiplier)
-    stats['total_blocks_floor'] = total_blocks(own_floor_widths, multiplier)
+    multiplier = (tree_keys(rf1, rf2) if price == 'port'
+                  else tree_multiplier(rf1, rf2))
+    stats['factor_before'] = _factor(pooled_widths, price)
+    stats['factor_floor'] = _factor(own_floor_widths, price)
+    stats['total_blocks_before'] = total_blocks(pooled_widths, multiplier, price)
+    stats['total_blocks_floor'] = total_blocks(own_floor_widths, multiplier, price)
 
     # §4.6. bits_to_reach survives, aimed at the next cheaper BLOCK factor
     # instead of the retired stage step. A factor of f - 1 holds a key of at
@@ -493,7 +501,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                                     multiplier=multiplier,
                                     widths=live_widths,
                                     floors=own_floor_widths,
-                                    features=remaining)[0]
+                                    features=remaining,
+                                    price=price)[0]
         remaining.discard(feature_idx)
 
         current_ranges1 = intervals1[feature_idx]
@@ -724,8 +733,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['codeword_after'] = stats['intervals_after'] - n_features
     stats['key_bytes_after'] = pooled_key_bytes(intervals1_after, intervals2_after)
     widths_after = _pooled_widths(intervals1_after, intervals2_after)
-    stats['factor_after'] = _factor(widths_after)
-    stats['total_blocks_after'] = total_blocks(widths_after, multiplier)
+    stats['factor_after'] = _factor(widths_after, price)
+    stats['total_blocks_after'] = total_blocks(widths_after, multiplier, price)
 
     # §2.4: what this run gave away, in the same units accept_alignment uses,
     # priced as a MAX across the four metrics rather than a sum or a mean --
@@ -1248,7 +1257,7 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
 
 def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
                       delta_rel=0.0,
-                      align_stats=None, candidate_log=None):
+                      align_stats=None, candidate_log=None, price='ladder'):
     """align_rf_thresholds, with `align_stats` cleared first.
 
     Kept under its own name because train_model.py and
@@ -1269,4 +1278,4 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     return align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         delta_rel=delta_rel,
-        align_stats=stats, candidate_log=candidate_log)
+        align_stats=stats, candidate_log=candidate_log, price=price)

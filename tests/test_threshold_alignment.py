@@ -2670,3 +2670,38 @@ def test_the_candidate_log_is_off_by_default():
 
     signature = inspect.signature(ta.align_rf_thresholds)
     assert signature.parameters['candidate_log'].default is None
+
+
+# Captured 2026-11-14 at 5b39f5b (before the price option existed): sha256 of
+# every tree's threshold array of both aligned forests, then the sorted-key
+# JSON of align_stats, from align_with_policy on _golden_alignment_pair(n).
+_LADDER_BEFORE_PRICE_OPTION = {
+    300: '4dabdd99b4cc62ecd537c13a272ac57295ff5753e4aa5be4ddd2ccf31d404417',
+    500: '89f6ce3779a095d22c31a52540cef57cab9b4e609e78a914302b899997d024e7',
+}
+
+
+@pytest.mark.parametrize('n', sorted(_LADDER_BEFORE_PRICE_OPTION))
+@pytest.mark.parametrize('kwargs', [{}, {'price': 'ladder'}])
+def test_ladder_price_is_byte_identical_to_before_the_option(n, kwargs):
+    import hashlib
+    import json
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair(n=n)
+    stats = {}
+    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats, **kwargs)
+    h = hashlib.sha256()
+    for rf in (a, b):
+        for est in rf.estimators_:
+            h.update(np.asarray(est.tree_.threshold).tobytes())
+    h.update(json.dumps(stats, sort_keys=True, default=str).encode())
+    assert h.hexdigest() == _LADDER_BEFORE_PRICE_OPTION[n]
+
+
+def test_port_price_runs_and_reports_port_totals():
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair(n=300)
+    stats = {}
+    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats, price='port')
+    widths = ab._pooled_widths(ta.extract_feature_intervals(a), ta.extract_feature_intervals(b))
+    assert stats['total_blocks_after'] == ab.total_blocks(
+        widths, ab.tree_keys(a, b), price='port')
+    assert stats['factor_after'] == ab._factor(widths, price='port')

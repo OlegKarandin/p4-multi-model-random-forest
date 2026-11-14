@@ -241,3 +241,42 @@ def test_blocks_bought_by_sees_a_range_step_a_byte_rule_cannot():
     floors = {0: 0, 1: 0}
     bought, spent = ab.blocks_bought_by(widths, floors, 0, multiplier=1)
     assert (bought, spent) == (1, 1)
+
+
+# --- decision 9.4: optional port pricing (off by default) -------------------
+
+@pytest.mark.parametrize('key', [(3, 11, 84), (27, 52), (4, 19, 24, 53, 62)])
+def test_port_price_is_the_ports_price(key):
+    """price='port' returns lanes.table_blocks (the production price) of the
+    key, whatever the dict order."""
+    from p4model.lanes import table_blocks
+    widths = {i: w for i, w in enumerate(reversed(key))}
+    assert ab._factor(widths, price='port') == table_blocks(key)
+    assert ab.port_price(key) == table_blocks(key)
+
+
+def test_port_width_never_changes_the_ports_price():
+    """port_width keeps every width's byte count and <= 4-bit-tail flag, which
+    is all the port reads; checked against the uncached port."""
+    import random
+    from p4model import lanes
+    rng = random.Random(9)
+    for _ in range(200):
+        key = tuple(sorted(rng.randint(1, 60) for _ in range(rng.randint(1, 8))))
+        canon = tuple(sorted(ab.port_width(w) for w in key))
+        assert (lanes._table_blocks.__wrapped__(key)
+                == lanes._table_blocks.__wrapped__(canon)), key
+
+
+def test_port_total_prices_each_tree_key_on_its_own():
+    from p4model.lanes import table_blocks
+    widths = {0: 30, 1: 9, 2: 3}
+    keys = ((frozenset({0}), 2), (frozenset({0, 1, 2}), 1))
+    ranges = sum(ab.range_blocks(w + 1) for w in widths.values())
+    assert ab.total_blocks(widths, keys, price='port') == (
+        ranges + 2 * table_blocks((30,)) + table_blocks((3, 9, 30)))
+
+
+def test_unknown_price_is_refused():
+    with pytest.raises(ValueError):
+        ab._factor({0: 3}, price='lane')

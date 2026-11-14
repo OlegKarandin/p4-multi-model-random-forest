@@ -17,7 +17,11 @@ COUNT (lane-era, 2026-10-04; not re-measured against the port): a
 lane-priced alignment ends with different thresholds on 48 (2.1%), summed
 total blocks 1,708 vs 1,706, accuracy differences +-0.001 that cancel, at
 x1.42 the alignment time. align_stats' factor_* / total_blocks_* fields are
-therefore LADDER quantities.
+therefore LADDER quantities -- unless price='port' (decision 9.4, 2026-11-14,
+off by default): then every total prices each tree's OWN key with the port
+(tree_keys, port_price). G2 sample, 300 campaign_2026_11 joint-off DEV designs
+(model): x1.34 (k<=8) / x1.80 (k>=9) the alignment time, production-priced
+twin blocks equal on 297, summed blocks equal (model8/impl/g2_alignment.md).
 
 SUPERSEDED, 2026-09-14. This module used to claim range blocks were
 alignment-invariant, on the grounds that a range table holds 206 intervals per
@@ -59,8 +63,45 @@ from p4gen.build_p4_script import INFINITE
 from p4gen.evaluation import (codeword_fields_to_bytes_from_bits,
                                   codeword_to_blocks,
                                   entries_across_trees_to_blocks)
+from p4model.lanes import table_blocks
 from p4model.ranges import compiler_range_rows
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
+
+# Decision 9.4 (2026-11-14): alignment may price keys with the crossbar port
+# (lanes.table_blocks, the production per-table price) instead of the ladder.
+# 'ladder' stays the default, so nothing changes unless a caller asks.
+PRICES = ('ladder', 'port')
+
+
+def _check_price(price):
+    if price not in PRICES:
+        raise ValueError('price must be one of {}, got {!r}'.format(PRICES, price))
+
+
+def port_width(width):
+    """The smallest-information stand-in for a `width`-bit code field under
+    the port: same byte count, same "tail of <= 4 bits" flag.
+
+    lanes.layout gives a field its containers from ceil(w / 8) alone (every
+    size boundary -- 8, 16, 32, and each W32 step above -- is a byte
+    boundary), every slice but the top one is whole bytes, and the top slice's
+    tail is w's own tail; the crossbar port reads a slice only as started
+    bytes plus whether its last byte has <= 4 live bits (one nibble). So the
+    port price of a key is a function of these two numbers per field, and
+    mapping each width to 8 * (bytes - 1) + (4 or 8) lets lanes' cache hit on
+    every width whose layout cannot differ -- the port is called only where
+    the layout can change (byte boundaries, <= 4-bit tails). Pinned against
+    the raw port on random keys by tests/test_align_budget.py."""
+    if width <= 0:
+        return 0
+    full = (width - 1) // 8
+    tail = width - 8 * full
+    return 8 * full + (4 if tail <= 4 else 8)
+
+
+def port_price(widths):
+    """lanes.table_blocks of an iterable of field widths, via port_width."""
+    return table_blocks(tuple(sorted(port_width(int(w)) for w in widths if w > 0)))
 
 
 def pooled_interval_count(ranges1, ranges2):
@@ -139,7 +180,7 @@ def _own_floor_widths(intervals1, intervals2):
     return floors
 
 
-def _factor(widths):
+def _factor(widths, price='ladder'):
     """The per-table TCAM block factor of a pooled per-feature width dict.
 
     THE quantity alignment optimises after the 2026-09-07 repair, and the
@@ -162,7 +203,13 @@ def _factor(widths):
     documents its input as sorted (ternary_key_field_bits returns it that way).
     The dict's own key order is the generator's feature-emission order, and the
     crossbar allocator does not honour it.
+
+    price='port' (decision 9.4) prices the same union key with the crossbar
+    port instead (port_price).
     """
+    _check_price(price)
+    if price == 'port':
+        return port_price(widths.values())
     return codeword_to_blocks(tuple(sorted(widths.values())))
 
 
@@ -210,7 +257,30 @@ def tree_multiplier(*forests):
         for forest in forests for estimator in forest.estimators_)
 
 
-def total_blocks(widths, multiplier):
+def tree_keys(*forests):
+    """The port path's counterpart of tree_multiplier: per DISTINCT set of
+    features a tree splits on, the 512-row words its trees hold,
+    ((frozenset(feature indices), rows), ...) in a deterministic order.
+
+    Production keys every tree with only its own split features (decision
+    2.3, evaluation._tree_keys), each at the POOLED width, so its price is
+    rows * lanes.table_blocks(those widths); the ladder path keeps pricing
+    the union key. Rows are counted from leaves exactly as tree_multiplier
+    counts them (an upper bound, same caveat). Computed once at entry:
+    alignment moves thresholds but never removes one, so a tree's split
+    feature set and leaf count do not change."""
+    rows = {}
+    for forest in forests:
+        for estimator in forest.estimators_:
+            tree = estimator.tree_
+            internal = tree.children_left != -1
+            features = frozenset(int(f) for f in tree.feature[internal])
+            rows[features] = rows.get(features, 0) + entries_across_trees_to_blocks(
+                [int((~internal).sum())])
+    return tuple(sorted(rows.items(), key=lambda item: sorted(item[0])))
+
+
+def total_blocks(widths, multiplier, price='ladder'):
     """Every TCAM block a joint design of these per-feature widths costs.
 
     Option A of the audit's §5, and THE quantity alignment optimises after
@@ -232,12 +302,20 @@ def total_blocks(widths, multiplier):
     entirely: a feature four intervals from a free range block could not open
     the budget gate, and could not outrank a feature one bit from a byte
     boundary that bought nothing (Gap 1).
+
+    price='port' (decision 9.4): `multiplier` is then tree_keys(...) and the
+    ternary term is sum over distinct tree keys of rows * port_price(that
+    key's pooled widths) -- what production charges a joint tree.
     """
-    return (sum(range_blocks(width + 1) for width in widths.values())
-            + _factor(widths) * multiplier)
+    _check_price(price)
+    ranges = sum(range_blocks(width + 1) for width in widths.values())
+    if price == 'port':
+        return ranges + sum(rows * port_price(widths[f] for f in features)
+                            for features, rows in multiplier)
+    return ranges + _factor(widths) * multiplier
 
 
-def blocks_bought_by(widths, floors, feature, multiplier):
+def blocks_bought_by(widths, floors, feature, multiplier, price='ladder'):
     """(blocks_bought, bits_spent) for the CHEAPEST block-buying shed on one
     feature, or (0, 0) when no shed within that feature's own room buys
     anything.
@@ -276,11 +354,11 @@ def blocks_bought_by(widths, floors, feature, multiplier):
     room = widths[feature] - floors[feature]
     if room <= 0:
         return 0, 0
-    before = total_blocks(widths, multiplier)
+    before = total_blocks(widths, multiplier, price)
     probe = dict(widths)
     for shed in range(1, room + 1):
         probe[feature] = widths[feature] - shed
-        bought = before - total_blocks(probe, multiplier)
+        bought = before - total_blocks(probe, multiplier, price)
         if bought > 0:
             return bought, shed
     return 0, 0
