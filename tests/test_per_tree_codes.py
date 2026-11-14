@@ -777,41 +777,37 @@ def test_a_no_split_tree_is_an_infeasible_trial_and_counted(monkeypatch):
 
   trials, result = _search(monkeypatch, replacement)
   first = trials[0]
-  # The constraint of that name, magnitude 1 (decision 9.2); the trial table's
-  # no_split_tree column reads it as a bool.
+  # The constraint of that name, magnitude 1 (decision 9.2), and the trial
+  # table's column of that name.
   assert {n: first.user_attrs[n] for n in CONSTRAINTS} == violations("no_split_tree", 1)
   assert first.values == [-1.0, -1.0, float("inf")]
   assert not early_stopping.is_feasible(first)
   assert result is not None
   rows = {row["number"]: row for row in result.trial_table}
-  assert rows[0]["no_split_tree"] is True and rows[0]["feasible"] is False
+  assert rows[0]["no_split_tree"] == 1 and rows[0]["feasible"] is False
   # the column is the trials' own attribute (the search also meets stumps by itself)
   assert {number for number, row in rows.items() if row["no_split_tree"]} == {
       t.number for t in trials if t.user_attrs.get("no_split_tree")}
   assert all(row["feasible"] is False for row in rows.values() if row["no_split_tree"])
+  assert all(row[name] == 0 for row in rows.values() if row["feasible"] for name in CONSTRAINTS)
 
 
-def test_other_arms_trial_tables_keep_their_columns(tmp_path):
+def test_every_arms_trial_table_has_one_column_per_constraint(tmp_path):
+  # Decision 9.2 (controller ruling, Task 12 fix 1): the measured columns, then one
+  # column per refusals.CONSTRAINTS name, in every arm.
   from src.training import row_artifacts as ra
   from tests.test_train_model_contract import _call
   header = ("number,params,feasible,acc_sel_app,acc_sel_ddos,blocks,stage_depth,"
-            "b_app,c_app,b_ddos,c_ddos,tied")
-  for encoding in (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING):
+            "b_app,c_app,b_ddos,c_ddos,tied," + ",".join(CONSTRAINTS))
+  for encoding in (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING, PER_TREE_ENCODING):
     # 4000 rows: stumps are refused in every encoding (R6), and forests trained on
     # the default 300 are mostly stumps
     result = _call(encoding=encoding, n=4000)
     assert list(result.trial_table[0]) == header.split(",")
-    assert "no_split_tree" not in result.trial_table[0]
     ctx = ra.RowContext(str(tmp_path / encoding), "x", 35, "abc")
     path = ra.write_trial_table(ctx, "x_M035_s00_k01", result.trial_table)
     with open(path, encoding="utf-8", newline="") as handle:
       assert handle.readline().rstrip("\n") == header
-  result = _call(encoding=PER_TREE_ENCODING, n=4000)
-  assert list(result.trial_table[0]) == header.split(",") + ["no_split_tree"]
-  ctx = ra.RowContext(str(tmp_path / "tree"), "x", 35, "abc")
-  path = ra.write_trial_table(ctx, "x_M035_s00_k01", result.trial_table)
-  with open(path, encoding="utf-8", newline="") as handle:
-    assert handle.readline().rstrip("\n") == header + ",no_split_tree"
 
 
 # --- hardening from the task reviews ---------------------------------------------------
@@ -843,7 +839,7 @@ def test_a_per_tree_search_with_no_feasible_trial_still_counts_its_stumps(tmp_pa
   with open(path, encoding="utf-8", newline="") as handle:
     table = list(csv.DictReader(handle))
   assert len(table) == 6
-  assert {row["no_split_tree"] for row in table} == {"True"}
+  assert {row["no_split_tree"] for row in table} == {"1"}
   assert {row["feasible"] for row in table} == {"False"}
 
 
@@ -856,7 +852,7 @@ def test_the_failed_per_tree_search_carries_the_table_on_the_exception():
     # Seeded: whether all 4 trials draw a no-split tree depends on the draw
     # (unseeded, it failed 2 of 18 runs alone).
     _call(encoding=PER_TREE_ENCODING, cfg=cfg, max_blocks=200, n=240, optuna_seed=0)
-  assert list(e.value.trial_table[0])[-1] == "no_split_tree"
+  assert list(e.value.trial_table[0])[-len(CONSTRAINTS):] == list(CONSTRAINTS)
   assert all(row["no_split_tree"] for row in e.value.trial_table)
   with pytest.raises(NoFeasibleSolution) as e:
     _call(encoding=DISJOINT_ENCODING, cfg=cfg, max_blocks=1)

@@ -75,8 +75,10 @@ def load_run(run):
                             M=float(r['M']),
                             p4c_s=int(r['p4c_stage_depth']),
                             p4c_b=int(r['p4c_blocks']) if r['p4c_blocks'] else None,
-                            model_s=int(r['model_stage_depth']),
-                            model_b=int(r['model_blocks']),
+                            # '' on a MODEL_REFUSED:<reason> row (decision 8.2)
+                            model_s=(int(r['model_stage_depth'])
+                                     if r['model_stage_depth'] else None),
+                            model_b=int(r['model_blocks']) if r['model_blocks'] else None,
                             base_s=b_s, base_b=b_b))
     return out
 
@@ -89,6 +91,10 @@ def load_calibration(directory):
                       encoding='utf-8', errors='replace') as fh2:
                 text = fh2.read()
             model = model_breakdown(parse_program_text(text), r['row_id'])
+            if model['stage_depth'] is None:
+                # The replay refuses the archived program (decision 8.2, e.g. a
+                # gated register block of an older generator): no model numbers.
+                print('model refuses %s: %s' % (r['row_id'], model['refusal_reason']))
             b_s, b_b = baseline(text)
             out.append(dict(row_id=r['row_id'], arm=arm_of(r['row_id']),
                             M=float('inf'),
@@ -105,6 +111,10 @@ def feasible(stages, blocks, M):
 
 
 def summarise(rows, est):
+    # A design the estimator refuses (the model's MODEL_REFUSED rows, decision
+    # 8.2) has no numbers to compare: counted, then left out.
+    refused = sum(r[est + '_s'] is None for r in rows)
+    rows = [r for r in rows if r[est + '_s'] is not None]
     n = len(rows)
     with_b = [r for r in rows if r['p4c_b'] is not None]
     ds = [r[est + '_s'] - r['p4c_s'] for r in rows]
@@ -126,6 +136,7 @@ def summarise(rows, est):
     pct = lambda k, d=n: 100.0 * k / d if d else float('nan')
     return {
         'designs': n,
+        'refused (not compared)': refused,
         'stage exact': pct(sum(d == 0 for d in ds)),
         'stage within 1': pct(sum(abs(d) <= 1 for d in ds)),
         'blocks exact': pct(sum(d == 0 for d in db), len(db)),

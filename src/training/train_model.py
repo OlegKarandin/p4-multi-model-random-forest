@@ -268,8 +268,8 @@ def design_refusal(model_A, model_B, features_A, features_B, encoding, max_block
 def _record_violations(trial, constraint=None, magnitude=0):
     """Set one user attribute per refusals.CONSTRAINTS name on `trial`:
     `magnitude` for `constraint`, 0 for every other (None: all satisfied).
-    early_stopping.constraint_values reads them back in that order. The per-tree
-    trial table's `no_split_tree` column is this attribute, read as a bool."""
+    early_stopping.constraint_values reads them back in that order, and
+    trial_selection.trial_rows writes one trials/ column per name."""
     for name, value in refusals.violations(constraint, magnitude).items():
         trial.set_user_attr(name, value)
 
@@ -477,9 +477,6 @@ def train_multi_RF_Optuna_multi_constrained(
     marks = {number: tuple(np.unpackbits(packed, count=size).astype(bool)
                            for packed, size in zip(pair, sizes))
              for number, pair in correctness.items()}
-    # no_split_tree is a per-tree column only: every other arm's trials/
-    # CSV keeps its header.
-    trial_columns = ('no_split_tree',) if encoding == PER_TREE_ENCODING else ()
     try:
         chosen, reference, table = trial_selection.select_tied_cheapest(
             feasible_trials, marks, cfg.select_alpha, k=len(features_A),
@@ -488,8 +485,7 @@ def train_multi_RF_Optuna_multi_constrained(
         if encoding == PER_TREE_ENCODING:
             # A search made only of stumps has no feasible trial, but its stump
             # count is what the pilot check (spec 9.4) reads: hand the table on.
-            exc.trial_table = trial_selection.trial_rows(
-                study.trials, [], extra_attrs=trial_columns)
+            exc.trial_table = trial_selection.trial_rows(study.trials, [])
         raise
     if cfg.selection_rule == 'balanced':
         chosen = reference
@@ -595,6 +591,5 @@ def train_multi_RF_Optuna_multi_constrained(
         ref_stage_depth=int(ref_usage.stage_depth),
         ref_acc_sel_A=reference.user_attrs['acc_app'],
         ref_acc_sel_B=reference.user_attrs['acc_ddos'],
-        trial_table=trial_selection.trial_rows(
-            study.trials, table, extra_attrs=trial_columns),
+        trial_table=trial_selection.trial_rows(study.trials, table),
     )

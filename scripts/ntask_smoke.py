@@ -75,6 +75,9 @@ def compare(design, path, out_dir):
         model = model_breakdown(parse_program(path), design)
     except Exception as exc:  # noqa: BLE001 -- e.g. CrossbarKeyTooWide: reported
         return {'design': design, 'error': f'model refuses: {type(exc).__name__}: {exc}'}
+    if model['stage_depth'] is None:
+        # Since Task 12 the replay returns its refusals (decision 8.2).
+        return {'design': design, 'error': 'model refuses: ' + model['refusal_reason']}
     compile_dir = os.path.join(out_dir, design)
     result = compile_p4(path, compile_dir, timeout_seconds=1800)
     logs = os.path.join(compile_dir, 'pipe', 'logs')

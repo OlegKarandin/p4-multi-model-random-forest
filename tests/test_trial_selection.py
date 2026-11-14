@@ -258,3 +258,6 @@ def test_trial_rows_cover_every_trial_and_blank_the_infeasible_ones():
     assert rows[-1]['feasible'] is False and rows[-1]['blocks'] == '' and rows[-1]['tied'] == ''
     assert json.loads(rows[0]['params']) == trials[0].params
     assert rows[2]['b_ddos'] == 12 and rows[2]['tied'] is False
+    # One column per constraint (decision 9.2), '' for a trial that never recorded it.
+    from p4model.refusals import CONSTRAINTS
+    assert list(rows[0])[-len(CONSTRAINTS):] == list(CONSTRAINTS)

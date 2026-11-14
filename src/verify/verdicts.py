@@ -10,7 +10,15 @@ VERDICTS = ('FALSE_FEASIBLE', 'UNDER', 'FALSE_INFEASIBLE', 'OVER', 'EXACT',
 # A program the model's replay refuses outright (model.json's model_refusal,
 # p4_replay.model_breakdown) has no prediction to classify: its verdict is
 # MODEL_REFUSED_PREFIX + the refusal's reason, e.g. MODEL_REFUSED:stage_pin.
+# Those verdicts are NOT in VERDICTS (the reason varies): a filter such as
+# `isin(VERDICTS)` would drop them silently -- test with is_verdict instead.
 MODEL_REFUSED_PREFIX = 'MODEL_REFUSED:'
+
+
+def is_verdict(name):
+    """True for one of VERDICTS or a MODEL_REFUSED:<reason> verdict."""
+    return name in VERDICTS or (isinstance(name, str)
+                                and name.startswith(MODEL_REFUSED_PREFIX))
 
 
 @dataclass(frozen=True)

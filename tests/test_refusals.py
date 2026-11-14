@@ -162,7 +162,7 @@ def test_a_pre_task_2_program_is_refused_as_a_gated_register_block(tmp_path):
     (lambda t: re.sub(r"bit<16> (\w+_val);", r"bit<32> \1;", t, count=1),
      "unexpected_shape:val_width:"),
     (lambda t: re.sub(r"@placement_priority\(3\)", "@placement_priority(7)", t, count=1),
-     "unexpected_shape:range_priority:table_0_"),
+     "unexpected_shape:range_priority:table_"),       # range tables not one priority
 ])
 def test_a_program_of_another_shape_is_refused_with_its_reason(tmp_path, edit, reason):
     (_, text), = _texts(tmp_path, JOINT_ENCODING, 1, min_features=3)
@@ -171,6 +171,77 @@ def test_a_program_of_another_shape_is_refused_with_its_reason(tmp_path, edit, r
     with pytest.raises(ProgramShapeRefused) as refused:
         check_program(parse_program_text(changed))
     assert refused.value.reason.startswith(reason), refused.value.reason
+
+
+@pytest.mark.parametrize("treeless", ["app", "ddos"])
+def test_a_program_with_a_tree_less_task_passes(tmp_path, treeless):
+    # The generator numbers priorities over every task (ddos 2, app 1, range 3),
+    # also when one task has no trees: the check reads the relations the model uses
+    # (one priority per task with trees, distinct; one range priority above them; a
+    # vote table exactly per task with trees), not those numbers.
+    from tests.test_per_task_codes import FEATURES, _forest
+    app, ddos = _forest(3, 2), _forest(2, 1)
+    path = bps.generate_P4_code(
+        3, 2, None if treeless == "app" else app, None if treeless == "ddos" else ddos,
+        feature_intervals_app=_own(app, FEATURES), feature_intervals_ddos=_own(ddos, FEATURES),
+        output_dir=str(tmp_path) + os.sep, output_filename="treeless.p4",
+        selected_features_app=FEATURES, selected_features_ddos=FEATURES)
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    assert "get_classification_tree_%s_" % treeless not in text
+    program = parse_program_text(text)
+    check_program(program)
+    breakdown = model_breakdown(program)
+    assert breakdown["refusal"] is None and breakdown["stage_depth"] is not None
+    # still refused: the range tables' priority not above the trees'
+    tree_priority = max(program.priorities[name] for name in program.tables
+                        if name.startswith("get_classification_tree_"))
+    lowered = re.sub(r"@placement_priority\(3\)(\s*\n\s*table table_)",
+                     r"@placement_priority(%d)\1" % tree_priority, text)
+    with pytest.raises(ProgramShapeRefused, match="^unexpected_shape:range_priority:"):
+        check_program(parse_program_text(lowered))
+
+
+def test_two_tasks_with_one_tree_priority_are_refused(tmp_path):
+    (_, text), = _texts(tmp_path, JOINT_ENCODING, 1, min_features=3)
+    same = re.sub(r"@placement_priority\(2\)(\s*\n\s*table get_classification_tree_ddos_)",
+                  r"@placement_priority(1)\1", text)
+    assert same != text
+    with pytest.raises(ProgramShapeRefused, match="^unexpected_shape:tree_priority:"):
+        check_program(parse_program_text(same))
+
+
+def test_model_refused_verdicts_are_verdicts():
+    from src.verify.verdicts import MODEL_REFUSED_PREFIX, VERDICTS, is_verdict
+    assert all(is_verdict(v) for v in VERDICTS)
+    assert is_verdict(MODEL_REFUSED_PREFIX + "stage_pin")
+    assert not is_verdict("MODEL_REFUSED") and not is_verdict(None)
+    assert MODEL_REFUSED_PREFIX + "stage_pin" not in VERDICTS
+
+
+def test_feasibility_frontier_counts_every_constraint():
+    """scripts/feasibility_frontier.py's F6 diagnostic over refusals.CONSTRAINTS (it
+    read early_stopping's old three attribute names before decision 9.2)."""
+    import optuna
+    from types import SimpleNamespace
+    from scripts import feasibility_frontier as ff
+    complete = optuna.trial.TrialState.COMPLETE
+
+    def trial(constraint=None, magnitude=0, state=complete):
+        return SimpleNamespace(state=state,
+                               user_attrs=refusals.violations(constraint, magnitude))
+    trials = [trial(), trial("key_bytes_over", 3), trial("blocks_over", 5),
+              trial("blocks_over", 1), trial("program_shape", 1),
+              SimpleNamespace(state=complete, user_attrs={}),          # never set: infeasible
+              trial("stages_over", 2, state=optuna.trial.TrialState.FAIL)]
+    assert ff.trial_violation_type(refusals.violations("phv_containers_short", 2)) == (
+        "phv_containers_short")
+    assert ff.trial_violation_type({}) is None
+    summary = ff.summarize_trials(trials)
+    assert summary["n_trials_run"] == 7 and summary["n_feasible"] == 1
+    assert summary["any_feasible"] and summary["dominant_violation_type"] == "blocks_over"
+    assert {name: summary["n_" + name] for name in refusals.CONSTRAINTS} == dict(
+        refusals.violations(None), key_bytes_over=1, blocks_over=2, program_shape=1)
 
 
 # --- named constraints (9.2) ----------------------------------------------------------

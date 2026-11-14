@@ -10,6 +10,7 @@ no allocation, i.e. FALSE_FEASIBLE. Stage 3 renders every deliverable.
 The run holds two arms and one M, so it cannot assemble the pre-registered
 Holm families; `allow_partial_family=True` is the documented escape for such a
 pilot (see `run_plot_mode`)."""
+from p4model.refusals import CONSTRAINTS
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -314,7 +315,7 @@ def test_the_per_tree_arm_trains_verifies_and_renders_without_twins(tmp_path, mo
                     if name.startswith("joint-tree_")]
     assert trial_tables
     with open(os.path.join(run_dir, "trials", trial_tables[0]), encoding="utf-8") as handle:
-        assert handle.readline().rstrip("\n").endswith(",tied,no_split_tree")
+        assert handle.readline().rstrip("\n").endswith(",tied," + ",".join(CONSTRAINTS))
 
     compiler = ReplayingCompiler(false_feasible_row=None)
     assert verify_runner.run(run_dir, workers=2, compile_fn=compiler, min_free_bytes=0) == 0

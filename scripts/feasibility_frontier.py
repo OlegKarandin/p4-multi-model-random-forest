@@ -14,8 +14,9 @@ arm) = max{T : some trial at that T is feasible}, over a 2x2 factorial of
 those two treatments (arm in {control, aligned_only, ccp_alpha_only, both}),
 for every cell in an 8-cell x 6-T x 4-arm x 3-split grid (576 points total),
 and records, for every point, WHICH constraint the search's own trials hit
-when a point turns out infeasible (F6) -- codeword length, block budget, the
-crossbar's byte width, or the pipeline-depth ceiling.
+when a point turns out infeasible (F6) -- one of p4model.refusals.CONSTRAINTS
+(key bytes, PHV containers, bus bytes, range rows, stages, blocks over, a tree
+with no split, no placement, program shape; decision 9.2).
 
 Two decisions already resolved during planning:
 
@@ -67,6 +68,7 @@ import pandas as pd
 
 from scripts.replay_alignment import column_indices, split_random_state
 from src.main import load_campaign_data
+from p4model.refusals import CONSTRAINTS
 from src.training import early_stopping
 from src.training.config import TrainConfig
 from src.training.errors import NoFeasibleSolution
@@ -150,8 +152,9 @@ def load_cell_features(campaign_dir, M, k, split_idx):
 
 
 def trial_violation_type(user_attrs):
-    """Which of early_stopping._VIOLATION_ATTRS is >0 for one trial, or None
-    (no violation attribute is set to a positive value).
+    """Which refusals.CONSTRAINTS name is >0 for one trial (the first in that
+    order), or None (no constraint attribute is set to a positive value; also a
+    trial recorded before the names existed, decision 9.2).
 
     This is the F6 "which violation type" DIAGNOSTIC only -- it is deliberately
     NOT the feasibility decision (see summarize_trials, which uses the public
@@ -163,7 +166,7 @@ def trial_violation_type(user_attrs):
     never ran far enough to set it (failed/pruned/still running), and that
     must read as INFEASIBLE, not feasible-by-default.
     """
-    for name in early_stopping._VIOLATION_ATTRS:
+    for name in CONSTRAINTS:
         if user_attrs.get(name, 0.0) > 0:
             return name
     return None
@@ -182,9 +185,10 @@ def summarize_trials(trials):
     reads as infeasible here, consistent with early_stopping's own documented
     convention, instead of silently counting as feasible. trial_violation_type
     is used only for the separate F6 diagnostic -- which violation a NOT
-    -feasible trial hit -- computed for every trial is_feasible rejects."""
+    -feasible trial hit -- computed for every trial is_feasible rejects.
+    The result carries n_<name> for every refusals.CONSTRAINTS name."""
     n_feasible = 0
-    counts = {name: 0 for name in early_stopping._VIOLATION_ATTRS}
+    counts = {name: 0 for name in CONSTRAINTS}
     n_run = 0
     for trial in trials:
         n_run += 1

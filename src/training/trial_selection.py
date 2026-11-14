@@ -22,6 +22,8 @@ per-flow right/wrong marks).
 import json
 
 import numpy as np
+
+from p4model.refusals import CONSTRAINTS
 from scipy.stats import binomtest
 
 from src.training.errors import NoFeasibleSolution
@@ -150,14 +152,18 @@ _TRIAL_COLUMNS = ('acc_sel_app', 'acc_sel_ddos', 'blocks', 'stage_depth',
                   'b_app', 'c_app', 'b_ddos', 'c_ddos', 'tied')
 
 
-def trial_rows(all_trials, table, extra_attrs=()):
+def trial_rows(all_trials, table):
     """trials/<row_id>.csv rows: one per study trial, in number order. A trial
     not in `table` (infeasible, failed) carries '' in every measured column, so
     the rule can be re-run offline at any select_alpha from b/c alone.
 
-    extra_attrs: trial user attributes to append as boolean columns after the
-    measured ones (False when a trial never set one). Empty for every arm but
-    the per-tree one, so the other arms' tables keep their columns."""
+    After the measured columns, every arm's table has one column per
+    p4model.refusals.CONSTRAINTS name (decision 9.2): the trial's violation of
+    that constraint in its natural unit (0 when satisfied), '' when the trial
+    never recorded it (it failed before the objective set it). This replaced the
+    per-tree arm's boolean `no_split_tree` column (now the magnitude of that
+    constraint, 1 for a tree with no split); a trials CSV written before has
+    neither these columns nor, on the other arms, any refusal column."""
     by_number = {row['number']: row for row in table}
     rows = []
     for trial in sorted(all_trials, key=lambda t: t.number):
@@ -167,7 +173,7 @@ def trial_rows(all_trials, table, extra_attrs=()):
                'feasible': measured is not None}
         for column in _TRIAL_COLUMNS:
             row[column] = measured[column] if measured is not None else ''
-        for attr in extra_attrs:
-            row[attr] = bool(trial.user_attrs.get(attr, False))
+        for name in CONSTRAINTS:
+            row[name] = trial.user_attrs.get(name, '')
         rows.append(row)
     return rows

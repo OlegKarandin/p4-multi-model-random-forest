@@ -109,6 +109,10 @@ def check_campaign(run_dir, take_all=False):
                       encoding='utf-8') as handle:
                 stored = json.load(handle)
             replay = model_breakdown(parse_program(archived_path), row)
+            # A refusal (decision 8.2) has no numbers, so it differs from a
+            # stored priced design; one stored as refused compares equal.
+            if replay['stage_depth'] is None:
+                print('model refuses', row, replay['refusal_reason'])
             if any(replay[key] != stored[key]
                    for key in ('stage_depth', 'blocks', 'tables')):
                 model_diffs.append(row)

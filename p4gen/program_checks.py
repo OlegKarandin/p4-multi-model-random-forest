@@ -289,7 +289,7 @@ def _flatten(nodes, depth, under_fwd, steps):
   for node in nodes:
     if node[0] == "if":
       _, cond, then_nodes, else_nodes = node
-      fwd = under_fwd or "meta.fwd" in cond
+      fwd = under_fwd or re.search(r"\bmeta\.fwd\b", cond) is not None
       _flatten(then_nodes, depth + 1, fwd, steps)
       _flatten(else_nodes, depth + 1, fwd, steps)
       continue
@@ -353,8 +353,11 @@ def _check_pins(program, pins):
 
 
 def _check_priorities(program):
-  """A4 / A5: every tree carries its task's @placement_priority (one per task, the
-  tasks numbered 1..N), every range table N + 1 (program.range_table_priority)."""
+  """A4 / A5, the relations the model uses (not the generator's numbers, which
+  depend on tasks that may have no trees): every tree carries its task's
+  @placement_priority, one per task with trees and distinct across those tasks;
+  every range table carries one shared priority above every tree priority
+  (program.range_table_priority)."""
   task_priority = {}
   for name in program.tables:
     tree = _TREE_TABLE.match(name)
@@ -365,15 +368,19 @@ def _check_priorities(program):
     if task_priority.setdefault(tree.group(1), program.priorities[name]) != (
         program.priorities[name]):
       raise ProgramShapeRefused("unexpected_shape:tree_priority:%s" % name)
-  if sorted(task_priority.values()) != list(range(1, len(task_priority) + 1)):
+  if len(set(task_priority.values())) != len(task_priority):
     raise ProgramShapeRefused("unexpected_shape:tree_priority:%s" % ",".join(
         "%s=%d" % item for item in sorted(task_priority.items())))
+  range_priority = None
   for name in program.tables:
     if not _RANGE_TABLE.match(name):
       continue
     if name not in program.priorities:
       raise ProgramShapeRefused("missing_pin:placement_priority:%s" % name)
-    if program.priorities[name] != len(task_priority) + 1:
+    if range_priority is None:
+      range_priority = program.priorities[name]
+    if (program.priorities[name] != range_priority
+        or range_priority <= max(task_priority.values(), default=0)):
       raise ProgramShapeRefused("unexpected_shape:range_priority:%s" % name)
 
 
