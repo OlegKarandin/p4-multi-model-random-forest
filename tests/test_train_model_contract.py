@@ -11,9 +11,10 @@ from src.training.train_model import TrainResult, train_multi_RF_Optuna_multi_co
 FEATURE_NAMES = ['Flow.IAT.Max', 'Fwd.IAT.Max', 'Fwd.Packet.Length.Max']
 
 
-def _tiny_problem(n=300, seed=0):
+def _tiny_problem(n=4000, seed=0):
     """Small enough for a real Optuna search in a test, structured enough that
-    a shallow forest beats chance."""
+    a shallow forest beats chance. 4000 rows: a stump (a tree with no split) is
+    refused in every encoding (R6), and forests trained on 300 were mostly stumps."""
     rng = np.random.default_rng(seed)
     X_app = rng.integers(0, 400, size=(n, 3)).astype(float)
     y_app = (X_app[:, 0] // 134).astype(int)
@@ -22,7 +23,7 @@ def _tiny_problem(n=300, seed=0):
     return X_app, y_app, X_ddos, y_ddos
 
 
-def _call(encoding='disjoint', cfg=None, max_blocks=60, n=300, optuna_seed=0):
+def _call(encoding='disjoint', cfg=None, max_blocks=60, n=4000, optuna_seed=0):
     """One small search. Seeded by default: an unseeded Optuna search makes
     any assertion about which trials it draws random."""
     X_app, y_app, X_ddos, y_ddos = _tiny_problem(n=n)
@@ -792,9 +793,9 @@ def test_the_reference_refit_adds_exactly_one_evaluation(monkeypatch):
     calls = {'n': 0}
 
     def counting(*a, **k):
-        usage = real(*a, **k)
+        # counted before the call: a refused trial (a stump, R6) raises from it
         calls['n'] += 1
-        return usage
+        return real(*a, **k)
 
     monkeypatch.setattr(tm, 'multi_model_memory_evaluation', counting)
     out = _call(cfg=TrainConfig(n_trials=12, min_feasible_before_stop=4, lookback=3,

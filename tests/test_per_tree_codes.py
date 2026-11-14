@@ -185,11 +185,15 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # current_iat, which also leaves the template), and again 2026-11-14 for the vote export (decision 1f:
 # the vote action writes ig_tm_md, no classification_<task> field); on the 210 identity-harness designs
 # (model8/impl) every changed text is exactly those rewrites of its old text
-# (impl/scripts/t2_text_diff.py, t2b_text_diff.py).
+# (impl/scripts/t2_text_diff.py, t2b_text_diff.py). Re-frozen 2026-11-14 for key pruning
+# (decision 2.3: a tree keys only the code fields of the features it splits on): seed 0 and
+# "three" changed, each new text exactly its old text minus some classification-key lines, and
+# the seed-0 entries (fixtures/entries_by_encoding.json) exactly their old records minus
+# all-'*' key fields (impl/scripts/t5_fixture_compare.py); seeds 1-3 key every field on every tree.
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "83f6b15d69dbf6ccb5626fd6644cb7249ba48729a0dfb6c50171b57dba9fe149",
-    ("disjoint", 0): "1509b1aaec6c9d354c801796d7b0cd7065fc13a7078627317c3844fc0ed7347c",
-    ("per_task", 0): "afffdbe2b46e98c1f79166dc562db3b44dccaa109abc45af9545648b5eab6040",
+    ("joint", 0): "62d9d28bfffd12839185ac736acfdee6a003a3b8d0031ace5933788236cd2566",
+    ("disjoint", 0): "cc5250a1fe16a9c70ba3c0dd122249946347a21868579897259d89951c6b3068",
+    ("per_task", 0): "e84c9031b72474e034fc594f7c89d91595c2cdb47f58f94e8d9cd0ce33bb86a9",
     ("joint", 1): "6f49530f2b24e3866cda85f93f15963636c705f3a43360dfd0b8e556ea8105ad",
     ("disjoint", 1): "47ade9093688efe9a814b7155d4eeaf1f2e90f04dba4ca9a34e6ed6a6f70f9e8",
     ("per_task", 1): "33e3b02021e9be436ef6fa66d51240bf0c5013c8a4e2569edfd54915bbddd6d9",
@@ -199,8 +203,8 @@ _OLD_FLAG_SHAS = {
     ("joint", 3): "a3008d7523202fd050b5aae4ccff0f6344c71b59c849d413b5f09d1aa3a35e35",
     ("disjoint", 3): "add1b7bb2c52731d2d86e0a088ff81998daa21779d2a803e6b7bdc580d20fd85",
     ("per_task", 3): "7b317a0e8f4071651271808a9c001ad41fec8e84ee444f424b5c59f431ff7b09",
-    ("disjoint", "three"): "1543af938298649d8bde7e76191da0e29cbde2154bdc4032fe17db9ab6429f81",
-    ("per_task", "three"): "8f4d2ff24497ef6a401029c225d95b99481a8d144ed7ddf824fd268c93c620d6",
+    ("disjoint", "three"): "c7a00a30a9c6a6160f47e4765777de1d856f02c922e3b5c91ea80d61d1417779",
+    ("per_task", "three"): "1e4554b38591ccaca4e52aae9195993a9eb2500e7fe76f5e322102e1f2996d3a",
 }
 
 
@@ -474,9 +478,9 @@ def test_the_range_pool_is_the_per_task_arms():
 # writes for test_per_task_codes' random design of the seed, frozen 2026-11-08 at 64ab25c,
 # before the replay learned per-tree codes.
 _OTHER_REPLAY_SHAS = {
-    ("joint", 0): "0ddd86d1ae9800c435020184bbaf44ae0d76173977070b097ea3403716f42ced",  # 2026-11-13: joint pool simulated, same totals
-    ("disjoint", 0): "9726ece6130b4ef6e4b80481f68291bcf6a26a8afadd4b1dd7181d14e8da25e7",
-    ("per_task", 0): "84ee7109c89fe0ebd142f5416f40c7797799531d1c78a68fb2bdcdd2ce972e8c",
+    ("joint", 0): "e9fd593ccdf73ea48e8d280d75b890d89f8161695071c1781f86d20ee59b7a19",  # 2026-11-14 key pruning (2.3): depth 10 -> 9, blocks 36 -> 31
+    ("disjoint", 0): "84a71640e61d60e7e09e356f38fe6297bbc072c81afba97fa0c71c3ce93acf89",  # 2026-11-14 key pruning: same totals (9, 28)
+    ("per_task", 0): "0df851c3acf7b61e1a8bd79f16ad0f9fd0f53807c5a7ef634b0c73925b1f3993",  # 2026-11-14 key pruning: same totals (9, 24)
     ("joint", 1): "62d1be543bcea0b8242e3c7213f9f82898577b147ab475b8db0df1a8a9760b02",
     ("disjoint", 1): "dd83f6bc9962048dd56275f8142cbb10e8b4889d7eba877c93ca0ff80a5d4e93",
     ("per_task", 1): "62d1be543bcea0b8242e3c7213f9f82898577b147ab475b8db0df1a8a9760b02",
@@ -788,7 +792,9 @@ def test_other_arms_trial_tables_keep_their_columns(tmp_path):
   header = ("number,params,feasible,acc_sel_app,acc_sel_ddos,blocks,stage_depth,"
             "b_app,c_app,b_ddos,c_ddos,tied")
   for encoding in (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING):
-    result = _call(encoding=encoding)
+    # 4000 rows: stumps are refused in every encoding (R6), and forests trained on
+    # the default 300 are mostly stumps
+    result = _call(encoding=encoding, n=4000)
     assert list(result.trial_table[0]) == header.split(",")
     assert "no_split_tree" not in result.trial_table[0]
     ctx = ra.RowContext(str(tmp_path / encoding), "x", 35, "abc")

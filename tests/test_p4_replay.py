@@ -3,6 +3,7 @@ The c1 fixture holds already-parsed programs (tests/fixtures/c1_replay_designs.j
 so these run without results/."""
 import json
 import os
+import re
 
 import pytest
 
@@ -106,3 +107,93 @@ def test_declared_prices_charge_classification_tables_with_table_blocks():
         sizes={'get_classification_tree_ddos_0': 600})       # 2 words
     # (27, 52): 3 per word, p4c's charge (independent_low_sd5); the lane count said 2
     assert declared_prices(program) == {'get_classification_tree_ddos_0': 6}
+
+
+# --- training == replay on saved DEV forests (decision 2.3, key pruning) -------
+
+_ROW = re.compile(r'^(?P<arm>.+)_M\w+_s(?P<split>\d+)_k(?P<k>\d+)$')
+# encoding -> (arm, campaign whose forests/ holds it); DEV splits 0-24 only.
+_SAVED_ARMS = {
+    "joint": ("joint-off", "campaign_2026_11"),
+    "disjoint": ("independent", "campaign_2026_11"),
+    "per_task": ("joint-task", "campaign_2026_11d"),
+    "per_tree": ("joint-tree", "campaign_2026_11e"),
+}
+
+
+def _results_dir():
+    """The checkout's results/ (outside git): beside tests/, or, from a git
+    worktree under .claude/worktrees/, the main checkout's."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for root in (here, os.path.normpath(os.path.join(here, "..", "..", ".."))):
+        if os.path.isdir(os.path.join(root, "results", "campaign_2026_11", "forests")):
+            return os.path.join(root, "results")
+    return None
+
+
+def _saved_designs(encoding, per_group=15, seed=20261114):
+    """per_group designs with k <= 8 and per_group with k >= 9, drawn
+    deterministically from the arm's saved DEV forests."""
+    import random
+    arm, campaign = _SAVED_ARMS[encoding]
+    folder = os.path.join(_results_dir(), campaign, "forests")
+    rows = []
+    for name in sorted(os.listdir(folder)):
+        match = _ROW.match(name[:-len(".joblib")]) if name.endswith(".joblib") else None
+        if match and match["arm"] == arm and int(match["split"]) <= 24:
+            rows.append((os.path.join(folder, name), int(match["k"])))
+    rng = random.Random("%d-%s" % (seed, encoding))
+    out = []
+    for low in (True, False):
+        pool = sorted(path for path, k in rows if (k <= 8) == low)
+        out += rng.sample(pool, min(per_group, len(pool)))
+    return out
+
+
+@pytest.mark.skipif(_results_dir() is None, reason="results/ (saved forests) not present")
+@pytest.mark.parametrize("encoding", sorted(_SAVED_ARMS))
+def test_training_equals_replay_pruned(tmp_path, encoding):
+    """30 saved designs per encoding: training's price (evaluation._pool_inputs ->
+    assemble_usage) equals the replay of the generated program, stage depth and
+    blocks, now that every tree keys only its own features; a design one path
+    refuses, the other refuses the same way."""
+    from p4gen import build_p4_script as bps
+    from p4gen.evaluation import multi_model_memory_evaluation
+    from src.training.row_artifacts import load_forests
+
+    designs = _saved_designs(encoding)
+    assert len(designs) == 30
+    compared = 0
+    for path in designs:
+        stored = load_forests(path)
+        app, ddos = stored["app"], stored["ddos"]
+        names_app, names_ddos = stored["features_app"], stored["features_ddos"]
+        if encoding == "joint":
+            ia = idd = bps.get_joint_feature_intervals(app, names_app, ddos, names_ddos)
+        else:
+            ia = bps.get_feature_intervals(app, names_app)
+            idd = bps.get_feature_intervals(ddos, names_ddos)
+        try:
+            usage = multi_model_memory_evaluation(app, ddos, names_app, names_ddos, encoding)
+        except RuntimeError as exc:
+            trained = type(exc)
+        else:
+            trained = None
+        try:
+            written = bps.generate_P4_code(
+                3, 2, app, ddos, feature_intervals_app=ia, feature_intervals_ddos=idd,
+                output_dir=str(tmp_path) + os.sep, output_filename="d.p4",
+                selected_features_app=names_app, selected_features_ddos=names_ddos,
+                encoding=encoding)
+        except RuntimeError as exc:
+            assert trained is type(exc), (path, trained, exc)
+            continue
+        replay = rp.model_breakdown(rp.parse_program(written))
+        if trained is not None:
+            # training-only refusals (codeword length, crossbar width) are not
+            # generator refusals; the replay prices the program regardless
+            continue
+        assert (replay["stage_depth"], replay["blocks"]) == (usage.stage_depth, usage.blocks), path
+        compared += 1
+    # the sample is of trained (feasible) designs: nearly all are priced both ways
+    assert compared >= 25, compared

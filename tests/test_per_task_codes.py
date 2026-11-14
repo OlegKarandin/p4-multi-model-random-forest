@@ -146,11 +146,12 @@ def test_a_range_action_writes_each_tasks_code_and_each_tree_keys_only_its_own(t
     assert "meta.code_tk_app_%s = code_app;" % shared in text
     assert "meta.code_tk_ddos_%s = code_ddos;" % shared in text
     tables = parse_program_text(text).tables
-    for name, keys in tables.items():
-        if name.startswith("get_classification_tree_app_"):
-            assert keys == ["code_tk_app_" + f for f in sorted(own_app)]
-        elif name.startswith("get_classification_tree_ddos_"):
-            assert keys == ["code_tk_ddos_" + f for f in sorted(own_ddos)]
+    # each tree keys its own task's codes of the features IT splits (decision 2.3)
+    for task, forest in ((APP_TASK, app), (DDOS_TASK, ddos)):
+        for i, tree in enumerate(forest.estimators_):
+            split = _own(bps._Forest([tree]))
+            assert tables["get_classification_tree_%s_%d" % (task, i)] == [
+                "code_tk_%s_%s" % (task, f) for f in sorted(split) if len(split[f]) >= 2]
     # One range table per feature of the union, keyed on the raw value.
     union = sorted(set(own_app) | set(own_ddos))
     assert [(n, k) for n, k in tables.items() if n.startswith("table_")] == [

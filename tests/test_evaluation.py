@@ -1835,6 +1835,9 @@ POOL_KEYS = {
     # 2026-11-09: each range table's action-data bus bytes, the range pool's
     # per-stage bus budget (crossbar_stages_needed action_bytes).
     "range_action_bytes",
+    # 2026-11-14 (decision 2.3): every encoding's trees key only their own
+    # features, so every pool carries each tree's range-table reads (rule E).
+    "tree_reads",
 }
 
 
@@ -1883,7 +1886,10 @@ def test_pool_inputs_labels_every_table_with_its_task(encoding):
     # range_task/ternary_task are positionally aligned with the specs. Trees
     # are always one task's (app trees first, even under 'joint', where the
     # merged tree set keeps merge_tree_nodes' order); a range table is its own
-    # model's under 'disjoint' and every task's (SHARED_TASK) under 'joint'.
+    # model's under 'disjoint'. Under 'joint' it is the task whose trees key
+    # its field, SHARED_TASK when both tasks' trees do (decision 2.3: a tree
+    # keys only the features it splits on, so a feature one forest alone
+    # splits is read by that task alone, as p4_replay.table_tasks labels it).
     from p4model.program import APP_TASK, DDOS_TASK, SHARED_TASK
 
     features = ["f0", "f1", "f2", "f3"]
@@ -1896,7 +1902,12 @@ def test_pool_inputs_labels_every_table_with_its_task(encoding):
     assert len(pool["ternary_task"]) == len(pool["ternary_table_specs"])
     assert len(pool["range_task"]) == len(pool["range_table_specs"])
     if encoding == "joint":
-        assert set(pool["range_task"]) == {SHARED_TASK}
+        app = ev.get_feature_intervals(clf_app, features)
+        ddos = ev.get_feature_intervals(clf_ddos, features)
+        union = bps.get_joint_feature_intervals(clf_app, features, clf_ddos, features)
+        assert pool["range_task"] == [
+            SHARED_TASK if f in app and f in ddos else (APP_TASK if f in app else DDOS_TASK)
+            for f in union]
     else:
         n_range_app = len(ev.get_feature_intervals(clf_app, features))
         assert pool["range_task"] == (
@@ -2042,3 +2053,65 @@ def test_replay_reads_each_tables_task_from_its_name_and_its_readers():
         "table_0_a": "app", "table_1_d": "ddos", "table_2_both": "shared",
         "table_3_app_x": "app", "table_4_ddos_x": "ddos",
     }
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint", "per_task"])
+def test_pool_prices_each_tree_on_the_fields_it_splits(encoding):
+    """Decision 2.3: under every encoding a tree keys only the code fields of
+    the features it splits on, so the pool prices each tree on that key (bits,
+    fields, slices), reads only those range tables (rule E per tree), and counts
+    a feature's readers as the trees that key it."""
+    from p4model.program import APP_TASK, DDOS_TASK, per_task_field
+    from tests.test_build_p4_script_tna import (_PRUNE_FEATURES, _pruning_forest,
+                                                _split_features)
+
+    binary = encoding == "disjoint"
+    app = _pruning_forest(3, 2, binary_first=binary)
+    ddos = _pruning_forest(2, 5, binary_first=binary)
+    pool = ev._pool_inputs(app, ddos, _PRUNE_FEATURES, _PRUNE_FEATURES, encoding)
+
+    own = {APP_TASK: bps.get_feature_intervals(app, _PRUNE_FEATURES),
+           DDOS_TASK: bps.get_feature_intervals(ddos, _PRUNE_FEATURES)}
+    if encoding == "joint":
+        union = bps.get_joint_feature_intervals(app, _PRUNE_FEATURES, ddos, _PRUNE_FEATURES)
+        own = {APP_TASK: union, DDOS_TASK: union}
+        tables = list(union)                                     # one per feature
+        table_of = {(task, f): tables.index(f) for task in own for f in union}
+    elif encoding == "per_task":
+        tables = sorted(set(own[APP_TASK]) | set(own[DDOS_TASK]))
+        table_of = {(task, f): tables.index(f) for task in own for f in own[task]}
+    else:
+        plan = bps._resolve_disjoint_feature_plan(own[APP_TASK], own[DDOS_TASK])
+        shared = {raw for raw, _, models in plan.values() if len(models) == 2}
+        assert shared and len(plan) > len(shared)
+        app_tables = list(own[APP_TASK])
+        ddos_only = [f for f in own[DDOS_TASK] if f not in shared]
+        table_of = {(APP_TASK, f): app_tables.index(f) for f in app_tables}
+        table_of.update({(DDOS_TASK, f): (app_tables.index(f) if f in shared
+                                          else len(app_tables) + ddos_only.index(f))
+                         for f in own[DDOS_TASK]})
+        tables = app_tables + ddos_only
+
+    trees = ([(APP_TASK, t) for t in app.estimators_]
+             + [(DDOS_TASK, t) for t in ddos.estimators_])
+    readers = collections.Counter()
+    for index, (task, tree) in enumerate(trees):
+        split = [f for f in own[task] if f in _split_features(tree)]
+        assert split
+        assert pool["ternary_key_bits"][index] == tuple(sorted(len(own[task][f]) - 1
+                                                               for f in split))
+        assert sorted(pool["tree_reads"][index]) == sorted(table_of[(task, f)] for f in split)
+        ids = {field_id for field_id, _ in pool["ternary_fields"][index]}
+        if encoding == "per_task":
+            assert ids == {per_task_field(task, f) for f in split}
+        else:
+            assert ids == {(f, tuple(own[task][f])) for f in split}
+        assert len(pool["ternary_key_slices"][index]) == len(split)
+        assert pool["ternary_table_specs"][index][1] == sum(
+            -(-(len(own[task][f]) - 1) // 8) for f in split)
+        readers.update(table_of[(task, f)] for f in split)
+    assert pool["range_dependents"] == [readers[i] for i in range(len(tables))]
+    assert len(pool["range_dependents"]) == len(pool["range_table_specs"])
+    # some tree keys fewer fields than its task has
+    assert any(len(bits) < len(own[task]) for bits, (task, _) in
+               zip(pool["ternary_key_bits"], trees))

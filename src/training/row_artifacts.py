@@ -37,8 +37,8 @@ def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encodin
     atomically, so a crash never leaves a half-written designs/<row_id>.p4 that
     the verifier would compile. No @stage pins: since the crossbar port (spec
     2026-11-13) the model moves no table for p4c to follow. A design the
-    per-tree pool refuses (NoSplitTree, ActionDataTooWide,
-    PhvContainersExhausted) raises from the generator."""
+    pool refuses (NoSplitTree, every encoding; under per-tree codes also
+    ActionDataTooWide, PhvContainersExhausted) raises from the generator."""
     # Deferred: feature_selection imports this module, so a top-level import
     # would be circular.
     from src.training.feature_selection import (
@@ -115,7 +115,8 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
                                        names_app, names_ddos, encoding)
     except (ValueError, ActionDataTooWide, NoSplitTree, PhvContainersExhausted,
             CodewordTooLong, CrossbarKeyTooWide) as exc:
-        # The three per-tree refusals are RuntimeErrors (p4model.errors), like the
+        # The three pool refusals (NoSplitTree in every encoding, the other two
+        # per-tree only) are RuntimeErrors (p4model.errors), like the
         # other model refusals; the search records them as infeasible trials
         # (train_model.objective), so selection should never reach one, but a
         # design that does is a generator_error row, not a crashed job.

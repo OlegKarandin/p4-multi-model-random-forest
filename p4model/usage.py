@@ -134,10 +134,12 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
 
   tree_reads : optional, one entry per tree: the positions (into
                range_table_stages) of the range tables whose code fields the
-               tree keys. None derives them from the labels -- every table
-               labelled with the tree's task or SHARED_TASK -- which is exact
-               for every encoding where a tree keys all of its task's
-               features ('joint', 'disjoint', per-task codes).
+               tree keys. Every encoding's pool passes them since decision
+               2.3 (2026-11-14: a tree keys only the features it splits on,
+               in every encoding). None derives them from the labels -- every
+               table labelled with the tree's task or SHARED_TASK -- which is
+               exact only for a pool whose trees key all of their task's
+               features (one serialized before 2.3).
 
   A tree keys on its own task's meta.code_<feature> fields, and a code field
   exists one stage after the range table that writes it. So a tree of task t
@@ -279,13 +281,12 @@ def assemble_usage(pool):
                                       key_fields=range_fields,
                                       table_dependents=pool.get("range_dependents"),
                                       action_bytes=pool.get("range_action_bytes"))
-  # Per-task tree readiness (audit C1): a tree waits for the range tables of
-  # ITS OWN task -- the ones writing the code_<feature> fields it keys on --
-  # plus any SHARED_TASK table, never for the other task's. Under 'joint'
-  # every range table is shared, so every tree starts at range_plan.depth, as
-  # it always did. Under 'disjoint' a task whose range tables finish early
-  # starts its trees early, while the other task's range tables may still be
-  # landing -- so the two pools can now meet in one stage, and the ternary
+  # Per-tree readiness (audit C1, then rule E): a tree waits for the range
+  # tables writing the code fields it keys on (tree_reads; since decision 2.3
+  # a tree keys only the features it splits on, in every encoding), never for
+  # the others, and never runs before the last range table's stage. A tree
+  # whose tables finish early starts early, while other range tables may still
+  # be landing -- so the two pools can meet in one stage, and the ternary
   # pool is SEEDED with the range pool's loads: those range shards count
   # against the stage's table cap, byte limit and column packing, and their
   # range fields are keys placed on the stage's crossbar BEFORE any tree key

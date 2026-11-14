@@ -288,6 +288,38 @@ _OPTION_B_2026_11_14 = {
 }
 
 
+# Key pruning (decision 2.3, 2026-11-14): every tree keys only the code fields of the
+# features it splits on. Seed 0 is the one design here where some tree splits fewer
+# features than its task: its ddos trees 0, 1 and 3 now read only stage-5 range tables, so
+# they move into stage 6 beside table_0 (rule E per tree), and joint keys narrow (36 -> 31
+# blocks, stage depth 10 -> 9). Per-task and disjoint keep their totals.
+_KEY_PRUNING_2026_11_14 = {
+    (JOINT_ENCODING, 0): (9, 31, (
+        'table_1_bwd_packet_length_max:1@5 table_2_flow_iat_max:1@5 table_3_flow_iat_min:1@5 '
+        'get_classification_tree_ddos_0:1@6 get_classification_tree_ddos_1:4@6 '
+        'get_classification_tree_ddos_3:1@6 table_0_bwd_iat_mean:1@6 '
+        'get_classification_tree_app_0:5@7 get_classification_tree_app_1:5@7 '
+        'get_classification_tree_app_2:4@7 get_classification_tree_app_3:4@7 '
+        'get_classification_tree_ddos_2:3@7')),
+    (PER_TASK_ENCODING, 0): (9, 24, (
+        'table_1_bwd_packet_length_max:1@5 table_2_flow_iat_max:1@5 table_3_flow_iat_min:1@5 '
+        'get_classification_tree_ddos_0:1@6 get_classification_tree_ddos_1:1@6 '
+        'get_classification_tree_ddos_3:1@6 table_0_bwd_iat_mean:1@6 '
+        'get_classification_tree_app_0:4@7 get_classification_tree_app_1:4@7 '
+        'get_classification_tree_app_2:4@7 get_classification_tree_app_3:4@7 '
+        'get_classification_tree_ddos_2:1@7')),
+    (DISJOINT_ENCODING, 0): (9, 28, (
+        'table_1_app_bwd_packet_length_max:1@5 table_2_app_flow_iat_max:1@5 '
+        'table_3_app_flow_iat_min:1@5 table_5_ddos_bwd_packet_length_max:1@5 '
+        'table_6_ddos_flow_iat_max:1@5 table_7_ddos_flow_iat_min:1@5 '
+        'get_classification_tree_ddos_0:1@6 get_classification_tree_ddos_1:1@6 '
+        'get_classification_tree_ddos_3:1@6 table_0_app_bwd_iat_mean:1@6 '
+        'table_4_ddos_bwd_iat_mean:1@6 get_classification_tree_app_0:4@7 '
+        'get_classification_tree_app_1:4@7 get_classification_tree_app_2:4@7 '
+        'get_classification_tree_app_3:4@7 get_classification_tree_ddos_2:1@7')),
+}
+
+
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, PER_TASK_ENCODING, DISJOINT_ENCODING])
 def test_other_encodings_replay_as_before(tmp_path, encoding):
   for seed in range(6):
@@ -299,4 +331,5 @@ def test_other_encodings_replay_as_before(tmp_path, encoding):
       recorded = recorded[:2] + (_JOINT_ORDER_2026_11_13[seed],)
     if (encoding, seed) in _OPTION_B_2026_11_14:
       recorded = recorded[:2] + (_OPTION_B_2026_11_14[(encoding, seed)],)
+    recorded = _KEY_PRUNING_2026_11_14.get((encoding, seed), recorded)
     assert (breakdown["stage_depth"], breakdown["blocks"], tables) == recorded, seed

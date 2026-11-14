@@ -28,6 +28,7 @@ from p4model.target import (
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
 from p4model import lanes, packed
+from p4model.errors import NoSplitTree
 from p4model.names import normalise_feature_name
 from p4model.program import (VOTE_EXPORT, VOTE_EXPORT_BITS, APP_TASK, DDOS_TASK, ENCODINGS, JOINT_ENCODING,
                                  PER_TASK_ENCODING, PER_TREE_ENCODING, PLACEMENT_PRIORITY,
@@ -733,7 +734,9 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
 
   Table and field names come from the same resolve_feature_plan the program
   text is built from: one range table per resolved entry, keyed on its raw
-  value field, and one table per tree, keyed on its task's own code fields. So
+  value field, and one table per tree, keyed on its task's code fields of the
+  features the tree splits on (decision 2.3, tree_key_features; a tree with
+  none raises NoSplitTree, as the program does). So
   namespaced disjoint fields (<task>_<f>) are addressed correctly -- the case
   the legacy get_table_entries (removed 2026-11-13) got wrong. Each task's codewords
   are computed against that task's OWN intervals, which are the intervals of
@@ -851,13 +854,14 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
           "(TaskSpec.features): its codewords cannot be recomputed" % task.name)
     intervals = task.intervals or {}
     field_of = {raw: name for name, (raw, _, models) in plan.items() if task.name in models}
-    # A task's own field on a feature with no bits does not exist under
-    # the per-task encoding, and it adds no bits to a codeword either.
-    fields = [("code_"+field_of[raw], len(iv)-1) for raw, iv in intervals.items()
-              if raw in field_of]
-    paths = get_root_to_leaf_paths(tree_nodes_for(_Forest(task.trees), task.features))
-    codewords = generate_codewords(paths, intervals)
+    # Each tree keys only the fields of the features it splits on (decision
+    # 2.3), so its codewords and entries hold only those (tree_key_features;
+    # the program's keys are the same). A task's own field on a feature with no
+    # bits does not exist under the per-task encoding, and no tree splits it.
+    keyed = tree_key_features(task, field_of.__contains__)
+    codewords = tree_codewords(task, keyed)
     for i in range(len(task.trees)):
+      fields = [("code_"+field_of[raw], len(intervals[raw])-1) for raw in keyed[i]]
       entries += _tree_table_entries(
           "get_classification_tree_"+task.name+"_"+str(i),
           "classify_flow_codeword_"+task.name+"_"+str(i),
@@ -890,6 +894,37 @@ def per_tree_intervals(task):
            for feature, intervals in get_feature_intervals(_Forest([tree]), task.features).items()
            if len(intervals) >= 2}
           for tree in task.trees]
+
+
+def tree_key_features(task, has_field):
+  '''Per tree of one TaskSpec, the raw features its classification key reads
+  (decision 2.3, every encoding): the features the tree splits on
+  (per_tree_intervals' rule, a threshold in the tree) that have a code field of
+  the task (has_field(raw)), in the order of the task's intervals -- the order
+  its codewords are concatenated in. A feature the tree never splits is '*' in
+  every one of its codewords, so leaving its field out of the key changes no
+  match. Raises NoSplitTree (args: message, '<task>_<i>') for the first tree
+  with no such feature: its table would have no key (R6, as
+  packed.layout_for refuses it under the per-tree encoding).'''
+  intervals = task.intervals or {}
+  keyed = []
+  for index, own in enumerate(per_tree_intervals(task)):
+    features = [raw for raw in intervals if raw in own and has_field(raw)]
+    if not features:
+      raise NoSplitTree("tree %s_%d has no threshold, so its table would have no key"
+                        % (task.name, index), "%s_%d" % (task.name, index))
+    keyed.append(features)
+  return keyed
+
+
+def tree_codewords(task, keyed):
+  '''{tree index: that tree's codeword dict} for one TaskSpec, each tree's
+  codewords over only the features its key reads (keyed[i], tree_key_features),
+  against the task's own intervals, in their order.'''
+  intervals = task.intervals or {}
+  paths = get_root_to_leaf_paths(tree_nodes_for(_Forest(task.trees), task.features))
+  return {i: generate_codewords({i: paths[i]}, {raw: intervals[raw] for raw in keyed[i]})[i]
+          for i in range(len(task.trees))}
 
 
 def resolve_per_tree_plan(tasks):
@@ -1668,6 +1703,12 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       features in the tree's feature order. The layout raises NoSplitTree /
       ActionDataTooWide / PhvContainersExhausted before anything is written.
       Every task with trees needs its ordered feature list.
+    In every encoding a tree keys only the code fields of the features it
+    splits on (decision 2.3; tree_key_features), so the encodings differ only in
+    their code scheme; every code field is still declared, pinned and written by
+    its range table. A tree that splits on nothing raises NoSplitTree (R6)
+    before anything is written. Under joint, disjoint and per-task codes a task
+    passed without its feature list keys all of its fields on every tree.
 
   The parameter notes below were written for the two-task form: read
   clf_<task> / feature_intervals_<task> / selected_features_<task> as that
@@ -1822,6 +1863,19 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
     table_plan, resolved_plan = resolve_per_task_plan(task_intervals)
   else:
     table_plan, resolved_plan = None, resolve_feature_plan(task_intervals)
+  # Every other encoding: each tree keys only its task's code fields of the
+  # features it splits on (decision 2.3), refusing a tree with none
+  # (NoSplitTree, R6) before anything is written, tasks in program order as the
+  # per-tree layout checks them. A task without its feature list cannot say
+  # what its trees split on: its trees key every field of the task (and its
+  # tables are sized by leaf count, below).
+  tree_keys = {}
+  if not tree_codes:
+    for task in program_tasks:
+      if task.trees and task.features is not None:
+        field_of = {raw: name for name, (raw, _, models) in resolved_plan.items()
+                    if task.name in models}
+        tree_keys[task.name] = (field_of, tree_key_features(task, field_of.__contains__))
 
   metadata_code = ""
   # Accumulated by three separate loops below (per-tree result fields, raw
@@ -2071,9 +2125,17 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                              for i, own in enumerate(tree_intervals[task.name])}
                  for task in tasks}
   else:
-    key_names = {task.name: [name for name, (_, _, models) in resolved_plan.items()
-                             if task.name in models]
-                 for task in tasks}
+    # Per tree too (decision 2.3): tree i keys, in the plan's field order, the
+    # fields of the features it splits on (tree_key_features).
+    key_names = {}
+    for task in tasks:
+      names = [name for name, (_, _, models) in resolved_plan.items() if task.name in models]
+      if task.name in tree_keys:
+        field_of, keyed = tree_keys[task.name]
+        key_names[task.name] = {i: [name for name in names if resolved_plan[name][0] in raws]
+                                for i, raws in enumerate(keyed)}
+      else:
+        key_names[task.name] = names
   raw_feature_names = ({feature: feature for feature in table_plan}
                        if task_codes or tree_codes
                        else {name: raw for name, (raw, _, _) in resolved_plan.items()})
@@ -2099,9 +2161,9 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                                 tree_intervals[task.name][i])[0]
           for i, tree in enumerate(task.trees)}
     elif task.features is not None:
-      tree_nodes = tree_nodes_for(_Forest(task.trees), task.features)
-      paths = get_root_to_leaf_paths(tree_nodes)
-      codewords[task.name] = generate_codewords(paths, task.intervals or {})
+      # each tree's codewords over the features its key reads, as its entries
+      # (generate_table_entries) hold them; the count is the full codewords'
+      codewords[task.name] = tree_codewords(task, tree_keys[task.name][1])
     elif use_default_action_discount:
       raise ValueError(
           "selected_features_{0} (the features of task {0!r}) is required when "

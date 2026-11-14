@@ -142,13 +142,21 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
 
     # Stage 2b: twins, then compile the differing ones.
     from src.training import align_twins
-    # The tiny synthetic forests are single-leaf stumps (no thresholds), so the
-    # aligner can never change a program and every twin comes out byte-identical,
-    # which would leave the compile branch untested. We therefore force the
-    # DIFFERING branch by making the program hash of every twin except
-    # `false_feasible`'s unequal to its source's: those twins are recorded
-    # twin_identical=False and must be compiled, while the false_feasible twin
-    # stays genuinely identical and must be COPIED from its FALSE_FEASIBLE source.
+    # The tiny synthetic forests used to be single-leaf stumps (no thresholds), so
+    # the aligner could never change a program. Stumps are now refused in every
+    # encoding (R6), so the feasible designs here split and alignment could move
+    # a threshold: it is made a no-op, which keeps every twin byte-identical, as
+    # the stumps did. We then force the DIFFERING branch by making the program
+    # hash of every twin except `false_feasible`'s unequal to its source's: those
+    # twins are recorded twin_identical=False and must be compiled, while the
+    # false_feasible twin stays genuinely identical and must be COPIED from its
+    # FALSE_FEASIBLE source.
+    def no_move(model_A, model_B, *args, align_stats=None, **kwargs):
+        if align_stats is not None:
+            align_stats.update({"attempted": 0, "accepted": 0})
+        return model_A, model_B
+
+    monkeypatch.setattr(align_twins, "align_with_policy", no_move)
     real_sha, differ_from = align_twins._sha256, set()
 
     def forced_sha(path):
@@ -267,8 +275,8 @@ def test_the_per_task_arm_trains_verifies_and_renders_without_twins(tmp_path, mo
 
 
 def _per_tree_data():
-    """4000 learnable rows per task: _synthetic_data's 240 make most forests stumps, and a
-    per-tree design with a stump has no key to match on (NoSplitTree), so no row is feasible."""
+    """4000 learnable rows per task: on few rows most forests are stumps, and a design
+    with a stump has no key to match on (NoSplitTree, every encoding), so no row is feasible."""
     rng = np.random.default_rng(3)
     X_app = rng.integers(0, 5000, size=(4000, 3))
     X_ddos = rng.integers(0, 5000, size=(4000, 3))

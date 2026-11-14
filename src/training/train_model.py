@@ -395,8 +395,9 @@ def train_multi_RF_Optuna_multi_constrained(
             trial.set_user_attr('stages_violation', 0.0)
             return -1.0, -1.0, float('inf')
         except NoSplitTree:
-            # Per-tree codes only (spec 9.4): a tree with no threshold has a table
-            # with no key. Counted in the trial table (`no_split_tree`).
+            # Every encoding (spec 9.4; R6 since decision 2.3, 2026-11-14): a tree
+            # with no threshold has a table with no key. Counted in the per-tree
+            # arm's trial table (`no_split_tree`); the other arms keep their header.
             trial.set_user_attr('no_split_tree', True)
             trial.set_user_attr('crossbar_violation', 1.0)
             trial.set_user_attr('codeword_violation', 0.0)
@@ -501,9 +502,9 @@ def train_multi_RF_Optuna_multi_constrained(
             pass  # Ignore if enqueue fails (e.g. bounds changed between k)
 
     # catch=() deliberately: the ONLY expected RuntimeErrors are the codeword
-    # (CodewordTooLong), crossbar-width (CrossbarKeyTooWide) and, under per-tree
-    # codes, action-width (ActionDataTooWide), PHV (PhvContainersExhausted) and
-    # no-split-tree (NoSplitTree) violations, and the objective already handles
+    # (CodewordTooLong), crossbar-width (CrossbarKeyTooWide), no-split-tree
+    # (NoSplitTree, every encoding) and, under per-tree codes, action-width
+    # (ActionDataTooWide) and PHV (PhvContainersExhausted) violations, and the objective already handles
     # all five itself. The previous
     # catch=(RuntimeError,) also swallowed align_rf_thresholds' own
     # AlignmentInvariantError (raised as a bare RuntimeError("Smth is

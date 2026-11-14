@@ -150,7 +150,8 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             selected_features_ddos=feature_names_ddos,
             config=config, encoding=encoding)
     except (ValueError, ActionDataTooWide, NoSplitTree, PhvContainersExhausted) as e:
-        # The three per-tree refusals (a RuntimeError each, p4model.errors) are
+        # The three pool refusals (a RuntimeError each, p4model.errors;
+        # NoSplitTree in every encoding, the other two per-tree only) are
         # caught with it, as row_artifacts._generate does: an unbuildable design
         # is unavailable for validation, not a dead split.
         # NB: this also swallows generate_P4_code's shared-field layout-conflict

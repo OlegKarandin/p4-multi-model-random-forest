@@ -1804,9 +1804,12 @@ def test_generate_P4_code_selected_features_without_flag_changes_only_sizes(tmp_
   # fallback) is covered above by
   # test_generate_P4_code_classification_size_is_real_codeword_count and
   # test_generate_P4_code_classification_size_falls_back_to_leaf_count. This
-  # test protects the OTHER half: nothing but the `size = N;` literals may
-  # differ between the two calls -- selected_features_app must never change
-  # any other line of the generated program.
+  # test protects the OTHER half: nothing but the `size = N;` literals and the
+  # tree keys may differ between the two calls. The list also says which
+  # features each tree splits on, and a tree keys only those (decision 2.3):
+  # without it every tree keys all of its task's fields, so each pruned key is
+  # a subset of that, in the same order.
+  from p4gen.p4_replay import parse_program_text
   clf_app = _fit_real_forest([0, 1, 2], seed=0, n_estimators=2, value_scale=4000)
   intervals_app = _derive_intervals(clf_app)
 
@@ -1822,11 +1825,16 @@ def test_generate_P4_code_selected_features_without_flag_changes_only_sizes(tmp_
   with_lists = _generate("with_selected_features.p4",
                          selected_features_app=_DISCOUNT_FEATURE_NAMES)
 
-  stripped_without = [l for l in without.splitlines()
-                      if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
-  stripped_with = [l for l in with_lists.splitlines()
-                   if not re.match(r"size\s*=\s*\d+\s*;", l.strip())]
-  assert stripped_without == stripped_with
+  def _stripped(text):
+    return [l for l in text.splitlines()
+            if not re.match(r"size\s*=\s*\d+\s*;", l.strip())
+            and not re.match(r"meta\.code_\w+ : ternary;", l.strip())]
+  assert _stripped(without) == _stripped(with_lists)
+  full, pruned = parse_program_text(without).tables, parse_program_text(with_lists).tables
+  assert full.keys() == pruned.keys()
+  for name, keys in pruned.items():
+    assert keys == [key for key in full[name] if key in keys]
+  assert any(pruned[name] != full[name] for name in pruned)
 
 
 # ---------------------------------------------------------------------------
@@ -2308,3 +2316,152 @@ def test_vote_result_exported(tmp_path):
 def test_vote_export_rejects_unmapped_task():
   with pytest.raises(ValueError, match="vote export"):
     generate_voting_code(2, 2, "third")
+
+
+# ---------------------------------------------------------------------------
+# Key pruning (decision 2.3) and stump refusal (R6), every encoding
+# ---------------------------------------------------------------------------
+
+_PRUNE_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
+                   "flow_iat_min", "bwd_packet_length_max"]
+
+
+def _pruning_forest(n_classes, seed, binary_first=False):
+  """Trees that split on DIFFERENT subsets of the features (max_features=1,
+  depth 2), so pruning drops fields. binary_first: the first feature takes only
+  the values 0 and 1, so every split on it is at threshold 0 and two forests
+  discretize it identically (a shared disjoint field)."""
+  import numpy as np
+  from sklearn.ensemble import RandomForestClassifier
+  rng = np.random.RandomState(seed)
+  X = rng.randint(0, 3000, size=(400, len(_PRUNE_FEATURES)))
+  if binary_first:
+    X[:, 0] = rng.randint(0, 2, size=400)
+  y = ((X[:, 1] + X[:, 2] // 2 + 1500 * X[:, 0] * binary_first)
+       // (4500 // n_classes)).clip(0, n_classes - 1)
+  return bps.dt_thresholds_float_to_int(RandomForestClassifier(
+      n_estimators=6, max_depth=2, max_features=1, random_state=seed).fit(X, y))
+
+
+def _split_features(tree):
+  return {f for f, iv in bps.get_feature_intervals(bps._Forest([tree]), _PRUNE_FEATURES).items()
+          if len(iv) >= 2}
+
+
+def _pruned_program(tmp_path, encoding, app, ddos):
+  if encoding == "joint":
+    ia = idd = bps.get_joint_feature_intervals(app, _PRUNE_FEATURES, ddos, _PRUNE_FEATURES)
+  else:
+    ia = bps.get_feature_intervals(app, _PRUNE_FEATURES)
+    idd = bps.get_feature_intervals(ddos, _PRUNE_FEATURES)
+  path = bps.generate_P4_code(
+      3, 2, app, ddos, feature_intervals_app=ia, feature_intervals_ddos=idd,
+      output_dir=str(tmp_path) + os.sep, output_filename="pruned.p4",
+      selected_features_app=_PRUNE_FEATURES, selected_features_ddos=_PRUNE_FEATURES,
+      encoding=encoding, entries_filename="pruned.json")
+  with open(path) as f:
+    text = f.read()
+  with open(os.path.join(str(tmp_path), "pruned.json")) as f:
+    entries = json.load(f)
+  return text, entries, ia, idd
+
+
+def _assert_trees_key_only_their_features(text, entries, app, ddos, field_of):
+  """field_of(task, feature) -> the code field (resolved name) the task's trees
+  read f from, or None. Every tree keys exactly the fields of its split features,
+  in the program's field order, and its entries carry no other field. Some tree
+  must key fewer fields than its task has, or nothing was pruned."""
+  from p4gen.p4_replay import parse_program_text
+  tables = parse_program_text(text).tables
+  declared = re.findall(r"bit<\d+> (code_\w+);", text)
+  pruned_somewhere = False
+  for task, forest in ((APP_TASK, app), (DDOS_TASK, ddos)):
+    task_fields = {field_of(task, f) for f in _PRUNE_FEATURES} - {None}
+    for i, tree in enumerate(forest.estimators_):
+      name = "get_classification_tree_%s_%d" % (task, i)
+      want = {"code_" + field_of(task, f) for f in _split_features(tree)}
+      keys = tables[name]
+      assert set(keys) == want
+      assert keys == [field for field in declared if field in want]  # the field order
+      pruned_somewhere |= len(want) < len(task_fields)
+      rows = [e for e in entries if e["table_name"] == name and not e["is_default_action"]]
+      assert rows
+      for entry in rows:
+        assert set(entry["key_fields"]) == want
+  assert pruned_somewhere
+
+
+def test_joint_tree_keys_only_its_features(tmp_path):
+  from p4gen.p4_replay import parse_program_text
+  app, ddos = _pruning_forest(3, 2), _pruning_forest(2, 5)
+  text, entries, union, _ = _pruned_program(tmp_path, "joint", app, ddos)
+  _assert_trees_key_only_their_features(
+      text, entries, app, ddos, lambda task, f: f if f in union else None)
+  # An app tree no longer keys a feature only the ddos forest splits (Q2).
+  only_ddos = set(bps.get_feature_intervals(ddos, _PRUNE_FEATURES)) - set(
+      bps.get_feature_intervals(app, _PRUNE_FEATURES))
+  for name, keys in parse_program_text(text).tables.items():
+    if name.startswith("get_classification_tree_app_"):
+      assert not {"code_" + f for f in only_ddos} & set(keys)
+  # Every joint field is still declared and written by its range table.
+  for f in union:
+    assert "bit<%d> code_%s;" % (len(union[f]) - 1, f) in text
+    assert "meta.code_%s = code;" % f in text
+
+
+def test_disjoint_tree_keys_only_its_features(tmp_path):
+  app = _pruning_forest(3, 2, binary_first=True)
+  ddos = _pruning_forest(2, 5, binary_first=True)
+  text, entries, ia, idd = _pruned_program(tmp_path, "disjoint", app, ddos)
+  plan = bps._resolve_disjoint_feature_plan(ia, idd)
+  field = {(task, raw): name for name, (raw, _, models) in plan.items() for task in models}
+  # the design holds a shared field and a namespaced one
+  assert any(len(models) == 2 for _, _, models in plan.values())
+  assert any(name.startswith(("app_", "ddos_")) for name in plan)
+  _assert_trees_key_only_their_features(
+      text, entries, app, ddos, lambda task, f: field.get((task, f)))
+
+
+def test_per_task_tree_keys_only_its_features(tmp_path):
+  app, ddos = _pruning_forest(3, 2), _pruning_forest(2, 5)
+  text, entries, ia, idd = _pruned_program(tmp_path, "per_task", app, ddos)
+  own = {APP_TASK: ia, DDOS_TASK: idd}
+  _assert_trees_key_only_their_features(
+      text, entries, app, ddos,
+      lambda task, f: "tk_%s_%s" % (task, f) if f in own[task] else None)
+
+
+def _stump_forest():
+  """Every tree a stump: a constant input leaves nothing to split on."""
+  import numpy as np
+  from sklearn.ensemble import RandomForestClassifier
+  X = np.zeros((60, len(_PRUNE_FEATURES)), dtype=int)
+  y = np.arange(60) % 3
+  return bps.dt_thresholds_float_to_int(RandomForestClassifier(
+      n_estimators=2, max_depth=3, random_state=0).fit(X, y))
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint", "per_task", "per_tree"])
+def test_stump_refused_every_encoding(tmp_path, encoding):
+  """R6: a tree with no split has a table with no key, in every encoding: the
+  generator refuses it before writing anything, and training refuses the same
+  tree with the same label."""
+  from p4gen.evaluation import multi_model_memory_evaluation
+  from p4model.errors import NoSplitTree
+  app, ddos = _stump_forest(), _pruning_forest(2, 5)
+  if encoding == "joint":
+    ia = idd = bps.get_joint_feature_intervals(app, _PRUNE_FEATURES, ddos, _PRUNE_FEATURES)
+  else:
+    ia = bps.get_feature_intervals(app, _PRUNE_FEATURES)
+    idd = bps.get_feature_intervals(ddos, _PRUNE_FEATURES)
+  with pytest.raises(NoSplitTree) as generated:
+    bps.generate_P4_code(
+        3, 2, app, ddos, feature_intervals_app=ia, feature_intervals_ddos=idd,
+        output_dir=str(tmp_path) + os.sep, output_filename="stump.p4",
+        selected_features_app=_PRUNE_FEATURES, selected_features_ddos=_PRUNE_FEATURES,
+        encoding=encoding)
+  assert generated.value.args[1] == "app_0"
+  assert not os.path.exists(os.path.join(str(tmp_path), "stump.p4"))
+  with pytest.raises(NoSplitTree) as trained:
+    multi_model_memory_evaluation(app, ddos, _PRUNE_FEATURES, _PRUNE_FEATURES, encoding)
+  assert trained.value.args == generated.value.args

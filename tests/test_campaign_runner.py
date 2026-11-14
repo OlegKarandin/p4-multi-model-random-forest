@@ -205,11 +205,13 @@ def test_env_hash_never_raises_when_conda_is_absent(monkeypatch):
 # Determinism (spec §5.4)
 # ---------------------------------------------------------------------------
 
-def _synthetic_data():
+def _synthetic_data(n=4000):
+    """n rows per task. 4000: a stump is refused in every encoding (R6), and searches
+    on 240 rows drew mostly stumps."""
     from tests.test_train_model_seed import _NAMES, _task
     parts = []
     for n_classes, seed in ((3, 0), (2, 1)):
-        X_tr, y_tr, (X_al, y_al), (X_sel, y_sel) = _task(n_classes, seed)
+        X_tr, y_tr, (X_al, y_al), (X_sel, y_sel) = _task(n_classes, seed, n=n)
         parts.append((np.vstack([X_tr, X_al, X_sel]),
                       np.concatenate([y_tr, y_al, y_sel])))
     (X_app, y_app), (X_ddos, y_ddos) = parts
