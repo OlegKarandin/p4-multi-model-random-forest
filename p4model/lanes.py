@@ -5,13 +5,13 @@ Since 2026-11-13 the price of a key -- alone (`table_blocks`) and in a shared
 stage (packing's stage simulation) -- is p4c's ternary crossbar allocation,
 ported (xbar.py). This module keeps what feeds it:
 
-  1. Layout (`layout`, `relaxed_layout`, `key_layout`, `key_fields`, `container_sizes`): each `code_*` field's
+  1. Layout (`layout`, `key_fields`, `container_sizes`): each `code_*` field's
      PHV container layout, predicted from its bit width alone -- the model runs
      before any compile, so it has no PHV log. Audit Sec 7.4.
   2. Lane count (`standalone`): the smallest block count whose crossbar slots
      can legally hold the key's bytes, by counting. Audit Sec 7.2 and Appendix
-     A. It is no longer a price: `key_layout` compares it with the ladder to
-     choose the layout the generator pins, and pins must not change.
+     A. It is no longer a price, and it no longer chooses the layout: a code
+     field's pin depends on its width alone (decision 4.1).
   3. `table_blocks` / `key_fields`: the key's fields in that layout, priced by
      xbar.alone_blocks. (The lane stage simulation -- `price_with_supply`,
      `fit_with_supply`, `first_key_occupancy`, `later_key_occupancy`,
@@ -32,7 +32,7 @@ A BYTE LIST is this module's key representation: one `(kind, k, nibble_only)`
 tuple per crossbar byte, `kind` in {'W', 'H', 'B'} (the container size), `k`
 the byte's index within its container slice, `nibble_only` True when the byte
 carries at most 4 live bits (it may then sit in a single midbyte nibble).
-`bytes_from_layout(field_bit_widths, key_layout(field_bit_widths))` builds the
+`bytes_from_layout(field_bit_widths, layout)` builds the
 one this model lays a key out with.
 
 "No price" is `None` throughout (the audit's scratch code used 99): a key with
@@ -52,7 +52,6 @@ from p4model.errors import CrossbarKeyTooWide
 from p4model.tables import (
     codeword_bits_to_blocks,
     codeword_fields_to_bytes_from_bits,
-    codeword_to_blocks,
 )
 from p4model.target import (
     TERNARY_CROSSBAR_GROUPS_PER_STAGE,
@@ -97,10 +96,10 @@ def layout(w):
   fields over 32 bits): when the remainder is 24 bits the low slice is NOT a
   W24 -- the pinned containers are all W32, p4c fills them from the low one,
   and only the top container is partly used (51 -> W32 | W19). Container
-  sizes, and so @pa_container_size, are the same either way PER FIELD. Per
-  KEY they can differ: `key_layout`'s plain-vs-relaxed choice may flip on a
-  key mixing a 24-remainder field with 17-32-bit fields (its plain price
-  drops), changing those keys' pins.
+  sizes, and so @pa_container_size, are the same either way PER FIELD, and
+  a field's pin is this function's sizes whatever the rest of its key (decision
+  4.1: the model once fell back to an H16 + remainder split for some keys, and
+  that fallback is gone).
 
   Every slice starts at container bit 0. A non-positive width has no slices."""
   if w <= 0:
@@ -131,17 +130,6 @@ def layout(w):
   return out
 
 
-def relaxed_layout(w):
-  """The layout p4c's PHV allocator falls back to when whole-W fields would
-  pile onto the same lanes (seen in M50_k8_s13 / M150_k7_s11): a 17..32-bit
-  field goes into an H16 plus a B (<= 8 bits left) or H remainder. Every other
-  width is laid out as `layout` does."""
-  if 17 <= w <= 32:
-    r = w - 16
-    return [('H', 16), ('B', r) if r <= 8 else ('H', r)]
-  return layout(w)
-
-
 def bytes_from_layout(field_bit_widths, lay=layout):
   """The byte list (see module docstring) of a key whose fields are laid out
   by `lay` -- one entry per started byte of every slice."""
@@ -159,55 +147,12 @@ def bytes_from_widths(field_bit_widths):
   return bytes_from_layout(field_bit_widths, layout)
 
 
-def _price_le(a, b):
-  """`a <= b` for lane prices, `None` (no fit) ranking above every number."""
-  if b is None:
-    return True
-  if a is None:
-    return False
-  return a <= b
-
-
-def key_layout(field_bit_widths):
-  """The layout function -- `layout` or `relaxed_layout` -- this model prices
-  a key with: THE LAYOUT FALLBACK RULE of audit Sec 7.4.
-
-  Use the width-rule layout (`layout`), unless its standalone lane price is
-  ABOVE the LADDER `tables.codeword_to_blocks` (deliberately not `table_blocks`:
-  comparing against the ladder keeps the pins identical to campaign_2026_10's
-  and avoids recursion) -- then
-  p4c's PHV allocator is known to relax the layout (H containers instead of
-  whole W ones), so use the relaxed layout (`relaxed_layout`) if it prices no
-  worse than the width-rule one. With this rule the lane price from widths
-  equals the lane price from the REAL PHV layout on 148/148 real keys
-  (audit `layout_rule_check.py`).
-
-  The fill-low fix in `layout` leaves container sizes unchanged per field,
-  but lowers the plain price of keys with a 24-remainder field, so on keys
-  mixing one with 17-32-bit fields this choice can flip relaxed -> plain and
-  the pins change (e.g. (3, 21, 49); 0 of 7,681 campaign_2026_10 keys).
-
-  Returned as a function, not a byte list, because the generator needs it
-  too: it pins every tree-key code_* field to exactly this layout with
-  @pa_container_size (build_p4_script.code_field_container_sizes), so p4c
-  can no longer pick a different split under PHV pressure (spec 2026-09-29
-  Sec 1.2). Pricing (key_fields -> xbar.alone_blocks, and the stage
-  simulation) and pinning share this one decision so the two cannot drift."""
-  field_bit_widths = list(field_bit_widths)
-  prod = codeword_to_blocks(tuple(sorted(field_bit_widths)))
-  plain_price = standalone(bytes_from_widths(field_bit_widths))
-  if _price_le(plain_price, prod):
-    return layout
-  relaxed = bytes_from_layout(field_bit_widths, relaxed_layout)
-  return relaxed_layout if _price_le(standalone(relaxed), plain_price) else layout
-
-
 def table_blocks(field_bit_widths):
   """THE production per-table price: TCAM blocks one 512-row word of a
   classification table with this key costs alone in a stage, as p4c's ternary
   crossbar allocator (ported, xbar.py) lays out the key's pinned PHV
   containers -- `xbar.alone_blocks(key_fields(w))` (2026-11-13; the lane
-  count `standalone(bytes_from_layout(w, key_layout(w)))` until then).
+  count `standalone(bytes_from_layout(w, layout))` until then).
 
   2026-11-13, campaign_2026_11 (7,763 distinct tree keys of 15,300 designs):
   the port and the lane count differ on 61 keys; on every one p4c's own
@@ -216,9 +161,7 @@ def table_blocks(field_bit_widths):
 
   Replaces the byte-count ladder `tables.codeword_to_blocks` as the price
   every table is CHARGED (packing, p4_replay, ternary_matching_resource_usage).
-  The ladder is kept for threshold alignment (align_budget) and as
-  key_layout's reference, which keeps the pins identical and avoids recursion
-  (table_blocks -> key_layout -> table_blocks).
+  The ladder is kept for threshold alignment (align_budget).
 
   Evidence (reviews/campaign_2026_10_lane_findings.md Sec 3-5): on
   campaign_2026_10 the lane price is below the ladder on 133 tables and p4c
@@ -255,12 +198,11 @@ def _table_blocks(widths):
 
 def key_fields(field_bit_widths):
   """A key's fields as xbar.field_key takes them, (field id, slices) per field
-  with any bits, laid out by key_layout's choice -- the containers the
+  with any bits, laid out by `layout` -- the containers the
   generator pins (build_p4_script.code_field_container_sizes). Field ids are
   positions in `field_bit_widths`: a key never repeats a field."""
   field_bit_widths = [int(w) for w in field_bit_widths]
-  lay = key_layout(field_bit_widths)
-  return tuple((index, tuple(lay(w))) for index, w in enumerate(field_bit_widths)
+  return tuple((index, tuple(layout(w))) for index, w in enumerate(field_bit_widths)
                if w > 0)
 
 
@@ -389,6 +331,6 @@ def standalone(byte_list):
 
   Agrees with p4c on 57/57 probe keys (from the real PHV layout) and with
   `tables.codeword_to_blocks` on 74/74 real design keys (laid out by
-  `key_layout`)."""
+  `layout`)."""
   W, H, B = _counts(byte_list)
   return _standalone(W, H, B, _nibble_types(byte_list))

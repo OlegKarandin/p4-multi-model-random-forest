@@ -2134,7 +2134,7 @@ def test_generate_P4_code_every_solitary_field_gets_pa_no_overlay_next_to_it(tmp
 # ---------------------------------------------------------------------------
 # Spec 2026-09-29 (overlay and key-layout pragmas): every code_* field gets
 # @pa_no_overlay, and every tree-key code_* field a @pa_container_size pinned
-# to the layout lanes.key_layout prices its key with. Pinning OUR side of any
+# to the layout lanes.layout gives it (width rule alone, decision 4.1). Pinning OUR side of any
 # overlay pair blocks every partner, known or not; pinning the layout keeps
 # p4c from choosing a split the model does not price.
 # ---------------------------------------------------------------------------
@@ -2146,8 +2146,8 @@ _PA_CODE_SIZE_RE = re.compile(
     r'@pa_container_size\(\s*"ingress"\s*,\s*"ig_md\.(code_[A-Za-z0-9_]+)"'
     r'((?:\s*,\s*\d+)+)\s*\)')
 
-# margin_independent_M50_k8_s13's two real keys (spec Sec 4 test 2): the ddos
-# key prices with the RELAXED layout, the app key with the plain one.
+# margin_independent_M50_k8_s13's two real keys (spec Sec 4 test 2); since decision 4.1
+# both pin by the plain width rule.
 _DDOS_WIDTHS = {"bwd_iat_min": 18, "bwd_packet_length_max": 19,
                 "bwd_packet_length_mean": 18, "fwd_iat_mean": 27,
                 "fwd_iat_min": 21, "fwd_packet_length_max": 18,
@@ -2216,20 +2216,18 @@ def test_joint_design_pins_each_field_once(tmp_path):
 def test_tree_key_fields_are_pinned_to_the_layout_their_key_prices(tmp_path):
   app = {name: _intervals_of_width(w) for name, w in _APP_WIDTHS.items()}
   ddos = {name: _intervals_of_width(w) for name, w in _DDOS_WIDTHS.items()}
-  assert lanes.key_layout(list(_DDOS_WIDTHS.values())) is lanes.relaxed_layout
-  assert lanes.key_layout(list(_APP_WIDTHS.values())) is lanes.layout
   text = _generate(tmp_path, "layout_pins.p4", app, ddos,
                    clf_app=_tiny_app_forest())
   # Names both models select come out namespaced (their widths differ);
   # the rest keep their own name.
   expected = {
-      # ddos key, relaxed: 17..32-bit fields split H16 + remainder.
-      "code_bwd_iat_min": [16, 8], "code_ddos_bwd_packet_length_max": [16, 8],
-      "code_ddos_bwd_packet_length_mean": [16, 8], "code_fwd_iat_mean": [16, 16],
-      "code_fwd_iat_min": [16, 8], "code_ddos_fwd_packet_length_max": [16, 8],
-      "code_ddos_fwd_packet_length_mean": [16, 8],
-      "code_ddos_packet_length_mean": [16, 8],
-      # app key, plain width rule.
+      # ddos key: 17..32-bit fields are whole W containers.
+      "code_bwd_iat_min": [32], "code_ddos_bwd_packet_length_max": [32],
+      "code_ddos_bwd_packet_length_mean": [32], "code_fwd_iat_mean": [32],
+      "code_fwd_iat_min": [32], "code_ddos_fwd_packet_length_max": [32],
+      "code_ddos_fwd_packet_length_mean": [32],
+      "code_ddos_packet_length_mean": [32],
+      # app key.
       "code_bwd_iat_mean": [8, 32], "code_app_bwd_packet_length_max": [16, 32],
       "code_app_bwd_packet_length_mean": [32], "code_bwd_packet_length_min": [8],
       "code_flow_iat_min": [32], "code_app_fwd_packet_length_max": [8, 32],
@@ -2251,11 +2249,22 @@ def test_a_tree_less_task_pins_no_layout_but_still_forbids_overlay(tmp_path):
              if f.startswith("code_")) == {"code_flow_iat_max", "code_fwd_iat_max"}
 
 
-def test_a_shared_field_whose_two_keys_disagree_on_its_layout_raises(tmp_path):
-  # flow_iat_max: 19 bits, identical in both models, so ONE shared field.
-  # The app key (19, 64) prices it plain -> [32]; the ddos key
-  # (19, 18, 18, 18, 19, 21, 24, 27) prices relaxed -> [16, 8]. One pragma
-  # cannot pin both (spec Sec 3.1 step 2).
+def test_container_sizes_depend_on_width_only():
+  """Decision 4.1: a code field's pin is lanes.container_sizes(width, lanes.layout)
+  whatever else its key holds, for every width, alone or beside companions that
+  once flipped a key to the relaxed layout."""
+  companions = ({}, {"c1": 18, "c2": 18, "c3": 19, "c4": 21, "c5": 24, "c6": 27},
+                {"c1": 19, "c2": 64}, {"c1": 49, "c2": 21, "c3": 3})
+  for w in range(1, 201):
+    for extra in companions:
+      intervals = {"target": _intervals_of_width(w)}
+      intervals.update({k: _intervals_of_width(v) for k, v in extra.items()})
+      plan = bps._resolve_disjoint_feature_plan(intervals, {})
+      pins = bps.code_field_container_sizes(plan, ["app"])
+      assert pins["target"] == lanes.container_sizes(w, lanes.layout), (w, extra)
+
+
+def test_a_shared_field_read_by_two_keys_is_pinned_once(tmp_path):
   shared = _intervals_of_width(19)
   app = {"flow_iat_max": shared, "fwd_iat_max": _intervals_of_width(64)}
   ddos = {"flow_iat_max": shared}
@@ -2264,8 +2273,8 @@ def test_a_shared_field_whose_two_keys_disagree_on_its_layout_raises(tmp_path):
                       "packet_length_mean"),
                      (18, 18, 18, 19, 21, 24, 27)):
     ddos[name] = _intervals_of_width(w)
-  with pytest.raises(ValueError, match=r"code_flow_iat_max.*app.*ddos|code_flow_iat_max.*ddos.*app"):
-    _generate(tmp_path, "conflict.p4", app, ddos, clf_app=_tiny_app_forest())
+  text = _generate(tmp_path, "shared.p4", app, ddos, clf_app=_tiny_app_forest())
+  assert _code_pins(text)["code_flow_iat_max"] == [32]
 
 
 def test_code_field_container_sizes_skips_a_zero_width_field():

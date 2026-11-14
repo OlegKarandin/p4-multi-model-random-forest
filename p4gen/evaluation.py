@@ -211,12 +211,11 @@ def _packed_tree_entries(codewords, key, use_default_action_discount):
 def _key_slices(fields):
   """One classification key as packing.crossbar_stages_needed's key_slices
   takes it: (field id, slices) per (field id, bit width) of `fields`, laid
-  out by lanes.key_layout's choice for the whole key -- the containers
+  out by lanes.layout, the width rule -- the containers
   build_p4_script.code_field_container_sizes pins. A field with no bits is
   not keyed."""
   fields = list(fields)
-  lay = lanes.key_layout([bits for _, bits in fields])
-  return tuple((field_id, tuple(lay(bits))) for field_id, bits in fields
+  return tuple((field_id, tuple(lanes.layout(bits))) for field_id, bits in fields
                if bits > 0)
 
 

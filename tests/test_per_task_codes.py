@@ -121,7 +121,7 @@ def test_program_declares_and_pins_every_code_field(tmp_path):
     for task, intervals in own.items():
         names = list(intervals)
         widths = [len(intervals[f]) - 1 for f in names]
-        lay = lanes.key_layout(widths)
+        lay = lanes.layout
         for feature, width in zip(names, widths):
             field = "code_tk_%s_%s" % (task, feature)
             assert "bit<%d> %s;" % (width, field) in text

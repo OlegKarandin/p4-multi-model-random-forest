@@ -1145,40 +1145,24 @@ def code_field_container_sizes(resolved_plan, tasks):
   '''resolved_name -> @pa_container_size sizes (low slice first) for every
   code_<resolved_name> field some classification key reads.
 
-  One key per task in `tasks` (the tasks that HAVE trees -- a tree-less task
-  has no key to price): the code_* fields whose `models` include that task,
-  the same field set evaluation prices through
-  tables.ternary_key_field_bits. Each key's layout is lanes.key_layout's
-  choice, the one the model prices it with, so pinning it makes p4c lay the
-  key out the way it is priced (spec 2026-09-29 Sec 1.2: unpinned, PHV
-  pressure moved 17-32-bit fields into whole W containers and cost +1 block
-  per tree on M50_k8_s13 / M150_k7_s11).
+  A field's pin is lanes.container_sizes(width, lanes.layout): the width rule
+  alone, whatever else its key holds (decision 4.1), and the layout the model
+  prices the key with (lanes.key_fields), so p4c lays the key out the way it
+  is priced (spec 2026-09-29 Sec 1.2: unpinned, PHV pressure moved 17-32-bit
+  fields into whole W containers). Tasks with no trees have no key, so their
+  fields are pinned only when some listed task reads them; a field two keys
+  read (disjoint, identical intervals) has one width, hence one pin.
 
   A field with no bits has no layout and gets no entry (a pragma with no
-  sizes does not parse). A field two keys read (disjoint, identical
-  intervals) is pinned once when both keys agree; when they do not, this
-  RAISES -- the model would otherwise price one key with a layout the
-  program does not have. 0 of 73 archived designs hit it (spec Sec 7).'''
-  sizes, owner = {}, {}
+  sizes does not parse).'''
+  sizes = {}
   for task in tasks:
-    names = [name for name, (_, _, models) in resolved_plan.items() if task in models]
-    if not names:
-      continue
-    widths = [max(len(resolved_plan[name][1]) - 1, 0) for name in names]
-    lay = lanes.key_layout(widths)
-    for name, width in zip(names, widths):
-      pin = lanes.container_sizes(width, lay)
-      if not pin:
+    for name, (_, intervals, models) in resolved_plan.items():
+      if task not in models:
         continue
-      if name in sizes and sizes[name] != pin:
-        raise ValueError(
-            "code_{} is read by both the {} and the {} classification keys, "
-            "which this model prices with different PHV layouts ({} vs {}); "
-            "one @pa_container_size cannot pin both (spec 2026-09-29 Sec 7: "
-            "price both keys relaxed, or namespace the field per task)".format(
-                name, owner[name], task, sizes[name], pin))
-      sizes.setdefault(name, pin)
-      owner.setdefault(name, task)
+      pin = lanes.container_sizes(max(len(intervals) - 1, 0), lanes.layout)
+      if pin:
+        sizes[name] = pin
   return sizes
 
 
@@ -1955,7 +1939,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   #     partners (*_val, fwd) left residual overlays on flow_hash /
   #     now_pseudo_us.
   #   * @pa_container_size on every TREE-KEY code_* field, to the layout
-  #     lanes.key_layout prices its key with. No-overlay alone changes PHV
+  #     lanes.layout gives it (the width rule). No-overlay alone changes PHV
   #     pressure and p4c then put some 17-32-bit fields whole in W containers:
   #     same bytes, worse lanes, +1 block per tree. The model's 62-byte
   #     mixed-key refusal was retired on the strength of these pins

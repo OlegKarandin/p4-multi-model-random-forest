@@ -16,7 +16,7 @@ Every number pinned here was OBSERVED in a real p4c compile, not derived:
     gitignored.
 
 The port was also checked against the scratch code itself (not committed; the
-scratch directory is untracked): layout/relaxed_layout for w in 0..329,
+scratch directory is untracked): layout for w in 0..329,
 key_bytes (since deleted) and standalone on 1679 keys -- 0 differences, 99 read as None.
 """
 import pytest
@@ -111,11 +111,21 @@ LANE_BELOW_P4C_REAL_KEYS = {
     (27, 52): (2, 3),   # independent_low_sd5's ddos trees
 }
 
+# The two real keys p4c charged one block less than the plain width rule gives:
+# they were compiled under the relaxed H16 + remainder pin the model used to
+# choose (M150_k7_s11, M50_k8_s13; spec 2026-09-29 Sec 1.2). Since decision 4.1
+# the pin is the plain one, which prices them one higher (unpinned, p4c charged
+# the plain price too: +1 block per tree). (key widths) -> (plain price, p4c
+# charged under the old relaxed pin).
+PLAIN_ABOVE_RELAXED_COMPILES = {
+    (19, 20, 21, 21, 23, 23, 28): (5, 4),
+    (18, 18, 18, 19, 19, 21, 24, 27): (6, 5),
+}
+
 
 def _key_bytes(widths):
-  """A key's byte list as this model lays it out: key_layout's choice."""
-  widths = list(widths)
-  return lanes.bytes_from_layout(widths, lanes.key_layout(widths))
+  """A key's byte list as this model lays it out: the width rule."""
+  return lanes.bytes_from_layout(list(widths), lanes.layout)
 
 
 def _price(widths):
@@ -149,14 +159,16 @@ def test_lane_standalone_is_never_below_the_headline_ladder(widths):
     assert price == lane < observed == codeword_to_blocks(widths)
     return
   assert price >= codeword_to_blocks(widths)
+  if widths in PLAIN_ABOVE_RELAXED_COMPILES:
+    assert (price, codeword_to_blocks(widths)) == PLAIN_ABOVE_RELAXED_COMPILES[widths]
 
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
 def test_lane_standalone_equals_production_on_real_keys(widths):
   """On every real design key but the listed greedy misses the lane price and
   the ladder agree."""
-  if widths in LANE_BELOW_P4C_REAL_KEYS:
-    pytest.skip('listed greedy miss, asserted above')
+  if widths in LANE_BELOW_P4C_REAL_KEYS or widths in PLAIN_ABOVE_RELAXED_COMPILES:
+    pytest.skip('listed miss, asserted above')
   assert _price(widths) == codeword_to_blocks(widths)
 
 
@@ -246,13 +258,11 @@ def test_pinned_24_remainder_fields_fill_the_low_container_first(w, expected):
   7,479/7,479 fields over 32 bits, reviews/campaign_2026_10_lane_findings.md
   Sec 4). A 51-bit field is 32|19, not 24|27."""
   assert lanes.layout(w) == expected
-  assert lanes.relaxed_layout(w) == expected
 
 
 def test_fill_low_fix_leaves_every_pin_unchanged():
   """Per FIELD, the pins (container sizes, low slice first) do not move, for
-  every width 0..329. This does NOT make the pins of a whole KEY unchanged:
-  see test_fill_low_fix_can_flip_a_keys_plain_vs_relaxed_pin."""
+  every width 0..329."""
   failures = []
   for w in range(0, 330):
     sizes = lanes.container_sizes(w)
@@ -261,105 +271,6 @@ def test_fill_low_fix_leaves_every_pin_unchanged():
         or sum(bits for _, bits in lanes.layout(w)) != max(w, 0)):
       failures.append(w)
   assert not failures, 'widths whose pins moved: %r' % failures
-
-
-def _key_choice(widths, monkeypatch, old):
-  """('relaxed'|'plain', container_sizes of each field) of key_layout(widths),
-  under the pre-fill-low layout when `old`, else the current one."""
-  with monkeypatch.context() as m:
-    if old:
-      m.setattr(lanes, 'layout', _pre_fill_low_layout)
-    lanes._table_blocks.cache_clear()
-    lay = lanes.key_layout(widths)
-    name = 'relaxed' if lay is lanes.relaxed_layout else 'plain'
-    sizes = [lanes.container_sizes(w, lay) for w in widths]
-  lanes._table_blocks.cache_clear()
-  return name, sizes
-
-
-def test_fill_low_fix_can_flip_a_keys_plain_vs_relaxed_pin(monkeypatch):
-  """Per-key pin identity is NOT structural. container_sizes(w) is identical
-  per field (test above), but key_layout compares the plain lane price with
-  the ladder, and the fill-low fix lowers the plain price of keys holding a
-  24-remainder field, so a key mixing one with 17-32-bit fields can now pin
-  plain W32 where the old code pinned relaxed H16 + B8. It held on all 7,681
-  campaign_2026_10 keys (a one-off check, since removed); a new campaign can pin
-  plain W32 where the old code pinned relaxed H16 on such keys, which no
-  compile has tested."""
-  key = (3, 21, 49)
-  old, old_sizes = _key_choice(key, monkeypatch, old=True)
-  new, new_sizes = _key_choice(key, monkeypatch, old=False)
-  assert (old, new) == ('relaxed', 'plain')
-  assert old_sizes[1] == [16, 8]
-  assert new_sizes[1] == [32]
-  assert old_sizes[0] == new_sizes[0] and old_sizes[2] == new_sizes[2]
-  key2 = (22, 30, 50, 54)
-  assert _key_choice(key2, monkeypatch, old=True)[0] == 'relaxed'
-  assert _key_choice(key2, monkeypatch, old=False)[0] == 'plain'
-  # A campaign-style key without a flip is unchanged.
-  stable = (19, 64)
-  assert (_key_choice(stable, monkeypatch, old=True)
-          == _key_choice(stable, monkeypatch, old=False))
-
-
-def test_relaxed_layout_splits_17_to_32_bit_fields_into_halves():
-  assert lanes.relaxed_layout(19) == [('H', 16), ('B', 3)]
-  assert lanes.relaxed_layout(28) == [('H', 16), ('H', 12)]
-  assert lanes.relaxed_layout(16) == lanes.layout(16)
-  assert lanes.relaxed_layout(33) == lanes.layout(33)
-
-
-@pytest.mark.parametrize('widths,plain,relaxed', [
-    ((19, 20, 21, 21, 23, 23, 28), 5, 4),       # M150_k7_s11
-    ((18, 18, 18, 19, 19, 21, 24, 27), 6, 5),   # M50_k8_s13
-])
-def test_layout_fallback_rule(widths, plain, relaxed):
-  """Audit Sec 7.4: the width layout, unless its lane price exceeds
-  codeword_to_blocks -- then the relaxed layout."""
-  assert lanes.standalone(lanes.bytes_from_widths(widths)) == plain
-  chosen = _key_bytes(widths)
-  assert chosen == lanes.bytes_from_layout(widths, lanes.relaxed_layout)
-  assert lanes.standalone(chosen) == relaxed == codeword_to_blocks(widths)
-
-
-def test_fallback_keeps_the_width_layout_when_it_already_matches_production():
-  assert _key_bytes((19, 64)) == lanes.bytes_from_widths((19, 64))
-
-
-# ------------------------------------------------ key_layout (spec 2026-09-29)
-# The generator pins every tree-key code_* field to the layout this model
-# prices the key with (@pa_container_size), so the layout DECISION must be one
-# function both sides call -- key_layout -- not a byte list the generator
-# would have to reverse-engineer.
-
-@pytest.mark.parametrize('widths', REAL_DESIGN_KEYS + (
-    (19, 20, 21, 21, 23, 23, 28), (18, 18, 18, 19, 19, 21, 24, 27)))
-def test_key_layout_is_one_of_the_two_layouts(widths):
-  lay = lanes.key_layout(widths)
-  assert lay is lanes.layout or lay is lanes.relaxed_layout
-
-
-@pytest.mark.parametrize('widths,relaxed', [
-    ((18, 18, 18, 19, 19, 21, 24, 27), True),    # M50_k8_s13 ddos key
-    ((7, 17, 31, 33, 34, 36, 39, 46), False),    # M50_k8_s13 app key
-    ((19, 20, 21, 21, 23, 23, 28), True),        # M150_k7_s11 ddos key
-    ((19, 64), False),
-])
-def test_key_layout_picks_relaxed_only_where_key_bytes_does(widths, relaxed):
-  assert lanes.key_layout(widths) is (
-      lanes.relaxed_layout if relaxed else lanes.layout)
-
-
-def test_container_sizes_are_container_widths_low_slice_first():
-  assert lanes.container_sizes(19, lanes.relaxed_layout) == [16, 8]
-  assert lanes.container_sizes(28, lanes.relaxed_layout) == [16, 16]
-  assert lanes.container_sizes(19) == [32]
-  assert lanes.container_sizes(7) == [8]
-  assert lanes.container_sizes(33) == [8, 32]    # B8 low, W25 top
-  assert lanes.container_sizes(46) == [16, 32]   # H16 low, W30 top
-  assert lanes.container_sizes(56) == [32, 32]   # W24 low, W32 top
-  assert lanes.container_sizes(0) == []
-  assert lanes.container_sizes(0, lanes.relaxed_layout) == []
 
 
 def test_byte_list_marks_nibble_only_bytes():
@@ -393,6 +304,8 @@ def test_table_blocks_equals_p4c_on_real_keys(widths):
   # the port gives p4c's number.
   if widths in LANE_BELOW_P4C_REAL_KEYS:
     assert lanes.table_blocks(widths) == LANE_BELOW_P4C_REAL_KEYS[widths][1]
+  elif widths in PLAIN_ABOVE_RELAXED_COMPILES:
+    assert lanes.table_blocks(widths) == PLAIN_ABOVE_RELAXED_COMPILES[widths][0]
   else:
     assert lanes.table_blocks(widths) == codeword_to_blocks(widths)
 

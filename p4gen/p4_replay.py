@@ -413,12 +413,11 @@ def tree_key_slices(program, table):
     one) as packing.crossbar_stages_needed's key_slices takes it: (field name,
     slices) per keyed field with bits, in key order. A field's slices are its
     @pa_container_size pin filled low first (xbar.fill_low); a field with no
-    pin (a program generated before the pins) gets lanes.key_layout's choice
-    for the key, which is what the pin would say."""
+    pin (a program generated before the pins) gets lanes.layout, which is what
+    the pin would say."""
     keys = [key for key in program.tables[table] if program.bits.get(key, 0) > 0]
-    lay = lanes.key_layout([program.bits[key] for key in keys])
     return tuple((key, xbar.fill_low(program.bits[key], program.code_containers[key])
-                  if key in program.code_containers else tuple(lay(program.bits[key])))
+                  if key in program.code_containers else tuple(lanes.layout(program.bits[key])))
                  for key in keys)
 
 

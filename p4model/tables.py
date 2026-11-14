@@ -349,7 +349,7 @@ def codeword_to_blocks(field_bit_widths):
   THE LADDER: a byte-count estimate (Sec 2.2/13.1's ledger, headline ladder
   codeword_to_blocks_headline plus the Sec 2.3 isolation credit, capped at one
   nibble-clean field per Sec 6.1 amendment 2). Used by threshold alignment
-  (align_budget) and as lanes.key_layout's reference. The production per-table
+  (align_budget). The production per-table
   price is lanes.table_blocks (2026-10-04).
 
   (This replaces the retired offset-taking `codeword_to_blocks` of

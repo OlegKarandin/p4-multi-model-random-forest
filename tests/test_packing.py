@@ -204,7 +204,7 @@ def test_a_probe_behind_a_crowded_spacer_pays_p4cs_seven_blocks():
     # blocks. That compile pinned no containers: p4c laid each 84-bit field out
     # as W24 | W32 | W28 (its prog.bfa), and with that layout the crossbar port
     # (xbar.py) charges exactly p4c's 8 + 7. Under the layout the generator pins
-    # (lanes.key_layout, fill-low W32 | W32 | W20) the port's price is 6, never
+    # (lanes.layout, fill-low W32 | W32 | W20) the port's price is 6, never
     # compiled.
     from p4model.packing import crossbar_stages_needed
 
