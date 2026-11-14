@@ -148,9 +148,10 @@ def test_disjoint_key_order_is_the_texts_with_a_shared_feature_after_a_ddos_only
         "get_classification_tree_ddos_%d" % i for i in range(len(ddos.estimators_))]
     both = False
     for name, slices in zip(trees, pool["ternary_key_slices"]):
-        text_order = [raw[field] for field, _ in rp.tree_key_slices(program, name)]
-        assert [field_id[0] for field_id, _ in slices] == text_order, name
-        both |= text_order == ["flow_iat_max", "bwd_iat_mean"]
+        # training names each field as the program does (the crossbar numbers containers by name)
+        text = rp.tree_key_slices(program, name)
+        assert [field_id for field_id, _ in slices] == [field for field, _ in text], name
+        both |= [raw[field] for field, _ in text] == ["flow_iat_max", "bwd_iat_mean"]
     assert both      # some ddos tree keys the shared field and the ddos-only one
 
 

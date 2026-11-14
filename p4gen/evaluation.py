@@ -222,23 +222,28 @@ def _key_slices(fields):
                if bits > 0)
 
 
-def _code_fields(feature_intervals, task=None):
-  """(field id, bit width) per code field of a key over feature_intervals, in
-  its order, with the ids tables.ternary_key_fields (task None) or
-  tables.per_task_key_fields (task given) give the same fields."""
-  out = []
-  for feature, intervals in feature_intervals.items():
-    name = normalise_feature_name(feature)
-    field_id = (per_task_field(task, name) if task is not None
-                else (name, tuple(intervals)))
-    out.append((field_id, max(len(intervals) - 1, 0)))
-  return out
+def _code_fields(feature_intervals, names):
+  """(field name, bit width) per code field of a key over feature_intervals, in
+  its order, each field named as the program names it (names[feature],
+  code_<resolved name>, _field_names): the crossbar ids two keys share when they
+  key one field, and the names xbar.code_container_order orders the stage's
+  containers by -- what the replay reads from the program text."""
+  return [(names[feature], max(len(intervals) - 1, 0))
+          for feature, intervals in feature_intervals.items()]
 
 
 def _key_orders(resolved_plan):
   """{task: [raw feature]} in the order the program text lists each task's code
   fields (build_p4_script.plan_key_order), for _tree_keys."""
   return {task: [raw for _, raw in plan_key_order(resolved_plan, task)]
+          for task in (APP_TASK, DDOS_TASK)}
+
+
+def _field_names(resolved_plan):
+  """{task: {raw feature: code field name}}: the code_<resolved name> field each
+  task's trees key for a feature (build_p4_script.plan_key_order), as the
+  program declares it."""
+  return {task: {raw: "code_" + name for name, raw in plan_key_order(resolved_plan, task)}
           for task in (APP_TASK, DDOS_TASK)}
 
 
@@ -268,7 +273,7 @@ def _tree_keys(trees, intervals_of, orders):
 
 
 def _pruned_trees(trees, keys, codewords, table_of, n_range_tables, per_task_fields,
-                  use_default_action_discount):
+                  field_names, use_default_action_discount):
   """The classification side of a pool whose trees key only their own features
   (_tree_keys): per tree, its table spec (blocks, crossbar bytes) priced on its
   own key, the key's fields / bits / slices, and tree_reads, the range-table
@@ -281,7 +286,9 @@ def _pruned_trees(trees, keys, codewords, table_of, n_range_tables, per_task_fie
   and codeword_length (the longest; R1, CodewordTooLong) are the full
   codewords'. A key over a stage's crossbar bytes raises CrossbarKeyTooWide,
   per tree. per_task_fields: the per-task encoding's field ids
-  (tables.per_task_key_fields), which two tasks never share."""
+  (tables.per_task_key_fields), which two tasks never share. field_names:
+  _field_names of the encoding's plan, naming each key's fields for the
+  crossbar (_code_fields)."""
   out = {"ternary_table_specs": [], "ternary_fields": [], "ternary_key_bits": [],
          "ternary_key_slices": [], "tree_reads": [], "ternary_entries": 0,
          "codeword_length": 0}
@@ -296,7 +303,7 @@ def _pruned_trees(trees, keys, codewords, table_of, n_range_tables, per_task_fie
                                  else ternary_key_fields(key))
     out["ternary_key_bits"].append(ternary_key_field_bits(key))
     out["ternary_key_slices"].append(
-        _key_slices(_code_fields(key, task if per_task_fields else None)))
+        _key_slices(_code_fields(key, field_names[task])))
     reads = [table_of(task, feature) for feature in key]
     out["tree_reads"].append(reads)
     for position in reads:
@@ -400,15 +407,15 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # one code field per feature, but each tree keys only the fields of the
     # features it splits on (decision 2.3; _tree_keys refuses a stump first).
     trees = _program_trees(tree_nodes_app, tree_nodes_ddos)
+    plan = resolve_feature_plan([(DDOS_TASK, feature_intervals), (APP_TASK, feature_intervals)])
     keys = _tree_keys(trees, {APP_TASK: feature_intervals, DDOS_TASK: feature_intervals},
-                      _key_orders(resolve_feature_plan([(DDOS_TASK, feature_intervals),
-                                                        (APP_TASK, feature_intervals)])))
+                      _key_orders(plan))
     codewords = generate_codewords(get_root_to_leaf_paths(tree_nodes), feature_intervals)
     position = {feature: index for index, feature in enumerate(feature_intervals)}
     classification = _pruned_trees(
         trees, keys, [codewords[index] for index in range(len(trees))],
         lambda task, feature: position[feature], len(range_table_specs), False,
-        use_default_action_discount)
+        _field_names(plan), use_default_action_discount)
 
     # Readers (p4c's tie orders: register_stage_schedule, the range pool's
     # table_dependents): the trees keying each feature, whichever task.
@@ -442,8 +449,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # never share a crossbar id. Two independent codewords, as under
     # 'disjoint': see ResourceUsage.codeword_length.
     trees = _program_trees(tree_nodes_app, tree_nodes_ddos)
-    keys = _tree_keys(trees, own, _key_orders(resolve_per_task_plan(
-        [(DDOS_TASK, feature_intervals_ddos), (APP_TASK, feature_intervals_app)])[1]))
+    _, plan = resolve_per_task_plan([(DDOS_TASK, feature_intervals_ddos),
+                                     (APP_TASK, feature_intervals_app)])
+    keys = _tree_keys(trees, own, _key_orders(plan))
     codewords = {APP_TASK: generate_codewords(get_root_to_leaf_paths(tree_nodes_app),
                                               feature_intervals_app),
                  DDOS_TASK: generate_codewords(get_root_to_leaf_paths(tree_nodes_ddos),
@@ -452,7 +460,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     classification = _pruned_trees(
         trees, keys, [codewords[task][index] for task, index, _ in trees],
         lambda task, feature: position[feature], len(range_table_specs), True,
-        use_default_action_discount)
+        _field_names(plan), use_default_action_discount)
 
     # A feature is read by the trees keying one of its fields, whichever task
     # (the tie orders); a tree waits only for the tables it reads (tree_reads),
@@ -597,8 +605,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # why max and not sum.
     own = {APP_TASK: feature_intervals_app, DDOS_TASK: feature_intervals_ddos}
     trees = _program_trees(tree_nodes_app, tree_nodes_ddos)
-    keys = _tree_keys(trees, own, _key_orders(resolve_feature_plan(
-        [(DDOS_TASK, feature_intervals_ddos), (APP_TASK, feature_intervals_app)])))
+    plan = resolve_feature_plan([(DDOS_TASK, feature_intervals_ddos),
+                                 (APP_TASK, feature_intervals_app)])
+    keys = _tree_keys(trees, own, _key_orders(plan))
     codewords = {APP_TASK: generate_codewords(get_root_to_leaf_paths(tree_nodes_app),
                                               feature_intervals_app),
                  DDOS_TASK: generate_codewords(get_root_to_leaf_paths(tree_nodes_ddos),
@@ -615,12 +624,13 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       return ddos_position[feature]
 
     # A feature both models split identically is one code field both keys read
-    # (same id, tables.ternary_key_fields), so its crossbar slots are shared in
+    # (same name, _field_names), so its crossbar slots are shared in
     # a stage. range_task: an app-only table is the app's, a ddos-only one the
     # ddos', a shared one SHARED_TASK -- as p4_replay.table_tasks labels them.
     classification = _pruned_trees(
         trees, keys, [codewords[task][index] for task, index, _ in trees],
-        table_of, len(range_table_specs), False, use_default_action_discount)
+        table_of, len(range_table_specs), False, _field_names(plan),
+        use_default_action_discount)
     ternary_task = [task for task, _, _ in trees]
 
     # Each model keeps its own intervals here, so levels must be derived per

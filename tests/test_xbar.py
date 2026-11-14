@@ -94,3 +94,54 @@ def test_range_key_is_lo_and_hi_per_byte():
 def test_tie_must_be_known():
   with pytest.raises(ValueError):
     xbar.StageXbar(tie='alphabetical')
+
+
+# joint-task_M055_s20_k12 (Task 5, key pruning), stage 8: five ddos trees whose keys overlap but differ, in
+# p4c's placement order, with the code fields' widths (p4c put the 1-4-bit ones in B, the 9-16-bit ones in H
+# containers, as lanes.layout says). p4c charged [4, 4, 3, 4, 4] blocks per 512-row word (prog.bfa, all slot for
+# slot reproduced by the port on p4c's own containers); container numbers handed out by first use gave
+# get_classification_tree_ddos_0 3.
+_M055_WIDTHS = {'bwd_iat_max': 4, 'bwd_iat_mean': 4, 'bwd_packet_length_max': 14,
+                'bwd_packet_length_mean': 14, 'bwd_packet_length_min': 1, 'flow_iat_mean': 11,
+                'flow_iat_min': 16, 'fwd_iat_min': 13, 'fwd_packet_length_max': 9,
+                'fwd_packet_length_mean': 14, 'min_packet_length': 1, 'packet_length_mean': 10}
+_M055_STAGE8 = [
+    ('ddos_4', ['bwd_iat_max', 'bwd_iat_mean', 'bwd_packet_length_max', 'bwd_packet_length_mean',
+                'flow_iat_min', 'fwd_iat_min', 'fwd_packet_length_max', 'fwd_packet_length_mean',
+                'min_packet_length', 'packet_length_mean']),
+    ('ddos_3', ['bwd_iat_max', 'bwd_packet_length_max', 'bwd_packet_length_mean', 'flow_iat_mean',
+                'flow_iat_min', 'fwd_iat_min', 'fwd_packet_length_max', 'fwd_packet_length_mean',
+                'packet_length_mean']),
+    ('ddos_2', ['bwd_packet_length_max', 'bwd_packet_length_mean', 'bwd_packet_length_min',
+                'flow_iat_mean', 'flow_iat_min', 'fwd_packet_length_max', 'fwd_packet_length_mean',
+                'min_packet_length', 'packet_length_mean']),
+    ('ddos_1', ['bwd_iat_max', 'bwd_iat_mean', 'bwd_packet_length_max', 'bwd_packet_length_mean',
+                'flow_iat_mean', 'flow_iat_min', 'fwd_iat_min', 'fwd_packet_length_max',
+                'fwd_packet_length_mean', 'min_packet_length', 'packet_length_mean']),
+    ('ddos_0', ['bwd_iat_mean', 'bwd_packet_length_max', 'bwd_packet_length_mean', 'flow_iat_mean',
+                'flow_iat_min', 'fwd_packet_length_max', 'fwd_packet_length_mean', 'min_packet_length',
+                'packet_length_mean']),
+]
+
+
+def test_widest_first_numbering_reproduces_p4c_on_overlapping_keys():
+  from p4model import lanes
+  crossbar, numbering, blocks = xbar.StageXbar(tie='whole_first'), {}, []
+  for _, fields in _M055_STAGE8:
+    key = xbar.field_key([('code_tk_ddos_' + f, tuple(lanes.layout(_M055_WIDTHS[f]))) for f in fields],
+                         numbering)
+    assert crossbar.allocate(key)
+    blocks.append(xbar.blocks_per_row(key))
+  assert blocks == [4, 4, 3, 4, 4]
+
+
+def test_code_containers_are_numbered_widest_first_then_name_then_slice():
+  key = xbar.field_key([('code_b', (('B', 4),)), ('code_a', (('H', 16), ('B', 4))), ('code_c', (('B', 4),))],
+                       {})
+  order = sorted({b.ckey for b in key})
+  by_ckey = {b.ckey: b.container for b in key}
+  # code_a (20 bits) first, its low slice before its high one, then code_b before code_c (4 bits each)
+  # bytes: code_b's B, code_a's two H bytes and its B, code_c's B
+  assert [by_ckey[k] for k in order if k[1] == 8] == [key[3].container, key[0].container, key[4].container]
+  assert xbar.code_container_order('code_a', 20, 0) < xbar.code_container_order('code_a', 20, 1) < \
+      xbar.code_container_order('code_b', 4, 0) < xbar.code_container_order('code_c', 4, 0)

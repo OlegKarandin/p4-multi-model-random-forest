@@ -23,7 +23,8 @@ for an 8-bit container, two of four for a 16-bit one, one of four for a 32-bit o
 The one input the model does not know is p4c's PHV container NUMBERING. It only orders key bytes of equal alignment,
 and so decides whether a midbyte takes a whole byte or a half byte. The model settles it with tie='whole_first' (a
 midbyte takes a whole byte when one is eligible), which is never cheaper than p4c on this account (0 under-priced
-programs; over by one block on 2.3% / 8.2% of k<=8 / k>=9 programs). tie='index' is p4c's own order.
+programs; over by one block on 2.3% / 8.2% of k<=8 / k>=9 programs). tie='index' is p4c's own order. Code-field
+containers are numbered widest field first (code_container_order, an ordering assumption, P12).
 """
 from collections import defaultdict
 import re
@@ -60,9 +61,13 @@ class Byte:
   BYTES_PER_GROUP meaning the midbyte of the group pair."""
   __slots__ = ('container', 'lo', 'bits', 'spec', 'range_index', 'loc', 'ckey', 'size', 'tag')
 
-  def __init__(self, container, lo, bits, spec=NONE_SPEC, range_index=-1, tag=None):
+  def __init__(self, container, lo, bits, spec=NONE_SPEC, range_index=-1, tag=None, order=None):
+    """order: None, or the container's place in the stage's numbering when the name's index does not give it
+    (code_container_order, for the code fields of field_key). The container sort key is (kind, size, (0, index))
+    for a named container and (kind, size, (1,) + order) for an ordered one."""
     self.container, self.lo, self.bits, self.spec, self.range_index = container, lo, bits, spec, range_index
-    self.ckey, self.size = container_info(container)
+    (kind, size, index), self.size = container_info(container)
+    self.ckey = (kind, size, (0, index) if order is None else (1,) + tuple(order))
     self.loc = None
     self.tag = tag                         # free for callers (the tests keep p4c's slot here)
 
@@ -547,24 +552,43 @@ def fill_low(bits, sizes):
   return tuple(out)
 
 
+def code_container_order(field, width, slice_index):
+  """The place of one code-field container in a stage's container numbering: WIDEST field first, ties by field
+  name, then slice index (low slice first). Training and the replay order every code-field container by this one
+  function (field_key), with the field named as the program names it (code_<resolved name>; a key's position for
+  a key priced alone, lanes.key_fields, where equal widths are interchangeable).
+
+  An ordering ASSUMPTION about p4c's PHV container numbers (design-review inventory P12), not a port of p4c's PHV
+  allocator: the numbers only order key bytes p4c's crossbar sort leaves tied. Evidence: with p4c's own stage
+  contents, widest-first numbering prices 3,598 / 3,598 tree tables of the model6 compiles as p4c did, first-use
+  numbering 3,580 / 3,598 (results/encoding_evidence_2026_11/model7/findings.md Part 4, "Container numbering does
+  not matter for blocks"); and on joint-task_M055_s20_k12 (decision 2.3 key pruning, stage 8: five ddos trees with
+  overlapping but different keys) first use priced get_classification_tree_ddos_0 at 3 blocks, p4c and widest
+  first at 4 (model8/impl/scripts/t5_xbar_diag.py; p4c numbered those fields widest first, H2..H12)."""
+  return (-int(width), str(field), int(slice_index))
+
+
 def field_key(fields, numbering):
   """A key of whole code FIELDS -- every encoding but per-tree -- as Bytes. `fields` is a sequence of
   (field_id, slices), slices being (kind, used bits) per container, low first (fill_low, lanes.layout). Each field
   starts at bit 0 of its own containers (@pa_solitary), so a container's byte k carries bits 8k.. and only the top
   byte can be part-used: at most 4 live bits make it a one-nibble byte. `numbering` maps (field_id, slice index) to
-  a container number and is shared by every key of a stage, so two tables keying the same field name the same
-  container bytes and p4c's found-byte path shares their slots. Numbers are handed out in order of first use; they
-  only order bytes p4c's sort leaves tied (the module docstring's tie rule)."""
+  a container name and is shared by every key of a stage, so two tables keying the same field name the same
+  container bytes and p4c's found-byte path shares their slots. The containers are ORDERED by
+  code_container_order (widest field first), which only orders bytes p4c's sort leaves tied (the module
+  docstring's tie rule)."""
   out = []
   for field_id, slices in fields:
+    width = sum(int(used) for _, used in slices)
     for index, (kind, used) in enumerate(slices):
       ident = (field_id, index)
       if ident not in numbering:
         numbering[ident] = len(numbering)
       name = '%s%d' % (kind, 2000 + numbering[ident])
+      order = code_container_order(field_id, width, index)
       for k in range(-(-used // 8)):
         live = min(8, used - 8 * k)
-        out.append(Byte(name, 8 * k, 0x0F if live <= 4 else 0xFF))
+        out.append(Byte(name, 8 * k, 0x0F if live <= 4 else 0xFF, order=order))
   return out
 
 
