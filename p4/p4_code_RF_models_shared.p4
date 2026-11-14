@@ -37,9 +37,7 @@ struct metadata_t {
 	bit<16> flow_current_iat;
 	bit<2> class_tree_app_0;
 	bit<2> class_tree_app_1;
-	bit<2> classification_app;
 	bit<1> class_tree_ddos_0;
-	bit<1> classification_ddos;
 	bit<16> flow_iat_max_val;
 	bit<16> fwd_packet_length_max_val;
 	bit<1> code_app_flow_iat_max;
@@ -249,7 +247,7 @@ control SwitchIngress(
         size = 2;
     }   
     	action set_classification_app(bit<2> winner) {
-		meta.classification_app = winner;
+		ig_tm_md.qid = (bit<5>) winner;
 	}
 
 	table vote_app {
@@ -274,7 +272,7 @@ control SwitchIngress(
 		}
 	}
 	action set_classification_ddos(bit<1> winner) {
-		meta.classification_ddos = winner;
+		ig_tm_md.ingress_cos = (bit<3>) winner;
 	}
 
 	table vote_ddos {

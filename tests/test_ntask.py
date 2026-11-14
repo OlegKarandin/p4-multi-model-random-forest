@@ -21,6 +21,16 @@ from p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
                                  SHARED_TASK, TaskSpec, placement_priorities)
 from p4model.usage import tree_readiness_levels
 
+@pytest.fixture(autouse=True)
+def _synthetic_vote_exports(monkeypatch):
+    """Synthetic task names (solo, third, x, y, z, ...) are outside the two
+    production names program.VOTE_EXPORT maps; give them a destination so the
+    N-generic generator can be exercised."""
+    from p4model import program
+    for name in ("solo", "third", "x", "y", "z", "t0", "t1", "t2"):
+        monkeypatch.setitem(program.VOTE_EXPORT, name, "ig_tm_md.ingress_cos")
+
+
 FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
             "flow_iat_min", "bwd_packet_length_max"]
 
@@ -143,7 +153,9 @@ def test_three_task_program_generates_parses_and_prices(tmp_path, encoding):
         ("app", 0), ("app", 1), ("ddos", 0), ("ddos", 1), ("third", 0)]
     for task in ("ddos", "app", "third"):
         assert "table vote_%s" % task in text
-        assert "bit<%d> classification_%s;" % ({"ddos": 1, "app": 2, "third": 2}[task], task) in text
+        assert not re.search(r"bit<d+> classification_%s;" % task, text)
+        assert "set_classification_%s(bit<%d> winner)" % (
+            task, {"ddos": 1, "app": 2, "third": 2}[task]) in text
     program = parse_program(path)
     trees = {name: p for name, p in program.priorities.items()
              if name.startswith("get_classification_tree_")}

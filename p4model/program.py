@@ -54,6 +54,14 @@ APP_TASK = "app"
 DDOS_TASK = "ddos"
 TASKS = (APP_TASK, DDOS_TASK)
 
+# Where each task's vote winner is exported (decision 1f, GATE G0): the vote
+# action writes it straight into a TM intrinsic field, so the result leaves the
+# ingress pipe and is not computed and discarded. A task with trees whose name
+# is not a key here cannot be generated (ValueError). VOTE_EXPORT_BITS is the
+# Tofino-1 TNA width of each destination (qid is QueueId_t = bit<5>).
+VOTE_EXPORT = {'app': 'ig_tm_md.qid', 'ddos': 'ig_tm_md.ingress_cos'}
+VOTE_EXPORT_BITS = {'ig_tm_md.qid': 5, 'ig_tm_md.ingress_cos': 3}
+
 # range_task's label for a range table whose code_<feature> field EVERY task's
 # trees key on, so every tree waits for it: all of them under 'joint' (one
 # merged interval set), and under 'disjoint' a feature both models split

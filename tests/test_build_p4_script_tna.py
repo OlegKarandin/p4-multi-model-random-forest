@@ -987,6 +987,7 @@ def test_generate_P4_code_no_markers_or_placeholders_remain(m1_ddos_only_output)
 
 def test_generate_P4_code_ddos_only_has_no_app_task_artifacts(m1_ddos_only_output):
   assert "classification_app" not in m1_ddos_only_output
+  assert "ig_tm_md.qid" not in m1_ddos_only_output
   assert "class_tree_app_" not in m1_ddos_only_output
   assert "classify_flow_codeword_app" not in m1_ddos_only_output
 
@@ -1002,7 +1003,7 @@ def test_generate_P4_code_contains_expected_m1_feature_text(m1_ddos_only_output)
 
 
 def test_generate_P4_code_ddos_task_artifacts_present(m1_ddos_only_output):
-  assert "classification_ddos" in m1_ddos_only_output
+  assert "ig_tm_md.ingress_cos = (bit<3>) winner;" in m1_ddos_only_output
   assert "class_tree_ddos_0" in m1_ddos_only_output
   assert "classify_flow_codeword_ddos" in m1_ddos_only_output
 
@@ -1990,10 +1991,8 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
   # ignores a pragma naming a field that does not exist, so a stale or
   # mis-spelled name would stop pinning with no error anywhere. Assert the
   # solitary set is exactly the code_*/class_tree_* fields declared -- and in
-  # particular that classification_<task> is NOT pinned: it is written by the
-  # vote tables but read by nothing downstream, so the compiler eliminates it
-  # and it never reaches PHV allocation at all (checked against all 19
-  # calibration compiles: it appears in no phv_allocation_summary).
+  # particular that no classification_<task> field exists any more: the vote
+  # action exports the winner into ig_tm_md (decision 1f).
   clf_app = _tiny_app_forest()
   clf_ddos = _tiny_ddos_forest()
   app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
@@ -2014,6 +2013,7 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
   assert len(solitary) == len(set(solitary)), "duplicate @pa_solitary is a p4c error"
   assert "classification_app" not in set(solitary)
   assert "classification_ddos" not in set(solitary)
+  assert not re.search(r"bit<d+> classification_", text)
 
 
 # ---------------------------------------------------------------------------
@@ -2273,3 +2273,29 @@ def test_code_field_container_sizes_skips_a_zero_width_field():
       {"flow_iat_max": [(0, INFINITE)], "fwd_iat_max": _intervals_of_width(3)},
       {})
   assert bps.code_field_container_sizes(plan, ["app"]) == {"fwd_iat_max": [8]}
+
+
+def test_vote_result_exported(tmp_path):
+  clf_app = _tiny_app_forest()
+  clf_ddos = _tiny_ddos_forest()
+  app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
+  ddos_intervals = {"flow_iat_max": [(0, 200), (201, INFINITE)],
+                    "fwd_packet_length_max": [(0, 8), (9, INFINITE)]}
+  path = bps.generate_P4_code(
+      3, 2, clf_app, clf_ddos,
+      feature_intervals_app=app_intervals, feature_intervals_ddos=ddos_intervals,
+      output_dir=str(tmp_path) + os.sep, output_filename="export.p4")
+  with open(path) as f:
+    text = f.read()
+  assert "ig_tm_md.qid = (bit<5>) winner;" in text
+  assert "ig_tm_md.ingress_cos = (bit<3>) winner;" in text
+  # Each export lives in its own vote action, which the vote table runs.
+  for task, field in (("app", "ig_tm_md.qid"), ("ddos", "ig_tm_md.ingress_cos")):
+    action = text.index("action set_classification_%s(" % task)
+    assert text.index(field + " = ", action) < text.index("table vote_%s" % task)
+    assert "vote_%s.apply();" % task in text
+
+
+def test_vote_export_rejects_unmapped_task():
+  with pytest.raises(ValueError, match="vote export"):
+    generate_voting_code(2, 2, "third")

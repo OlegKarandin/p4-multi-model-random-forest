@@ -31,6 +31,14 @@ FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
             "flow_iat_min", "bwd_packet_length_max"]
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_vote_exports(monkeypatch):
+    """Synthetic task names (a, b, c) are outside program.VOTE_EXPORT."""
+    from p4model import program
+    for name in ("a", "b", "c"):
+        monkeypatch.setitem(program.VOTE_EXPORT, name, "ig_tm_md.ingress_cos")
+
+
 def _forest(n_classes, seed, features=FEATURES, n_trees=3, depth=4, leaf=1):
     rng = np.random.RandomState(seed)
     X = rng.randint(0, 2000, size=(600, len(features)))

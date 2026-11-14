@@ -29,7 +29,7 @@ from p4model.target import (
 )
 from p4model import lanes, packed
 from p4model.names import normalise_feature_name
-from p4model.program import (APP_TASK, DDOS_TASK, ENCODINGS, JOINT_ENCODING,
+from p4model.program import (VOTE_EXPORT, VOTE_EXPORT_BITS, APP_TASK, DDOS_TASK, ENCODINGS, JOINT_ENCODING,
                                  PER_TASK_ENCODING, PER_TREE_ENCODING, PLACEMENT_PRIORITY,
                                  TaskSpec, per_task_field,
                                  placement_priorities, range_table_priority, task_names)
@@ -1544,6 +1544,15 @@ def generate_voting_code(num_trees, num_classes, task):
   statistics.mode() table.
   """
   bit_per_classes = math.ceil(math.log2(num_classes)) or 1
+  if task not in VOTE_EXPORT:
+    raise ValueError(
+        "task %r has trees but no vote export destination; program.VOTE_EXPORT "
+        "maps only %s" % (task, sorted(VOTE_EXPORT)))
+  export_field = VOTE_EXPORT[task]
+  export_bits = VOTE_EXPORT_BITS[export_field]
+  if bit_per_classes > export_bits:
+    raise ValueError("task %r needs %d bits for its class but %s holds %d"
+                     % (task, bit_per_classes, export_field, export_bits))
   # The table emits exactly num_classes ** num_trees const entries (see the
   # product() loop below), so that IS its size -- the real logical entry
   # count, per reviews/p4_tofino_reference.md Sec 4.4. A `max(32, ...)` floor
@@ -1578,7 +1587,7 @@ def generate_voting_code(num_trees, num_classes, task):
 
   table_decl = (
       "\taction set_classification_{task}(bit<{bits}> winner) {{\n"
-      "\t\tmeta.classification_{task} = winner;\n"
+      "\t\t{export} = (bit<{ebits}>) winner;\n"
       "\t}}\n"
       "\n"
       "\ttable vote_{task} {{\n"
@@ -1593,7 +1602,8 @@ def generate_voting_code(num_trees, num_classes, task):
       "{entries}\n"
       "\t\t}}\n"
       "\t}}\n"
-  ).format(task=task, bits=bit_per_classes, keys=key_lines, entries=entries_block, size=size)
+  ).format(task=task, bits=bit_per_classes, export=export_field,
+      ebits=export_bits, keys=key_lines, entries=entries_block, size=size)
 
   apply_call = "\t\t\tvote_{}.apply();\n".format(task)
 
@@ -1866,11 +1876,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
         # evaluation.stage_depth predicts -- with TCAM and SRAM totals
         # unchanged and 5 more PHV containers used.
         #
-        # classification_<task> below deliberately gets NO pragma: the vote
-        # tables write it but nothing downstream reads it, so p4c eliminates
-        # it before PHV allocation (it appears in no phv_allocation_summary of
-        # the 19 calibration compiles) and a pragma naming a field that does
-        # not exist is silently ignored.
+        # There is no classification_<task> field to pin: the vote action
+        # exports the winner into ig_tm_md (program.VOTE_EXPORT).
         phv_pragmas += ('@pa_solitary("ingress", "ig_md.class_tree_'
                         + name + "_" + str(i) + '")\n')
         # C5 (Phase 3 step 1): also forbid the allocator from overlaying this
@@ -1884,10 +1891,6 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
         # @pa_solitary, below) -- for a different reason, explained there.
         phv_pragmas += ('@pa_no_overlay("ingress", "ig_md.class_tree_'
                         + name + "_" + str(i) + '")\n')
-      # generate_voting_code (below) writes to meta.classification_<task>; the
-      # TNA template no longer declares this field itself (it doesn't know
-      # the task's class width ahead of time), so it must be declared here.
-      metadata_code += "\tbit<"+str(bits)+"> classification_"+name+";\n"
   # Tier 3 + Task 3: every RESOLVED entry gets its own codeword field
   # (code_<resolved_name>), but the raw tracked-value field (<raw>_val) is
   # declared exactly once per DISTINCT raw feature name -- never twice just
