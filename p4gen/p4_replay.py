@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from p4model.errors import CrossbarKeyTooWide
 from p4model.packing import (_alone_blocks, crossbar_stages_needed,
                               packed_alone_blocks)
-from p4model.program import (PLACEMENT_PRIORITY, SHARED_TASK,
+from p4model.program import (ORIENTATION_REGISTER, PLACEMENT_PRIORITY, SHARED_TASK,
                                  VOTE_EPILOGUE_STAGES, feature_of_per_task_field,
                                  feature_of_per_tree_field)
 from p4model.ranges import compiler_range_rows
@@ -27,7 +27,9 @@ class Program:
     """One parsed generated program: tables (name -> key fields), widths /
     bits (field -> crossbar bytes / declared bits), sizes (table -> declared
     entries), priorities (table -> its @placement_priority, for every table
-    that carries one).
+    that carries one), register_calls (register base names in the order
+    their RegisterActions are executed in the text -- register_stage_schedule's
+    call_order; the orientation action counts as its register).
 
     A packed per-tree program (spec 2026-11-11-packed-codes-stage-pin Sec 3.1)
     fills two more: containers (code_pk_<f> -> its @pa_container_size sizes in
@@ -47,6 +49,7 @@ class Program:
     containers: dict = field(default_factory=dict)
     key_slices: dict = field(default_factory=dict)
     code_containers: dict = field(default_factory=dict)
+    register_calls: tuple = ()
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -165,6 +168,22 @@ def carries_stage_pins(text):
     return bool(_STAGE_PIN.search(text))
 
 
+# A RegisterAction call site: `<name>_action.execute(meta.flow_hash)`. The
+# orientation action (flow_orientation_action) runs flow_forward_srcaddr_reg.
+_REGISTER_CALL = re.compile(r'\b(\w+)_action\.execute\(meta\.flow_hash\)')
+_ORIENTATION_ACTION = 'flow_orientation'
+
+
+def register_calls(text):
+    """Register base names in call-site order (first call of each)."""
+    names = []
+    for name in _REGISTER_CALL.findall(text):
+        name = ORIENTATION_REGISTER if name == _ORIENTATION_ACTION else name
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 def carries_gated_register_blocks(text):
     """True when the program executes RegisterActions inside `if (meta.fwd ==
     ...)` blocks (_GATED_BLOCK), which parse_program_text refuses."""
@@ -196,7 +215,8 @@ def parse_program_text(text):
                    key_slices=slices,
                    code_containers={name: tuple(int(size) for size in sizes.split(','))
                                     for name, sizes in _CODE_CONTAINERS.findall(text)
-                                    if not name.startswith(_PACKED_FIELD)})
+                                    if not name.startswith(_PACKED_FIELD)},
+                   register_calls=register_calls(text))
 
 
 def parse_program(p4_path):
@@ -519,7 +539,8 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     dependents = feature_readers if reads is not None else None
     if readiness_levels is None:
         levels = dict(zip(row_features, readiness_levels_for(
-            row_features, dependents=dependents)))
+            row_features, dependents=dependents,
+            call_order=program.register_calls or None)))
     else:
         missing = [f for f in row_features if f not in readiness_levels]
         if missing:

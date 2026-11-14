@@ -458,7 +458,12 @@ def test_the_range_pool_is_the_per_task_arms():
   # one range table per feature over the union, as under per_task
   from p4gen.evaluation import _pool_inputs
   per_task = _pool_inputs(app, ddos, names, names, PER_TASK_ENCODING)
-  for key in ("range_table_specs", "range_levels", "range_task", "range_fields",
+  # range_levels are not compared: they come from the register schedule, whose tie
+  # order counts the trees that read each feature (dependents), and per-tree counts
+  # only the trees that split on it, per-task every tree of a selecting task. They had
+  # agreed on this design by coincidence; under call-site ties (S5, 2026-11-14) they
+  # differ ([6, 6, 5, 5, 5] vs [6, 5, 6, 5, 5]).
+  for key in ("range_table_specs", "range_task", "range_fields",
               "emitted_features", "register_names", "range_entries", "range_blocks"):
     assert pool[key] == per_task[key], key
 

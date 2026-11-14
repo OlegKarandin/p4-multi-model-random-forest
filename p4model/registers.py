@@ -104,9 +104,38 @@ def _register_chains(features, catalog):
   return predecessor
 
 
+# The generator's register call-site order (generate_P4_registers_and_apply):
+# the orientation register, then the ungated features' registers, then the
+# fwd-owned, then the bwd-owned, each register at its first feature.
+_CALL_SITE_GATES = (None, "fwd", "bwd")
+
+
+def register_call_order(features, catalog=None):
+  """Register base names in the order the generator emits their .execute()
+  call sites for `features` (program order of the call sites): the
+  orientation register first, then ungated, fwd-owned and bwd-owned
+  features' registers, first-seen dedup. An unrecognised gated_by counts as
+  ungated, as in _register_chains."""
+  if catalog is None:
+    catalog = FEATURE_REGISTER_CATALOG
+  order = [ORIENTATION_REGISTER]
+  for gate in _CALL_SITE_GATES:
+    for feature in features:
+      entry = catalog.get(normalise_feature_name(feature))
+      if entry is None:
+        continue
+      gated_by = entry.get("gated_by")
+      if (gated_by if gated_by in ("fwd", "bwd") else None) != gate:
+        continue
+      for register in entry["registers"]:
+        if register["name"] not in order:
+          order.append(register["name"])
+  return order
+
+
 def register_stage_schedule(features, catalog=None,
                             alus_per_stage=METER_ALUS_PER_STAGE,
-                            dependents=None):
+                            dependents=None, call_order=None):
   """Register base name -> the pipeline stage its RegisterAction runs in, for
   the whole set of features whose registers the generator will emit.
 
@@ -121,12 +150,21 @@ def register_stage_schedule(features, catalog=None,
   results/encoding_evidence_2026_11/per_tree_model2 notes.md): the longer
   dependence chain first ("longer downward prop ... tail chain", the `height`
   below), then the one more trees depend on ("fewer total dependencies in
-  dominance frontier"), then the one listed LATER in the program ("default
-  choice"), then the name. `features` is in program order, and `dependents`
-  maps a feature (as spelled in `features`) to the number of classification
-  trees whose key reads that feature's code; a register's dependents are the
-  sum over the features it serves. Without `dependents` every register ties
-  there and the later-listed one goes first.
+  dominance frontier"), then the one whose call site comes LATER in the
+  program ("default choice"), then the name. `dependents` maps a feature (as
+  spelled in `features`) to the number of classification trees whose key
+  reads that feature's code; a register's dependents are the sum over the
+  features it serves. Without `dependents` every register ties there and the
+  later call site goes first.
+
+  call_order: register names in the program's call-site order -- the replay
+  reads it from the program text (p4_replay, Program.register_calls); None
+  (training) takes the generator's emission order, register_call_order. It
+  was the feature order until 2026-11-14 (controller ruling, S5), which
+  coincided with the call sites only inside one gated block; on the six
+  probe 7.1b compiles feature order put 46/77 registers in p4c's stage and
+  call-site order 73/77 (results/encoding_evidence_2026_11/model8/impl/
+  log.md, Task 2). A register missing from call_order ranks earliest.
 
   feature_readiness_level models a register chain's DEPTH -- how many stages
   a single feature's registers must run back to back. This models the
@@ -190,12 +228,15 @@ def register_stage_schedule(features, catalog=None,
     for register in (entry or {}).get("registers", ()):
       served[register["name"]].append(position)
   dependents = dependents or {}
+  if call_order is None:
+    call_order = register_call_order(features, catalog)
+  call_site = {name: index for index, name in enumerate(dict.fromkeys(call_order))}
 
   def rank(name):
     positions = served.get(name, ())
     return (-height[name],
             -sum(dependents.get(order[p], 0) for p in positions),
-            -max(positions, default=-1),
+            -call_site.get(name, -1),
             name)
 
   placed, load = {}, collections.Counter()
@@ -222,7 +263,7 @@ def register_stage_schedule(features, catalog=None,
 
 
 def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None,
-                         dependents=None):
+                         dependents=None, call_order=None):
   """One readiness level per feature, positionally aligned with
   range_matching_resource_usage's range_table_specs (both follow
   feature_intervals iteration order).
@@ -242,10 +283,11 @@ def readiness_levels_for(feature_intervals, catalog=None, emitted_features=None,
   itself, which is already the merged set on the 'joint' branch.
 
   dependents: {feature: trees reading its code}, handed to
-  register_stage_schedule (its tie order); None treats every register alike."""
+  register_stage_schedule (its tie order); None treats every register alike.
+  call_order: register_stage_schedule's (the program's call-site order)."""
   placed = register_stage_schedule(
       list(emitted_features if emitted_features is not None else feature_intervals),
-      catalog, dependents=dependents)
+      catalog, dependents=dependents, call_order=call_order)
   entries = FEATURE_REGISTER_CATALOG if catalog is None else catalog
 
   levels = []

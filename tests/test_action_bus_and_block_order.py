@@ -147,6 +147,56 @@ def test_a_direction_owned_register_still_waits_for_the_orientation_register():
         assert placed[first] > placed[ORIENTATION_REGISTER], (features, first)
 
 
+def test_ties_follow_call_site_order_not_feature_order():
+  # Controller ruling 2026-11-14 (S5): p4c's "default choice" is the later CALL SITE. Here
+  # the feature order lists bwd_packet_length_max first, but its call site follows every
+  # fwd-owned one (ungated, fwd, bwd). Five value registers tie at stage 4 for four ALUs:
+  # the earliest call site, fwd_packet_length_max, waits; by feature order it would have
+  # been bwd_packet_length_max.
+  from p4model import registers
+  features = ["bwd_packet_length_max", "fwd_packet_length_max", "fwd_packet_length_min",
+              "fwd_packet_length_mean", "bwd_packet_length_min"]
+  assert registers.register_call_order(features) == [
+      "flow_forward_srcaddr", "fwd_packet_length_max", "fwd_packet_length_min",
+      "fwd_packet_length_mean", "bwd_packet_length_max", "bwd_packet_length_min"]
+  placed = register_stage_schedule(features)
+  assert placed["fwd_packet_length_max"] == 5
+  assert all(placed[name] == 4 for name in features if name != "fwd_packet_length_max")
+  # An explicit call order (the replay's, read from the text) decides instead.
+  reversed_calls = ["flow_forward_srcaddr"] + list(reversed(features))
+  assert register_stage_schedule(features, call_order=reversed_calls)["bwd_packet_length_min"] == 5
+
+
+@pytest.mark.parametrize("encoding", [JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING,
+                                      PER_TREE_ENCODING])
+def test_training_and_replay_read_the_same_call_site_order(tmp_path, encoding):
+  # Training ranks by the generator's emission order (register_call_order over the
+  # features); the replay reads the call sites from the text. They must agree.
+  from p4model.registers import register_call_order
+  for seed in range(6):
+    app, ddos, names = _rng_design(seed)
+    if encoding == JOINT_ENCODING:
+      joint = bps.get_joint_feature_intervals(app, names, ddos, names)
+      intervals = (joint, joint)
+    else:
+      intervals = (_own(app, names), _own(ddos, names))
+    path = bps.generate_P4_code(3, 2, app, ddos, feature_intervals_app=intervals[0],
+                                feature_intervals_ddos=intervals[1],
+                                output_dir=str(tmp_path) + os.sep, output_filename="c.p4",
+                                selected_features_app=names, selected_features_ddos=names,
+                                encoding=encoding)
+    with open(path, encoding="utf-8") as handle:
+      program = parse_program_text(handle.read())
+    features = []
+    for name, keys in program.tables.items():
+      if name.startswith("table_") and keys and keys[0][:-len("_val")] not in features:
+        features.append(keys[0][:-len("_val")])
+    pool = ev._pool_inputs(app, ddos, names, names, encoding)
+    assert list(program.register_calls) == register_call_order(features), (encoding, seed)
+    assert list(program.register_calls) == register_call_order(pool["emitted_features"]), (
+        encoding, seed)
+
+
 def test_the_model_ignores_the_programs_fwd_pin(tmp_path):
   app, ddos, names = _rng_design(2)
   joint = bps.get_joint_feature_intervals(app, names, ddos, names)

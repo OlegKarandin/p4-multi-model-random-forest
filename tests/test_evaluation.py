@@ -1630,12 +1630,13 @@ def test_readiness_levels_schedule_both_models_registers_on_one_pipeline():
     # features have to be read off a schedule built from the UNION -- pricing
     # each model's registers against a private pipeline would understate the
     # pressure whenever the two models select different features.
-    # The other model's (later-listed) registers win the ALU ties, so this
-    # one's value registers spill a stage.
-    app = {"bwd_iat_max": [(0, 5)], "bwd_iat_mean": [(0, 5)]}
-    ddos = {"fwd_iat_max": [(0, 5)], "fwd_iat_min": [(0, 5)],
-            "fwd_iat_mean": [(0, 5)], "fwd_packet_length_max": [(0, 5)],
-            "fwd_packet_length_min": [(0, 5)], "fwd_packet_length_mean": [(0, 5)]}
+    # The other model's registers are bwd-owned, so their call sites come
+    # later and win the ALU ties (S5, call-site order): this model's fwd value
+    # registers spill a stage.
+    app = {"fwd_iat_max": [(0, 5)], "fwd_iat_mean": [(0, 5)]}
+    ddos = {"bwd_iat_max": [(0, 5)], "bwd_iat_min": [(0, 5)],
+            "bwd_iat_mean": [(0, 5)], "bwd_packet_length_max": [(0, 5)],
+            "bwd_packet_length_min": [(0, 5)], "bwd_packet_length_mean": [(0, 5)]}
     union = list(app) + list(ddos)
 
     alone = ev.readiness_levels_for(app)
