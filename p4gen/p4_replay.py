@@ -8,9 +8,12 @@ import re
 from collections import namedtuple
 from dataclasses import dataclass, field
 
-from p4model.errors import CrossbarKeyTooWide
+from p4gen import program_checks
+from p4model.errors import CrossbarKeyTooWide, NoSplitTree, ProgramShapeRefused
 from p4model.packing import (_alone_blocks, crossbar_stages_needed,
                               packed_alone_blocks)
+from p4model import refusals
+from p4model.tables import check_key_bytes
 from p4model.program import (ORIENTATION_REGISTER, PLACEMENT_PRIORITY, SHARED_TASK,
                                  VOTE_EPILOGUE_STAGES, feature_of_per_task_field,
                                  feature_of_per_tree_field)
@@ -19,7 +22,7 @@ from p4model.registers import readiness_levels_for
 from p4model import lanes, packed, phv, xbar
 from p4model.tables import tree_entries_to_blocks
 from p4model.target import RANGE_KEY_SLOTS_PER_BYTE, TERNARY_MATCHING_ENTRIES_PER_BLOCK
-from p4model.usage import tree_readiness_levels
+from p4model.usage import check_shared_stages, tree_readiness_levels
 
 
 @dataclass(frozen=True)
@@ -47,7 +50,15 @@ class Program:
 
     scratch_fields / class_fields: the declared IAT scratch fields
     (`<chain>_current_iat`) and `class_tree_<task>_<i>` fields, which only the PHV
-    count reads (p4model.phv.from_program)."""
+    count reads (p4model.phv.from_program).
+
+    The rest is what program_checks.check_program reads (decision 8.2):
+    pragmas ((pin, field, sizes) per `@pa_<pin>("ingress", "ig_md.<field>", ...)`
+    line), declared (metadata field -> its DECLARED bits; `bits` holds a code
+    field's live, keyed bits instead), exact_keys (table -> its exact-match key
+    fields, the vote tables'), stage_pins / gated_register_blocks (the text has
+    @stage lines / RegisterActions executed in `if (meta.fwd ...)` blocks) and
+    apply_steps (program_checks.apply_steps)."""
     tables: dict
     widths: dict
     bits: dict
@@ -60,6 +71,12 @@ class Program:
     action_writes: dict = field(default_factory=dict)
     scratch_fields: tuple = ()
     class_fields: tuple = ()
+    pragmas: tuple = ()
+    declared: dict = field(default_factory=dict)
+    exact_keys: dict = field(default_factory=dict)
+    stage_pins: bool = False
+    gated_register_blocks: bool = False
+    apply_steps: tuple = ()
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -202,9 +219,44 @@ _STAGE_PIN = re.compile(r'^\s*@stage\(\d+\)', re.M)
 
 
 def carries_stage_pins(text):
-    """True when the program text has @stage lines, which parse_program_text
-    refuses (src.verify's rescore checks a whole run with this up front)."""
+    """True when the program text has @stage lines, which the replay refuses
+    (program_checks.check_program: stage_pin)."""
     return bool(_STAGE_PIN.search(text))
+
+
+# Every PHV pin line the generator writes: @pa_<pin>("ingress", "ig_md.<field>"[, sizes]).
+_PRAGMA = re.compile(
+    r'^\s*@(pa_\w+)\("ingress",\s*"ig_md\.(\w+)"(?:,\s*([\d,\s]+))?\)\s*$', re.M)
+_METADATA_STRUCT = re.compile(r'\bstruct\s+metadata_t\s*\{([^}]*)\}')
+_DECLARED = re.compile(r'^\s*bit<(\d+)>\s+(\w+)\s*;', re.M)
+_EXACT_KEY = re.compile(r"\s*meta\.(\w+)\s*:\s*exact\s*;")
+
+
+def _parse_pragmas(text):
+    return tuple((pin, name, tuple(int(size) for size in sizes.split(',') if size.strip())
+                  if sizes else ())
+                 for pin, name, sizes in _PRAGMA.findall(text))
+
+
+def _parse_declared(text):
+    """{metadata field: declared bits}: the metadata_t struct's declarations (the
+    whole text's for a fragment with no such struct)."""
+    struct = _METADATA_STRUCT.search(text)
+    return {name: int(bits)
+            for bits, name in _DECLARED.findall(struct.group(1) if struct else text)}
+
+
+def _parse_exact_keys(text):
+    keys, current = {}, None
+    for line in text.splitlines():
+        opened = re.match(r"\s*table\s+(\w+)\s*\{", line)
+        if opened:
+            current = opened.group(1)
+            continue
+        key = _EXACT_KEY.match(line)
+        if key and current:
+            keys.setdefault(current, []).append(key.group(1))
+    return keys
 
 
 # A RegisterAction call site: `<name>_action.execute(meta.flow_hash)`. The
@@ -237,27 +289,20 @@ def register_calls(text):
 
 def carries_gated_register_blocks(text):
     """True when the program executes RegisterActions inside `if (meta.fwd ==
-    ...)` blocks (_GATED_BLOCK), which parse_program_text refuses."""
+    ...)` blocks (_GATED_BLOCK), which the replay refuses
+    (program_checks.check_program: gated_register_block)."""
     return bool(_GATED_BLOCK.search(text))
 
 
 def parse_program_text(text):
-    """Raises ValueError for a program with @stage lines: the model no longer
-    prices pinned placements, so such a program is replayed at the commit that
-    generated it, never silently priced as if unpinned. Likewise for a program
-    with a gated register block (carries_gated_register_blocks): the register
-    schedule models one unconditional register sequence (decisions 1a / 7.1
-    option B), not the block order, cursor floor and interior stages of the
-    gated program."""
-    if carries_stage_pins(text):
-        raise ValueError('program carries @stage pins, which the model no longer '
-                         'prices (spec 2026-11-13); replay it at the commit that '
-                         'generated it')
-    if carries_gated_register_blocks(text):
-        raise ValueError('program carries a gated register block (`if (meta.fwd '
-                         '== ...)` around RegisterAction executes), which the model '
-                         'no longer prices (decisions 1a / 7.1 option B, '
-                         '2026-11-14); replay it at the commit that generated it')
+    """The Program of one generated program text. Parsing never refuses: a
+    program with @stage lines (the model no longer prices pinned placements) or
+    a gated register block (the register schedule models one unconditional
+    register sequence, decisions 1a / 7.1 option B) is recorded as such
+    (Program.stage_pins, Program.gated_register_blocks) and REFUSED when priced
+    (replay_plans, program_checks.check_program), so an archived program is
+    replayed at the commit that generated it, never silently priced as if
+    current. Raises ValueError only for a key it cannot read (_parse_keys)."""
     tables, widths, bits, slices = _parse_keys(text)
     return Program(tables, widths, bits, _parse_sizes(text),
                    _parse_priorities(text),
@@ -270,7 +315,13 @@ def parse_program_text(text):
                    register_calls=register_calls(text),
                    action_writes=action_writes(text),
                    scratch_fields=tuple(_SCRATCH_FIELD.findall(text)),
-                   class_fields=tuple(_CLASS_FIELD.findall(text)))
+                   class_fields=tuple(_CLASS_FIELD.findall(text)),
+                   pragmas=_parse_pragmas(text),
+                   declared=_parse_declared(text),
+                   exact_keys=_parse_exact_keys(text),
+                   stage_pins=carries_stage_pins(text),
+                   gated_register_blocks=carries_gated_register_blocks(text),
+                   apply_steps=program_checks.apply_steps(text))
 
 
 def parse_program(p4_path):
@@ -580,7 +631,16 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
     """Packs one program's range and classification pools with the model's
     packer, given a table -> block-count map. Shared by replay_stage_depth
     (p4c's committed counts) and replay_design (the model's own prices).
-    Returns a ReplayPlans; the name lists are aligned with the plans' table_specs."""
+    Returns a ReplayPlans; the name lists are aligned with the plans' table_specs.
+
+    Refuses (ProgramShapeRefused) a program with @stage pins or a gated register
+    block, which no schedule here prices, even for a caller that does not run
+    check_program; raises PlacementFailed where the placement fails
+    (usage.check_shared_stages, packing's horizon), as training does."""
+    if program.stage_pins:
+        raise ProgramShapeRefused('stage_pin')
+    if program.gated_register_blocks:
+        raise ProgramShapeRefused('gated_register_block')
     tables, widths, bits = program.tables, program.widths, program.bits
     # A range table keys on exactly one meta.<raw_feature>_val field. Levels
     # come from one schedule over the row's WHOLE feature set, not per
@@ -704,6 +764,7 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             key_field_bits=ternary_key_bits, key_slices=ternary_key_slices,
             seed_stages=range_plan.stage_loads,
             placement_priority=priorities)
+        check_shared_stages(range_plan, ternary_plan)
         predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
         return ReplayPlans(predicted, range_plan, ternary_plan, range_names,
                            ternary_names)
@@ -714,21 +775,46 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         ternary_specs, readiness_levels=ternary_levels,
         key_bytes=ternary_key_bytes, seed_stages=range_plan.stage_loads,
         placement_priority=priorities)
+    check_shared_stages(range_plan, ternary_plan)
     predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
     return ReplayPlans(predicted, range_plan, ternary_plan, range_names,
                        ternary_names)
 
 
-def model_breakdown(program, row_id=''):
-    """Everything the model says about one generated program, per table, by
-    the program's own table names -- so spec sec 6.3's per-table comparison with
-    p4c's mau.resources.log is a name join, not a mapping. The model side of
-    every campaign verdict (plan O3): the path the 60/60 calibration gate
-    validates, and the one --rescore reruns from a saved program.
+def check_trees(program):
+    """The per-table refusals training applies to the same design, from the
+    program text, in training's order (evaluation._pool_inputs): a tree table
+    with no key raises NoSplitTree (R6); a packed code field over the action data
+    bus ActionDataTooWide (packed.check_bus_bytes, R4); a tree key over
+    target.MAX_KEY_BYTES crossbar bytes CrossbarKeyTooWide (tables.check_key_bytes,
+    R2) -- for a packed program after the PHV count, as packed.layout_for refuses a
+    container before any key is priced, otherwise before it. The PHV count itself
+    (phv.check, R5) and the keys with no crossbar allocation (R3) are checked by
+    model_breakdown and the pricing."""
+    trees = [name for name in program.tables if _TREE_TASK.match(name)]
+    for name in trees:
+        if not program.tables[name]:
+            raise NoSplitTree('%s has no key: a tree with no threshold' % name, name)
+    packed_program = is_packed(program)
+    if packed_program:
+        for name in sorted(program.containers):
+            packed.check_bus_bytes(name[len(_PACKED_FIELD):],
+                                   sum(program.containers[name]) // 8)
+        phv.check(phv.containers_used(program))
+    for name in trees:
+        check_key_bytes(len(tree_key_bytes(program, name)) if packed_program
+                        else sum(program.widths[key] for key in program.tables[name]))
+    if not packed_program:
+        phv.check(phv.containers_used(program))
 
-    Raises PhvContainersExhausted for a program over the PHV container budget
-    (p4model.phv, decision 8.3), as training does for the same design."""
-    phv.check(phv.containers_used(program))
+
+def price_program(program, row_id=''):
+    """The pricing half of model_breakdown, with no shape check: the per-table
+    refusals (check_trees) and the placement, then {stage_depth, blocks, tables}.
+    Refusals RAISE here (p4model.refusals.REFUSAL_ERRORS). For a hand-built or
+    partial Program (tests, scripts) whose shape check_program cannot judge;
+    every verdict path goes through model_breakdown."""
+    check_trees(program)
     plans = replay_plans(row_id, program, declared_prices(program))
     tables = []
     for kind, plan, names in (('range', plans.range_plan, plans.range_names),
@@ -740,3 +826,33 @@ def model_breakdown(program, row_id=''):
     return {'stage_depth': int(plans.stage_depth),
             'blocks': int(plans.range_plan.blocks + plans.ternary_plan.blocks),
             'tables': tables}
+
+
+def model_breakdown(program, row_id='', max_blocks=None):
+    """Everything the model says about one generated program, per table, by
+    the program's own table names -- so spec sec 6.3's per-table comparison with
+    p4c's mau.resources.log is a name join, not a mapping. The model side of
+    every campaign verdict (plan O3): the path the 60/60 calibration gate
+    validates, and the one --rescore reruns from a saved program.
+
+    Every refusal is applied here, so training, --rescore, --model-archive and
+    outside users share one implementation (decision 8.2): first the program's
+    shape (program_checks.check_program), then the refusals training applies
+    (price_program: check_trees, the PHV count, the pricing's key allocation,
+    the placement). The result carries `refusal`, a p4model.refusals.CONSTRAINTS
+    name or None, and `refusal_reason` (ProgramShapeRefused's reason, else the
+    name). A refused program has stage_depth / blocks None and no tables; the two
+    numeric refusals keep the numbers: blocks_over (blocks > max_blocks; never
+    when max_blocks is None or inf), checked first as training does, then
+    stages_over (stage_depth > TOFINO_PIPELINE_STAGES)."""
+    try:
+        program_checks.check_program(program)
+        result = price_program(program, row_id)
+    except refusals.REFUSAL_ERRORS as exc:
+        return {'stage_depth': None, 'blocks': None, 'tables': [],
+                'refusal': exc.constraint, 'refusal_reason': refusals.reason_of(exc)}
+    refusal = ('blocks_over' if refusals.blocks_over(result['blocks'], max_blocks)
+               else 'stages_over' if refusals.stages_over(result['stage_depth'])
+               else None)
+    result.update({'refusal': refusal, 'refusal_reason': refusal})
+    return result

@@ -508,7 +508,7 @@ def test_all_unknown_features_raises():
   # len(intervals) before reaching the missing-feature diff) -- unlike
   # M1_FEATURE_INTERVALS above, whose None values are fine only for calling
   # generate_P4_registers_and_apply directly (it ignores values entirely).
-  with pytest.raises(ValueError, match="Totally_Bogus_Feature"):
+  with pytest.raises(AssertionError, match="Totally_Bogus_Feature"):  # R10: an invariant
     bps.generate_P4_code(
         num_class_app=0, num_class_ddos=0,
         clf_app=None, clf_ddos=None,
@@ -525,7 +525,7 @@ def test_unknown_feature_mixed_with_known_raises():
       "flow_iat_max": [(0, 100), (101, 500), (501, 9999)],
       "Totally_Bogus_Feature": [(0, 10), (11, 20)],
   }
-  with pytest.raises(ValueError, match="Totally_Bogus_Feature"):
+  with pytest.raises(AssertionError, match="Totally_Bogus_Feature"):  # R10: an invariant
     bps.generate_P4_code(
         num_class_app=0, num_class_ddos=0,
         clf_app=None, clf_ddos=None,
@@ -686,7 +686,7 @@ def test_register_shared_across_gate_classes_raises():
   }
   feature_intervals = {"Ungated_Feature": None, "Fwd_Feature": None}
 
-  with pytest.raises(ValueError, match="shared_cross_gate_reg"):
+  with pytest.raises(AssertionError, match="shared_cross_gate_reg"):  # R10: an invariant
     generate_P4_registers_and_apply(feature_intervals, catalog=synthetic_catalog)
 
 

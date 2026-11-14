@@ -61,9 +61,9 @@ from p4gen.build_p4_script import (
     TCAM_BLOCKS_PER_STAGE,
     TCAM_COLUMNS_PER_STAGE,
     TCAM_ROWS_PER_STAGE,
-    MAX_KEY_BYTES,
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
+from p4model.target import MAX_KEY_BYTES
 # Re-exported, not redefined: this sweep is what MEASURED the column geometry,
 # and the model is what has to obey it. Two copies of the packing rule could
 # drift and the sweep would then certify a rule the estimator does not use.

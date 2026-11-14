@@ -47,8 +47,9 @@ def _program(row_id):
 
 @pytest.mark.parametrize('row_id', sorted(FIXTURES))
 def test_the_designs_that_pinned_the_tie_order_are_refused_as_gated_programs(row_id):
-    with pytest.raises(ValueError, match='gated register block'):
-        _program(row_id)
+    program = _program(row_id)
+    assert program.gated_register_blocks
+    assert p4_replay.model_breakdown(program)['refusal_reason'] == 'gated_register_block'
 
 
 def test_a_newly_ready_register_with_more_dependents_beats_one_spilled_from_earlier():

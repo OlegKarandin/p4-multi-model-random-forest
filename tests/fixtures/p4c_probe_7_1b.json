@@ -1,0 +1,127 @@
+{
+ "joint-off_M015_s00_k04": {
+  "blocks": 8,
+  "compilation_succeeded": true,
+  "errors": 0,
+  "register_stages": {
+   "bwd_iat_mean": 5,
+   "bwd_last_arrival_time": 4,
+   "bwd_packet_length_max": 4,
+   "bwd_packet_length_mean": 4,
+   "flow_forward_srcaddr": 3,
+   "packet_length_mean": 3
+  },
+  "stage_depth": 9
+ },
+ "joint-off_M015_s00_k08": {
+  "blocks": 14,
+  "compilation_succeeded": true,
+  "errors": 0,
+  "register_stages": {
+   "bwd_iat_max": 5,
+   "bwd_iat_mean": 5,
+   "bwd_iat_min": 5,
+   "bwd_last_arrival_time": 4,
+   "bwd_packet_length_max": 4,
+   "bwd_packet_length_mean": 4,
+   "flow_forward_srcaddr": 3,
+   "fwd_iat_min": 5,
+   "fwd_last_arrival_time": 4,
+   "min_packet_length": 3,
+   "packet_length_mean": 3
+  },
+  "stage_depth": 9
+ },
+ "joint-off_M025_s01_k17": {
+  "blocks": 25,
+  "compilation_succeeded": true,
+  "errors": 0,
+  "register_stages": {
+   "bwd_iat_max": 5,
+   "bwd_iat_mean": 5,
+   "bwd_iat_min": 5,
+   "bwd_last_arrival_time": 4,
+   "bwd_packet_length_max": 4,
+   "bwd_packet_length_mean": 4,
+   "bwd_packet_length_min": 4,
+   "flow_forward_srcaddr": 3,
+   "flow_iat_max": 8,
+   "flow_iat_mean": 7,
+   "flow_iat_min": 7,
+   "flow_last_arrival_time": 3,
+   "fwd_iat_max": 7,
+   "fwd_iat_mean": 7,
+   "fwd_iat_min": 6,
+   "fwd_last_arrival_time": 5,
+   "fwd_packet_length_max": 6,
+   "fwd_packet_length_mean": 6,
+   "fwd_packet_length_min": 6,
+   "min_packet_length": 3,
+   "packet_length_mean": 3
+  },
+  "stage_depth": 12
+ },
+ "joint-tree_M015_s00_k04": {
+  "blocks": 7,
+  "compilation_succeeded": true,
+  "errors": 0,
+  "register_stages": {
+   "bwd_iat_mean": 5,
+   "bwd_last_arrival_time": 4,
+   "bwd_packet_length_mean": 4,
+   "bwd_packet_length_min": 4,
+   "flow_forward_srcaddr": 3,
+   "packet_length_mean": 3
+  },
+  "stage_depth": 9
+ },
+ "joint-tree_M015_s00_k08": {
+  "blocks": 12,
+  "compilation_succeeded": true,
+  "errors": 0,
+  "register_stages": {
+   "bwd_iat_max": 5,
+   "bwd_iat_mean": 6,
+   "bwd_last_arrival_time": 4,
+   "bwd_packet_length_mean": 4,
+   "bwd_packet_length_min": 4,
+   "flow_forward_srcaddr": 3,
+   "flow_iat_min": 5,
+   "flow_last_arrival_time": 3,
+   "fwd_iat_mean": 5,
+   "fwd_iat_min": 5,
+   "fwd_last_arrival_time": 4,
+   "packet_length_mean": 3
+  },
+  "stage_depth": 10
+ },
+ "joint-tree_M035_s00_k17": {
+  "blocks": 35,
+  "compilation_succeeded": true,
+  "errors": 0,
+  "register_stages": {
+   "bwd_iat_max": 8,
+   "bwd_iat_mean": 5,
+   "bwd_iat_min": 5,
+   "bwd_last_arrival_time": 4,
+   "bwd_packet_length_max": 4,
+   "bwd_packet_length_mean": 4,
+   "bwd_packet_length_min": 7,
+   "flow_forward_srcaddr": 3,
+   "flow_iat_max": 7,
+   "flow_iat_mean": 7,
+   "flow_iat_min": 7,
+   "flow_last_arrival_time": 3,
+   "fwd_iat_max": 6,
+   "fwd_iat_mean": 6,
+   "fwd_iat_min": 6,
+   "fwd_last_arrival_time": 5,
+   "fwd_packet_length_max": 6,
+   "fwd_packet_length_mean": 5,
+   "fwd_packet_length_min": 4,
+   "min_packet_length": 3,
+   "packet_length_mean": 3
+  },
+  "stage_depth": 12
+ }
+}

@@ -1350,7 +1350,7 @@ def test_get_feature_intervals_rejects_feature_names_colliding_after_normalisati
   colliding_names = ['Flow.IAT.Max', 'Flow IAT Max']
   clf = _forest_over(colliding_names, [0, 1, 2], seed=0)
 
-  with pytest.raises(ValueError, match="collide"):
+  with pytest.raises(AssertionError, match="collide"):  # R10: an invariant
     bps.get_feature_intervals(clf, colliding_names)
 
 
@@ -1363,7 +1363,7 @@ def test_get_joint_feature_intervals_rejects_feature_names_colliding_across_mode
   clf_a = _forest_over(['Flow.IAT.Max'], [0, 1, 2], seed=0)
   clf_b = _forest_over(['Flow IAT Max'], [-1, 1], seed=1)
 
-  with pytest.raises(ValueError, match="collide"):
+  with pytest.raises(AssertionError, match="collide"):  # R10: an invariant
     bps.get_joint_feature_intervals(clf_a, ['Flow.IAT.Max'], clf_b, ['Flow IAT Max'])
 
 
@@ -2245,14 +2245,15 @@ def test_tree_key_fields_are_pinned_to_the_layout_their_key_prices(tmp_path):
   assert _code_pins(text) == expected
 
 
-def test_a_tree_less_task_pins_no_layout_but_still_forbids_overlay(tmp_path):
-  # No app trees: there is no app key to price, so a field only the app side
-  # selected gets no layout pin -- but it is still a range-table output and
-  # still gets @pa_no_overlay.
+def test_a_tree_less_task_still_pins_every_code_field(tmp_path):
+  # No app trees: no key reads a field only the app side selected, but it is
+  # declared, so it is pinned like every other code field (decision 8.2: the
+  # replay refuses an unpinned code field, and training counts every pinned
+  # field's containers) and gets @pa_no_overlay.
   app = {"fwd_iat_max": _intervals_of_width(5)}
   ddos = {"flow_iat_max": _intervals_of_width(3)}
   text = _generate(tmp_path, "treeless.p4", app, ddos)   # clf_app=None
-  assert _code_pins(text) == {"code_flow_iat_max": [8]}
+  assert _code_pins(text) == {"code_flow_iat_max": [8], "code_fwd_iat_max": [8]}
   assert set(f for f in _PA_NO_OVERLAY_RE.findall(text)
              if f.startswith("code_")) == {"code_flow_iat_max", "code_fwd_iat_max"}
 

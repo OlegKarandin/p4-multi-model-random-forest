@@ -323,12 +323,12 @@ def test_kickoff_hardware_validation_returns_none_when_disabled():
     ) is None
 
 
-def test_kickoff_hardware_validation_uncatalogued_feature_returns_unavailable(tmp_path):
-    # F2: generate_P4_code raises ValueError when a selected feature has no
-    # FEATURE_REGISTER_CATALOG entry. _kickoff_hardware_validation must
-    # catch that and degrade to ('unavailable', reason) instead of letting
-    # the split die -- "f0"/"f1" are not catalogued (the real catalog only
-    # has flow_iat_max, fwd_iat_max, fwd_packet_length_max, flow_iat_mean).
+def test_kickoff_hardware_validation_uncatalogued_feature_is_an_invariant(tmp_path):
+    # F2: generate_P4_code raises when a selected feature has no
+    # FEATURE_REGISTER_CATALOG entry. Since decision 8 (R10) that is an
+    # invariant -- AssertionError, not a degradable refusal -- so the split
+    # fails loudly instead of degrading to ('unavailable', reason): "f0"/"f1"
+    # are not catalogued.
     X = np.random.RandomState(0).randint(0, 65535, size=(60, 2))
     y_app = np.random.RandomState(0).randint(0, 3, size=60)
     y_ddos = np.random.RandomState(1).choice([-1, 1], size=60)
@@ -336,14 +336,12 @@ def test_kickoff_hardware_validation_uncatalogued_feature_returns_unavailable(tm
     clf_ddos = _fit_tiny_rf(X, y_ddos, seed=1)
 
     with patch("p4gen.p4_compile.compile_p4_async") as mock_compile:
-        handle = fs._kickoff_hardware_validation(
-            True, str(tmp_path) + "/", 0, 'single', 2,
-            clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], 'disjoint')
+        with pytest.raises(AssertionError, match="no register catalog entry"):
+            fs._kickoff_hardware_validation(
+                True, str(tmp_path) + "/", 0, 'single', 2,
+                clf_app, clf_ddos, ["f0", "f1"], ["f0", "f1"], 'disjoint')
 
-    assert mock_compile.call_count == 0  # never reached: caught before compiling
-    assert handle[0] == 'unavailable'
-    assert isinstance(handle[1], str) and handle[1]  # non-empty reason
-    assert "f0" in handle[1] or "f1" in handle[1]
+    assert mock_compile.call_count == 0  # never reached
 
 
 def test_kickoff_hardware_validation_writes_no_stage_pins(tmp_path):
@@ -377,12 +375,10 @@ def test_join_pending_compile_unavailable_leaves_stages_and_tcam_none():
     assert row['compile_errors'] == 'no catalog entry for X'
 
 
-def test_process_single_split_uncatalogued_feature_degrades_not_aborts(tmp_path):
-    # Step 4's end-to-end guarantee: a split whose feature set includes an
-    # uncatalogued feature must still COMPLETE (validate_on_hardware=True)
-    # -- every row's hardware-validation fields record 'unavailable'
-    # (stages_real/tcam_real None, a non-empty reason in compile_errors)
-    # instead of the whole split raising.
+def test_process_single_split_uncatalogued_feature_fails_the_split(tmp_path):
+    # Since decision 8 (R10) an uncatalogued feature is an invariant
+    # (AssertionError), no longer Step 4's degrade-to-'unavailable' path: the
+    # split reports the error instead of completing with unvalidated rows.
     from sklearn.ensemble import RandomForestClassifier
     from p4gen import build_p4_script as bps
 
@@ -405,12 +401,7 @@ def test_process_single_split_uncatalogued_feature_degrades_not_aborts(tmp_path)
             validate_on_hardware=True, hardware_output_dir=str(tmp_path) + "/",
         )
 
-    assert result.error is None
-    assert len(result.results) > 0
-    for row in result.results:
-        assert row['stages_real'] is None
-        assert row['tcam_real'] is None
-        assert isinstance(row['compile_errors'], str) and row['compile_errors']
+    assert result.error is not None and "no register catalog entry" in result.error
 
 
 def test_kickoff_hardware_validation_joint_makes_one_compile_call(tmp_path):

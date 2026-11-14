@@ -34,11 +34,12 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from p4gen.p4_compile import P4CompileTimeout, compile_p4, read_compilation_succeeded
 from p4gen.p4_ground_truth import (
     committed_blocks, committed_stages_real, p4c_numbers)
-from p4gen.p4_replay import carries_stage_pins, model_breakdown, parse_program
+from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.target import TOFINO_PIPELINE_STAGES
 from src.reporting.manifest import git_provenance
 from src.training.campaign_run import (
     atomic_write_bytes, atomic_write_text, canonical_json, run_paths)
+from src.training.row_artifacts import replayed_fields
 from src.verify.verdicts import classify
 
 KEPT_LOGS = ('table_summary.log', 'mau.resources.log', 'phv_allocation_summary_0.log',
@@ -420,7 +421,13 @@ def _rescored_model(paths, row_id, model):
     saved program; a generator-error row (no program) is returned as stored.
     A missing program on any other row raises: keeping model.json's values
     under a new verifier commit would pass them off as rescored. model.json
-    itself is never rewritten (it is byte-deterministic training output)."""
+    itself is never rewritten (it is byte-deterministic training output).
+
+    A program the current replay refuses (program_checks.check_program's
+    shape, or a refusal training applies: p4_replay.model_breakdown) gets
+    `model_refusal` set and no numbers, and is classified MODEL_REFUSED:<reason>
+    (verdicts.classify) instead of stopping the rescore: an archived program of
+    an older generator -- @stage pins, gated register blocks -- is one."""
     p4_path = os.path.join(paths.designs, row_id + '.p4')
     if _generator_failed(paths, row_id, model):
         return model
@@ -429,36 +436,10 @@ def _rescored_model(paths, row_id, model):
             f"{row_id}: cannot rescore, designs/{row_id}.p4 is missing")
     fresh = model_breakdown(parse_program(p4_path), row_id)
     model = dict(model)
-    model.update({
-        'stage_depth': fresh['stage_depth'],
-        'blocks': fresh['blocks'],
-        'tables': fresh['tables'],
-        # As row_artifacts.write_row_artifacts.
-        'model_paths_differ': ((fresh['stage_depth'], fresh['blocks'])
-                               != (model.get('training_stage_depth'),
-                                   model.get('training_blocks'))),
-        'hw_feasible': bool(fresh['stage_depth'] <= TOFINO_PIPELINE_STAGES),
-        'budget_feasible': model.get('M') is None or fresh['blocks'] <= model['M'],
-    })
+    # As row_artifacts.write_row_artifacts.
+    model.update(replayed_fields(fresh, model.get('training_stage_depth'),
+                                 model.get('training_blocks'), model.get('M')))
     return model
-
-
-def _stage_pinned_rows(paths):
-    """The verified rows rescore would replay whose saved program carries
-    @stage pins (the replay refuses those, p4_replay.parse_program_text)."""
-    pinned = []
-    for name in sorted(os.listdir(paths.verify)):
-        if not name.endswith('.json'):
-            continue
-        row_id = _read_json(os.path.join(paths.verify, name))['row_id']
-        p4_path = os.path.join(paths.designs, row_id + '.p4')
-        if (not os.path.isfile(p4_path)
-                or _generator_failed(paths, row_id, _load_model(paths, row_id))):
-            continue
-        with open(p4_path, encoding='utf-8', errors='replace') as handle:
-            if carries_stage_pins(handle.read()):
-                pinned.append(row_id)
-    return pinned
 
 
 def rescore(run_dir):
@@ -466,19 +447,9 @@ def rescore(run_dir):
     p4c numbers re-parsed from its tarball. Never compiles. Keeps the
     compile's own provenance (p4c image, open-p4studio commit, verified_utc,
     p4c errors/warnings, compile_seconds); verifier_git_commit becomes the
-    rescoring commit.
-
-    Raises ValueError, before rewriting any record, when any program it would
-    replay carries @stage pins: such a run is rescored at the commit that
-    generated it, never left half-rescored."""
+    rescoring commit. A program the current replay refuses is classified
+    MODEL_REFUSED:<reason> (_rescored_model), never left half-rescored."""
     paths = run_paths(run_dir).ensure()
-    pinned = _stage_pinned_rows(paths)
-    if pinned:
-        raise ValueError(
-            f"cannot rescore {run_dir}: {len(pinned)} program(s) carry @stage pins, "
-            f"which the current model no longer prices: {', '.join(pinned)}. "
-            "Rescore this run at the commit that generated it. "
-            "Nothing was rewritten.")
     for name in sorted(os.listdir(paths.verify)):
         if not name.endswith('.json'):
             continue

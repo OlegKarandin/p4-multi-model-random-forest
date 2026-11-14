@@ -14,7 +14,7 @@ from src.training.splits import make_task_splits
 from src.training.campaign_run import optuna_seed, row_id
 from src.training.row_artifacts import write_row_artifacts, write_trial_table
 from p4gen import p4_gen_config
-from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
+from p4model.refusals import REFUSAL_ERRORS
 
 
 # =============================================================================
@@ -79,11 +79,10 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
       - the raw Future from `compile_p4_async`, exposing
         `.result(timeout=...)`, on the normal path.
       - the 2-tuple `('unavailable', reason)` when `generate_P4_code` raised
-        ValueError because some selected feature has no
-        FEATURE_REGISTER_CATALOG entry (F2) -- caught here so one
-        uncatalogued feature degrades hardware validation for this
-        iteration instead of aborting the whole elimination split; `reason`
-        is that ValueError's message, str()'d. See `_join_pending_compile`
+        a ValueError or a model refusal (p4model.refusals.REFUSAL_ERRORS) --
+        caught here so one unbuildable design degrades hardware validation for
+        this iteration instead of aborting the whole elimination split;
+        `reason` is the exception's message, str()'d. See `_join_pending_compile`
         for how each of these three shapes is consumed.
 
     Task 3: `generate_P4_code` now represents genuine disjoint encoding
@@ -149,21 +148,15 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             selected_features_app=feature_names_app,
             selected_features_ddos=feature_names_ddos,
             config=config, encoding=encoding)
-    except (ValueError, ActionDataTooWide, NoSplitTree, PhvContainersExhausted) as e:
-        # The three pool refusals (a RuntimeError each, p4model.errors;
-        # NoSplitTree in every encoding, the other two per-tree only) are
-        # caught with it, as row_artifacts._generate does: an unbuildable design
-        # is unavailable for validation, not a dead split.
-        # NB: this also swallows generate_P4_code's shared-field layout-conflict
-        # ValueError (build_p4_script.code_field_container_sizes); practically
-        # unreachable, and it would be recorded under this 'unavailable' label.
-        # No register catalog entry for some selected feature (F2). Hardware
-        # validation is unavailable for this feature set; the row records why
-        # rather than the split dying. FEATURE_REGISTER_CATALOG now covers
-        # all 18 of this project's real features (grown from 4 in Phase 2),
-        # so this is the RARE outcome -- only a selected feature outside that
-        # 18, or a future catalog regression, lands here -- not the common
-        # one anymore. See _run_elimination's per-split 'unavailable' count.
+    except (ValueError,) + REFUSAL_ERRORS as e:
+        # Every model refusal (p4model.refusals.REFUSAL_ERRORS: the generator
+        # raises the pool's -- NoSplitTree in every encoding, ActionDataTooWide
+        # and PhvContainersExhausted under per-tree codes) and the generator's
+        # ValueErrors are caught, as row_artifacts._generate does: an
+        # unbuildable design is unavailable for validation, not a dead split.
+        # An uncatalogued feature (F2) is no longer one of them: since decision
+        # 8 (R10) the generator raises AssertionError for it, an invariant --
+        # FEATURE_REGISTER_CATALOG covers all 18 of this project's features.
         return ('unavailable', str(e))
     log_dir = hardware_output_dir + f"logs_split{split_idx}_{method}_k{k}/"
     return compile_p4_async(written_path, log_dir)
@@ -189,8 +182,7 @@ def _join_pending_compile(handle, row):
     F2 degrade path: `handle` is normally the raw Future
     `_kickoff_hardware_validation` got back from `compile_p4_async`, but it
     is instead the 2-tuple `('unavailable', reason)` when that call caught a
-    ValueError from `generate_P4_code` (some selected feature has no
-    FEATURE_REGISTER_CATALOG entry) -- there is no real compile to join in
+    ValueError or a model refusal from `generate_P4_code` -- there is no real compile to join in
     that case, so `stages_real`/`tcam_real`/`sram_real`/`map_ram_real` stay
     None and `reason` (already a human-readable string) is written into
     `compile_errors` directly, rather than the real compiler's int error
@@ -221,8 +213,8 @@ def _advance_pending_compile(current_row, pending_previous, pending_next):
     `(handle, row_dict)` pair: `handle` is whatever
     `_kickoff_hardware_validation` returned for that iteration -- normally
     the raw Future from `compile_p4_async`, but the 2-tuple
-    `('unavailable', reason)` when that call caught a ValueError instead
-    (F2: some selected feature has no register catalog entry) -- and
+    `('unavailable', reason)` when that call caught a ValueError or a model
+    refusal instead -- and
     `row_dict` is the specific results row `handle`'s numbers (or, in the
     'unavailable' case, `reason`) must land on; see `_join_pending_compile`,
     which this function delegates the actual joining to and which
@@ -457,8 +449,8 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     carried_app = None
     carried_ddos = None
     # F2 degrade path: counts how many of this split's iterations landed on
-    # the 'unavailable' branch (some selected feature had no
-    # FEATURE_REGISTER_CATALOG entry). Reported once at the end of the split
+    # the 'unavailable' branch (generate_P4_code raised a ValueError or a model
+    # refusal). Reported once at the end of the split
     # (see below), not per-iteration -- with all 18 of this project's real
     # features catalogued (since Phase 2), this branch is now rare, so a
     # per-trial log line for it would mostly be spam; the once-per-split
@@ -630,8 +622,8 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     if n_unavailable > 0:
         print(
             f"[split {split_idx} arm={arm}] hardware validation unavailable for "
-            f"{n_unavailable} iteration(s) (uncatalogued feature -- see F2 in "
-            f"generate_P4_code)."
+            f"{n_unavailable} iteration(s) (generator ValueError or model "
+            f"refusal; see _kickoff_hardware_validation)."
         )
 
     return rows

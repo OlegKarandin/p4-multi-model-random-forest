@@ -8,7 +8,9 @@ import pytest
 
 from p4gen import build_p4_script as bps
 from p4gen import evaluation as ev
-from p4gen.p4_replay import model_breakdown, parse_program_text, range_action_bytes
+from p4gen.p4_replay import (model_breakdown, parse_program_text, price_program,
+                             range_action_bytes, replay_plans)
+from p4model.errors import ProgramShapeRefused
 from p4model.packing import crossbar_stages_needed
 from p4model.program import (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING,
                              PER_TREE_ENCODING)
@@ -214,8 +216,12 @@ def test_the_model_ignores_the_programs_fwd_pin(tmp_path):
   pin = '@pa_no_overlay("ingress", "ig_md.fwd")\n'
   assert pin in text
   assert not hasattr(parse_program_text(text), "fwd_pinned")
-  assert model_breakdown(parse_program_text(text.replace(pin, ""))) == model_breakdown(
+  # The pin changes no price; a program without it is refused by the shape
+  # check (decision 8.2), since the generator always emits it.
+  assert price_program(parse_program_text(text.replace(pin, ""))) == price_program(
       parse_program_text(text))
+  assert model_breakdown(parse_program_text(text.replace(pin, "")))["refusal_reason"] == (
+      "missing_pin:pa_no_overlay:fwd")
 
 
 def test_replay_refuses_a_gated_register_block():
@@ -228,12 +234,19 @@ def test_replay_refuses_a_gated_register_block():
           "\t\t\t\tmeta.current_iat = x_action.execute(meta.flow_hash);\n"
           "\t\t\t}\n\t}\n}\n")
   for owner in (0, 1):
-    with pytest.raises(ValueError, match="gated register block"):
-      parse_program_text(text % owner)
+    program = parse_program_text(text % owner)
+    assert program.gated_register_blocks
+    breakdown = model_breakdown(program)
+    assert (breakdown["refusal"], breakdown["refusal_reason"]) == (
+        "program_shape", "gated_register_block")
+    assert breakdown["stage_depth"] is None and breakdown["blocks"] is None
+    # replay_plans refuses it too, for a caller that skips check_program
+    with pytest.raises(ProgramShapeRefused, match="gated_register_block"):
+      replay_plans("", program, {})
   # a direction test inside a RegisterAction body is not a gated block
   body = ("\tRegisterAction<bit<16>, bit<32>, bit<16>>(x_reg) x_action = {\n"
           "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
           "\t\t\tif (meta.fwd == 1) {\n"
           "\t\t\t\tvalue = x_halve_unit.execute(value + meta.current_iat);\n"
           "\t\t\t}\n\t\t\trv = value;\n\t\t}\n\t};\n")
-  parse_program_text(body)
+  assert not parse_program_text(body).gated_register_blocks

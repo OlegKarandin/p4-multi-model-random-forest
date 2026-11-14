@@ -1,9 +1,16 @@
 """F6: the early-stopping callback never fired, so every search ran 1000 trials."""
 import optuna
 
+from p4model.refusals import CONSTRAINTS, violations
 from src.training import early_stopping
 
 optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+
+
+def _set_violations(trial, constraint=None, magnitude=0):
+    """What train_model's objective records: one attr per CONSTRAINTS name."""
+    for name, value in violations(constraint, magnitude).items():
+        trial.set_user_attr(name, value)
 
 
 def _study():
@@ -16,9 +23,7 @@ def _converged_objective(trial):
     """Every trial lands on the SAME single Pareto point: a converged search.
     The front is stable from trial 0, so a correct stopper must stop."""
     trial.suggest_int('x', 0, 100)
-    trial.set_user_attr('blocks_violation', 0.0)
-    trial.set_user_attr('crossbar_violation', 0.0)
-    trial.set_user_attr('stages_violation', 0.0)
+    _set_violations(trial)
     return 0.9, 10.0
 
 
@@ -41,9 +46,7 @@ def test_stopper_keeps_searching_while_the_front_still_moves():
 
     def objective(trial):
         trial.suggest_int('x', 0, 100)
-        trial.set_user_attr('blocks_violation', 0.0)
-        trial.set_user_attr('crossbar_violation', 0.0)
-        trial.set_user_attr('stages_violation', 0.0)
+        _set_violations(trial)
         return 0.5 + trial.number * 1e-4, 100.0 - trial.number
 
     study.optimize(objective, n_trials=40, callbacks=[stopper])
@@ -60,9 +63,7 @@ def test_infeasible_trials_never_satisfy_the_feasible_minimum():
 
     def objective(trial):
         trial.suggest_int('x', 0, 100)
-        trial.set_user_attr('blocks_violation', 5.0)
-        trial.set_user_attr('crossbar_violation', 0.0)
-        trial.set_user_attr('stages_violation', 0.0)
+        _set_violations(trial, 'blocks_over', 5.0)
         return -1.0, 1e9
 
     study.optimize(objective, n_trials=20, callbacks=[stopper])
@@ -80,5 +81,25 @@ def test_a_trial_missing_its_violation_attrs_reads_as_infeasible():
         values=[0.9, 10.0]))
     trial = study.trials[0]
 
-    assert early_stopping.constraint_values(trial) == [float('inf')] * 3
+    assert early_stopping.constraint_values(trial) == [float('inf')] * len(CONSTRAINTS)
     assert early_stopping.is_feasible(trial) is False
+
+
+def test_constraint_values_follow_the_constraint_names_in_order():
+    """Decision 9.2: one value per p4model.refusals.CONSTRAINTS name, in that order."""
+    study = _study()
+    study.add_trial(optuna.trial.create_trial(
+        params={'x': 1},
+        distributions={'x': optuna.distributions.IntDistribution(0, 100)},
+        values=[0.9, 10.0],
+        user_attrs={name: float(index + 1) for index, name in enumerate(CONSTRAINTS)}))
+    trial = study.trials[0]
+    assert early_stopping.constraint_values(trial) == [
+        float(index + 1) for index in range(len(CONSTRAINTS))]
+    assert CONSTRAINTS == ('key_bytes_over', 'phv_containers_short', 'bus_bytes_over',
+                           'range_rows_over', 'stages_over', 'blocks_over', 'no_split_tree',
+                           'placement_failed', 'program_shape')
+    for name in CONSTRAINTS:
+        values = violations(name, 2)
+        assert [values[n] for n in CONSTRAINTS] == [
+            2 if n == name else 0.0 for n in CONSTRAINTS]

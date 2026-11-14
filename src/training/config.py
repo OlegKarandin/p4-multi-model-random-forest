@@ -81,7 +81,8 @@ class TrainConfig:
         once. No -1 sentinel (F10i). Rederived from the measured capacity
         ceiling: `scripts/capacity_ceiling.py` fits both models over a
         n_trees x max_depth grid on 3 splits at the full feature set and
-        records where the 512-bit codeword limit starts to bind, at both
+        records where a 512-bit codeword limit (the model's until decision
+        6b removed it; the script keeps it as a yardstick) starts to bind, at both
         ends of rf_params' regularization ranges -- now including ccp_alpha
         -- (results/capacity_ceiling.csv). A cell counts as feasible when
         ANY configuration the search can reach there compiles -- witnessed
@@ -106,7 +107,7 @@ class TrainConfig:
         though the measurement did not rule out raising it: spec 2.1's
         boxed warning is that codeword length is essentially total leaf
         count across both forests, and `joint` pools both models' leaves
-        into one 512-bit codeword while `independent` never pools, so
+        into one codeword while `independent` never pools, so
         raising max_depth would push `joint` toward CrossbarKeyTooWide faster
         than `independent`, widening a dimension that structurally
         disadvantages the arm under study -- raising it is therefore a

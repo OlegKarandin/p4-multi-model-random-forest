@@ -118,9 +118,10 @@ def test_a_program_with_stage_pins_is_refused(tmp_path):
   pinned = re.sub(r"(\n)(\s*@placement_priority\(\d+\)\s*\n\s*table get_classification_tree_app_0 \{)",
                   r"\1    @stage(11)\n\2", text, count=1)
   assert pinned != text
-  model_breakdown(parse_program_text(text))
-  with pytest.raises(ValueError, match="@stage"):
-    parse_program_text(pinned)
+  assert model_breakdown(parse_program_text(text))["refusal"] is None
+  breakdown = model_breakdown(parse_program_text(pinned))
+  assert (breakdown["refusal"], breakdown["refusal_reason"]) == ("program_shape", "stage_pin")
+  assert breakdown["stage_depth"] is None
 
 
 @pytest.mark.parametrize("seed", range(6))

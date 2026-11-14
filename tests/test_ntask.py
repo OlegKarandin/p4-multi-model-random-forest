@@ -256,7 +256,7 @@ def test_feature_plan_rejects_colliding_resolved_names():
     # both resolve to "a_b_c"; the second must not silently replace the first.
     one = [(0, 10), (11, 65535)]
     two = [(0, 20), (21, 65535)]
-    with pytest.raises(ValueError, match="a_b_c"):
+    with pytest.raises(AssertionError, match="a_b_c"):  # R10: an invariant
         bps.resolve_feature_plan([("a", {"b_c": one, "c": one}),
                                   ("a_b", {"b_c": two, "c": two})])
 

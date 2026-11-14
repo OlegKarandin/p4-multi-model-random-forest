@@ -27,13 +27,10 @@ from sklearn.metrics import accuracy_score
 import numpy as np
 
 from p4gen.build_p4_script import dt_thresholds_float_to_int
-from p4gen.evaluation import (
-    CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES, multi_model_memory_evaluation)
+from p4gen.evaluation import TOFINO_PIPELINE_STAGES, multi_model_memory_evaluation
 from p4gen.switch_semantics import switch_predict
-from p4model.errors import (ActionDataTooWide, NoSplitTree, PhvContainersExhausted,
-                            PlacementFailed, RangeEntriesDoNotFit)
+from p4model import refusals
 from p4model.program import PER_TREE_ENCODING
-from p4model.target import ACTION_DATA_BUS_BYTES, MAX_KEY_BYTES
 from src.training.threshold_alignment import align_with_policy
 from src.training import early_stopping
 from src.training import trial_selection
@@ -127,8 +124,8 @@ class TrainResult:
         worse-served task fell below its own achievable best.
     n_trials_run : len(study.trials) -- how many trials the search actually
         ran before stopping (early stopping may cut this short of cfg.n_trials).
-    n_feasible : how many of those trials satisfied both the codeword and
-        block-budget constraints.
+    n_feasible : how many of those trials satisfied every constraint
+        (p4model.refusals.CONSTRAINTS).
     align_attempted, align_accepted, intervals_before, intervals_after :
         the four align_stats keys from threshold_alignment.align_rf_thresholds,
         measured on the REFIT winner (gap 1), not an earlier trial. Alignment
@@ -238,13 +235,43 @@ def rf_params_from_params(params, suffix):
     }
 
 
-def _crossbar_violation(byte_width):
-    """crossbar_violation for a CrossbarKeyTooWide trial: the byte overflow,
-    floored at 1. lanes.table_blocks also raises for a key of <= MAX_KEY_BYTES bytes
-    with no crossbar allocation (xbar.alone_blocks), whose overflow would
-    read <= 0 -- i.e.
-    feasible -- to early_stopping.constraint_values."""
-    return max(1, byte_width - MAX_KEY_BYTES)
+def design_refusal(model_A, model_B, features_A, features_B, encoding, max_blocks):
+    """(usage, constraint, magnitude) for one design, as the objective judges it:
+    usage None and the exception's own constraint and magnitude when the model
+    refuses it (p4model.refusals.REFUSAL_ERRORS: key bytes over, PHV containers
+    short, bus bytes over, range rows over; 1 for a tree with no split or no
+    placement), else blocks_over (blocks past max_blocks) or then stages_over
+    (stage_depth past TOFINO_PIPELINE_STAGES), else (usage, None, 0). The same
+    order as p4_replay.model_breakdown, so the replay of the design's program
+    names the same refusal (decision 8.2). The magnitudes are the ones the
+    objective recorded before the names existed, so the sampler's ordering of
+    infeasible trials (by their sum) is unchanged.
+
+    stages_over compares the model's stage_depth (StagePlan.depth, not `stages`:
+    see evaluation.multi_model_memory_evaluation): p4c can need more stages (an
+    UNDER or FALSE_FEASIBLE verdict) or fewer (OVER), so it is the model's
+    refusal, not a proof about the compile (F5)."""
+    try:
+        usage = multi_model_memory_evaluation(
+            model_A, model_B, features_A, features_B, encoding)
+    except refusals.REFUSAL_ERRORS as e:
+        return (None,) + refusals.of(e)
+    over = refusals.blocks_over(usage.blocks, max_blocks)
+    if over > 0:
+        return usage, 'blocks_over', over
+    over = refusals.stages_over(usage.stage_depth)
+    if over > 0:
+        return usage, 'stages_over', over
+    return usage, None, 0
+
+
+def _record_violations(trial, constraint=None, magnitude=0):
+    """Set one user attribute per refusals.CONSTRAINTS name on `trial`:
+    `magnitude` for `constraint`, 0 for every other (None: all satisfied).
+    early_stopping.constraint_values reads them back in that order. The per-tree
+    trial table's `no_split_tree` column is this attribute, read as a bool."""
+    for name, value in refusals.violations(constraint, magnitude).items():
+        trial.set_user_attr(name, value)
 
 
 def train_multi_RF_Optuna_multi_constrained(
@@ -275,8 +302,8 @@ def train_multi_RF_Optuna_multi_constrained(
     trial shipped under cfg.selection_rule; see TrainResult for the reference
     fields.
 
-    Raises NoFeasibleSolution when no trial satisfies both the block budget and
-    the codeword limit -- an expected outcome at tight max_blocks, handled per-k
+    Raises NoFeasibleSolution when no trial satisfies every constraint
+    (p4model.refusals.CONSTRAINTS) -- an expected outcome at tight max_blocks, handled per-k
     by the caller. On the per-tree arm the exception carries the search's trials
     table (`trial_table`), so the stump count survives a search with no winner.
     """
@@ -353,88 +380,12 @@ def train_multi_RF_Optuna_multi_constrained(
         model_A, model_B = fit_pair(rf_params(trial, 'A'), rf_params(trial, 'B'),
                                    align_stats=align_stats)
 
-        # (b) Constraint, on the shipped artifact -- exact, no proxy.
-        try:
-            usage = multi_model_memory_evaluation(
-                model_A, model_B, features_A, features_B, encoding)
-        except CrossbarKeyTooWide as e:
-            trial.set_user_attr('crossbar_violation',
-                                _crossbar_violation(e.args[1]))
-            trial.set_user_attr('blocks_violation', 0.0)
-            trial.set_user_attr('stages_violation', 0.0)
-            return -1.0, -1.0, float('inf')
-        except RangeEntriesDoNotFit as e:
-            # A range table whose real entries need more rows than the blocks p4c
-            # commits for its declared size can hold (decision 6d,
-            # tables.range_deployment_overflow): undeployable. Reported through the
-            # crossbar attribute until the constraint attributes are renamed; the
-            # violation is the rows short.
-            trial.set_user_attr('crossbar_violation', float(max(1, e.args[1])))
-            trial.set_user_attr('blocks_violation', 0.0)
-            trial.set_user_attr('stages_violation', 0.0)
-            return -1.0, -1.0, float('inf')
-        except ActionDataTooWide as e:
-            # Per-tree codes only: a packed code field needs more bus bytes
-            # than the action data bus carries (packed.layout_for; spec
-            # 2026-11-11-packed-codes-stage-pin Sec 3.2, 6). Reported through
-            # the crossbar attribute, as the other width refusal; the violation
-            # is the bytes over the bus, at least 1.
-            trial.set_user_attr('crossbar_violation',
-                                float(max(1, e.args[1] - ACTION_DATA_BUS_BYTES)))
-            trial.set_user_attr('blocks_violation', 0.0)
-            trial.set_user_attr('stages_violation', 0.0)
-            return -1.0, -1.0, float('inf')
-        except PhvContainersExhausted as e:
-            # Per-tree codes only: a packed code field finds no PHV container of
-            # any size left (packed.layout_for, packed.budgets). Reported through
-            # the crossbar attribute like the action-width refusal; the violation
-            # is the number of containers short.
-            trial.set_user_attr('crossbar_violation', float(max(1, e.args[1])))
-            trial.set_user_attr('blocks_violation', 0.0)
-            trial.set_user_attr('stages_violation', 0.0)
-            return -1.0, -1.0, float('inf')
-        except PlacementFailed:
-            # The placement simulation has no placement for this design (decision
-            # 7.4, S29/S30): infeasible, not a crash. Reported through the crossbar
-            # attribute, magnitude 1, until the constraint attributes are renamed.
-            trial.set_user_attr('crossbar_violation', 1.0)
-            trial.set_user_attr('blocks_violation', 0.0)
-            trial.set_user_attr('stages_violation', 0.0)
-            return -1.0, -1.0, float('inf')
-        except NoSplitTree:
-            # Every encoding (spec 9.4; R6 since decision 2.3, 2026-11-14): a tree
-            # with no threshold has a table with no key. Counted in the per-tree
-            # arm's trial table (`no_split_tree`); the other arms keep their header.
-            trial.set_user_attr('no_split_tree', True)
-            trial.set_user_attr('crossbar_violation', 1.0)
-            trial.set_user_attr('blocks_violation', 0.0)
-            trial.set_user_attr('stages_violation', 0.0)
-            return -1.0, -1.0, float('inf')
-
-        if usage.blocks > max_blocks:
-            trial.set_user_attr('blocks_violation', usage.blocks - max_blocks)
-            trial.set_user_attr('crossbar_violation', 0.0)
-            trial.set_user_attr('stages_violation', 0.0)
-            return -1.0, -1.0, float('inf')
-
-        # F5: hard 12-ingress-stage Tofino-1 pipeline ceiling
-        # (TOFINO_PIPELINE_STAGES), compared against stage_depth -- NOT
-        # `stages` (see evaluation.multi_model_memory_evaluation's docstring
-        # for why those are different quantities).
-        #
-        # NECESSARY BUT NOT SUFFICIENT: stage_depth is this model's predicted
-        # pipeline depth from placed match tables alone (StagePlan.depth);
-        # the real compiler also spends stages on parsing/bookkeeping
-        # overhead this model does not capture -- measured on M2, this model
-        # predicts depth 6 where the real compiler needs 9 stages
-        # (`stages_real`, p4_compile.parse_compile_logs). A violation here is
-        # therefore a DEFINITE reject (the real pipeline can only need MORE
-        # stages than predicted, never fewer); passing this check is NOT a
-        # guarantee the real compile fits within TOFINO_PIPELINE_STAGES.
-        if usage.stage_depth > TOFINO_PIPELINE_STAGES:
-            trial.set_user_attr('blocks_violation', 0.0)
-            trial.set_user_attr('crossbar_violation', 0.0)
-            trial.set_user_attr('stages_violation', usage.stage_depth - TOFINO_PIPELINE_STAGES)
+        # (b) Constraint, on the shipped artifact -- exact, no proxy
+        # (design_refusal: one named constraint per refusal, decision 9.2).
+        usage, constraint, magnitude = design_refusal(
+            model_A, model_B, features_A, features_B, encoding, max_blocks)
+        if constraint is not None:
+            _record_violations(trial, constraint, magnitude)
             return -1.0, -1.0, float('inf')
 
         # (c) Only FEASIBLE trials pay for scoring. At tight max_blocks most of
@@ -469,9 +420,7 @@ def train_multi_RF_Optuna_multi_constrained(
         # ResourceUsage already carries both; only the recording was missing.
         trial.set_user_attr('stages', int(usage.stages))
         trial.set_user_attr('stage_depth', int(usage.stage_depth))
-        trial.set_user_attr('blocks_violation', 0.0)
-        trial.set_user_attr('crossbar_violation', 0.0)
-        trial.set_user_attr('stages_violation', 0.0)
+        _record_violations(trial)
 
         # Blocks stays a third OBJECTIVE rather than a pure constraint because
         # plots use REALIZED blocks as an axis: without minimize-blocks pressure
@@ -504,12 +453,9 @@ def train_multi_RF_Optuna_multi_constrained(
         except Exception:
             pass  # Ignore if enqueue fails (e.g. bounds changed between k)
 
-    # catch=() deliberately: the ONLY expected RuntimeErrors are the crossbar-width
-    # (CrossbarKeyTooWide), range-entry (RangeEntriesDoNotFit), no-split-tree
-    # (NoSplitTree, every encoding) and, under per-tree codes, action-width
-    # (ActionDataTooWide) and PHV (PhvContainersExhausted) violations, plus the
-    # placement refusal (PlacementFailed), and the objective already handles
-    # all six itself. The previous
+    # catch=() deliberately: the ONLY expected RuntimeErrors are the model's
+    # refusals (p4model.refusals.REFUSAL_ERRORS), and the objective already
+    # handles every one itself. The previous
     # catch=(RuntimeError,) also swallowed align_rf_thresholds' own
     # AlignmentInvariantError (raised as a bare RuntimeError("Smth is
     # very-very wrong") before it was given its own type), hiding corrupted

@@ -8,7 +8,7 @@ import pytest
 
 from p4gen import build_p4_script as bps
 from p4gen import evaluation
-from p4gen.p4_replay import model_breakdown, parse_program, parse_program_text
+from p4gen.p4_replay import model_breakdown, parse_program, parse_program_text, price_program
 from p4model import phv
 from p4model.errors import PhvContainersExhausted
 from p4model.program import (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING,
@@ -90,11 +90,17 @@ def test_phv_refusal_every_encoding(tmp_path, monkeypatch, encoding):
   tight = dict(PHV_INGRESS_CONTAINERS)
   tight[16] = used[16] - 1                             # one 16-bit container short
   monkeypatch.setattr(phv, "PHV_INGRESS_CONTAINERS", tight)
+  breakdown = model_breakdown(parse_program(path))
+  assert breakdown["refusal"] == "phv_containers_short"
+  assert breakdown["stage_depth"] is None and breakdown["blocks"] is None
   with pytest.raises(PhvContainersExhausted) as replayed:
-    model_breakdown(parse_program(path))
+    price_program(parse_program(path))
   with pytest.raises(PhvContainersExhausted) as trained:
     evaluation._pool_inputs(app, ddos, names, names, encoding)
   assert replayed.value.args[1] >= 1 and trained.value.args[1] >= 1
+  assert replayed.value.magnitude == replayed.value.args[1]
+  assert (replayed.value.constraint, trained.value.constraint) == (
+      "phv_containers_short", "phv_containers_short")
   assert "16-bit" in replayed.value.args[0]
 
 

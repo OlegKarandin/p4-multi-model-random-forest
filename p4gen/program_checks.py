@@ -28,8 +28,14 @@ not `meta.` fields and are exempt.
 A form the walk does not understand raises ValueError instead of passing silently: an
 `.execute(` on an unknown register action, an `.apply()` on an unknown table or inside a
 condition (`if (t.apply().hit)`), a bare call of an unknown action.
+
+check_program (decision 8.2) checks a parsed program's SHAPE -- the pins, priorities,
+declared widths and apply order the replay assumes -- and refuses one it does not know
+with a named reason (ProgramShapeRefused); p4_replay.model_breakdown calls it first.
 """
 import re
+
+from p4model.errors import ProgramShapeRefused
 
 _META = re.compile(r"\bmeta\.(\w+)")
 _ASSIGN = re.compile(r"^meta\.(\w+)\s*(?:\[[^\]]*\])?\s*=(?!=)\s*(.*)$", re.S)
@@ -245,3 +251,219 @@ def metadata_reads_before_writes(text):
   earlier in the apply order writes them on every path. First-read order, no repeats;
   empty when the program is clean. Raises ValueError on a form it cannot follow."""
   return _analyse(text)[0]
+
+
+# ------------------------------------------------------------------ program shape (8.2)
+
+
+def apply_steps(text):
+  """The ingress apply block as a flat tuple of (kind, name, depth, under_fwd) steps in
+  program order: kind 'apply' (a `<table>.apply()`), 'execute' (a RegisterAction's
+  `.execute(...)`, name = the action), 'call' (a bare `<action>()`) or 'other'; depth =
+  the number of enclosing `if`s; under_fwd = some enclosing `if` condition reads
+  meta.fwd. Empty when the text has no ingress control (a control with an
+  `inout <type> meta` parameter) or a form the parser cannot follow -- check_program
+  refuses that as a shape it does not know. Read by p4_replay.parse_program_text into
+  Program.apply_steps."""
+  try:
+    text = _strip_comments(text)
+    for match in _CONTROL.finditer(text):
+      if not re.search(r"\binout\s+\w+\s+meta\b", match.group(1)):
+        continue
+      open_index = match.end() - 1
+      control = text[open_index + 1:_matching(text, open_index)]
+      apply = re.search(r"(?<![\w.])apply\s*\{", control)
+      if apply is None:
+        return ()
+      start = apply.end() - 1
+      nodes = _parse(control[start + 1:_matching(control, start)])
+      steps = []
+      _flatten(nodes, 0, False, steps)
+      return tuple(steps)
+  except ValueError:
+    return ()
+  return ()
+
+
+def _flatten(nodes, depth, under_fwd, steps):
+  for node in nodes:
+    if node[0] == "if":
+      _, cond, then_nodes, else_nodes = node
+      fwd = under_fwd or "meta.fwd" in cond
+      _flatten(then_nodes, depth + 1, fwd, steps)
+      _flatten(else_nodes, depth + 1, fwd, steps)
+      continue
+    statement = node[1]
+    applied = _APPLY_CALL.match(statement)
+    if applied:
+      steps.append(("apply", applied.group(1), depth, under_fwd))
+      continue
+    executed = _EXECUTE.findall(statement)
+    if executed:
+      steps.extend(("execute", name, depth, under_fwd) for name in executed)
+      continue
+    called = _ACTION_CALL.match(statement)
+    steps.append(("call" if called else "other",
+                  called.group(1) if called else statement, depth, under_fwd))
+
+
+_TREE_TABLE = re.compile(r"^get_classification_tree_(\w+)_(\d+)$")
+_RANGE_TABLE = re.compile(r"^table_\d+_\w+$")
+_VOTE_TABLE = re.compile(r"^vote_(\w+)$")
+_PACKED = "code_pk_"
+_ORIENTATION_ACTION = "flow_orientation_action"
+_PROLOGUE_CALL = "calc_flow_hash"
+
+
+def _pins(program):
+  """{(pin, field): args} from Program.pragmas."""
+  return {(pin, field): args for pin, field, args in program.pragmas}
+
+
+def _require(pins, pin, field):
+  if (pin, field) not in pins:
+    raise ProgramShapeRefused("missing_pin:%s:%s" % (pin, field))
+  return pins[(pin, field)]
+
+
+def _check_pins(program, pins):
+  """A1, A7-A10 and the code-field pins of decisions 4.1 / 4.3: every pin the
+  generator emits is present, and every pinned code field is declared at its
+  containers' full width."""
+  _require(pins, "pa_no_overlay", "fwd")
+  for field in program.class_fields:
+    _require(pins, "pa_solitary", field)
+    _require(pins, "pa_no_overlay", field)
+  for field in sorted(program.declared):
+    bits = program.declared[field]
+    if field.endswith("_val") and not field.startswith("code_"):
+      if bits != 16:
+        raise ProgramShapeRefused("unexpected_shape:val_width:%s" % field)
+      if tuple(_require(pins, "pa_container_size", field)) != (16,):
+        raise ProgramShapeRefused("unexpected_shape:val_container:%s" % field)
+    elif field.startswith("code_"):
+      if not field.startswith(_PACKED):
+        _require(pins, "pa_solitary", field)
+      _require(pins, "pa_no_overlay", field)
+      if bits == 0:
+        continue
+      sizes = _require(pins, "pa_container_size", field)
+      if sum(sizes) != bits:
+        raise ProgramShapeRefused("unexpected_shape:code_width:%s" % field)
+
+
+def _check_priorities(program):
+  """A4 / A5: every tree carries its task's @placement_priority (one per task, the
+  tasks numbered 1..N), every range table N + 1 (program.range_table_priority)."""
+  task_priority = {}
+  for name in program.tables:
+    tree = _TREE_TABLE.match(name)
+    if not tree:
+      continue
+    if name not in program.priorities:
+      raise ProgramShapeRefused("missing_pin:placement_priority:%s" % name)
+    if task_priority.setdefault(tree.group(1), program.priorities[name]) != (
+        program.priorities[name]):
+      raise ProgramShapeRefused("unexpected_shape:tree_priority:%s" % name)
+  if sorted(task_priority.values()) != list(range(1, len(task_priority) + 1)):
+    raise ProgramShapeRefused("unexpected_shape:tree_priority:%s" % ",".join(
+        "%s=%d" % item for item in sorted(task_priority.items())))
+  for name in program.tables:
+    if not _RANGE_TABLE.match(name):
+      continue
+    if name not in program.priorities:
+      raise ProgramShapeRefused("missing_pin:placement_priority:%s" % name)
+    if program.priorities[name] != len(task_priority) + 1:
+      raise ProgramShapeRefused("unexpected_shape:range_priority:%s" % name)
+
+
+def _check_apply(program):
+  """A11-A14: registers unconditional and executed once each, in the catalog's
+  call-site order for the range tables' features; the prologue (calc_flow_hash)
+  before the first register, the orientation register first; then range tables,
+  trees, and one exact-match vote table per task after every tree, all at one
+  nesting depth."""
+  steps = program.apply_steps
+  if not steps:
+    raise ProgramShapeRefused("unexpected_shape:no_ingress_apply")
+  executes = [step for step in steps if step[0] == "execute"]
+  applies = [step for step in steps if step[0] == "apply"]
+  if not executes:
+    raise ProgramShapeRefused("unexpected_shape:no_registers")
+  depth = executes[0][2]
+  if any(step[2] != depth for step in executes + applies):
+    raise ProgramShapeRefused("unexpected_shape:nesting")
+  if len({step[1] for step in executes}) != len(executes):
+    raise ProgramShapeRefused("unexpected_shape:register_repeated")
+  first = steps.index(executes[0])
+  if not any(step[0] == "call" and step[1] == _PROLOGUE_CALL for step in steps[:first]):
+    raise ProgramShapeRefused("unexpected_shape:prologue")
+  if executes[0][1] != _ORIENTATION_ACTION:
+    raise ProgramShapeRefused("unexpected_shape:orientation_register")
+  # Lazy: p4model.registers needs nothing from here, but keep this module's
+  # import cost at the stdlib for metadata_reads_before_writes' callers.
+  from p4model.registers import register_call_order
+  features = []
+  for name, keys in program.tables.items():
+    if _RANGE_TABLE.match(name):
+      if len(keys) != 1 or not keys[0].endswith("_val"):
+        raise ProgramShapeRefused("unexpected_shape:range_key:%s" % name)
+      if keys[0][:-len("_val")] not in features:
+        features.append(keys[0][:-len("_val")])
+  if tuple(program.register_calls) != tuple(register_call_order(features)):
+    raise ProgramShapeRefused("unexpected_shape:register_calls")
+  rank, last = None, -1
+  trees, votes = {}, []
+  for kind, name, _, _ in steps:
+    if kind == "execute":
+      rank = 0
+    elif kind == "apply" and _RANGE_TABLE.match(name):
+      rank = 1
+    elif kind == "apply" and _TREE_TABLE.match(name):
+      rank = 2
+      trees.setdefault(_TREE_TABLE.match(name).group(1), []).append(name)
+    elif kind == "apply" and _VOTE_TABLE.match(name):
+      rank = 3
+      votes.append(_VOTE_TABLE.match(name).group(1))
+    elif kind == "apply":
+      raise ProgramShapeRefused("unexpected_shape:table:%s" % name)
+    else:
+      continue
+    if rank < last:
+      raise ProgramShapeRefused("unexpected_shape:apply_order")
+    last = rank
+  if sorted(votes) != sorted(trees):
+    raise ProgramShapeRefused("unexpected_shape:vote_tables")
+  for task in votes:
+    keys = program.exact_keys.get("vote_" + task, [])
+    if sorted(keys) != sorted("class_tree_%s_%s" % (task, _TREE_TABLE.match(tree).group(2))
+                              for tree in trees[task]):
+      raise ProgramShapeRefused("unexpected_shape:vote_key:vote_" + task)
+
+
+def check_program(program):
+  """Refuse a parsed program (p4_replay.Program) that breaks an assumption the replay
+  prices by (decision 8.2; inventory_model Sec 6, A1, A5, A7, A8, A10-A14, A17, and
+  the pins of decisions 4.1 / 4.3), raising ProgramShapeRefused(reason):
+
+    stage_pin                    an @stage line (A17)
+    gated_register_block         a RegisterAction executed inside `if (meta.fwd ...)`
+                                 (every program before decisions 1a / 7.1 option B)
+    missing_pin:<pin>:<field>    a pin the generator emits is absent: pa_no_overlay on
+                                 fwd, pa_solitary + pa_no_overlay on class_tree_*,
+                                 pa_container_size 16 on *_val, pa_solitary (not on
+                                 code_pk_*), pa_no_overlay, pa_container_size on code_*,
+                                 placement_priority on every tree and range table
+    unexpected_shape:<what>      a declared width, priority, key or apply order other
+                                 than the generator's
+
+  A program the generator writes passes; an archived program of an older generator
+  is refused, never priced as if it were current."""
+  if program.stage_pins:
+    raise ProgramShapeRefused("stage_pin")
+  if program.gated_register_blocks or any(
+      kind == "execute" and under_fwd for kind, _, _, under_fwd in program.apply_steps):
+    raise ProgramShapeRefused("gated_register_block")
+  _check_pins(program, _pins(program))
+  _check_priorities(program)
+  _check_apply(program)

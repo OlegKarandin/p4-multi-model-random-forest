@@ -5,6 +5,7 @@ import pathlib
 
 from p4gen import evaluation as ev
 from p4gen import build_p4_script as bps
+from p4model import target
 from p4model.errors import RangeEntriesDoNotFit
 from p4model.ranges import range_entry_count
 import pytest
@@ -425,15 +426,15 @@ def test_crossbar_stages_needed_output_respects_all_three_limits():
     import random
     rnd = random.Random(1234)
     for _ in range(200):
-        specs = [(rnd.randint(1, 30), rnd.randint(1, bps.MAX_KEY_BYTES))
+        specs = [(rnd.randint(1, 30), rnd.randint(1, target.MAX_KEY_BYTES))
                  for _ in range(rnd.randint(1, 20))]
         stages = ev.crossbar_stages_needed(specs).occupied
         # A valid packing can never use fewer stages than either
         # single-dimension lower bound.
         assert stages >= math.ceil(sum(b for b, _ in specs) / bps.TCAM_BLOCKS_PER_STAGE)
         assert stages >= math.ceil(
-            sum(min(w, bps.MAX_KEY_BYTES) for _, w in specs)
-            / bps.MAX_KEY_BYTES)
+            sum(min(w, target.MAX_KEY_BYTES) for _, w in specs)
+            / target.MAX_KEY_BYTES)
         assert stages >= math.ceil(len(specs) / bps.TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
 
@@ -614,7 +615,7 @@ def test_single_model_memory_evaluation_raises_on_colliding_feature_names():
     features = ["Flow.IAT.Max", "Flow IAT Max", "f2", "f3"]
     clf = _tiny_forest([0, 1, 2], seed=3)
 
-    with pytest.raises(ValueError, match="collide"):
+    with pytest.raises(AssertionError, match="collide"):  # R10: an invariant
         ev.single_model_memory_evaluation(clf, features)
 
 
@@ -637,7 +638,7 @@ def test_multi_model_memory_evaluation_joint_raises_on_cross_model_colliding_fea
     clf_app = _tiny_forest([0, 1, 2], seed=0)
     clf_ddos = _tiny_forest([-1, 1], seed=7)
 
-    with pytest.raises(ValueError, match="collide"):
+    with pytest.raises(AssertionError, match="collide"):  # R10: an invariant
         ev.multi_model_memory_evaluation(
             clf_app, clf_ddos, features_app, features_ddos, encoding='joint')
 
@@ -952,7 +953,7 @@ def test_nibble_widths_for_18_bits_has_a_two_bit_remainder_nibble():
 
 
 def test_nibble_widths_for_rejects_widths_above_the_sde_ceiling():
-    with pytest.raises(ValueError):
+    with pytest.raises(AssertionError):  # R9 (decision 8): an invariant
         ev.nibble_widths_for(20)
 
 
@@ -963,7 +964,7 @@ def test_range_matching_resource_usage_rejects_a_key_wider_than_the_ceiling():
     # a 32-bit range key does not compile on real hardware. It must now
     # raise instead of returning a bogus price.
     feature_intervals = {"f": [(0, 100000), (100001, 200000)]}
-    with pytest.raises(ValueError):
+    with pytest.raises(AssertionError):  # R9 (decision 8): an invariant
         ev.range_matching_resource_usage(feature_intervals, key_bit_width=32)
 
 

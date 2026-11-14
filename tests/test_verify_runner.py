@@ -473,25 +473,27 @@ def test_rescore_raises_when_a_rows_program_is_missing(tmp_path):
         runner.rescore(run_dir)
 
 
-def test_rescore_refuses_a_stage_pinned_run_before_rewriting_anything(tmp_path):
-    """One @stage-pinned program anywhere in the run: rescore raises naming it
-    and leaves every verify json as it was (rows sorted before AND after it)."""
+def test_rescore_reports_a_refused_program_as_model_refused(tmp_path, monkeypatch):
+    """A program the current replay refuses (decision 8.2) -- here one with an
+    @stage pin -- is classified MODEL_REFUSED:<reason>; the rescore does not stop,
+    and the rows before and after it are rescored as usual."""
     run_dir = _run_dir(tmp_path, rows=("a", "p", "z"))
     for row_id in ("a", "p", "z"):
         runner.verify_row(run_dir, row_id, compile_fn=FakeCompiler())
     with open(os.path.join(run_dir, "designs", "p.p4"), "w") as handle:
         handle.write("// program p\n@stage(3)\ntable t {}\n")
-    before = {}
-    for name in os.listdir(os.path.join(run_dir, "verify")):
-        with open(os.path.join(run_dir, "verify", name), "rb") as handle:
-            before[name] = handle.read()
-    with pytest.raises(ValueError, match=r"@stage pins.*\bp\b.*commit that generated it"):
-        runner.rescore(run_dir)
-    after = {}
-    for name in os.listdir(os.path.join(run_dir, "verify")):
-        with open(os.path.join(run_dir, "verify", name), "rb") as handle:
-            after[name] = handle.read()
-    assert after == before
+    real = runner.model_breakdown
+    # The fixture's other programs are one-line stand-ins the shape check would
+    # refuse too; price them as the model.json says, so only p is refused.
+    monkeypatch.setattr(runner, "model_breakdown", lambda program, row_id: (
+        real(program, row_id) if program.stage_pins
+        else {"stage_depth": 12, "blocks": 6, "tables": _TABLES}))
+    runner.rescore(run_dir)
+    assert _verify_json(run_dir, "p")["verdict"] == "MODEL_REFUSED:stage_pin"
+    assert _verify_json(run_dir, "p")["model_stage_depth"] is None
+    assert [_verify_json(run_dir, r)["verdict"] for r in ("a", "z")] == ["EXACT", "EXACT"]
+    assert {row["row_id"]: row["verdict"] for row in _csv_rows(run_dir)}["p"] == (
+        "MODEL_REFUSED:stage_pin")
 
 
 def test_rescore_recomputes_the_model_from_the_saved_program(tmp_path, monkeypatch):
@@ -513,9 +515,12 @@ def test_rescore_recomputes_the_model_from_the_saved_program(tmp_path, monkeypat
     assert record["verified_utc"] == first["verified_utc"]
 
 
-def test_rescore_keeps_a_timeout(tmp_path):
+def test_rescore_keeps_a_timeout(tmp_path, monkeypatch):
     run_dir = _run_dir(tmp_path)
     runner.verify_row(run_dir, "r", compile_fn=FakeCompiler("timeout", "timeout"))
+    # The one-line stand-in program would be refused by the shape check.
+    monkeypatch.setattr(runner, "model_breakdown", lambda program, row_id: {
+        "stage_depth": 12, "blocks": 6, "tables": _TABLES})
     runner.rescore(run_dir)
     assert _verify_json(run_dir)["verdict"] == "TIMEOUT"
 

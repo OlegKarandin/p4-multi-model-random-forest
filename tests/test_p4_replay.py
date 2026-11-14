@@ -27,14 +27,14 @@ def test_breakdown_totals_equal_the_scripts_replay(name, design):
     from scripts.p4_artifact_replay import replay_program
     depth, blocks = replay_program(name, design["tables"], design["widths"],
                                    design["bits"], design["sizes"])
-    breakdown = rp.model_breakdown(_program(design), row_id=name)
+    breakdown = rp.price_program(_program(design), row_id=name)
     assert (breakdown["stage_depth"], breakdown["blocks"]) == (depth, blocks)
     assert sum(t["blocks"] for t in breakdown["tables"]) == blocks
 
 
 @pytest.mark.parametrize("name,design", _designs(), ids=[n for n, _ in _designs()])
 def test_breakdown_names_every_priced_table_once(name, design):
-    breakdown = rp.model_breakdown(_program(design), row_id=name)
+    breakdown = rp.price_program(_program(design), row_id=name)
     names = [t["table"] for t in breakdown["tables"]]
     assert len(names) == len(set(names))
     assert set(names) == set(rp.declared_prices(_program(design)))
@@ -153,7 +153,10 @@ def test_replay_live_width_from_slice():
     # the declaration differs.
     live = (_FULL_WIDTH.replace("bit<8> code_tk_app_a", "bit<3> code_tk_app_a")
             .replace("bit<32> code_tk_ddos_a", "bit<20> code_tk_ddos_a"))
-    assert rp.model_breakdown(rp.parse_program_text(live)) == rp.model_breakdown(program)
+    # (price_program: the fragment has no prologue / pins for check_program; with
+    # the live width the field is no longer its containers' width, which
+    # check_program refuses -- unexpected_shape:code_width.)
+    assert rp.price_program(rp.parse_program_text(live)) == rp.price_program(program)
 
 
 def test_replay_refuses_slices_that_do_not_hold_the_live_bits_from_bit_0():

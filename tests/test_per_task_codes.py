@@ -17,7 +17,8 @@ from sklearn.ensemble import RandomForestClassifier
 
 from p4gen import build_p4_script as bps
 from p4gen.evaluation import _pool_inputs, multi_model_memory_evaluation
-from p4gen.p4_replay import model_breakdown, parse_program, parse_program_text, table_tasks
+from p4gen.p4_replay import (model_breakdown, parse_program, parse_program_text,
+                             price_program, table_tasks)
 from p4gen.switch_semantics import per_tree_class_indices, switch_predict, vote_winner
 from p4model import lanes
 from p4model.errors import CrossbarKeyTooWide
@@ -99,7 +100,7 @@ def test_plan_union_equals_the_joint_intervals_of_the_same_forests():
 
 
 def test_plan_rejects_colliding_field_names():
-    with pytest.raises(ValueError, match="produced twice"):
+    with pytest.raises(AssertionError, match="produced twice"):  # R10: an invariant
         bps.resolve_per_task_plan([("a", {"b_c": _iv(1)}), ("a_b", {"c": _iv(1)})])
 
 
@@ -189,13 +190,17 @@ def test_old_one_code_programs_still_replay(tmp_path):
         selected_features_app=FEATURES, selected_features_ddos=FEATURES)
     with open(path, encoding="utf-8") as handle:
         text = handle.read()
-    # A program generated before the range-table priority carries none.
+    # A program generated before the range-table priority carries none. The
+    # priority changes no price, but the shape check refuses its absence since
+    # decision 8.2: the replay prices only the generator's current shape.
     old = re.sub(r"@placement_priority\(3\)\n\s*", "", text)
     assert "@placement_priority(3)" not in old
-    assert model_breakdown(parse_program_text(old)) == model_breakdown(parse_program_text(text))
+    assert price_program(parse_program_text(old)) == price_program(parse_program_text(text))
     usage = multi_model_memory_evaluation(app, ddos, FEATURES, FEATURES, "joint")
-    breakdown = model_breakdown(parse_program_text(old))
+    breakdown = model_breakdown(parse_program_text(text))
     assert (breakdown["stage_depth"], breakdown["blocks"]) == (usage.stage_depth, usage.blocks)
+    refused = model_breakdown(parse_program_text(old))
+    assert refused["refusal_reason"].startswith("missing_pin:placement_priority:table_")
 
 
 # --- the range-table priority (all arms) ------------------------------------

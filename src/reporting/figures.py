@@ -1529,8 +1529,9 @@ def appendix_6_capacity_ceiling(ceiling_csv=DEFAULT_CEILING_CSV,
         'measurement itself is not repeated here. n_trees and max_depth are '
         'inclusive search bounds, not fixed hyperparameters, and were '
         'previously justified only as "chosen manually because larger values '
-        'gave overly long codewords". The tables below locate where the '
-        '512-bit codeword limit actually binds, over a grid of bounds, at '
+        'gave overly long codewords". The tables below locate where a '
+        '512-bit codeword limit (since removed from the model, decision 6b) '
+        'binds, over a grid of bounds, at '
         'both ends of the regularisation range the search also explores, and '
         'apply the adoption rule to the measurement. Adopted: n_trees = {}, '
         'max_depth = {}.'.format(ceiling_csv, n_trees, max_depth))

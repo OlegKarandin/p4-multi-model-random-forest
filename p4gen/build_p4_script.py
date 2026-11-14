@@ -17,7 +17,6 @@ from p4gen import switch_semantics
 # the path they always have. Explicit names, not `import *`, so the mapping
 # stays greppable.
 from p4model.target import (
-    MAX_KEY_BYTES,
     MAX_KEY_SLICE_BITS,
     TCAM_BLOCK_KEY_LENGTH,
     TCAM_BLOCKS_PER_STAGE,
@@ -293,7 +292,8 @@ def _reject_colliding_feature_names(selected_features):
     canonical.setdefault(normalise_feature_name(name), []).append(name)
   collisions = {k: v for k, v in canonical.items() if len(v) > 1}
   if collisions:
-    raise ValueError(
+    # R10: an invariant (AssertionError, see generate_P4_code's catalog check).
+    raise AssertionError(
         "feature names collide after normalisation, their intervals would "
         "silently merge: {}".format(collisions))
 
@@ -1148,7 +1148,8 @@ def resolve_feature_plan(task_intervals):
       # join to the same name (task a + feature b_c, task a_b + feature c);
       # the second would silently replace the first's field and table.
       if name in resolved:
-        raise ValueError(
+        # R10: an invariant (AssertionError, see generate_P4_code's catalog check).
+        raise AssertionError(
             "resolved feature name %r is produced twice: feature %r for tasks %s and "
             "feature %r for tasks %s; rename a task or a feature"
             % (name, resolved[name][0], sorted(resolved[name][2]), feature, list(group)))
@@ -1201,7 +1202,8 @@ def resolve_per_task_plan(task_intervals):
       thresholds.update((feature, high) for _, high in own[:-1])
       name = per_task_field(task, feature)
       if name in field_plan:
-        raise ValueError(
+        # R10: an invariant (AssertionError, see generate_P4_code's catalog check).
+        raise AssertionError(
             "resolved field name %r is produced twice: feature %r of task %r and "
             "feature %r of task %r; rename a task or a feature"
             % (name, field_plan[name][0], sorted(field_plan[name][2])[0], feature, task))
@@ -1215,15 +1217,15 @@ def resolve_per_task_plan(task_intervals):
 
 def code_field_container_sizes(resolved_plan, tasks):
   '''resolved_name -> @pa_container_size sizes (low slice first) for every
-  code_<resolved_name> field some classification key reads.
+  code_<resolved_name> field of a listed task (the generator lists every task,
+  so every declared field with bits is pinned; decision 8.2).
 
   A field's pin is lanes.container_sizes(width, lanes.layout): the width rule
   alone, whatever else its key holds (decision 4.1), and the layout the model
   prices the key with (lanes.key_fields), so p4c lays the key out the way it
   is priced (spec 2026-09-29 Sec 1.2: unpinned, PHV pressure moved 17-32-bit
-  fields into whole W containers). Tasks with no trees have no key, so their
-  fields are pinned only when some listed task reads them; a field two keys
-  read (disjoint, identical intervals) has one width, hence one pin.
+  fields into whole W containers). A field two keys read (disjoint, identical
+  intervals) has one width, hence one pin.
 
   A field with no bits has no layout and gets no entry (a pragma with no
   sizes does not parse).'''
@@ -1861,7 +1863,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   discretizes it (see _resolve_disjoint_feature_plan's own docstring for
   the full design).
 
-  Also raises ValueError (F2) when any DISTINCT raw feature name across
+  Also raises AssertionError (F2; R10, an invariant) when any DISTINCT raw feature name across
   BOTH feature_intervals_app and feature_intervals_ddos has no
   FEATURE_REGISTER_CATALOG entry -- checked right after this function calls
   generate_P4_registers_and_apply (see that call site's own inline comment
@@ -2068,9 +2070,12 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       phv_pragmas += '@pa_no_overlay("ingress", "ig_md.'+field+'")\n'
       phv_pragmas += ('@pa_container_size("ingress", "ig_md.' + field + '", '
                       + ", ".join(str(size) for size in containers) + ')\n')
-  tasks_with_trees = [task.name for task in program_tasks if n_trees[task.name] > 0]
-  code_container_sizes = ({} if tree_codes
-                          else code_field_container_sizes(resolved_plan, tasks_with_trees))
+  # Every declared code field with bits is pinned, also one no tree reads (a task
+  # with no trees): the replay refuses an unpinned code field (program_checks.
+  # check_program, decision 8.2), and training counts the pinned containers of
+  # every field (evaluation._pool_inputs), so the two PHV counts agree.
+  code_container_sizes = ({} if tree_codes else code_field_container_sizes(
+      resolved_plan, [task.name for task in program_tasks]))
   # Every other encoding: each field's @pa_solitary, then its @pa_no_overlay and
   # @pa_container_size. (The groupby once also gathered the per-field per-tree
   # program's codes of one (feature, reader); every group here is one field.)
@@ -2079,8 +2084,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # above (the range action writes it whole), and every tree keys the live bits
   # as slices from bit 0 (code_key_slices). The bus then carries exactly the
   # containers (S14) and p4c's action format has no padding bits in which to
-  # condense another code (the per-tree ADB finding, inventory Q7). A field no
-  # tree reads has no pin and keeps its live width.
+  # condense another code (the per-tree ADB finding, inventory Q7). A field with
+  # no bits has no pin.
   code_field_bits = {} if tree_codes else {
       name: (sum(code_container_sizes[name]) if name in code_container_sizes
              else len(intervals) - 1)
@@ -2131,7 +2136,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # matters in practice -- but comparing raw (mixed-case-tolerant) against
   # resolved (always-lowercase) with a bare set difference would falsely
   # flag a feature that actually DID resolve, just spelled with different
-  # case, as "missing" and raise a false-positive ValueError for it.
+  # case, as "missing" and raise a false-positive AssertionError for it.
   # Lowercasing raw_feature_intervals' keys here too keeps this comparison
   # exact regardless of that upstream-normalisation invariant, while still
   # reporting each missing feature by its ORIGINAL (caller-supplied)
@@ -2140,8 +2145,11 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       raw_name for raw_name in raw_feature_intervals
       if raw_name.lower() not in resolved
   )
+  # R10 (decision 8): an invariant, not a refusal -- the catalog covers every
+  # feature the pipeline selects -- so an AssertionError (raised, not `assert`,
+  # so python -O cannot drop it).
   if missing:
-    raise ValueError(
+    raise AssertionError(
         "no register catalog entry for {} -- the generated program would declare "
         "<feature>_val, key a range table on it, and never write it, so it would "
         "read 0 for every packet. Add the feature to FEATURE_REGISTER_CATALOG "
@@ -2603,7 +2611,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   F2: it is the CALLER's job to decide whether a silent skip is acceptable
   -- generate_P4_code, the only production caller, is not: it diffs its own
   requested feature set against this function's `resolved` return value
-  (below) and raises ValueError if anything didn't resolve, because letting
+  (below) and raises AssertionError if anything didn't resolve, because letting
   an uncatalogued feature's <feature>_val field compile silently would read
   0 for every packet forever (see generate_P4_code's own F2 comment).
 
@@ -2714,7 +2722,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
 
   Raises RuntimeError, at generation time (not left to fail later at `p4c`
   invocation), for a catalog entry with an unsupported `gated_by` value
-  (only None, "fwd", and "bwd" are implemented). Raises ValueError if a
+  (only None, "fwd", and "bwd" are implemented). Raises AssertionError (R10) if a
   register name is shared by features in different gate classes -- e.g.
   one feature's entry lists it ungated and another's lists it "fwd" --
   which would give it one direction's body and feed the other class a
@@ -2826,7 +2834,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     for reg in catalog[feature]["registers"]:
       previous = gate_of_register.setdefault(reg["name"], gate)
       if previous != gate:
-        raise ValueError(
+        # R10: an invariant of the catalog (AssertionError, see the uncatalogued check).
+        raise AssertionError(
             "register {!r} is shared by features in different gate classes "
             "({!r} and {!r}); its body would update in one gate class's direction "
             "and be read as garbage by the other. Promote it to an ungated register "

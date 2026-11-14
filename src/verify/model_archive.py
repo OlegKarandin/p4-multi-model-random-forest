@@ -9,7 +9,9 @@ scratchpad/campaign_2026_10_analysis/oct03/a3_archive.py.
 
 stage_depth is compared on every design; blocks only on feasible ones (p4c
 stage_depth <= TOFINO_PIPELINE_STAGES), as the model's total against the sum of
-p4c's committed blocks over the tables the model prices. Exit 1 on any miss not
+p4c's committed blocks over the tables the model prices. A program the replay
+refuses (an older generator's: @stage pins, gated register blocks, missing pins)
+is reported as a miss MODEL_REFUSED:<reason> instead of stopping the check. Exit 1 on any miss not
 in KNOWN_MISSES with the same numbers, and on any KNOWN_MISSES entry that no
 longer occurs. The archive is not in git, so this is a command, not a test."""
 import os
@@ -17,6 +19,7 @@ import os
 from p4gen.p4_ground_truth import committed_blocks, committed_stages_real
 from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.target import TOFINO_PIPELINE_STAGES
+from src.verify.verdicts import MODEL_REFUSED_PREFIX
 
 # results/compiler_calibration_pragmas_2026_09_29 under the ternary crossbar
 # port (p4model/xbar.py, 2026-11-13): stage_depth 72/73 (feasible 60/60),
@@ -41,9 +44,13 @@ def _design(archive_dir, row, known):
     p4c_tables = committed_blocks(logs) or {}
     p4c_blocks = sum(p4c_tables.get(t, 0) for t in priced)
     misses = {}
-    if model['stage_depth'] != p4c_depth:
+    if model['stage_depth'] is None:
+        # The replay refused the program (p4_replay.model_breakdown): no
+        # prediction, one miss named by its reason (MODEL_REFUSED:<reason>).
+        misses['refusal'] = MODEL_REFUSED_PREFIX + model['refusal_reason']
+    elif model['stage_depth'] != p4c_depth:
         misses['stage_depth'] = (model['stage_depth'], p4c_depth)
-    if feasible and model['blocks'] != p4c_blocks:
+    if feasible and model['stage_depth'] is not None and model['blocks'] != p4c_blocks:
         misses['blocks'] = (model['blocks'], p4c_blocks)
     listed = known.get(row, {})
     unexpected = {m: v for m, v in misses.items() if listed.get(m) != v}
@@ -61,15 +68,20 @@ def check(archive_dir, known_misses=None):
                   if n.endswith('.p4'))
     results = [_design(archive_dir, row, known) for row in rows]
     for r in results:
-        for metric, (model, p4c) in sorted(r['misses'].items()):
+        for metric, value in sorted(r['misses'].items()):
             tag = 'UNEXPECTED' if metric in r['unexpected'] else 'known'
+            if metric == 'refusal':
+                print(f"{r['row']}: {value} ({tag})")
+                continue
+            model, p4c = value
             kind = 'over' if model > p4c else 'under'
             print(f"{r['row']}: {metric} model {model} p4c {p4c} ({kind}, {tag})")
     feasible = [r for r in results if r['feasible']]
     print(f"designs {len(results)} feasible {len(feasible)}; stage_depth exact all "
           f"{sum('stage_depth' not in r['misses'] for r in results)}/{len(results)}, "
           f"feasible {sum('stage_depth' not in r['misses'] for r in feasible)}/{len(feasible)}; "
-          f"blocks exact feasible {sum('blocks' not in r['misses'] for r in feasible)}/{len(feasible)}")
+          f"blocks exact feasible {sum('blocks' not in r['misses'] for r in feasible)}/{len(feasible)}; "
+          f"refused by the model {sum('refusal' in r['misses'] for r in results)}")
     return results
 
 

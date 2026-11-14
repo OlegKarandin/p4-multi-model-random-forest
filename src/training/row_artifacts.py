@@ -16,10 +16,7 @@ import sklearn
 from p4gen.build_p4_script import generate_P4_code
 from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.program import JOINT_ENCODING
-from p4model.errors import (
-    ActionDataTooWide, CrossbarKeyTooWide, NoSplitTree,
-    PhvContainersExhausted, RangeEntriesDoNotFit)
-from p4model.target import TOFINO_PIPELINE_STAGES
+from p4model.refusals import REFUSAL_ERRORS, stages_over
 from src.training.campaign_run import (
     atomic_write_text, canonical_json, run_paths)
 
@@ -86,6 +83,28 @@ def load_forests(path):
     return stored
 
 
+def replayed_fields(replay, training_stage_depth, training_blocks, M):
+    """model.json's model side from one model_breakdown result: the replay's
+    numbers, whether they differ from training's, hw_feasible / budget_feasible,
+    and model_refusal -- the replay's refusal reason when it refused the program
+    outright (no numbers: p4_replay.model_breakdown's program_shape, key bytes,
+    PHV, bus, no-split or placement refusals), else None. A refused program is
+    neither hw- nor budget-feasible. Shared by write_row_artifacts and the
+    verifier's --rescore (src.verify.runner)."""
+    refused = replay['stage_depth'] is None
+    budgeted = M is not None and M != float('inf')
+    return {
+        'stage_depth': replay['stage_depth'],
+        'blocks': replay['blocks'],
+        'tables': None if refused else replay['tables'],
+        'model_paths_differ': ((replay['stage_depth'], replay['blocks'])
+                               != (training_stage_depth, training_blocks)),
+        'hw_feasible': (not refused) and stages_over(replay['stage_depth']) == 0,
+        'budget_feasible': (not refused) and (not budgeted or replay['blocks'] <= M),
+        'model_refusal': replay.get('refusal_reason') if refused else None,
+    }
+
+
 def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddos,
                         encoding, usage, extra=None):
     """`extra`: a mapping merged into model.json after every computed field
@@ -113,33 +132,24 @@ def write_row_artifacts(ctx, row_id, model_app, model_ddos, names_app, names_ddo
     try:
         p4_path = _generate(ctx, row_id, model_app, model_ddos,
                                        names_app, names_ddos, encoding)
-    except (ValueError, ActionDataTooWide, NoSplitTree, PhvContainersExhausted,
-            CrossbarKeyTooWide, RangeEntriesDoNotFit) as exc:
-        # The three pool refusals (NoSplitTree in every encoding, the other two
-        # per-tree only) are RuntimeErrors (p4model.errors), like the
-        # other model refusals; the search records them as infeasible trials
-        # (train_model.objective), so selection should never reach one, but a
-        # design that does is a generator_error row, not a crashed job.
-        # CrossbarKeyTooWide and RangeEntriesDoNotFit are caught the same way
-        # defensively: training refuses those designs before selection.
+    except (ValueError,) + REFUSAL_ERRORS as exc:
+        # A model refusal the generator raises (p4model.refusals.REFUSAL_ERRORS:
+        # NoSplitTree in every encoding, ActionDataTooWide and
+        # PhvContainersExhausted under per-tree codes) or a generator ValueError.
+        # The search records refusals as infeasible trials (train_model.
+        # objective), so selection should never reach one, but a design that
+        # does is a generator_error row, not a crashed job.
         message = str(exc)
         atomic_write_text(os.path.join(paths.designs, row_id + '.generator_error.txt'),
                           message)
         model.update({'stage_depth': None, 'blocks': None, 'tables': None,
                       'model_paths_differ': None, 'hw_feasible': False,
-                      'budget_feasible': False, 'generator_error': message})
+                      'budget_feasible': False, 'model_refusal': None,
+                      'generator_error': message})
     else:
-        replay = model_breakdown(parse_program(p4_path), row_id)
-        model.update({
-            'stage_depth': replay['stage_depth'],
-            'blocks': replay['blocks'],
-            'tables': replay['tables'],
-            'model_paths_differ': ((replay['stage_depth'], replay['blocks'])
-                                   != (usage.stage_depth, usage.blocks)),
-            'hw_feasible': bool(replay['stage_depth'] <= TOFINO_PIPELINE_STAGES),
-            'budget_feasible': (not budgeted) or replay['blocks'] <= ctx.M,
-            'generator_error': None,
-        })
+        model.update(replayed_fields(model_breakdown(parse_program(p4_path), row_id),
+                                     usage.stage_depth, usage.blocks, ctx.M))
+        model['generator_error'] = None
     if extra:
         clash = set(extra) & set(model)
         if clash:

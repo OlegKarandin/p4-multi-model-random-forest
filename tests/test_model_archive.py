@@ -51,6 +51,22 @@ def test_an_exact_archive_passes(tmp_path, monkeypatch, capsys):
     assert "blocks exact feasible 1/1" in capsys.readouterr().out
 
 
+def test_a_refused_program_is_reported_not_raised(tmp_path, monkeypatch, capsys):
+    # The real replay on a stand-in program with none of the generator's pins: a
+    # named refusal, reported as MODEL_REFUSED:<reason> (decision 8.2).
+    archive = _archive(tmp_path, ["d1"])
+    _p4c(monkeypatch, {"d1": 11})
+    results = model_archive.check(archive, known_misses={})
+    assert results[0]["misses"] == {"refusal": "MODEL_REFUSED:missing_pin:pa_no_overlay:fwd"}
+    assert results[0]["model_stage_depth"] is None
+    out = capsys.readouterr().out
+    assert "d1: MODEL_REFUSED:missing_pin:pa_no_overlay:fwd (UNEXPECTED)" in out
+    assert "refused by the model 1" in out
+    assert model_archive.main_exit_code(results, known_misses={}) == 1
+    listed = {"d1": {"refusal": "MODEL_REFUSED:missing_pin:pa_no_overlay:fwd"}}
+    assert model_archive.main_exit_code(model_archive.check(archive, listed), listed) == 0
+
+
 def test_an_unlisted_blocks_miss_fails(tmp_path, monkeypatch):
     archive = _archive(tmp_path, ["d1"])
     _fake_model(monkeypatch, {"d1": (11, {**EXACT_TABLES, "get_classification_tree_app_0": 4})})
@@ -132,8 +148,9 @@ def test_the_pragmas_archive_programs_are_refused_as_gated_programs():
     73 compiles of programs generated before decisions 1a / 7.1 option B
     (2026-11-14): every one carries a gated register block, which the replay
     now refuses, so the model can no longer be scored on it (a gate on
-    option-B programs needs new compiles)."""
-    from p4gen.p4_replay import parse_program
+    option-B programs needs new compiles). --model-archive reports each as
+    MODEL_REFUSED:gated_register_block instead of stopping (decision 8.2)."""
+    from p4gen.p4_replay import model_breakdown, parse_program
     archive = _find_pragmas_archive()
     if archive is None:
         pytest.skip("calibration archive %s not found in this checkout or any "
@@ -142,8 +159,12 @@ def test_the_pragmas_archive_programs_are_refused_as_gated_programs():
                      if name.endswith(".p4"))
     assert len(sources) == 73
     for name in sources:
-        with pytest.raises(ValueError, match="gated register block"):
-            parse_program(os.path.join(archive, "p4_src", name))
+        breakdown = model_breakdown(parse_program(os.path.join(archive, "p4_src", name)))
+        assert breakdown["refusal_reason"] == "gated_register_block", name
+    results = model_archive.check(archive)
+    assert all(r["misses"] == {"refusal": "MODEL_REFUSED:gated_register_block"}
+               for r in results)
+    assert model_archive.main_exit_code(results) == 1
 
 
 def test_cli_model_archive_exit_code(tmp_path, monkeypatch):

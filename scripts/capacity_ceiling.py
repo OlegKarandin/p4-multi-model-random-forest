@@ -7,7 +7,9 @@ bounds*, not fixed hyperparameters: `train_model.rf_params` suggests
 only as "chosen manually because larger values gave overly long codewords".
 This script replaces that sentence with a table: it measures, over a grid of
 bounds, where the 512-bit codeword limit (`MAX_CODEWORD_LENGTH`) starts to
-bind, and applies the adoption rule to the measurement.
+bind, and applies the adoption rule to the measurement. That limit is no longer
+the model's (decision 6b removed it; the one key limit is target.MAX_KEY_BYTES):
+this script keeps 512 bits as its own yardstick, MAX_CODEWORD_LENGTH below.
 
 Method. For every cell of the grid `n_trees x max_depth`, and for each of the
 first 3 campaign splits, one App forest and one DDoS forest are fitted on the
@@ -65,11 +67,11 @@ located the ceiling. That is why this table exists. It also means the
 worst-case-corner reading would impose a stricter requirement than this project
 has ever applied to itself.
 
-Codeword length above the limit. `multi_model_memory_evaluation` raises
+Codeword length above the limit. `multi_model_memory_evaluation` raised
 `CodewordTooLong("Codewords are too long", codeword_length)` rather than
-returning when the limit is exceeded (evaluation.py:221), so over-512 cells
-would be lost -- and a table containing only feasible cells cannot locate a
-ceiling. The length is therefore derived directly from the feature intervals
+returning when the limit was exceeded (before decision 6b removed it), so
+over-512 cells would have been lost -- and a table containing only feasible
+cells cannot locate a ceiling. The length is therefore derived directly from the feature intervals
 (it is `sum(len(intervals) - 1)` over features, exactly what
 `generate_codewords` emits per leaf) so that it exists for every cell, and is
 cross-checked against `e.args[1]` on every cell that raises. Separately (F3),
@@ -121,8 +123,9 @@ from sklearn.ensemble import RandomForestClassifier
 # mattered; that module is gone, but the import-cost argument stands on its
 # own.)
 from p4gen.build_p4_script import (
-    INFINITE, MAX_KEY_BYTES, dt_thresholds_float_to_int,
+    INFINITE, dt_thresholds_float_to_int,
     get_feature_intervals, get_joint_feature_intervals)
+from p4model.target import MAX_KEY_BYTES
 from p4gen.evaluation import (
     CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
     multi_model_memory_evaluation)

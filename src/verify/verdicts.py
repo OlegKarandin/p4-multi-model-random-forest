@@ -7,6 +7,11 @@ from p4model.target import TOFINO_PIPELINE_STAGES
 VERDICTS = ('FALSE_FEASIBLE', 'UNDER', 'FALSE_INFEASIBLE', 'OVER', 'EXACT',
             'COMPILE_ERROR', 'TIMEOUT')
 
+# A program the model's replay refuses outright (model.json's model_refusal,
+# p4_replay.model_breakdown) has no prediction to classify: its verdict is
+# MODEL_REFUSED_PREFIX + the refusal's reason, e.g. MODEL_REFUSED:stage_pin.
+MODEL_REFUSED_PREFIX = 'MODEL_REFUSED:'
+
 
 @dataclass(frozen=True)
 class Verdict:
@@ -44,6 +49,16 @@ def _cmp(model_value, p4c_value):
 
 
 def classify(model, p4c, M, failure=None):
+    if model.get('model_refusal'):
+        # Checked first: with no model numbers there is nothing to compare. The
+        # p4c side is kept and flagged as usual; the row is unverified only when
+        # p4c gave no stage count (a failed compile).
+        compiled = (not failure and p4c is not None and p4c.stage_depth is not None)
+        over_stages = compiled and p4c.stage_depth > TOFINO_PIPELINE_STAGES
+        over_budget = (compiled and p4c.blocks is not None and M != float('inf')
+                       and p4c.blocks > M)
+        return Verdict(MODEL_REFUSED_PREFIX + model['model_refusal'], bool(over_budget),
+                       bool(over_stages), not compiled, [])
     if failure or p4c is None or p4c.stage_depth is None:
         return Verdict(failure or 'COMPILE_ERROR', False, False, True, [])
 

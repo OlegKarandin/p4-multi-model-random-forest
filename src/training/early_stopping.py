@@ -17,36 +17,33 @@ re-deriving constraints on every trial.
 """
 import optuna
 
+from p4model.refusals import CONSTRAINTS
+
 # The objective records violation MAGNITUDES rather than booleans so Optuna's
-# constrained TPE sampler can order infeasible trials by how badly they miss.
+# constrained TPE sampler can order infeasible trials by how badly they miss
+# (Optuna 4.4 ranks them by the SUM of the positive values, so how the
+# magnitudes are split over names does not change the search).
 #
-# crossbar_violation (Task 10, F3): a table whose key exceeds the per-stage
-# crossbar's byte budget is a distinct failure from an over-block-budget model
-# (it also carries the other width refusals and RangeEntriesDoNotFit). Without
-# it here, a trial that hit CrossbarKeyTooWide -- which sets blocks_violation
-# to 0.0 precisely because it isn't over budget -- would read as feasible
-# (both tracked magnitudes <= 0) despite never having set acc_app/acc_ddos/
-# blocks/stages, crashing trial_selection.select_best_trial with a KeyError
-# instead of correctly excluding the trial.
-#
-# stages_violation (Task 13, F5): the hard 12-stage Tofino-1 pipeline-depth
-# ceiling is a further, distinct failure -- a trial can be within the
-# block budget and still predict a pipeline deeper than
-# TOFINO_PIPELINE_STAGES. Without it here, such a trial would read as
-# feasible despite objective() having returned the infeasible triple
-# (-1.0, -1.0, inf) for it, letting trial_selection.select_best_trial pick a
-# trial whose acc_app/acc_ddos are the -1.0 sentinel rather than a real score.
-_VIOLATION_ATTRS = ('blocks_violation', 'crossbar_violation', 'stages_violation')
+# One value per p4model.refusals.CONSTRAINTS name (decision 9.2): every refusal
+# source has its own constraint in its own unit (key bytes, PHV containers, bus
+# bytes, range rows, stages, blocks over, ...), and the objective sets every name
+# on every trial it finishes, 0 for a satisfied constraint. Without a constraint
+# here, a trial refused for it (which leaves the others at 0) would read as
+# feasible despite never having set acc_app/acc_ddos/blocks/stages, crashing
+# trial_selection.select_best_trial with a KeyError instead of excluding the
+# trial; and a trial over the 12-stage ceiling (F5) would let selection pick a
+# trial whose accuracies are the -1.0 sentinel.
 
 
 def constraint_values(trial):
-    """The violation magnitudes for `trial`; every element <= 0 means feasible.
+    """The violation magnitudes for `trial`, one per refusals.CONSTRAINTS name in
+    that order; every element <= 0 means feasible.
 
     A missing attribute means the objective never reached the point where it
     sets them -- the trial failed, was pruned, or is still running. That must
     read as infeasible (inf), never as feasible-by-default.
     """
-    return [trial.user_attrs.get(name, float('inf')) for name in _VIOLATION_ATTRS]
+    return [trial.user_attrs.get(name, float('inf')) for name in CONSTRAINTS]
 
 
 def is_feasible(trial):

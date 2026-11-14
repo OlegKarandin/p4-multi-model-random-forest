@@ -74,10 +74,12 @@ def nibble_widths_for(bits):
   """Nibble geometry expand_range() walks for a key of `bits` bits.
 
   Above MAX_RANGE_KEY_BITS the SDE refuses the table outright, so this raises
-  rather than returning a geometry -- the case the old width_factor was
+  AssertionError rather than returning a geometry -- the case the old width_factor was
   insuring against does not need pricing, it needs rejecting."""
+  # R9 (decision 8): an invariant -- every range key is a 16-bit *_val field --
+  # so an AssertionError, raised rather than `assert`ed so python -O keeps it.
   if bits > MAX_RANGE_KEY_BITS:
-    raise ValueError(
+    raise AssertionError(
         "range key of %d bits does not compile (SDE ceiling is %d bits)"
         % (bits, MAX_RANGE_KEY_BITS))
   full, rem = divmod(bits, 4)

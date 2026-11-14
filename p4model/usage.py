@@ -216,6 +216,21 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
   return levels
 
 
+def check_shared_stages(range_plan, ternary_plan):
+  """PlacementFailed when a stage both pools use breaks a per-stage limit with
+  both pools' tables in it. The seeded placement already guarantees it; checked
+  because it is the property that makes the two plans' numbers mean anything
+  together. A failure is a refusal (decision 7.4, S29), not a crash. Training
+  (assemble_usage) and the replay (p4_replay.replay_plans) both call it."""
+  range_loads = {load.index: load for load in range_plan.stage_loads}
+  for load in ternary_plan.stage_loads:
+    if load.index in range_loads and not stage_load_fits(
+        [range_loads[load.index], load]):
+      raise PlacementFailed(
+          "range and classification tables share stage {} beyond its "
+          "table/column limits".format(load.index))
+
+
 def assemble_usage(pool):
   """Pack both pools and assemble the ResourceUsage.
 
@@ -324,18 +339,7 @@ def assemble_usage(pool):
       seed_stages=range_plan.stage_loads,
       placement_priority=[PLACEMENT_PRIORITY[task] for task in ternary_task])
 
-  # A stage both pools use must satisfy every per-stage limit with both
-  # pools' tables in it. The seeded placement above already guarantees this;
-  # re-checked here because it is the property that makes the two plans'
-  # numbers mean anything together. A failure is a refusal (decision 7.4,
-  # S29), not a crash.
-  range_loads = {load.index: load for load in range_plan.stage_loads}
-  for load in ternary_plan.stage_loads:
-    if load.index in range_loads and not stage_load_fits(
-        [range_loads[load.index], load]):
-      raise PlacementFailed(
-          "range and classification tables share stage {} beyond its "
-          "table/column limits".format(load.index))
+  check_shared_stages(range_plan, ternary_plan)
 
   # F5/F6: stage_depth is ternary_plan.depth -- the classification pool is
   # placed LAST in the sense that matters: every tree starts after its own

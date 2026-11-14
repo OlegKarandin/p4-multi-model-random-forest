@@ -1,0 +1,324 @@
+"""Decision 8.2 / 9.2 (Task 12): the replay checks the program shape it assumes
+(program_checks.check_program) and applies every refusal, one NAMED constraint per
+refusal source (p4model.refusals.CONSTRAINTS), so training, --rescore,
+--model-archive and outside users share one implementation."""
+import collections
+import json
+import os
+import re
+
+import pytest
+
+from p4gen import build_p4_script as bps
+from p4gen.p4_replay import (model_breakdown, parse_program_text, price_program,
+                             tree_range_reads)
+from p4gen.program_checks import check_program
+from p4model import errors, lanes, phv, refusals, target
+from p4model.errors import ProgramShapeRefused
+from p4model.program import ENCODINGS, JOINT_ENCODING, PER_TREE_ENCODING
+from p4model.registers import register_stage_schedule
+from p4model.target import PHV_INGRESS_CONTAINERS
+from src.training import early_stopping
+from src.training.row_artifacts import replayed_fields
+from src.training.train_model import design_refusal
+from tests.test_per_task_codes import _own, _rng_design
+
+# The pins the generator writes, one per line: @pa_<pin>("ingress", "ig_md.<field>"...)
+# or @placement_priority(N) above `table <name> {`.
+_PIN_LINE = re.compile(r'^\s*@(pa_\w+)\("ingress",\s*"ig_md\.(\w+)".*$|'
+                       r'^\s*@(placement_priority)\(\d+\)\s*$')
+
+
+def _design_text(tmp_path, app, ddos, names, encoding, name="d.p4"):
+    """The program row_artifacts._generate writes for the design (joint: the joint
+    intervals; every other encoding: each model's own)."""
+    if encoding == JOINT_ENCODING:
+        joint = bps.get_joint_feature_intervals(app, names, ddos, names)
+        intervals = (joint, joint)
+    else:
+        intervals = (_own(app, names), _own(ddos, names))
+    path = bps.generate_P4_code(3, 2, app, ddos, feature_intervals_app=intervals[0],
+                                feature_intervals_ddos=intervals[1],
+                                output_dir=str(tmp_path) + os.sep, output_filename=name,
+                                selected_features_app=names, selected_features_ddos=names,
+                                encoding=encoding)
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _texts(tmp_path, encoding, count, min_features=1):
+    """(seed, text) of the first `count` _rng_design seeds the generator builds (a
+    stump is refused, NoSplitTree) with at least min_features features."""
+    found = []
+    for seed in range(60):
+        app, ddos, names = _rng_design(seed)
+        if len(names) < min_features:
+            continue
+        try:
+            found.append((seed, _design_text(tmp_path, app, ddos, names, encoding)))
+        except errors.NoSplitTree:
+            continue
+        if len(found) == count:
+            return found
+    raise AssertionError("too few buildable designs")
+
+
+# --- check_program on what the generator writes ------------------------------------
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_every_generated_program_passes_check_program(tmp_path, encoding):
+    for seed, text in _texts(tmp_path, encoding, 6):
+        program = parse_program_text(text)
+        check_program(program)
+        breakdown = model_breakdown(program)
+        assert breakdown["refusal"] in (None, "stages_over"), (encoding, seed)
+        assert breakdown["stage_depth"] is not None
+
+
+def _identity_sample():
+    """The newest identity sample of the model8 plan (impl/identity/t<N>/), which
+    lives outside git: in this checkout's results/ or any parent directory's."""
+    relative = os.path.join("results", "encoding_evidence_2026_11", "model8", "impl", "identity")
+    here = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        folder = os.path.join(here, relative)
+        if os.path.isdir(folder):
+            tags = [name for name in os.listdir(folder)
+                    if re.fullmatch(r"t\d+", name) and os.path.isdir(os.path.join(folder, name))]
+            if tags:
+                return os.path.join(folder, max(tags, key=lambda t: int(t[1:])))
+            return None
+        parent = os.path.dirname(here)
+        if parent == here:
+            return None
+        here = parent
+
+
+def test_every_program_in_the_identity_sample_passes_check_program():
+    sample = _identity_sample()
+    if sample is None:
+        pytest.skip("the identity sample (results/, not in git) is not in this checkout "
+                    "or any parent directory")
+    names = sorted(name for name in os.listdir(sample) if name.endswith(".p4"))
+    assert len(names) > 100
+    for name in names:
+        with open(os.path.join(sample, name), encoding="utf-8") as handle:
+            check_program(parse_program_text(handle.read()))
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_each_pin_the_generator_emits_is_required(tmp_path, encoding):
+    """The program with any one pin line removed is refused missing_pin:<pin>:<field>."""
+    (_, text), = _texts(tmp_path, encoding, 1, min_features=3)
+    lines = text.split("\n")
+    seen = collections.Counter()
+    for index, line in enumerate(lines):
+        match = _PIN_LINE.match(line)
+        if not match:
+            continue
+        if match.group(3):
+            pin = match.group(3)
+            field = re.match(r"\s*table\s+(\w+)", lines[index + 1]).group(1)
+        else:
+            pin, field = match.group(1), match.group(2)
+        cut = parse_program_text("\n".join(lines[:index] + lines[index + 1:]))
+        with pytest.raises(ProgramShapeRefused) as refused:
+            check_program(cut)
+        assert refused.value.reason == "missing_pin:%s:%s" % (pin, field)
+        breakdown = model_breakdown(cut)
+        assert (breakdown["refusal"], breakdown["refusal_reason"]) == (
+            "program_shape", "missing_pin:%s:%s" % (pin, field))
+        assert breakdown["stage_depth"] is None and breakdown["blocks"] is None
+        seen[pin] += 1
+    expected = {"pa_no_overlay", "pa_solitary", "pa_container_size", "placement_priority"}
+    if encoding == PER_TREE_ENCODING:
+        assert seen["pa_solitary"] == sum(1 for line in lines if "class_tree_" in line
+                                          and "@pa_solitary" in line)
+    assert set(seen) == expected, seen
+
+
+def test_a_pre_task_2_program_is_refused_as_a_gated_register_block(tmp_path):
+    # Before decisions 1a / 7.1 option B (2026-11-14) direction-owned registers were
+    # executed inside `if (meta.fwd == ...)` blocks: wrap one call site that way.
+    (_, text), = _texts(tmp_path, JOINT_ENCODING, 1, min_features=3)
+    calls = re.findall(r"^\t+meta\.\w+ = (?!flow_orientation)\w+_action\.execute\(meta\.flow_hash\);$",
+                       text, re.M)
+    assert calls
+    gated = text.replace(calls[-1], "\t\t\tif (meta.fwd == 1) {\n%s\n\t\t\t}" % calls[-1], 1)
+    for program in (parse_program_text(gated),):
+        with pytest.raises(ProgramShapeRefused, match="^gated_register_block$"):
+            check_program(program)
+        assert model_breakdown(program)["refusal_reason"] == "gated_register_block"
+
+
+@pytest.mark.parametrize("edit,reason", [
+    (lambda t: re.sub(r"(\n\s*@placement_priority\(\d+\)\s*\n\s*table get_classification_tree_app_0)",
+                      r"\n    @stage(9)\1", t, count=1), "stage_pin"),
+    (lambda t: t.replace("\t\t\tcalc_flow_hash();\n", "", 1), "unexpected_shape:prologue"),
+    (lambda t: re.sub(r"\t\t\tvote_ddos\.apply\(\);\n", "", t, count=1),
+     "unexpected_shape:vote_tables"),
+    (lambda t: re.sub(r"(\t\t\ttable_0_\w+\.apply\(\);\n)((?:.|\n)*?)(\t\t\tvote_app\.apply\(\);\n)",
+                      r"\2\1\3", t, count=1), "unexpected_shape:apply_order"),
+    (lambda t: re.sub(r"bit<16> (\w+_val);", r"bit<32> \1;", t, count=1),
+     "unexpected_shape:val_width:"),
+    (lambda t: re.sub(r"@placement_priority\(3\)", "@placement_priority(7)", t, count=1),
+     "unexpected_shape:range_priority:table_0_"),
+])
+def test_a_program_of_another_shape_is_refused_with_its_reason(tmp_path, edit, reason):
+    (_, text), = _texts(tmp_path, JOINT_ENCODING, 1, min_features=3)
+    changed = edit(text)
+    assert changed != text
+    with pytest.raises(ProgramShapeRefused) as refused:
+        check_program(parse_program_text(changed))
+    assert refused.value.reason.startswith(reason), refused.value.reason
+
+
+# --- named constraints (9.2) ----------------------------------------------------------
+
+def test_every_refusal_exception_carries_its_constraint_and_magnitude():
+    cases = [
+        (errors.CrossbarKeyTooWide("", target.MAX_KEY_BYTES + 7), "key_bytes_over", 7),
+        (errors.CrossbarKeyTooWide("", 10), "key_bytes_over", 1),    # no allocation
+        (errors.PhvContainersExhausted("", 3), "phv_containers_short", 3),
+        (errors.ActionDataTooWide("", target.ACTION_DATA_BUS_BYTES + 2), "bus_bytes_over", 2),
+        (errors.ActionDataTooWide("", target.ACTION_DATA_BUS_BYTES), "bus_bytes_over", 1),
+        (errors.RangeEntriesDoNotFit("", 12), "range_rows_over", 12),
+        (errors.NoSplitTree("", "app_0"), "no_split_tree", 1),
+        (errors.PlacementFailed(""), "placement_failed", 1),
+        (ProgramShapeRefused("stage_pin"), "program_shape", 1),
+    ]
+    for exc, constraint, magnitude in cases:
+        assert isinstance(exc, refusals.REFUSAL_ERRORS)
+        assert refusals.of(exc) == (constraint, magnitude)
+        assert constraint in refusals.CONSTRAINTS
+    assert refusals.reason_of(ProgramShapeRefused("stage_pin")) == "stage_pin"
+    assert refusals.stages_over(target.TOFINO_PIPELINE_STAGES + 2) == 2
+    assert refusals.stages_over(target.TOFINO_PIPELINE_STAGES) == 0
+    assert refusals.blocks_over(40, 35) == 5 and refusals.blocks_over(40, float("inf")) == 0
+    assert refusals.blocks_over(40, None) == 0
+
+
+def test_constraint_values_follow_the_constraint_order():
+    class Trial:
+        user_attrs = {name: float(i) for i, name in enumerate(refusals.CONSTRAINTS)}
+    assert early_stopping.constraint_values(Trial()) == [
+        float(i) for i in range(len(refusals.CONSTRAINTS))]
+    assert list(refusals.violations("blocks_over", 3)) == list(refusals.CONSTRAINTS)
+
+
+@pytest.fixture
+def _fresh_key_prices():
+    """lanes._table_blocks caches prices behind the key check; a test that moves
+    target.MAX_KEY_BYTES must not see prices cached under the real limit."""
+    lanes._table_blocks.cache_clear()
+    yield
+    lanes._table_blocks.cache_clear()
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, encoding,
+                                                        _fresh_key_prices):
+    """20 designs per encoding that training refuses (design_refusal, the objective's
+    rule): the replay of each design's program (model_breakdown) -- or, where the
+    generator itself refuses to write it, the generator -- names the same constraint.
+    Limits are moved to make refusals: the key limit to 1 byte, the 16-bit PHV budget
+    to 6 containers (not per-tree: its layout refuses at generation), the budget M
+    to 12 blocks."""
+    regimes = ["key", "budget"] + ([] if encoding == PER_TREE_ENCODING else ["phv"])
+    seen = collections.Counter()
+    for seed in range(300):
+        if sum(seen.values()) >= 20 and len({r for r, _ in seen}) == len(regimes):
+            break
+        regime = regimes[seed % len(regimes)]
+        max_blocks = 12 if regime == "budget" else float("inf")
+        app, ddos, names = _rng_design(seed)
+        with monkeypatch.context() as patch:
+            if regime == "key":
+                patch.setattr(target, "MAX_KEY_BYTES", 1)
+            elif regime == "phv":
+                tight = dict(PHV_INGRESS_CONTAINERS)
+                tight[16] = 6
+                patch.setattr(phv, "PHV_INGRESS_CONTAINERS", tight)
+            lanes._table_blocks.cache_clear()
+            _, trained, _ = design_refusal(app, ddos, names, names, encoding, max_blocks)
+            if trained is None:
+                continue
+            try:
+                text = _design_text(tmp_path, app, ddos, names, encoding)
+            except refusals.REFUSAL_ERRORS as exc:
+                replayed = exc.constraint
+            else:
+                replayed = model_breakdown(parse_program_text(text),
+                                           max_blocks=max_blocks)["refusal"]
+        lanes._table_blocks.cache_clear()
+        assert replayed == trained, (encoding, seed, regime)
+        seen[(regime, trained)] += 1
+    assert sum(seen.values()) >= 20, seen
+    assert {regime for regime, _ in seen} == set(regimes), seen
+
+
+def test_a_refused_replay_is_neither_feasible_nor_priced():
+    refused = {"stage_depth": None, "blocks": None, "tables": [],
+               "refusal": "program_shape", "refusal_reason": "stage_pin"}
+    fields = replayed_fields(refused, 9, 20, 35)
+    assert fields["model_refusal"] == "stage_pin"
+    assert not fields["hw_feasible"] and not fields["budget_feasible"]
+    assert fields["stage_depth"] is None and fields["tables"] is None
+    over = {"stage_depth": 13, "blocks": 40, "tables": [], "refusal": "blocks_over",
+            "refusal_reason": "blocks_over"}
+    fields = replayed_fields(over, 13, 40, 35)
+    assert fields["model_refusal"] is None
+    assert not fields["hw_feasible"] and not fields["budget_feasible"]
+    assert replayed_fields(over, 13, 40, float("inf"))["budget_feasible"]
+
+
+# --- real p4c output: the register schedule on the option-B probe compiles -------------
+
+_PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "p4c_probe_7_1b")
+
+# p4c's stage vs the model's, per register, where they differ (Task 2's probe report).
+_KNOWN_REGISTER_MISSES = {
+    ("joint-off_M025_s01_k17", "bwd_packet_length_max"): (4, 5),
+    ("joint-off_M025_s01_k17", "fwd_last_arrival_time"): (5, 4),
+    ("joint-tree_M035_s00_k17", "fwd_last_arrival_time"): (5, 4),
+    ("joint-tree_M035_s00_k17", "fwd_packet_length_min"): (4, 5),
+}
+
+
+def test_the_register_schedule_matches_p4c_on_the_probe_compiles():
+    """Six programs compiled by p4c (results/encoding_evidence_2026_11/model8/impl/
+    probe_7_1b, Task 2 of the model8 plan, option B: one unconditional register
+    block), committed with p4c's per-register stages (mau.resources.log). Only the
+    REGISTER schedule is tested: the texts predate later generator changes (the vote
+    export, key pruning, full-width code fields), so they are not what the
+    generator writes today -- check_program refuses the three joint ones
+    (unexpected_shape:code_width, pre-4.3 live-width declarations) -- and the
+    schedule reads only their range tables, tree keys and register call sites.
+    Model vs p4c (73/77 registers in p4c's stage): k<=8 35/35, k>=9 38/42; the four
+    misses are pinned below."""
+    with open(_PROBE + ".json", encoding="utf-8") as handle:
+        p4c = json.load(handle)
+    assert len(p4c) == 6
+    misses, total = {}, 0
+    for name, numbers in sorted(p4c.items()):
+        assert numbers["errors"] == 0 and numbers["compilation_succeeded"]
+        with open(os.path.join(_PROBE, name + ".p4"), encoding="utf-8") as handle:
+            program = parse_program_text(handle.read())
+        tables = program.tables
+        features = []
+        for table, keys in tables.items():
+            if table.startswith("table_") and keys[0][:-len("_val")] not in features:
+                features.append(keys[0][:-len("_val")])
+        dependents = {}
+        for read in tree_range_reads(tables).values():
+            for table in read:
+                feature = tables[table][0][:-len("_val")]
+                dependents[feature] = dependents.get(feature, 0) + 1
+        placed = register_stage_schedule(features, dependents=dependents,
+                                         call_order=program.register_calls)
+        for register, stage in numbers["register_stages"].items():
+            total += 1
+            if placed.get(register) != stage:
+                misses[(name, register)] = (stage, placed.get(register))
+    assert total == 77
+    assert misses == _KNOWN_REGISTER_MISSES

@@ -19,6 +19,7 @@ import pytest
 from sklearn.ensemble import RandomForestClassifier
 
 from p4gen import build_p4_script as bps
+from p4model.refusals import CONSTRAINTS, violations
 from p4gen.p4_replay import model_breakdown, parse_program_text
 from p4model import lanes, packed
 from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
@@ -515,7 +516,12 @@ def test_one_code_and_per_task_programs_replay_unchanged(tmp_path, seed):
     assert all(type(bits) is int for bits in program.bits.values())
     # Unchanged by decisions 1a / 7.1 option B (2026-11-14): these designs' register
     # schedules gain nothing from losing the block order.
-    breakdown = json.dumps(model_breakdown(program), sort_keys=True)
+    # The numbers only: the refusal keys (Task 12) are newer than the shas.
+    replay = model_breakdown(program)
+    refusal = replay.pop("refusal")
+    assert replay.pop("refusal_reason") == refusal
+    assert refusal == ("stages_over" if replay["stage_depth"] > 12 else None)
+    breakdown = json.dumps(replay, sort_keys=True)
     assert _sha(breakdown) == _OTHER_REPLAY_SHAS[(encoding, seed)], (encoding, seed)
 
 
@@ -721,12 +727,10 @@ def test_a_field_wider_than_the_bus_is_an_infeasible_trial_with_its_overflow(mon
 
   trials, result = _search(monkeypatch, replacement)
   first = trials[0]
-  assert first.user_attrs["crossbar_violation"] == 5.0
-  for attr in ("blocks_violation", "stages_violation"):
-    assert first.user_attrs[attr] == 0.0
+  assert {n: first.user_attrs[n] for n in CONSTRAINTS} == violations("bus_bytes_over", 5)
   assert first.values == [-1.0, -1.0, float("inf")]
   assert not early_stopping.is_feasible(first)
-  assert "no_split_tree" not in first.user_attrs
+  assert not first.user_attrs["no_split_tree"]
   assert len(trials) > 1                          # the search continued
   assert result is not None                       # and found a feasible design
 
@@ -743,9 +747,7 @@ def test_a_phv_refusal_is_an_infeasible_trial_with_its_overflow(monkeypatch):
 
   trials, result = _search(monkeypatch, replacement)
   first = trials[0]
-  assert first.user_attrs["crossbar_violation"] == 4.0
-  for attr in ("blocks_violation", "stages_violation"):
-    assert first.user_attrs[attr] == 0.0
+  assert {n: first.user_attrs[n] for n in CONSTRAINTS} == violations("phv_containers_short", 4)
   assert first.values == [-1.0, -1.0, float("inf")]
   assert not early_stopping.is_feasible(first)
   assert len(trials) > 1                          # the search continued
@@ -760,7 +762,7 @@ def test_a_bus_overflow_is_floored_at_one(monkeypatch):
 
   trials, result = _search(monkeypatch, replacement, n_trials=3)
   assert result is None
-  assert {t.user_attrs["crossbar_violation"] for t in trials} == {1}
+  assert {t.user_attrs["bus_bytes_over"] for t in trials} == {1}
 
 
 def test_a_no_split_tree_is_an_infeasible_trial_and_counted(monkeypatch):
@@ -775,10 +777,9 @@ def test_a_no_split_tree_is_an_infeasible_trial_and_counted(monkeypatch):
 
   trials, result = _search(monkeypatch, replacement)
   first = trials[0]
-  assert first.user_attrs["no_split_tree"] is True
-  assert first.user_attrs["crossbar_violation"] == 1.0
-  for attr in ("blocks_violation", "stages_violation"):
-    assert first.user_attrs[attr] == 0.0
+  # The constraint of that name, magnitude 1 (decision 9.2); the trial table's
+  # no_split_tree column reads it as a bool.
+  assert {n: first.user_attrs[n] for n in CONSTRAINTS} == violations("no_split_tree", 1)
   assert first.values == [-1.0, -1.0, float("inf")]
   assert not early_stopping.is_feasible(first)
   assert result is not None
@@ -901,9 +902,7 @@ def test_a_placement_failure_is_an_infeasible_trial(monkeypatch):
 
   trials, result = _search(monkeypatch, replacement)
   first = trials[0]
-  assert first.user_attrs["crossbar_violation"] == 1.0
-  for attr in ("blocks_violation", "stages_violation"):
-    assert first.user_attrs[attr] == 0.0
+  assert {n: first.user_attrs[n] for n in CONSTRAINTS} == violations("placement_failed", 1)
   assert first.values == [-1.0, -1.0, float("inf")]
   assert not early_stopping.is_feasible(first)
   assert len(trials) > 1                          # the search continued

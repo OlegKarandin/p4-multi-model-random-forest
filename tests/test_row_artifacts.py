@@ -65,6 +65,27 @@ def test_generator_value_error_is_recorded_not_raised(tmp_path, monkeypatch):
     assert (tmp_path / "forests" / "x.joblib").is_file()
 
 
+def test_a_replay_refusal_is_recorded_not_raised(tmp_path, monkeypatch):
+    # The replay of the written program applies every refusal (decision 8.2); one it
+    # refuses (here a placement failure) is a model_refusal row, not a crashed job.
+    from p4model.errors import PlacementFailed
+    fa, fd = _forests()
+    usage = multi_model_memory_evaluation(fa, fd, _NAMES, _NAMES, "joint")
+    import p4gen.p4_replay as rp
+
+    def refuse(program, row_id=""):
+        raise PlacementFailed("no placement")
+
+    monkeypatch.setattr(rp, "price_program", refuse)
+    model = ra.write_row_artifacts(ra.RowContext(str(tmp_path), "joint", 35, "c"),
+                                   "x", fa, fd, _NAMES, _NAMES, "joint", usage)
+    assert model["model_refusal"] == "placement_failed"
+    assert model["stage_depth"] is None and model["tables"] is None
+    assert model["hw_feasible"] is False and model["budget_feasible"] is False
+    assert model["generator_error"] is None
+    assert json.loads((tmp_path / "designs" / "x.model.json").read_text()) == model
+
+
 def test_load_forests_refuses_another_sklearn(tmp_path):
     path = tmp_path / "f.joblib"
     joblib.dump({"sklearn": "0.0.1"}, path)

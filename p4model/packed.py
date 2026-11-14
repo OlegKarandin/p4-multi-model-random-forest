@@ -27,6 +27,16 @@ from p4model.target import (ACTION_DATA_BUS_BYTES, ACTION_RAM_WORD_BYTES,
 _KIND = {32: 'W', 16: 'H', 8: 'B'}
 
 
+def check_bus_bytes(feature, n):
+  """ActionDataTooWide when feature's packed code field needs n > the action data
+  bus's ACTION_DATA_BUS_BYTES (R4). layout_for (training, generator) and the replay
+  (p4_replay, from the field's container pin) both call it."""
+  if n > ACTION_DATA_BUS_BYTES:
+    raise ActionDataTooWide(
+        "field %s needs %d bus bytes, the action data bus carries %d"
+        % (feature, n, ACTION_DATA_BUS_BYTES), n)
+
+
 def widths_of(tree_intervals):
   """widths from {task: [{feature: interval list}, one dict per tree]}: a code's
   bits are the interval count minus one (the generator's own rounding, from
@@ -147,10 +157,7 @@ def layout_for(widths, features, task_order, n_scratch=0):
   for feature, found in codes.items():
     units = pack_bytes(found)
     n = sum(nbytes for nbytes, _ in units)
-    if n > ACTION_DATA_BUS_BYTES:
-      raise ActionDataTooWide(
-          "field %s needs %d bus bytes, the action data bus carries %d"
-          % (feature, n, ACTION_DATA_BUS_BYTES), n)
+    check_bus_bytes(feature, n)
     chosen, covered, short = [], 0, 0
     while covered < n:
       rest = n - covered
