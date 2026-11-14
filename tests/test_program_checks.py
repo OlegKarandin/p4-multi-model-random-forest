@@ -7,7 +7,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 from p4gen import build_p4_script as bps
 from p4gen.feature_registers import FEATURE_REGISTER_CATALOG
-from p4gen.program_checks import metadata_reads_before_writes
+from p4gen.program_checks import _analyse, metadata_reads_before_writes
 from p4model.program import (DISJOINT_ENCODING, JOINT_ENCODING, PER_TASK_ENCODING,
                              PER_TREE_ENCODING)
 
@@ -43,7 +43,12 @@ def _program(tmp_path, encoding, k):
                                       PER_TREE_ENCODING])
 @pytest.mark.parametrize("k", [2, 8, 18])
 def test_generated_programs_read_no_metadata_before_it_is_written(tmp_path, encoding, k):
-  assert metadata_reads_before_writes(_program(tmp_path, encoding, k)) == []
+  violations, stats = _analyse(_program(tmp_path, encoding, k))
+  assert violations == []
+  # Non-vacuity: the walk really executed registers and applied every declared table
+  # (range + tree + vote tables).
+  assert stats["registers_executed"] >= 1
+  assert stats["tables_applied"] == stats["tables_declared"] >= 3
 
 
 _MINI = """
@@ -116,3 +121,39 @@ def test_a_table_write_counts_from_that_tables_apply():
                   "\t\t\tmeta.x_val = r_action.execute(meta.flow_hash);\n"
                   "\t\t\tt_tree.apply();\n\t\t\tt_range.apply();\n")
   assert metadata_reads_before_writes(text) == ["code_x"]
+
+
+
+_PRELUDE = ("\t\t\tcalc_flow_hash();\n\t\t\tmeta.fwd = 1;\n\t\t\tmeta.now_pseudo_us = 5;\n")
+
+
+def _with(lines):
+  return _MINI % (_PRELUDE + lines)
+
+
+def test_a_write_in_one_if_branch_does_not_count_afterwards():
+  text = _with("\t\t\tif (meta.fwd == 1) { meta.a = 1; }\n\t\t\tmeta.b = meta.a;\n")
+  assert metadata_reads_before_writes(text) == ["a"]
+
+
+def test_a_write_in_both_branches_counts_afterwards():
+  text = _with("\t\t\tif (meta.fwd == 1) { meta.a = 1; } else { meta.a = 2; }\n"
+               "\t\t\tmeta.b = meta.a;\n")
+  assert metadata_reads_before_writes(text) == []
+
+
+def test_an_else_if_chain_needs_every_branch_to_write():
+  text = _with("\t\t\tif (meta.fwd == 1) { meta.a = 1; } "
+               "else if (meta.fwd == 0) { meta.a = 2; }\n\t\t\tmeta.b = meta.a;\n")
+  assert metadata_reads_before_writes(text) == ["a"]
+
+
+def test_unknown_calls_raise_instead_of_passing():
+  with pytest.raises(ValueError, match="unknown register action"):
+    metadata_reads_before_writes(_with("\t\t\tmeta.x_val = nope.execute(1);\n"))
+  with pytest.raises(ValueError, match="unknown table"):
+    metadata_reads_before_writes(_with("\t\t\tt_missing.apply();\n"))
+  with pytest.raises(ValueError, match="unknown action"):
+    metadata_reads_before_writes(_with("\t\t\tno_such_action();\n"))
+  with pytest.raises(ValueError, match=r"\.apply\(\)"):
+    metadata_reads_before_writes(_with("\t\t\tif (t_range.apply().hit) { }\n"))

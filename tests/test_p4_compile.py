@@ -645,14 +645,14 @@ def test_extra_args_reach_p4c_on_both_routes(tmp_path, monkeypatch):
         cmd, 0, "0 errors, 0 warnings generated.", ""))
     monkeypatch.setattr(p4_compile.subprocess, "run", fake)
     (tmp_path / "prog.p4").write_text("// program")
-    args = ("-Tauto_init_metadata:1",)
+    args = ("-Xp4c=-Tauto_init_metadata:1",)
     monkeypatch.setattr(p4_compile, "_native_p4c", lambda: "/opt/p4c/bin/p4c")
     p4_compile.compile_p4(str(tmp_path / "prog.p4"), str(tmp_path / "o1"), extra_args=args)
-    assert "-Tauto_init_metadata:1" in calls[-1]
-    assert calls[-1].index("-Tauto_init_metadata:1") < calls[-1].index("-o")
+    assert "-Xp4c=-Tauto_init_metadata:1" in calls[-1]
+    assert calls[-1].index("-Xp4c=-Tauto_init_metadata:1") < calls[-1].index("-o")
     monkeypatch.setattr(p4_compile, "_native_p4c", lambda: None)
     p4_compile.compile_p4(str(tmp_path / "prog.p4"), str(tmp_path / "o2"), extra_args=args)
-    assert "--verbose 2 -Tauto_init_metadata:1 -o " in calls[-1][-1]
+    assert "--verbose 2 -Xp4c=-Tauto_init_metadata:1 -o " in calls[-1][-1]
     p4_compile.compile_p4(str(tmp_path / "prog.p4"), str(tmp_path / "o3"))
     assert "--verbose 2 -o " in calls[-1][-1]
 

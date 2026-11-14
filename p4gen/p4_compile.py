@@ -352,7 +352,7 @@ def compile_p4(p4_path: str, output_dir: str, architecture: str = "tna",
     `__TARGET_TOFINO__` from `-b`, so no extra `-D` flag is needed here.
 
     `extra_args` are extra p4c options placed before the output flag (e.g.
-    ("-Tauto_init_metadata:1",)); each is shell-quoted on the WSL route.
+    ("-Xp4c=-Tauto_init_metadata:1",)); each is shell-quoted on the WSL route.
 
     Raises RuntimeError if the compiler times out or fails to run (no output line
     containing error/warning count despite nonzero exit code).
