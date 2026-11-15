@@ -697,7 +697,9 @@ def _tree_table_entries(table_name, action_name, tree_codewords, fields,
   field, in the order generate_codewords concatenated the codeword, or
   (key field, width, slices) for a code the key reads as slices, slices being
   (bf_rt key name, hi, lo) per slice, hi and lo bit positions in the CODE
-  (bit 0 its least significant bit), whatever the field it sits in.'''
+  (bit 0 its least significant bit), whatever the field it sits in. A slice
+  may reach above the code's top bit (a padded per-tree key slice,
+  packed.Layout.keyed): the bits past `width` are don't-care.'''
   # Planter-style discount: every leaf sharing this tree's majority class is
   # excluded from this tree's explicit entries and covered by ONE
   # default-action record instead. Computed once per tree, up front, so
@@ -728,8 +730,13 @@ def _tree_table_entries(table_name, action_name, tree_codewords, fields,
       bit_offset += width
       # A code the key reads as slices (packed per-tree codes, generate_per_tree_table_entries)
       # carries (bf_rt name, hi, lo) per slice: each slice gets its own value/mask.
-      for slice_name, hi, lo in (field[2] if len(field) > 2 and field[2] else [(name, width - 1, 0)]):
-        hex_value, hex_mask = get_ternary_value_and_mask(chunk[width - 1 - hi:width - lo])
+      slices = field[2] if len(field) > 2 and field[2] else [(name, width - 1, 0)]
+      # The keyed bits, most significant first: the code, under don't-care bits
+      # for whatever its slices key above it.
+      keyed = max(hi for _, hi, _ in slices) + 1
+      chunk = '*' * (keyed - width) + chunk
+      for slice_name, hi, lo in slices:
+        hex_value, hex_mask = get_ternary_value_and_mask(chunk[keyed - 1 - hi:keyed - lo])
         key_fields[slice_name] = {"value": hex_value, "mask": hex_mask}
     entries.append({
         "table_name": table_name,
@@ -1073,8 +1080,8 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
   p4/deploy_table_entries.py) of the packed per-tree program generate_p4_program
   emits under PER_TREE_ENCODING (spec 2026-11-11-packed-codes-stage-pin Sec 3.1,
   3.2, 8): one field meta.code_pk_<f> per feature, every tree's code on f at its
-  bit offset in it (codes of <= 8 bits may share a byte, none straddles one;
-  decision 4.4), from the same per_tree_layout the program is written from.
+  bit offset in it (each in bytes of its own, p4model.packed), from the same
+  per_tree_layout the program is written from.
 
   Range table table_<index>_<f> (resolve_per_tree_plan's table_plan, over the
   union of the tasks' intervals): its action set_code_<f> takes ONE parameter
@@ -1297,7 +1304,7 @@ def generate_actions(feature_intervals, task_trees, per_task_writes=None,
   packed_bits: under the per-tree encoding, entry name -> the container bits N
   of its packed field: the action takes ONE parameter `bit<N> code` and writes
   it whole to meta.code_pk_<entry> (spec 2026-11-11-packed-codes-stage-pin Sec
-  3.1), every tree's code already at its bit offset in the value (decision 4.4).
+  3.1), every tree's code already at its bit offset in the value.
   field_bits: None, or resolved field name -> its DECLARED bits (decision 4.3:
   a joint / disjoint / per-task code field is declared at its containers' full
   width); each parameter writing that field takes that width, so the action
@@ -1819,7 +1826,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       threshold on the feature.
     PER_TREE_ENCODING: resolve_per_tree_plan, the same tables, each writing
       ONE packed field meta.code_pk_<feature> that holds the code of every
-      TREE with a threshold on the feature at its own bit offset (decision 4.4; spec
+      TREE with a threshold on the feature in bytes of its own (p4model.packed; spec
       2026-11-11-packed-codes-stage-pin Sec 3.1; per_tree_layout, the layout
       the training pool prices). The field is declared at its containers'
       bits, pinned @pa_no_overlay + @pa_container_size (low container first),

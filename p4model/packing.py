@@ -422,8 +422,8 @@ def _crossbar_stage(seed_fields, units, mode='packed'):
   (table_idx, key byte tuple, rows) in placement order; units of one table
   share one allocation. mode 'packed': a key is a packed tree's byte tuples
   (packed.key_bytes -> xbar.tree_key), container identities shared across the
-  stage's keys, so two trees keying codes in one container byte (decision
-  4.4) share its slot as in p4c; mode 'fields': a key is
+  stage's keys, so two keys naming one container byte would share its slot as
+  in p4c (packed.layout_for gives no byte to two trees); mode 'fields': a key is
   (field id, slices) per code field (xbar.field_key), container numbers shared
   across the stage's keys, so tables keying the same field share its slots
   as in p4c. Returns {table_idx: blocks per 512-row word}, or None when a

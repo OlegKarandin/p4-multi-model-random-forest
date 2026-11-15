@@ -527,7 +527,7 @@ def test_two_trees_on_identical_intervals_stay_distinct_keys():
   for feature in own[APP_TASK][0]:
     (a, bits_a), (b, bits_b) = (layout.place[(APP_TASK, i, feature)] for i in (0, 1))
     assert bits_a == bits_b
-    assert not (set(range(a, a + bits_a)) & set(range(b, b + bits_b)))   # bit offsets, 4.4
+    assert not (set(range(a, a + bits_a)) & set(range(b, b + bits_b)))   # bit offsets
   # in the pool: two keys of equal length, never sharing a crossbar field
   pool = _pool(twins, _forest(2, 1), FEATURES)
   assert len(pool["ternary_key_bytes"][0]) == len(pool["ternary_key_bytes"][1])

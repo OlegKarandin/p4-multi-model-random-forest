@@ -518,17 +518,17 @@ def range_action_bytes(program):
 def tree_key_bytes(program, table):
     """One packed tree table's key as lanes.py byte tuples, in packed.key_bytes'
     format and order, rebuilt from the program text alone (spec 2026-11-11
-    Sec 3.1, 3.2, 8; decision 4.4): each code_pk_<f> key's slices give the
-    code's bit offset (its lowest bit) and live bits (the slices' widths
-    summed), the field's @pa_container_size pin gives its containers, and
-    packed.key_bytes reads the Layout those make -- the function the training
-    pool prices from, so the two read one rule (a byte two trees key bits of
-    is a byte of both keys, its identity the field and container). Raises
-    ValueError for a key a packed program cannot carry: a field with no
-    container pin or no slice, slices that are not one contiguous run, a code
-    that straddles a byte boundary (packed.straddles: a code of <= 8 bits
-    outside one byte, a longer one not starting on a byte boundary), or a code
-    running past its field's containers."""
+    Sec 3.1, 3.2, 8): each code_pk_<f> key's slices give the code's bit offset
+    (its lowest bit) and the bits the tree KEYS of it (the slices' widths
+    summed: its live bits, or its padded width, packed.Layout.keyed), the
+    field's @pa_container_size pin gives its containers, and packed.key_bytes
+    reads the Layout those make -- the function the training pool prices from,
+    so the two read one rule. Raises ValueError for a key a packed program
+    cannot carry: a field with no container pin or no slice, slices that are
+    not one contiguous run, a code that does not start on a byte boundary (the
+    shared-byte layout of an older generator, design-review decision 4.4,
+    whose block price depends on p4c's container numbers: packed.py), or a
+    code running past its field's containers."""
     match = _TREE_TASK.match(table)
     if match is None:
         raise ValueError('%s is not a classification tree table' % table)
@@ -548,8 +548,8 @@ def tree_key_bytes(program, table):
                 raise ValueError('%s: the slices of %s are not one contiguous run'
                                  % (table, key))
         width = runs[-1][0] - low + 1
-        if packed.straddles(low, width):
-            raise ValueError("%s: %s[%d:%d] straddles a byte boundary (decision 4.4)"
+        if low % 8:
+            raise ValueError("%s: %s[%d:%d] does not start on a byte boundary"
                              % (table, key, runs[-1][0], low))
         if low + width > sum(program.containers[key]):
             raise ValueError("%s: %s[%d:%d] runs past the field's containers"

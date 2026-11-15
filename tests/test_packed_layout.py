@@ -29,8 +29,8 @@ def test_no_fall_through(monkeypatch):
 
 @pytest.mark.parametrize("bits, containers", [
     ([6], (8,)), ([12], (16,)), ([12, 6], (16, 8)),
-    ([12, 9, 6], (32,)),                           # 4 bytes: the 6-bit code sits in the 9-bit one's last byte
-    ([12, 12, 5], (32, 8)),                        # 5 bytes: 5 bits fit neither 12-bit code's 4 free bits
+    ([12, 9, 6], (32, 8)),                         # 5 bytes: every code has its own (2 + 2 + 1)
+    ([3, 3, 2], (16, 8)),                          # 3 bytes: three small codes, one byte each
     ([32, 32, 32, 32], (32, 32, 32, 32)),          # 16 bytes: not over one RAM word
     ([32, 32, 32, 32, 6], (32,) * 5),              # 17 bytes: 32-bit only, last one padded
 ])
@@ -38,24 +38,19 @@ def test_containers_of_a_field(bits, containers):
   widths = _w(app=[{"f": b} for b in bits])
   assert packed.layout_for(widths, ["f"], ["app", "ddos"]).containers["f"] == containers
 
-def test_small_codes_share_a_byte():                                             # decision 4.4
+def test_small_codes_do_not_share_a_byte():
+  # three codes of 3, 3 and 2 bits would fit one byte; each gets a byte of its own (two trees
+  # keying one byte make p4c's block count depend on its PHV container numbers)
   layout = packed.layout_for(_w(app=[{"f": 3}, {"f": 3}], ddos=[{"f": 2}]), ["f"], ["app", "ddos"])
-  assert layout.containers["f"] == (8,)
-  assert layout.place == {("app", 0, "f"): (0, 3), ("app", 1, "f"): (3, 3), ("ddos", 0, "f"): (6, 2)}
+  assert layout.containers["f"] == (16, 8)
+  assert layout.place == {("app", 0, "f"): (0, 3), ("app", 1, "f"): (8, 3), ("ddos", 0, "f"): (16, 2)}
 
-def test_long_code_starts_on_fresh_byte():
-  # the 3-bit code makes byte 0 first (program order), but codes go widest first: the 10-bit
-  # code takes two fresh bytes and the 3-bit code its last byte's free bits
+def test_a_small_code_does_not_sit_in_a_long_codes_last_byte():
   layout = packed.layout_for(_w(app=[{"f": 3}, {"f": 10}]), ["f"], ["app", "ddos"])
-  assert layout.containers["f"] == (16,)
-  assert layout.place[("app", 1, "f")] == (0, 10) and layout.place[("app", 0, "f")] == (10, 3)
-  # a fresh byte holding small codes never takes a long code's start
-  layout = packed.layout_for(_w(app=[{"f": 4}, {"f": 4}, {"f": 9}, {"f": 12}]), ["f"], ["app", "ddos"])
-  for (_, _, _), (offset, bits) in layout.place.items():
-    if bits > 8:
-      assert offset % 8 == 0
+  assert layout.containers["f"] == (16, 8)                         # 1 + 2 bytes, not the 10-bit code's 6 free bits
+  assert layout.place == {("app", 0, "f"): (0, 3), ("app", 1, "f"): (8, 10)}
 
-def test_no_code_straddles_a_byte():
+def test_every_code_starts_a_byte_no_other_code_touches():
   rng = random.Random(4)
   for _ in range(300):
     trees = [{"f": rng.choice([1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 17, 30, 70])}
@@ -64,15 +59,16 @@ def test_no_code_straddles_a_byte():
     spans = sorted(layout.place.values())
     used = set()
     for offset, bits in spans:
-      assert not packed.straddles(offset, bits), (trees, offset, bits)
-      cover = set(range(offset, offset + bits))
-      assert not cover & used                                      # codes never overlap
+      assert offset % 8 == 0, (trees, offset, bits)
+      cover = set(range(offset // 8, (offset + bits - 1) // 8 + 1))
+      assert not cover & used, (trees, offset, bits)               # no byte holds two codes
       used |= cover
     assert max(o + b for o, b in spans) <= packed.field_bits(layout, "f")
+    assert len(used) == sum(-(-bits // 8) for _, bits in spans)     # and no byte is left out between codes
 
 def test_codes_are_ordered_to_spread_each_trees_bytes_over_the_lanes():
   # tree 0 already has a byte counted in lane 0 (g: a 1-byte field in an 8-bit container);
-  # 5-bit codes cannot share a byte, so each is a unit of its own, as before 4.4
+  # each 5-bit code has a byte of its own
   widths = _w(app=[{"g": 5, "f": 5}, {"f": 5}, {"f": 5}, {"f": 5}])
   layout = packed.layout_for(widths, ["g", "f"], ["app", "ddos"])
   assert layout.containers == {"g": (8,), "f": (32,)}
@@ -80,12 +76,65 @@ def test_codes_are_ordered_to_spread_each_trees_bytes_over_the_lanes():
 
 def test_key_bytes_name_container_kind_lane_nibble_and_identity():
   layout = packed.layout_for(_w(app=[{"f": 12}, {"f": 9}], ddos=[{"f": 6}]), ["f"], ["app", "ddos"])
-  assert layout.containers["f"] == (32,)
+  assert layout.containers["f"] == (32, 8)
   assert packed.key_bytes(layout, "app", 0) == (("W", 0, False, ("f", 0)), ("W", 1, True, ("f", 0)))   # 8 + 4
   assert packed.key_bytes(layout, "app", 1) == (("W", 2, False, ("f", 0)), ("W", 3, True, ("f", 0)))   # 8 + 1
-  # the 6-bit code shares byte 3 (its bits 1-6: both nibbles, so not a one-nibble byte, P13)
-  assert layout.place[("ddos", 0, "f")] == (25, 6)
-  assert packed.key_bytes(layout, "ddos", 0) == (("W", 3, False, ("f", 0)),)
+  # the 6-bit code has the fifth byte, in the field's second container; bits in both nibbles (P13)
+  assert layout.place[("ddos", 0, "f")] == (32, 6)
+  assert packed.key_bytes(layout, "ddos", 0) == (("B", 0, False, ("f", 1)),)
+
+def test_a_half_byte_beside_a_whole_byte_of_its_class_is_keyed_whole():
+  # one tree: f 12 bits in a 16-bit container (byte 0 whole, byte 1 four bits), g 4 bits and h
+  # 8 bits each in an 8-bit container. g's half byte and h's whole byte need the same kind of
+  # crossbar slot, so p4c's container numbers would pick which one a midbyte gets: g is keyed
+  # as a whole byte. f's byte 1 is the only 16-bit byte-1 of the key and stays a half byte.
+  layout = packed.layout_for(_w(app=[{"f": 12, "g": 4, "h": 8}]), ["f", "g", "h"], ["app", "ddos"])
+  assert layout.containers == {"f": (16,), "g": (8,), "h": (8,)}
+  assert packed.key_bytes(layout, "app", 0) == (
+      ("H", 0, False, ("f", 0)), ("H", 1, True, ("f", 0)), ("B", 0, False, ("g", 0)), ("B", 0, False, ("h", 0)))
+  assert packed.key_slices(layout, "app", 0, "g") == [(7, 0)]
+  assert packed.key_slices(layout, "app", 0, "f") == [(11, 0)]
+  assert layout.place[("app", 0, "g")] == (0, 4)                   # the code itself is still 4 bits
+  assert packed.key_bits(layout, "app", 0) == 12 + 8 + 8
+
+def test_half_bytes_alone_in_their_class_stay_half():
+  layout = packed.layout_for(_w(app=[{"g": 3, "h": 4}]), ["g", "h"], ["app", "ddos"])
+  assert packed.key_bytes(layout, "app", 0) == (("B", 0, True, ("g", 0)), ("B", 0, True, ("h", 0)))
+  assert packed.key_slices(layout, "app", 0, "g") == [(2, 0)]
+  assert packed.key_slices(layout, "app", 0, "h") == [(3, 0)]
+  assert packed.key_bits(layout, "app", 0) == 7
+
+def test_a_long_codes_half_top_byte_is_padded_too():
+  # f 12 bits and g 16 bits, each in a 16-bit container: byte 1 is half for f, whole for g
+  layout = packed.layout_for(_w(app=[{"f": 12, "g": 16}]), ["f", "g"], ["app", "ddos"])
+  assert packed.key_bytes(layout, "app", 0) == (
+      ("H", 0, False, ("f", 0)), ("H", 1, False, ("f", 0)), ("H", 0, False, ("g", 0)), ("H", 1, False, ("g", 0)))
+  assert packed.key_slices(layout, "app", 0, "f") == [(15, 0)]
+
+def test_the_class_is_the_byte_position_in_a_32_bit_container():
+  # f 28 bits: byte 3 of its 32-bit container holds 4 bits. g 32 bits has a whole byte 3: padded.
+  layout = packed.layout_for(_w(app=[{"f": 28, "g": 32}]), ["f", "g"], ["app", "ddos"])
+  assert layout.containers == {"f": (32,), "g": (32,)}
+  assert packed.key_slices(layout, "app", 0, "f") == [(31, 0)]
+  # g 24 bits sits in a 16-bit and an 8-bit container: no 32-bit byte 3 beside f's, f stays half
+  layout = packed.layout_for(_w(app=[{"f": 28, "g": 24}]), ["f", "g"], ["app", "ddos"])
+  assert layout.containers == {"f": (32,), "g": (16, 8)}
+  assert packed.key_slices(layout, "app", 0, "f") == [(27, 0)]
+  assert packed.key_bytes(layout, "app", 0)[3] == ("W", 3, True, ("f", 0))
+
+def test_only_the_trees_own_key_decides_its_padding():
+  # field g holds tree 0's 4-bit code and tree 1's 8-bit code; tree 0 keys only its own byte
+  layout = packed.layout_for(_w(app=[{"g": 4}, {"g": 8}]), ["g"], ["app", "ddos"])
+  assert layout.containers["g"] == (16,)
+  assert packed.key_bytes(layout, "app", 0) == (("H", 0, True, ("g", 0)),)
+  assert packed.key_bytes(layout, "app", 1) == (("H", 1, False, ("g", 0)),)
+
+def test_a_padded_code_over_64_bits_is_cut_into_slices_of_its_padded_width():
+  # f 68 bits: 9 bytes, the ninth with 4 bits, in an 8-bit container; g 72 bits has a whole
+  # byte in its own 8-bit container, so f is keyed as 72 bits
+  layout = packed.layout_for(_w(app=[{"f": 68, "g": 72}]), ["f", "g"], ["app", "ddos"])
+  assert layout.containers == {"f": (32, 32, 8), "g": (32, 32, 8)}
+  assert packed.key_slices(layout, "app", 0, "f") == [(63, 0), (71, 64)]
 
 def test_one_nibble_is_either_nibble_alone():
   assert packed.one_nibble(0x0F) and packed.one_nibble(0xF0) and packed.one_nibble(0x30)
@@ -103,8 +152,9 @@ def test_slices_are_field_positions_of_at_most_64_bits():                       
   assert packed.key_slices(layout, "app", 1, "f") == [(offset + 63, offset), (offset + 69, offset + 64)]
   base = layout.place[("app", 0, "f")][0]
   assert packed.key_slices(layout, "app", 0, "f") == [(base + 11, base)]
-  shared = packed.layout_for(_w(app=[{"f": 3}, {"f": 4}]), ["f"], ["app", "ddos"])
-  assert packed.key_slices(shared, "app", 0, "f") == [(6, 4)]                    # the 4-bit code is first
+  small = packed.layout_for(_w(app=[{"f": 3}, {"f": 4}]), ["f"], ["app", "ddos"])
+  assert packed.key_slices(small, "app", 0, "f") == [(2, 0)]
+  assert packed.key_slices(small, "app", 1, "f") == [(11, 8)]                    # its own byte, the second
 
 def test_range_value_or_of_shifted_codes():
   layout = packed.layout_for(_w(app=[{"f": 12}, {"f": 3}, {"f": 2}], ddos=[{"f": 3}]), ["f"], ["app", "ddos"])
@@ -131,10 +181,9 @@ def test_a_budget_that_runs_out_mid_field_is_refused_not_filled_with_smaller_one
   assert refused.value.args[1] == 2
 
 def test_two_trees_keying_one_byte_share_its_crossbar_slot():
-  # the crossbar moves whole bytes: in one stage the second tree finds the first one's slot
-  layout = packed.layout_for(_w(app=[{"f": 3}, {"f": 3}]), ["f"], ["app", "ddos"])
-  keys = [packed.key_bytes(layout, "app", t) for t in range(2)]
-  assert keys[0][0][3] == keys[1][0][3]
+  # the crossbar moves whole bytes: in one stage the second tree finds the first one's slot.
+  # The generator no longer lays codes out like this; the port still prices such keys.
+  keys = [(("B", 0, True, ("f", 0)),), (("B", 0, True, ("f", 0)),)]
   units = tuple((t, keys[t], 1) for t in range(2))
   crossbar, _, per_row = packing._stage_state((), units, "packed")
   used = sum(slot is not None for row in crossbar.use for slot in row) + sum(

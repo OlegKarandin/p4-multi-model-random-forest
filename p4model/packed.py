@@ -1,10 +1,19 @@
 """The packed-codes layout: ONE PHV field `code_pk_<feature>` per feature holds every
-tree's code on that feature, each at its own bit offset (spec
-docs/superpowers/specs/2026-11-11-packed-codes-stage-pin-design.md Sec 3.1-3.3;
-design review decision 4.4, 2026-11-14: codes of <= 8 bits share bytes, no code
-straddles a byte boundary: a code of > 8 bits starts on a fresh byte).
-A byte holding codes of several trees is a byte of each of their keys (each keys
-its own bit slice of it; the crossbar moves whole bytes).
+tree's code on that feature, each in BYTES OF ITS OWN (spec
+docs/superpowers/specs/2026-11-11-packed-codes-stage-pin-design.md Sec 3.1-3.3).
+
+Two rules keep p4c's TCAM block count independent of its PHV container numbers,
+which no model can know (p4c's ternary crossbar orders key bytes of equal alignment
+by container number, xbar.py; results/encoding_evidence_2026_11/model8/impl/
+per_tree_accuracy.md, 2026-11-15: blocks exact on 160 of 160 compiled designs):
+  * no byte holds two trees' codes. Design-review decision 4.4 (codes of <= 8 bits
+    share bytes) is taken back: a later tree reuses the crossbar slot an earlier
+    tree chose for the shared byte, and that slot follows the container numbers;
+  * inside one tree's key, bytes of one alignment class (container size, byte
+    position in the container) are all one-nibble bytes or all whole bytes. A
+    one-nibble byte beside a whole byte of its class is KEYED as a whole byte
+    (`Layout.keyed`): the tree's key slice is padded up to the byte boundary, and
+    the padding bits, which no code owns, are don't-care in every entry.
 
 ONE function for every consumer: the generator emits the containers as
 @pa_container_size and the tree keys as slices of the field, the model prices each
@@ -12,12 +21,10 @@ tree's key from the byte list, and the entry writer ORs the shifted codes, all f
 the `Layout` that `layout_for` returns, so they cannot disagree.
 
 `widths` throughout is {task: [{feature: code bits}, one dict per tree]} (widths_of).
-Reference implementation of the layout: results/encoding_evidence_2026_11/model4/
-scripts/pklib.py `plan(..., exact='big_one_size')`, which the 68 probe designs were
-compiled with; the byte packing of decision 4.4 is model8/design_review/scripts/
-nostraddle_scan.py's (pack_bytes reproduces its byte counts on the 272 campaign_2026_11e
-designs)."""
-from dataclasses import dataclass
+Reference implementation of the container choice: results/encoding_evidence_2026_11/
+model4/scripts/pklib.py `plan(..., exact='big_one_size')`, which the 68 probe designs
+were compiled with."""
+from dataclasses import dataclass, field
 
 from p4model import lanes, phv
 from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
@@ -66,10 +73,16 @@ def budgets(n_features, n_trees, n_scratch=0, n_constants=0, coarse_clock=False,
 class Layout:
   """containers: feature -> container bits of its field, low first;
   place: (task, tree, feature) -> (BIT offset of the code in the field, live bits
-  of the code). A code of more than 8 bits starts on a byte boundary (offset % 8
-  == 0); a code of <= 8 bits lies inside one byte (decision 4.4)."""
+  of the code); layout_for starts every code on a byte boundary, in bytes no other
+  code touches;
+  keyed: (task, tree, feature) -> the bits the tree KEYS of that code, for the
+  codes whose key slice is padded up to the byte boundary (the module docstring's
+  second rule); a code not listed is keyed at its live bits. A Layout rebuilt
+  from a program text (p4_replay.tree_key_bytes) carries the keyed bits as its
+  place and lists none."""
   containers: dict
   place: dict
+  keyed: dict = field(default_factory=dict)
 
 
 def _bytes(bits):
@@ -86,50 +99,33 @@ def _container_of_byte(containers):
   return [index for index, bits in enumerate(containers) for _ in range(bits // 8)]
 
 
-def straddles(offset, bits):
-  """Whether a `bits`-bit code at field bit `offset` breaks decision 4.4: a code of
-  <= 8 bits must lie inside one byte, a longer one must start on a byte boundary."""
-  if bits <= 8:
-    return offset // 8 != (offset + bits - 1) // 8
-  return offset % 8 != 0
-
-
-def pack_bytes(found):
-  """Decision 4.4: the field's codes packed into bytes, first-fit decreasing
-  (results/encoding_evidence_2026_11/model8/design_review/scripts/nostraddle_scan.py
-  packed_bytes, whose byte counts this reproduces). `found` is [(task, tree, bits)]
-  in program order. A code of > 8 bits takes ceil(bits/8) fresh bytes, and the free
-  bits of its last byte can take small codes; a code of <= 8 bits goes into the
-  first byte made so far (in making order) with room for it whole, else a fresh
-  byte. Codes are taken widest first, ties in program order.
-
-  Returns UNITS, [(n bytes, [(position in found, bit offset in the unit)])]: a wide
-  code with the small codes in its last byte, or one byte of small codes. Units
-  come in program order of their first code (the order the lane balancing breaks
-  ties in), codes in a unit low bit first."""
-  units = []              # [n bytes, [(i, bit offset)], next free bit]
-  for i in sorted(range(len(found)), key=lambda i: -found[i][2]):
-    bits = found[i][2]
-    if bits > 8:
-      units.append([_bytes(bits), [(i, 0)], bits])
-      continue
-    for unit in units:
-      if 8 * unit[0] - unit[2] >= bits:
-        unit[1].append((i, unit[2]))
-        unit[2] += bits
-        break
-    else:
-      units.append([1, [(i, 0)], bits])
-  units.sort(key=lambda unit: min(i for i, _ in unit[1]))
-  return [(n, codes) for n, codes, _ in units]
+def _padded_codes(containers, place):
+  """Layout.keyed: the codes whose top byte is a one-nibble byte (at most 4 live
+  bits) while the SAME tree's key holds a whole byte of the same alignment class
+  -- (container kind, byte index in the container): the bytes p4c's crossbar sort
+  leaves tied (xbar.Byte.flags) -- each mapped to its bits rounded up to whole
+  bytes. Only a code's top byte can be a one-nibble byte, since every code starts
+  on a byte boundary. A class whose bytes are all one-nibble bytes is left alone,
+  so the half-midbyte saving survives there; padding never mixes another class."""
+  kinds = {feature: _byte_kinds(sizes) for feature, sizes in containers.items()}
+  whole, half = set(), {}                 # (task, tree, class); code -> its half byte's class
+  for (task, tree, feature), (offset, bits) in place.items():
+    first, last = offset // 8, (offset + bits - 1) // 8
+    for j in range(first, last + 1):
+      if j == last and bits - 8 * (last - first) <= 4:
+        half[(task, tree, feature)] = kinds[feature][j]
+      else:
+        whole.add((task, tree, kinds[feature][j]))
+  return {code: 8 * _bytes(place[code][1]) for code, cls in half.items()
+          if (code[0], code[1], cls) in whole}
 
 
 def layout_for(widths, features, task_order, n_scratch=0, n_constants=0, coarse_clock=False,
                fine_clock=False):
-  """The packed layout (spec Sec 3.2, decision 4.4). Features in `features` order
-  that have a code; within a feature the codes in task_order, then tree index
-  (program order), packed into bytes by pack_bytes; the units are then ordered by
-  the lane balancing below. Raises NoSplitTree (a tree without a code),
+  """The packed layout (spec Sec 3.2). Features in `features` order that have a
+  code; within a feature the codes in task_order, then tree index (program
+  order), each in ceil(bits / 8) bytes of its own, ordered by the lane balancing
+  below; then the padded key slices (_padded_codes). Raises NoSplitTree (a tree without a code),
   ActionDataTooWide (a field over the bus's 128 bytes) or PhvContainersExhausted.
   A field's containers are the canonical ones for its bytes (spec Sec 3.2 rule 1:
   32-bit for 4 bytes or more, or whenever the field is over one RAM word; else 16
@@ -142,13 +138,10 @@ def layout_for(widths, features, task_order, n_scratch=0, n_constants=0, coarse_
   (two 32-bit containers of its own); `fine_clock`: it computes the fine IAT clock
   (phv.FINE_CLOCK_CONTAINERS).
 
-  Lane balancing (spec Sec 3.2 rule 2, design review 3.13, unchanged per byte): at
-  each byte offset take the remaining unit whose trees' per-lane key-byte counts
-  stay most even -- W byte k counts in lane k, H byte k in the less loaded of lanes
-  k and k+2, B in the least loaded lane, once for every tree with live bits in the
-  byte -- scored as the LARGEST max-min over the unit's trees; ties to program
-  order of the units' first codes. A unit of one code is today's rule exactly, so a
-  field where no codes share a byte keeps its pre-4.4 order."""
+  Lane balancing (spec Sec 3.2 rule 2, design review 3.13): at each byte offset
+  take the remaining code whose tree's per-lane key-byte counts stay most even --
+  W byte k counts in lane k, H byte k in the less loaded of lanes k and k+2, B in
+  the least loaded lane -- scored as that tree's max-min; ties to program order."""
   for task in task_order:
     for index, tree in enumerate(widths.get(task, [])):
       if not tree:
@@ -165,8 +158,7 @@ def layout_for(widths, features, task_order, n_scratch=0, n_constants=0, coarse_
   lane_count = {}                                   # (task, tree) -> key bytes per lane
   containers, place = {}, {}
   for feature, found in codes.items():
-    units = pack_bytes(found)
-    n = sum(nbytes for nbytes, _ in units)
+    n = sum(_bytes(bits) for _, _, bits in found)
     check_bus_bytes(feature, n)
     chosen, covered, short = [], 0, 0
     while covered < n:
@@ -182,34 +174,37 @@ def layout_for(widths, features, task_order, n_scratch=0, n_constants=0, coarse_
           "(%s bits wanted, %d short)" % (feature, chosen, short), short)
     containers[feature] = tuple(chosen)
     kinds = _byte_kinds(chosen)
-    remaining, offset = list(units), 0
+    remaining, offset = list(found), 0
 
-    def cost(unit, offset):
-      """(score, {(task, tree): lane counts after the unit}) at byte `offset`."""
-      after = {}
-      for i, bit in unit[1]:
-        task, tree, bits = found[i]
-        counts = list(lane_count.get((task, tree), (0, 0, 0, 0)))
-        for j in range(bit // 8, (bit + bits - 1) // 8 + 1):
-          kind, k = kinds[offset + j]
-          if kind == 'W':
-            counts[k] += 1
-          elif kind == 'H':
-            counts[k if counts[k] <= counts[k + 2] else k + 2] += 1
-          else:
-            counts[counts.index(min(counts))] += 1
-        after[(task, tree)] = counts
-      return max(max(c) - min(c) for c in after.values()), after
+    def cost(code, offset):
+      """(score, the tree's lane counts after the code) at byte `offset`."""
+      task, tree, bits = code
+      counts = list(lane_count.get((task, tree), (0, 0, 0, 0)))
+      for j in range(_bytes(bits)):
+        kind, k = kinds[offset + j]
+        if kind == 'W':
+          counts[k] += 1
+        elif kind == 'H':
+          counts[k if counts[k] <= counts[k + 2] else k + 2] += 1
+        else:
+          counts[counts.index(min(counts))] += 1
+      return max(counts) - min(counts), counts
 
     while remaining:
-      pick = min(remaining, key=lambda unit: cost(unit, offset)[0])
-      lane_count.update(cost(pick, offset)[1])
-      for i, bit in pick[1]:
-        task, tree, bits = found[i]
-        place[(task, tree, feature)] = (8 * offset + bit, bits)
-      offset += pick[0]
+      pick = min(remaining, key=lambda code: cost(code, offset)[0])
+      task, tree, bits = pick
+      lane_count[(task, tree)] = cost(pick, offset)[1]
+      place[(task, tree, feature)] = (8 * offset, bits)
+      offset += _bytes(bits)
       remaining.remove(pick)
-  return Layout(containers, place)
+  return Layout(containers, place, _padded_codes(containers, place))
+
+
+def _keyed(layout, task, tree, feature):
+  """(bit offset, bits the tree keys) of one code: its live bits, or its padded
+  width (Layout.keyed)."""
+  offset, bits = layout.place[(task, tree, feature)]
+  return offset, layout.keyed.get((task, tree, feature), bits)
 
 
 def _live_mask(offset, bits, byte):
@@ -222,24 +217,24 @@ def _live_mask(offset, bits, byte):
 def one_nibble(mask):
   """p4c's Use::Byte::only_one_nibble on a byte's live-bit mask (xbar.Byte): all
   live bits in the low nibble or all in the high one. A byte with live bits in
-  BOTH nibbles is not a one-nibble byte, however few they are (design review P13,
-  decision 4.4)."""
+  BOTH nibbles is not a one-nibble byte, however few they are (design review
+  P13)."""
   return (mask & 0x0F) == 0 or (mask & 0xF0) == 0
 
 
 def key_bytes(layout, task, tree):
   """The tree's key as byte tuples (kind, k, nibble_only, container): features in
   layout order, each code's bytes ascending; k is the byte's index in its
-  container, nibble_only when the TREE's own live bits in the byte lie in one
-  nibble (one_nibble), container = (feature, index of the container in its field):
-  the byte's identity, which two trees keying codes in one byte share (decision
-  4.4), so that a stage's crossbar holds the byte once (xbar.tree_key). The first
-  three elements are lanes.py's byte-list tuple."""
+  container, nibble_only when the bits the TREE KEYS in the byte lie in one
+  nibble (one_nibble; never for a padded code, Layout.keyed), container =
+  (feature, index of the container in its field): the byte's identity, which names
+  one container byte to a stage's crossbar (xbar.tree_key). The first three
+  elements are lanes.py's byte-list tuple."""
   out = []
   for feature, containers in layout.containers.items():
     if (task, tree, feature) not in layout.place:
       continue
-    offset, bits = layout.place[(task, tree, feature)]
+    offset, bits = _keyed(layout, task, tree, feature)
     kinds, owner = _byte_kinds(containers), _container_of_byte(containers)
     for j in range(offset // 8, (offset + bits - 1) // 8 + 1):
       kind, k = kinds[j]
@@ -248,10 +243,19 @@ def key_bytes(layout, task, tree):
 
 
 def key_slices(layout, task, tree, feature):
-  """[(hi, lo)] in the field's bit positions of the tree's code on `feature`, cut
-  into slices of at most MAX_KEY_SLICE_BITS from the code's bit 0, low first."""
-  offset, bits = layout.place[(task, tree, feature)]
+  """[(hi, lo)] in the field's bit positions of the bits the tree keys of its code
+  on `feature` (its live bits, or its padded width: Layout.keyed), cut into slices
+  of at most MAX_KEY_SLICE_BITS from the code's bit 0, low first."""
+  offset, bits = _keyed(layout, task, tree, feature)
   return bit_slices(bits, offset)
+
+
+def key_bits(layout, task, tree):
+  """The bits of the tree's key: its key slices' widths summed, padding included
+  -- what p4c's key-width check counts (tables.check_key_bits) and what the
+  replay sums from the program's slices (p4_replay.tree_key_bits)."""
+  return sum(_keyed(layout, task, tree, feature)[1]
+             for (t, i, feature) in layout.place if (t, i) == (task, tree))
 
 
 def bit_slices(bits, base=0):

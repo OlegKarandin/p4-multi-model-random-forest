@@ -188,21 +188,21 @@ def single_model_memory_evaluation(clf, selected_features, use_default_action_di
           range_table_specs, ternary_table_specs)
 
 
-def _packed_tree_entries(codewords, live_bits, use_default_action_discount):
+def _packed_tree_entries(codewords, key_bits, use_default_action_discount):
   """(entries, codeword length) of ONE packed tree's table, from its one-tree
   codeword dict, WITHOUT p4model.tables' block pricing: that prices the OLD
   unpacked layout (lanes.table_blocks of ternary_key_field_bits) and would refuse
   a design for a key the program never emits. The refusal kept is the packed
-  key's own first check: more than target.MAX_TERNARY_KEY_BITS live bits
-  (`live_bits`, the tree's code widths summed -- its key slices,
-  tables.check_key_bits). The second, the crossbar fit of the packed key
-  (CrossbarKeyTooWide when packing.packed_alone_blocks is None), follows in
-  _pool_inputs."""
+  key's own first check: more than target.MAX_TERNARY_KEY_BITS key bits
+  (`key_bits`, the widths of the tree's key slices summed, padding included:
+  packed.key_bits, tables.check_key_bits). The second, the crossbar fit of the
+  packed key (CrossbarKeyTooWide when packing.packed_alone_blocks is None),
+  follows in _pool_inputs."""
   entries = len(codewords[0])
   if use_default_action_discount and entries > 0:
     entries -= len(most_common_class_and_dropped_codewords(codewords[0])[1])
   length = len(next(iter(codewords[0].items()))[0])
-  check_key_bits(live_bits)
+  check_key_bits(key_bits)
   return entries, length
 
 
@@ -525,9 +525,11 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     for task, index, nodes in trees:
       intervals = own[task][index]
       key = packed.key_bytes(layout, task, index)
-      live_bits = sum(len(v) - 1 for v in intervals.values())
+      # The key's bits as the program writes them (padded slices included), which
+      # is what the replay sums from the text (p4_replay.tree_key_bits).
+      key_bits = packed.key_bits(layout, task, index)
       entries, length = _packed_tree_entries(
-          generate_codewords(get_root_to_leaf_paths({0: nodes}), intervals), live_bits,
+          generate_codewords(get_root_to_leaf_paths({0: nodes}), intervals), key_bits,
           use_default_action_discount)
       ternary_entries += entries
       # Independent keys, as under 'disjoint': see ResourceUsage.codeword_length.
@@ -536,7 +538,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       if price is None:
         raise CrossbarKeyTooWide(
             "tree %s_%d's key of %d bytes cannot be placed in one stage's ternary "
-            "crossbar" % (task, index, len(key)), live_bits)
+            "crossbar" % (task, index, len(key)), key_bits)
       ternary_table_specs.append((price * tree_entries_to_blocks(entries), len(key)))
       ternary_key_bytes.append(key)
       ternary_task.append(task)

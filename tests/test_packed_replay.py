@@ -53,43 +53,68 @@ def test_replay_rebuilds_the_layouts_key_bytes_from_the_text(tmp_path, seed):
     assert tree_key_bytes(program, name) == expected, name      # the order is recoverable too
 
 
-def _shared_bytes(layout):
-  """{(feature, field byte): [code bits]} for every byte holding codes of two or more trees."""
-  byte_codes = {}
-  for (_, _, feature), (offset, bits) in layout.place.items():
-    for byte in range(offset // 8, (offset + bits - 1) // 8 + 1):
-      byte_codes.setdefault((feature, byte), []).append(bits)
-  return {key: codes for key, codes in byte_codes.items() if len(codes) > 1}
-
-
-def test_replay_rebuilds_shared_bytes(tmp_path):
-  """Decision 4.4 (Review Focus 4): codes of <= 8 bits share bytes, so the replay rebuilds
-  each code's BIT offset from its slices; on 50 designs every tree's rebuilt key equals
-  packed.key_bytes, container identities included. Seed 1 puts six codes of 1-2 bits (two
-  app trees, four ddos trees) into one byte."""
-  shared_designs = 0
+def test_generated_keys_do_not_depend_on_p4cs_container_numbers(tmp_path):
+  """The two layout rules, read back from the program TEXT of 50 designs: no container byte
+  is in two trees' keys, and inside one tree's key the bytes of one alignment class (container
+  kind, byte position) are all one-nibble bytes or all whole bytes. The replay rebuilds the
+  padded slices from the text alone: every tree's key equals packed.key_bytes, container
+  identities included."""
+  padded_designs = half_bytes = 0
   for seed in range(50):
     program = parse_program_text(_generate(tmp_path, seed))
     layout = _layout(seed)
-    shared_designs += bool(_shared_bytes(layout))
+    padded_designs += bool(layout.keyed)
+    owner = {}
     for name in (name for name in program.tables if _TREE.match(name)):
       task, index = _TREE.match(name).groups()
-      assert tree_key_bytes(program, name) == packed.key_bytes(layout, task, int(index)), (seed, name)
-  assert shared_designs >= 25
-  assert any(len(codes) >= 3 and max(codes) <= 4 for codes in _shared_bytes(_layout(1)).values())
+      key = tree_key_bytes(program, name)
+      assert key == packed.key_bytes(layout, task, int(index)), (seed, name)
+      kinds = {}
+      for kind, k, nibble_only, container in key:
+        assert owner.setdefault((container, k), name) == name, (seed, name, container, k)
+        kinds.setdefault((kind, k), set()).add(nibble_only)
+        half_bytes += nibble_only
+      assert all(len(both) == 1 for both in kinds.values()), (seed, name, kinds)
+  assert padded_designs >= 25          # the padding rule fires on most designs ...
+  assert half_bytes >= 100             # ... and still leaves one-nibble bytes to price
 
 
-def test_a_straddling_slice_is_refused(tmp_path):
+def test_a_code_that_does_not_start_a_byte_is_refused(tmp_path):
+  # a key slice at a bit offset inside a byte is an older generator's shared-byte layout
   text = _generate(tmp_path, 1)
   program = parse_program_text(text)
   name, key = next((table, key) for (table, key), runs in program.key_slices.items()
-                   if runs[0][0] - runs[0][1] < 7 and runs[0][1] % 8 < 7)
+                   if len(runs) == 1 and runs[0][0] - runs[0][1] < 7)
   hi, lo = program.key_slices[(name, key)][0]
   moved = text.replace("meta.%s[%d:%d] : ternary @name(" % (key, hi, lo),
-                       "meta.%s[%d:%d] : ternary @name(" % (key, 8 * (lo // 8) + 8, 8 * (lo // 8) + 7))
+                       "meta.%s[%d:%d] : ternary @name(" % (key, hi + 1, lo + 1))
   assert moved != text
-  with pytest.raises(ValueError, match="straddles"):
+  with pytest.raises(ValueError, match="does not start on a byte boundary"):
     tree_key_bytes(parse_program_text(moved), name)
+
+
+def test_training_and_the_replay_both_count_the_padded_key_bits(tmp_path, monkeypatch):
+  """p4c's key-width check counts a tree's key slices as written, padding included. With
+  the limit set between a design's widest key in LIVE bits and its widest key in KEYED bits,
+  the replay (which sums the text's slices) refuses the design, and training must too."""
+  from p4model import target
+  from p4model.errors import CrossbarKeyTooWide
+  for seed in range(50):
+    layout = _layout(seed)
+    live, keyed = {}, {}
+    for (task, tree, _), (_, bits) in layout.place.items():
+      live[(task, tree)] = live.get((task, tree), 0) + bits
+      keyed[(task, tree)] = packed.key_bits(layout, task, tree)
+    if max(keyed.values()) > max(live.values()):
+      break
+  else:
+    pytest.fail("no design whose widest key is a padded one")
+  app, ddos, names = _rng_design(seed)
+  text = _generate(tmp_path, seed)
+  monkeypatch.setattr(target, "MAX_TERNARY_KEY_BITS", max(keyed.values()) - 1)
+  assert model_breakdown(parse_program_text(text))["refusal"] == "key_too_wide"
+  with pytest.raises(CrossbarKeyTooWide):
+    evaluation.multi_model_memory_evaluation(app, ddos, names, names, PER_TREE_ENCODING)
 
 
 def test_the_program_parses_into_containers_and_slices(tmp_path):

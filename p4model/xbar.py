@@ -526,15 +526,17 @@ def tree_key(key, table_idx, numbering=None):
   """A packed tree key, as packed.key_bytes tuples (kind 'W' | 'H' | 'B', byte index k in its container,
   nibble_only, container identity) in key order, -> Bytes.
 
-  Container identity (design review P14, decision 4.4). Codes of <= 8 bits share bytes, so two trees can key the
-  same container byte (each its own bits of it); the crossbar moves whole bytes, so both keys hold the byte, and in
-  a stage the later table finds the earlier one's slot (found path) as p4c does. With `numbering` (one dict shared by
+  Container identity (design review P14). Two keys can name the same container byte (each its own bits of it); the
+  crossbar moves whole bytes, so both keys hold the byte, and in a stage the later table finds the earlier one's
+  slot (found path) as p4c does. The generator's layout gives no byte to two trees (packed.py: a shared byte makes
+  the later table's blocks depend on p4c's container numbers), so this path prices hand-made keys and the fields
+  of the other encodings only. With `numbering` (one dict shared by
   a stage's keys, as field_key's) a container is named by its identity, so equal identities name one container
   byte; without it (a key priced alone) by the table's own numbers 1000 * (table_idx + 1) + i. The container SORT
   order is the container's first appearance in this key either way (Byte `order`), which is the key's own order,
-  so a key that shares nothing allocates exactly as before 4.4.
+  so a key that shares nothing allocates as a key priced alone.
 
-  A 3-tuple (no identity: a hand-made key) gets the pre-4.4 inference: a new container starts whenever the kind
+  A 3-tuple (no identity: a hand-made key) gets the container inferred: a new container starts whenever the kind
   changes, k does not follow the previous byte's k + 1, or the kind is 'B'; such a key shares no byte."""
   out, count, prev, seen = [], {'W': 0, 'H': 0, 'B': 0}, None, {}
   base = 1000 * (table_idx + 1)

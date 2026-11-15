@@ -129,8 +129,8 @@ PER_TASK_ENCODING = "per_task"
 # code per TREE that splits on the feature, as wide as that tree's own thresholds;
 # each tree keys only its own codes (spec 2026-11-06-per-tree-arm-design.md Sec 9.1).
 # Since 2026-11-11 all of a feature's codes sit in ONE packed field code_pk_<feature>,
-# each at its own bit offset (p4model.packed; spec 2026-11-11-packed-codes-stage-pin;
-# decision 4.4: codes of <= 8 bits share bytes, none straddles one).
+# each in bytes of its own (p4model.packed; spec 2026-11-11-packed-codes-stage-pin;
+# no byte holds two codes: design-review decision 4.4 was taken back 2026-11-15).
 PER_TREE_ENCODING = "per_tree"
 ENCODINGS = (JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING, PER_TREE_ENCODING)
 

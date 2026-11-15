@@ -139,7 +139,7 @@ def test_the_deep_design_has_a_multi_slice_key_at_a_non_zero_offset():
 
 # Case 0 under both discounts reaches every line and branch cases 0-5 did
 # (results/encoding_evidence_2026_11/model8/out/tests_parametrize.csv); "deep" adds a
-# multi-slice key at a non-zero offset; case 1 six codes of 1-2 bits sharing one byte (decision 4.4).
+# multi-slice key at a non-zero offset; case 1 six codes of 1-2 bits on one feature, a byte each.
 @pytest.mark.parametrize("discount", [False, True])
 @pytest.mark.parametrize("case", [0, 1, "deep"])
 def test_per_tree_entries_classify_every_input_exactly_as_each_tree(case, discount):
@@ -212,6 +212,20 @@ def test_a_slice_is_named_with_its_field_bounds():
   assert bps.bfrt_key_name("meta.code_pk_flow_iat_max[19:8]") == "code_pk_flow_iat_max_19_8_"
   assert bps.bfrt_key_name("meta.code_pk_bwd_iat_total[127:64]") == "code_pk_bwd_iat_total_127_64_"
   assert bps.bfrt_key_name("meta.flow_iat_max_val") == "flow_iat_max_val"
+
+
+def test_the_bits_a_padded_slice_keys_above_its_code_are_dont_care():
+  # a 3-bit code keyed as its whole byte [7:0] (packed.Layout.keyed): the code's bits keep
+  # their value and mask, the five padding bits match anything
+  entries = bps._tree_table_entries(
+      "t", "a", {"1*0": 2}, [("code_pk_f", 3, [("code_pk_f_7_0_", 7, 0)])], False)
+  assert entries[0]["key_fields"] == {"code_pk_f_7_0_": {"value": "0x04", "mask": "0x05"}}
+  # a 12-bit code keyed as [7:0] and a padded [15:8]: the top slice is code bits 11..8
+  entries = bps._tree_table_entries(
+      "t", "a", {"1010" "0000" "1111": 1},
+      [("code_pk_g", 12, [("code_pk_g_7_0_", 7, 0), ("code_pk_g_15_8_", 15, 8)])], False)
+  assert entries[0]["key_fields"] == {"code_pk_g_7_0_": {"value": "0x0F", "mask": "0xFF"},
+                                      "code_pk_g_15_8_": {"value": "0x0A", "mask": "0x0F"}}
 
 
 @pytest.mark.parametrize("case", [0, 3, "deep"])
