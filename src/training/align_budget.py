@@ -180,7 +180,7 @@ def _own_floor_widths(intervals1, intervals2):
     return floors
 
 
-def _factor(widths, price='ladder'):
+def _factor(widths, price='ladder', keys=None):
     """The per-table TCAM block factor of a pooled per-feature width dict.
 
     THE quantity alignment optimises after the 2026-09-07 repair, and the
@@ -204,13 +204,26 @@ def _factor(widths, price='ladder'):
     The dict's own key order is the generator's feature-emission order, and the
     crossbar allocator does not honour it.
 
-    price='port' (decision 9.4) prices the same union key with the crossbar
-    port instead (port_price).
+    price='port' (decision 9.4) never prices the union key: production keys
+    each joint tree with only its own split features, and a union key past
+    the stage's 64 crossbar bytes would raise CrossbarKeyTooWide although
+    every tree's own key fits (interim review I1). It needs `keys`
+    (tree_keys) and returns port_factor(widths, keys).
     """
     _check_price(price)
     if price == 'port':
-        return port_price(widths.values())
+        if keys is None:
+            raise ValueError("price='port' prices tree keys: pass keys=tree_keys(...)")
+        return port_factor(widths, keys)
     return codeword_to_blocks(tuple(sorted(widths.values())))
+
+
+def port_factor(widths, keys):
+    """The port path's per-table block factor: the dearest tree key's
+    port_price at these pooled widths, max over `keys` (tree_keys), or None
+    when there is no tree key. Never prices the union key (see _factor)."""
+    prices = [port_price(widths[f] for f in features) for features, _ in keys]
+    return max(prices) if prices else None
 
 
 def range_blocks(interval_count):

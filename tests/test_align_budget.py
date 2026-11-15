@@ -251,8 +251,25 @@ def test_port_price_is_the_ports_price(key):
     key, whatever the dict order."""
     from p4model.lanes import table_blocks
     widths = {i: w for i, w in enumerate(reversed(key))}
-    assert ab._factor(widths, price='port') == table_blocks(key)
+    one_tree = ((frozenset(widths), 1),)
+    assert ab._factor(widths, price='port', keys=one_tree) == table_blocks(key)
     assert ab.port_price(key) == table_blocks(key)
+
+
+def test_port_factor_is_the_dearest_tree_key_never_the_union():
+    """Interim review I1: under 'port' the factor is the max per-tree price;
+    the union key (here 9 x 60 bits = 72 crossbar bytes, past the stage's 64)
+    is never priced, and no keys means no factor."""
+    from p4model.errors import CrossbarKeyTooWide
+    from p4model.lanes import table_blocks
+    widths = {f: 60 for f in range(9)}
+    with pytest.raises(CrossbarKeyTooWide):
+        ab.port_price(widths.values())
+    keys = ((frozenset({0, 1}), 1), (frozenset({2, 3, 4}), 2))
+    assert ab._factor(widths, price='port', keys=keys) == table_blocks((60, 60, 60))
+    assert ab.port_factor(widths, ()) is None
+    with pytest.raises(ValueError):
+        ab._factor(widths, price='port')
 
 
 def test_port_width_never_changes_the_ports_price():

@@ -455,8 +455,12 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # factor under the old `blocks_*` name and must never be read as totals.
     multiplier = (tree_keys(rf1, rf2) if price == 'port'
                   else tree_multiplier(rf1, rf2))
-    stats['factor_before'] = _factor(pooled_widths, price)
-    stats['factor_floor'] = _factor(own_floor_widths, price)
+    # Under 'port' the factors are per-TREE prices (align_budget.port_factor:
+    # the dearest tree key), never the union key's, which can exceed the
+    # stage's 64 crossbar bytes while every tree key fits (interim review I1).
+    keys = multiplier if price == 'port' else None
+    stats['factor_before'] = _factor(pooled_widths, price, keys)
+    stats['factor_floor'] = _factor(own_floor_widths, price, keys)
     stats['total_blocks_before'] = total_blocks(pooled_widths, multiplier, price)
     stats['total_blocks_floor'] = total_blocks(own_floor_widths, multiplier, price)
 
@@ -471,10 +475,15 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # number is a lower bound up to that one byte, and the cheapest bits are
     # not necessarily the least damaging ones. Reported, never enforced -- no
     # run is skipped on it.
-    block_target = crossbar_capacity(stats['factor_before'] - 1)
+    # A ladder (byte-domain) bound under either price: crossbar_capacity is
+    # the ladder's, so it is fed the ladder factor of the union key, never a
+    # port factor (interim review I1). Under 'ladder' that is factor_before.
+    ladder_before = (stats['factor_before'] if price == 'ladder'
+                     else _factor(pooled_widths))
+    block_target = crossbar_capacity(ladder_before - 1)
     stats['bits_to_reach'] = (
         bits_to_reach(pooled_widths, own_floor_widths, block_target)
-        if stats['factor_before'] > 1 else None)
+        if ladder_before > 1 else None)
 
     # The width dict alignment actually works on, decremented per accepted move
     # so feature_order sees the CURRENT cost.
@@ -733,7 +742,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['codeword_after'] = stats['intervals_after'] - n_features
     stats['key_bytes_after'] = pooled_key_bytes(intervals1_after, intervals2_after)
     widths_after = _pooled_widths(intervals1_after, intervals2_after)
-    stats['factor_after'] = _factor(widths_after, price)
+    stats['factor_after'] = _factor(widths_after, price, keys)
     stats['total_blocks_after'] = total_blocks(widths_after, multiplier, price)
 
     # §2.4: what this run gave away, in the same units accept_alignment uses,

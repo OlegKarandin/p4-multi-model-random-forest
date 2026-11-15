@@ -2704,4 +2704,54 @@ def test_port_price_runs_and_reports_port_totals():
     widths = ab._pooled_widths(ta.extract_feature_intervals(a), ta.extract_feature_intervals(b))
     assert stats['total_blocks_after'] == ab.total_blocks(
         widths, ab.tree_keys(a, b), price='port')
-    assert stats['factor_after'] == ab._factor(widths, price='port')
+    assert stats['factor_after'] == ab._factor(widths, price='port',
+                                               keys=ab.tree_keys(a, b))
+
+
+def test_port_price_survives_a_union_key_past_the_crossbar(monkeypatch):
+    """Interim review I1: a joint pair whose UNION key is past the stage's 64
+    crossbar bytes while every tree's own key fits. Alignment with
+    price='port' completes, and its per-tree port prices equal production's
+    (_pool_inputs' joint ternary_table_specs, PHV check off: 18 wide code
+    fields exhaust the 8-bit containers, a refusal of its own)."""
+    from sklearn.ensemble import RandomForestClassifier
+    from p4gen import evaluation as ev
+    from p4model import phv
+    from p4model.catalog import FEATURE_REGISTER_CATALOG
+    from p4model.errors import CrossbarKeyTooWide
+
+    names = list(FEATURE_REGISTER_CATALOG)
+    n = 300
+
+    def forest(seed, y):
+        rng = np.random.default_rng(seed)
+        X = np.clip(rng.integers(0, 60000, size=(n, len(names))), 0, INFINITE).astype(float)
+        return dt_thresholds_float_to_int(RandomForestClassifier(
+            n_estimators=50, max_depth=3, max_features=1,
+            random_state=seed).fit(X, y)), X, y
+
+    rf1, X1, y1 = forest(11, np.array([c % 3 for c in range(n)]))
+    rf2, X2, y2 = forest(12, np.where(np.arange(n) % 2 == 0, -1, 1))
+    widths = ab._pooled_widths(ta.extract_feature_intervals(rf1),
+                               ta.extract_feature_intervals(rf2))
+    assert ab.pooled_key_bytes(ta.extract_feature_intervals(rf1),
+                               ta.extract_feature_intervals(rf2)) > 64
+    with pytest.raises(CrossbarKeyTooWide):
+        ab.port_price(widths.values())
+
+    stats = {}
+    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats, price='port')
+
+    def own_features(estimator):
+        tree = estimator.tree_
+        return {int(f) for f in tree.feature[tree.children_left != -1]}
+
+    after = ab._pooled_widths(ta.extract_feature_intervals(a), ta.extract_feature_intervals(b))
+    ours = [ab.port_price(after[f] for f in own_features(e))
+            for rf in (a, b) for e in rf.estimators_]
+    monkeypatch.setattr(phv, 'check', lambda *args: None)
+    pool = ev._pool_inputs(a, b, names, names, 'joint')
+    assert ours == [blocks for blocks, _ in pool['ternary_table_specs']]
+    assert stats['factor_after'] == max(ours)
+    assert stats['total_blocks_after'] == ab.total_blocks(after, ab.tree_keys(a, b), price='port')
+    assert stats['bits_to_reach'] is not None
