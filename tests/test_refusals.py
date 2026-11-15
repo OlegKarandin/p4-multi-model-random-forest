@@ -267,6 +267,7 @@ def test_feasibility_frontier_counts_every_constraint():
     def trial(constraint=None, magnitude=0, state=complete):
         return SimpleNamespace(state=state,
                                user_attrs=refusals.violations(constraint, magnitude))
+    # "key_bytes_over" is the pre-Task-32 name, read as key_too_wide.
     trials = [trial(), trial("key_bytes_over", 3), trial("blocks_over", 5),
               trial("blocks_over", 1), trial("program_shape", 1),
               SimpleNamespace(state=complete, user_attrs={}),          # never set: infeasible
@@ -278,15 +279,15 @@ def test_feasibility_frontier_counts_every_constraint():
     assert summary["n_trials_run"] == 7 and summary["n_feasible"] == 1
     assert summary["any_feasible"] and summary["dominant_violation_type"] == "blocks_over"
     assert {name: summary["n_" + name] for name in refusals.CONSTRAINTS} == dict(
-        refusals.violations(None), key_bytes_over=1, blocks_over=2, program_shape=1)
+        refusals.violations(None), key_too_wide=1, blocks_over=2, program_shape=1)
 
 
 # --- named constraints (9.2) ----------------------------------------------------------
 
 def test_every_refusal_exception_carries_its_constraint_and_magnitude():
     cases = [
-        (errors.CrossbarKeyTooWide("", target.MAX_KEY_BYTES + 7), "key_bytes_over", 7),
-        (errors.CrossbarKeyTooWide("", 10), "key_bytes_over", 1),    # no allocation
+        (errors.CrossbarKeyTooWide("", target.MAX_TERNARY_KEY_BITS + 7), "key_too_wide", 7),
+        (errors.CrossbarKeyTooWide("", 300), "key_too_wide", 1),    # no crossbar fit
         (errors.PhvContainersExhausted("", 3), "phv_containers_short", 3),
         (errors.ActionDataTooWide("", target.ACTION_DATA_BUS_BYTES + 2), "bus_bytes_over", 2),
         (errors.ActionDataTooWide("", target.ACTION_DATA_BUS_BYTES), "bus_bytes_over", 1),
@@ -314,10 +315,25 @@ def test_constraint_values_follow_the_constraint_order():
     assert list(refusals.violations("blocks_over", 3)) == list(refusals.CONSTRAINTS)
 
 
+def test_an_older_runs_constraint_name_is_read_as_the_current_one():
+    """Task 32 renamed key_bytes_over to key_too_wide; a trial recorded under the
+    old name still reads as refused, through refusals.LEGACY_CONSTRAINTS."""
+    assert refusals.canonical("key_bytes_over") == "key_too_wide"
+    assert refusals.violations("key_bytes_over", 2) == refusals.violations("key_too_wide", 2)
+
+    class Old:
+        user_attrs = {("key_bytes_over" if name == "key_too_wide" else name): 0.0
+                      for name in refusals.CONSTRAINTS}
+        user_attrs["key_bytes_over"] = 4.0
+    values = early_stopping.constraint_values(Old())
+    assert values[refusals.CONSTRAINTS.index("key_too_wide")] == 4.0
+    assert sum(values) == 4.0
+
+
 @pytest.fixture
 def _fresh_key_prices():
-    """lanes._table_blocks caches prices behind the key check; a test that moves
-    target.MAX_KEY_BYTES must not see prices cached under the real limit."""
+    """lanes._table_blocks caches prices; a test that moves a key limit must not
+    see prices cached under the real one."""
     lanes._table_blocks.cache_clear()
     yield
     lanes._table_blocks.cache_clear()
@@ -338,7 +354,7 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
     """20 designs per encoding that training refuses (design_refusal, the objective's
     rule): the replay of each design's program (model_breakdown) -- or, where the
     generator itself refuses to write it, the generator -- names the same constraint.
-    Limits are moved to make refusals: the key limit to 1 byte, the 16-bit PHV budget
+    Limits are moved to make refusals: the key limit to 1 live bit, the 16-bit PHV budget
     to 6 containers (not per-tree: its layout refuses at generation), the budget M
     to 12 blocks, the action data bus to 1 byte (per-tree only: the program is written
     under the real bus, then training and the replay meet the moved one); and an app
@@ -362,7 +378,7 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
                 continue
         with monkeypatch.context() as patch:
             if regime == "key":
-                patch.setattr(target, "MAX_KEY_BYTES", 1)
+                patch.setattr(target, "MAX_TERNARY_KEY_BITS", 1)
             elif regime == "phv":
                 tight = dict(PHV_INGRESS_CONTAINERS)
                 tight[16] = 6
@@ -395,7 +411,7 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
 def test_a_key_with_no_allocation_is_refused_before_the_phv_count_on_both_paths(
         tmp_path, monkeypatch, encoding, _fresh_key_prices):
     """Interim review minor 1: a design with BOTH a key the crossbar cannot allocate
-    (within MAX_KEY_BYTES) and a PHV shortage is refused key_bytes_over by training
+    (within MAX_TERNARY_KEY_BITS) and a PHV shortage is refused key_too_wide by training
     (per tree, lanes.table_blocks) and by the replay (check_trees runs the allocation
     before the PHV count). The program is written first, under the real limits."""
     from p4model import packing, xbar
@@ -418,7 +434,7 @@ def test_a_key_with_no_allocation_is_refused_before_the_phv_count_on_both_paths(
         replayed = model_breakdown(parse_program_text(text))["refusal"]
     finally:
         packing._alone_blocks.cache_clear()
-    assert trained == replayed == "key_bytes_over", (trained, replayed)
+    assert trained == replayed == "key_too_wide", (trained, replayed)
     monkeypatch.setattr(xbar, "alone_blocks", lambda key: 3)
     lanes._table_blocks.cache_clear()
     packing._alone_blocks.cache_clear()

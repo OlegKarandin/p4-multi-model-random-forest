@@ -260,11 +260,13 @@ def test_tree_key_pricer_reprices_only_the_trees_keying_a_changed_width(monkeypa
     pricer = ab.TreeKeyPricer(keys)
     calls = []
     real = ab.port_price
-    monkeypatch.setattr(ab, 'port_price', lambda w: calls.append(tuple(w)) or real(w))
+    crossbar = ab.crossbar_blocks
+    monkeypatch.setattr(ab, 'crossbar_blocks', lambda w: calls.append(tuple(w)) or crossbar(w))
     widths = {0: 30, 1: 9, 2: 17, 3: 3}
     first = list(pricer.prices(widths))
     assert len(calls) == 3
     assert first == [real(widths[f] for f in sorted(fs)) for fs, _ in keys]
+    del calls[:]
     del calls[:]
     assert list(pricer.prices(dict(widths))) == first and calls == []
     widths[2] = 16                       # W container -> H container: tree 1 only

@@ -230,14 +230,31 @@ def range_action_bytes_for(feature_intervals):
   return [container_bytes(len(intervals) - 1) for intervals in feature_intervals.values()]
 
 
-def check_key_bytes(table_bytes):
-  """CrossbarKeyTooWide when one table's key exceeds target.MAX_KEY_BYTES (the one
-  key limit, decision 6a; read through the module so a test can move it)."""
-  if table_bytes > target.MAX_KEY_BYTES:
+def check_key_bits(live_bits):
+  """CrossbarKeyTooWide when one ternary table's key has more LIVE bits (the
+  widths of its key slices, summed) than target.MAX_TERNARY_KEY_BITS -- the first
+  of p4c's two key-size checks (bf-p4c phv/table_phv_constraints.cpp:88; decision
+  6a, Task 32). Read through the module so a test can move the limit. The second
+  check is the crossbar port's fit (word_blocks)."""
+  if live_bits > target.MAX_TERNARY_KEY_BITS:
     raise CrossbarKeyTooWide(
-        "table key is %d crossbar bytes; no stage supplies more than %d, so the "
-        "compiler rejects this table rather than splitting it across stages"
-        % (table_bytes, target.MAX_KEY_BYTES), table_bytes)
+        "table key has %d live bits; p4c allows at most %d bits in a ternary match "
+        "key (phv/table_phv_constraints.cpp:88)"
+        % (live_bits, target.MAX_TERNARY_KEY_BITS), live_bits)
+
+
+def word_blocks(per_row):
+  """The second key-size check: the crossbar port's blocks per 512-row word of
+  a key (xbar.alone_blocks / blocks_per_row), or None when the key cannot be
+  placed in one stage -- no allocation in its 12 groups (`per_row` None), or a
+  word wider than target.TCAM_ROWS_PER_STAGE blocks, which no stage holds: a
+  word chains its blocks down ONE column of 12 (mau_spec.h:88-90). Probe 6a
+  (ii): 64 x 8 + two 6-bit fields, 524 bits, fit 12 groups at 13 blocks per word
+  (6 whole midbytes leave no nibble for the version bits), and p4c refused the
+  table ("could not fit in stage 0 with 512 entries")."""
+  if per_row is None or per_row > target.TCAM_ROWS_PER_STAGE:
+    return None
+  return per_row
 
 
 def tree_entries_to_blocks(entries):
@@ -305,13 +322,12 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
 
   table_bytes = codeword_fields_to_bytes(feature_intervals)
 
-  # Checked here, where the key width is already known, rather than deep
-  # inside crossbar_stages_needed/_stage_shards: a trial should be rejected
-  # with a clear reason at the point that has the clearest context, not
-  # crash mid-estimate several calls later. _stage_shards keeps its own
-  # copy of this check too (defense in depth for any other caller that
-  # reaches it directly).
-  check_key_bytes(table_bytes)
+  # Checked here, where the key is already known, rather than deep inside
+  # crossbar_stages_needed: a trial should be rejected with a clear reason at
+  # the point that has the clearest context. The bit check first (p4c's own
+  # order: it refuses the key before any placement), then the crossbar fit,
+  # inside lanes.table_blocks.
+  check_key_bits(sum(ternary_key_field_bits(feature_intervals)))
 
   # The per-tree block width: lanes.table_blocks, xbar.alone_blocks of the
   # table's pinned crossbar key layout (2026-11-13; the lane count from

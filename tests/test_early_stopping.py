@@ -96,7 +96,7 @@ def test_constraint_values_follow_the_constraint_names_in_order():
     trial = study.trials[0]
     assert early_stopping.constraint_values(trial) == [
         float(index + 1) for index in range(len(CONSTRAINTS))]
-    assert CONSTRAINTS == ('key_bytes_over', 'phv_containers_short', 'bus_bytes_over',
+    assert CONSTRAINTS == ('key_too_wide', 'phv_containers_short', 'bus_bytes_over',
                            'range_rows_over', 'stages_over', 'blocks_over', 'no_split_tree',
                            'placement_failed', 'program_shape')
     for name in CONSTRAINTS:

@@ -52,8 +52,9 @@ import functools
 from p4gen.build_p4_script import INFINITE
 from p4gen.evaluation import (codeword_fields_to_bytes_from_bits,
                                   entries_across_trees_to_blocks)
-from p4model.lanes import layout, table_blocks
+from p4model.lanes import crossbar_blocks, layout
 from p4model.ranges import compiler_range_rows
+from p4model.tables import check_key_bits
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 
 
@@ -70,7 +71,11 @@ def port_width(width):
     mapping each width to 8 * (bytes - 1) + (4 or 8) lets lanes' cache hit on
     every width whose layout cannot differ -- the port is called only where
     the layout can change (byte boundaries, <= 4-bit tails). Pinned against
-    the raw port on random keys by tests/test_align_budget.py."""
+    the raw port on random keys by tests/test_align_budget.py.
+
+    The stand-in has as many or MORE bits than `width`, so the live-bit check
+    (tables.check_key_bits) is applied to the real widths, never to these
+    (port_price, TreeKeyPricer._key)."""
     if width <= 0:
         return 0
     full = (width - 1) // 8
@@ -79,10 +84,13 @@ def port_width(width):
 
 
 def port_price(widths):
-    """lanes.table_blocks of an iterable of field widths, via port_width: one
-    tree key's per-word block price, CrossbarKeyTooWide where production
-    refuses the key."""
-    return table_blocks(tuple(sorted(port_width(int(w)) for w in widths if w > 0)))
+    """lanes.table_blocks of an iterable of field widths: one tree key's
+    per-word block price, CrossbarKeyTooWide where production refuses the key
+    (p4c's two checks: the live bits of the real widths, then the crossbar fit
+    of their port_width stand-ins, lanes.crossbar_blocks)."""
+    widths = [int(w) for w in widths if w > 0]
+    check_key_bits(sum(widths))
+    return crossbar_blocks(tuple(sorted(port_width(w) for w in widths)))
 
 
 def pooled_interval_count(ranges1, ranges2):
@@ -215,7 +223,8 @@ class TreeKeyPricer:
     only the keys holding a feature whose width changed. A key's price is a
     function of its port_width classes (exact: see port_width), so every
     distinct canonical key is priced once per run (memo) and through
-    port_price, whose own cache (lanes.table_blocks) stays in force.
+    lanes.crossbar_blocks, whose own cache stays in force; the live-bit check
+    (tables.check_key_bits) runs on every key's real widths before the memo.
 
     bought_by is blocks_bought_by's scan, computed as a difference instead of
     two totals: a probe changes one feature f's width, so
@@ -244,14 +253,18 @@ class TreeKeyPricer:
         self._widths = [None] * len(self.features)
         self._prices = [None] * len(self.features)
         self._counts = [None] * len(self.features)
-        self.priced = 0              # port_price calls made (memo misses), for tests
+        self.priced = 0              # crossbar_blocks calls made (memo misses), for tests
 
     def _key(self, widths):
-        """The price of one key from its raw widths (any order)."""
-        key = tuple(sorted(port_width(int(w)) for w in widths if w > 0))
+        """The price of one key from its raw widths (any order). The live-bit
+        check reads the raw widths (port_width can only add bits), the memo the
+        canonical ones."""
+        widths = [int(w) for w in widths if w > 0]
+        check_key_bits(sum(widths))
+        key = tuple(sorted(port_width(w) for w in widths))
         price = self._memo.get(key)
         if price is None:
-            price = port_price(key)
+            price = crossbar_blocks(key)
             self.priced += 1
             self._memo[key] = price
         return price

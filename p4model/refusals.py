@@ -9,7 +9,9 @@ order), and the replay (p4gen.p4_replay.model_breakdown) reports the same name f
 the same design, so training, --rescore, --model-archive and outside users share
 one implementation (decision 8.2).
 
-  key_bytes_over        crossbar bytes over target.MAX_KEY_BYTES (CrossbarKeyTooWide)
+  key_too_wide          a ternary key p4c refuses: live bits over
+                        target.MAX_TERNARY_KEY_BITS, or no placement in one stage
+                        (CrossbarKeyTooWide; 'key_bytes_over' before Task 32)
   phv_containers_short  PHV containers short (PhvContainersExhausted)
   bus_bytes_over        action-data bus bytes over (ActionDataTooWide)
   range_rows_over       TCAM rows the real range entries miss (RangeEntriesDoNotFit;
@@ -27,7 +29,7 @@ from p4model.errors import (ActionDataTooWide, CrossbarKeyTooWide, NoSplitTree,
                             PhvContainersExhausted, PlacementFailed, ProgramShapeRefused,
                             RangeEntriesDoNotFit)
 
-CONSTRAINTS = ('key_bytes_over', 'phv_containers_short', 'bus_bytes_over', 'range_rows_over',
+CONSTRAINTS = ('key_too_wide', 'phv_containers_short', 'bus_bytes_over', 'range_rows_over',
                'stages_over', 'blocks_over', 'no_split_tree', 'placement_failed',
                'program_shape')
 
@@ -40,6 +42,16 @@ REFUSAL_ERRORS = (CrossbarKeyTooWide, PhvContainersExhausted, ActionDataTooWide,
 NUMERIC = ('stages_over', 'blocks_over')
 
 assert sorted(CONSTRAINTS) == sorted({e.constraint for e in REFUSAL_ERRORS} | set(NUMERIC))
+
+# Names older runs recorded for a constraint since renamed: old name -> current
+# name. Read back through canonical(); never written.
+LEGACY_CONSTRAINTS = {'key_bytes_over': 'key_too_wide'}   # Task 32 (decision 6a)
+
+
+def canonical(name):
+  """The current CONSTRAINTS name of a recorded constraint name (an older run's
+  name maps through LEGACY_CONSTRAINTS; any other name is returned as given)."""
+  return LEGACY_CONSTRAINTS.get(name, name)
 
 
 def of(exc):
@@ -67,7 +79,10 @@ def blocks_over(blocks, max_blocks):
 
 def violations(constraint=None, magnitude=0):
   """{name: magnitude} for every constraint: 0 for each, `magnitude` for
-  `constraint` (None: every constraint satisfied)."""
+  `constraint` (None: every constraint satisfied; an older run's name is read
+  through canonical())."""
+  if constraint is not None:
+    constraint = canonical(constraint)
   if constraint is not None and constraint not in CONSTRAINTS:
     raise ValueError('unknown constraint %r' % (constraint,))
   return {name: (magnitude if name == constraint else 0.0) for name in CONSTRAINTS}

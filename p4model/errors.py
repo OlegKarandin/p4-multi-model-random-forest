@@ -22,18 +22,23 @@ def _over(args, limit=0):
 
 
 class CrossbarKeyTooWide(ModelRefusal):
-  """One table's match key exceeds target.MAX_KEY_BYTES crossbar bytes;
-  the compiler rejects such a table outright rather than splitting it.
-  args = (message, byte_width). Also raised for a key of <= MAX_KEY_BYTES bytes
-  with no crossbar allocation (xbar.alone_blocks), whose overflow would read <= 0,
-  hence the floor of 1. magnitude: bytes over target.MAX_KEY_BYTES (read through
-  the module so a test can move it)."""
-  constraint = 'key_bytes_over'
+  """One ternary table's match key fails one of p4c's two key-size checks
+  (decision 6a, Task 32): more than target.MAX_TERNARY_KEY_BITS live bits
+  (tables.check_key_bits), or no placement in one stage by the ported crossbar
+  (tables.word_blocks); the compiler rejects such a table outright rather than
+  splitting it. args = (message, live key bits). magnitude: live bits over
+  target.MAX_TERNARY_KEY_BITS (read through the module so a test can move it),
+  floored at 1 -- so 1 for a key that fails only the crossbar fit.
+
+  Constraint name 'key_too_wide' since Task 32; runs before it recorded the
+  same refusal as 'key_bytes_over' (crossbar bytes over a 65-byte limit), which
+  refusals.LEGACY_CONSTRAINTS maps to this name when read back."""
+  constraint = 'key_too_wide'
 
   @property
   def magnitude(self):
     from p4model import target
-    return _over(self.args, target.MAX_KEY_BYTES)
+    return _over(self.args, target.MAX_TERNARY_KEY_BITS)
 
 
 class ActionDataTooWide(ModelRefusal):

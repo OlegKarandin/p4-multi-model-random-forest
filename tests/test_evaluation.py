@@ -248,12 +248,13 @@ def test_range_deployment_overflow_is_empty_when_the_real_rows_fit():
 
 def test_stage_shards_rejects_a_key_wider_than_one_stage_crossbar():
     # F3: splitting a table's ROWS across stages is real; splitting its KEY
-    # is not -- a stage's crossbar cannot deliver more than
-    # MAX_KEY_BYTES bytes, and the compiler rejects
-    # such a table outright rather than spreading it over stages.
+    # is not -- a stage's crossbar cannot deliver more than its
+    # TERNARY_CROSSBAR_STAGE_BYTES (66) byte slots, and the compiler rejects
+    # such a table outright rather than spreading it over stages. args[1] is
+    # the key's live bits, 8 per byte as an upper bound where only bytes are known.
     with pytest.raises(ev.CrossbarKeyTooWide) as excinfo:
         ev._stage_shards(1, 100)
-    assert excinfo.value.args[1] == 100
+    assert excinfo.value.args[1] == 800
 
 
 def test_crossbar_stages_needed_propagates_key_too_wide():
@@ -261,14 +262,14 @@ def test_crossbar_stages_needed_propagates_key_too_wide():
     # it has to propagate the same raise _stage_shards produces.
     with pytest.raises(ev.CrossbarKeyTooWide) as excinfo:
         ev.crossbar_stages_needed([(1, 100)])
-    assert excinfo.value.args[1] == 100
+    assert excinfo.value.args[1] == 800
 
 
 def test_ternary_matching_resource_usage_rejects_many_narrow_features():
     # Reachable shape: the crossbar allocates PER FIELD, so 100 features x 2
-    # codeword bits each = 100 crossbar bytes, well under the separate
-    # MAX_KEY_BYTES-bytes limit counted per field, not by raw codeword bits (this
-    # codeword is only 200 bits, which a bit limit would have let through).
+    # codeword bits each = 100 crossbar bytes, more than a stage's 66 crossbar
+    # byte slots: the crossbar cannot place it although its 200 live bits pass
+    # p4c's 524-bit check.
     feature_intervals = {"F{}".format(i): [(0, 0), (0, 0), (0, 0)]
                           for i in range(100)}  # 3 intervals -> 2 bits each
     codewords = {0: {"0" * 200: 0}}
@@ -418,7 +419,7 @@ def test_crossbar_stages_needed_output_respects_all_three_limits():
     # emitted stage is a physically legal stage, so the count is an upper
     # bound on the optimum (never an under-count).
     #
-    # Byte width is capped at MAX_KEY_BYTES (Task 10,
+    # Byte width is capped at TERNARY_CROSSBAR_STAGE_BYTES (Task 10,
     # F3): a table whose key is wider than one stage's crossbar budget is not
     # a splittable-across-stages shape at all -- crossbar_stages_needed now
     # raises CrossbarKeyTooWide for it instead of pricing a design the
@@ -426,15 +427,15 @@ def test_crossbar_stages_needed_output_respects_all_three_limits():
     import random
     rnd = random.Random(1234)
     for _ in range(200):
-        specs = [(rnd.randint(1, 30), rnd.randint(1, target.MAX_KEY_BYTES))
+        specs = [(rnd.randint(1, 30), rnd.randint(1, target.TERNARY_CROSSBAR_STAGE_BYTES))
                  for _ in range(rnd.randint(1, 20))]
         stages = ev.crossbar_stages_needed(specs).occupied
         # A valid packing can never use fewer stages than either
         # single-dimension lower bound.
         assert stages >= math.ceil(sum(b for b, _ in specs) / bps.TCAM_BLOCKS_PER_STAGE)
         assert stages >= math.ceil(
-            sum(min(w, target.MAX_KEY_BYTES) for _, w in specs)
-            / target.MAX_KEY_BYTES)
+            sum(min(w, target.TERNARY_CROSSBAR_STAGE_BYTES) for _, w in specs)
+            / target.TERNARY_CROSSBAR_STAGE_BYTES)
         assert stages >= math.ceil(len(specs) / bps.TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE)
 
 

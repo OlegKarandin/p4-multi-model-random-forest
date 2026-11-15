@@ -50,11 +50,12 @@ import math
 from p4model import xbar
 from p4model.errors import CrossbarKeyTooWide
 from p4model.tables import (
-    check_key_bytes,
+    check_key_bits,
     codeword_bits_to_blocks,
     codeword_fields_to_bytes_from_bits,
+    word_blocks,
 )
-from p4model.target import TERNARY_CROSSBAR_GROUPS_PER_STAGE
+from p4model.target import TERNARY_CROSSBAR_GROUPS_PER_STAGE, TERNARY_CROSSBAR_STAGE_BYTES
 
 _GROUPS = TERNARY_CROSSBAR_GROUPS_PER_STAGE       # 12
 _SLOTS_PER_GROUP = 5
@@ -168,12 +169,23 @@ def table_blocks(field_bit_widths):
   key (lane 2 vs p4c 3: p4c's greedy midbyte choice leaves no nibble for the
   version bits), is priced 3 by the port, matching p4c.
 
-  Order-insensitive. The empty key returns the ladder's floor. Raises
-  CrossbarKeyTooWide(message, byte_width) when the key exceeds the stage's
-  target.MAX_KEY_BYTES bytes (checked before enumerating --
-  66-72-byte keys would otherwise pay the full 1..12-block search) or when
-  p4c's crossbar allocation (xbar.alone_blocks) finds no place for it in an
-  empty stage."""
+  Order-insensitive. The empty key returns the band floor
+  (tables.codeword_bits_to_blocks(0)). Raises CrossbarKeyTooWide(message,
+  live bits) where p4c refuses the key -- its two checks (decision 6a, Task
+  32): more than target.MAX_TERNARY_KEY_BITS live bits (tables.check_key_bits),
+  or no placement in one stage (crossbar_blocks)."""
+  widths = tuple(sorted(int(w) for w in field_bit_widths))
+  check_key_bits(sum(widths))
+  return _table_blocks(widths)
+
+
+def crossbar_blocks(field_bit_widths):
+  """table_blocks WITHOUT the live-bit check: the crossbar port's blocks per
+  512-row word of the key, CrossbarKeyTooWide when it cannot be placed in one
+  stage (tables.word_blocks: no allocation in 12 groups, or a word over 12
+  blocks). For threshold alignment, which prices canonical stand-in widths
+  (align_budget.port_width: same bytes, same nibbles, MORE bits) and applies
+  the bit check to the real widths itself."""
   return _table_blocks(tuple(sorted(int(w) for w in field_bit_widths)))
 
 
@@ -182,12 +194,15 @@ def _table_blocks(widths):
   byte_width = codeword_fields_to_bytes_from_bits(widths)
   if byte_width == 0:
     return codeword_bits_to_blocks(0)
-  check_key_bytes(byte_width)
-  price = xbar.alone_blocks(key_fields(widths))
+  # A shortcut, not a limit: a key of more bytes than the stage's 66 crossbar
+  # byte slots (12 groups x 5 + 6 midbytes) has no allocation, and the port
+  # would only find that after trying every group count.
+  price = (None if byte_width > TERNARY_CROSSBAR_STAGE_BYTES
+           else word_blocks(xbar.alone_blocks(key_fields(widths))))
   if price is None:
     raise CrossbarKeyTooWide(
-        "table key of %d crossbar bytes does not fit one stage's ternary "
-        "crossbar" % byte_width, byte_width)
+        "table key of %d crossbar bytes (%d live bits) cannot be placed in one "
+        "stage's ternary crossbar" % (byte_width, sum(widths)), sum(widths))
   return price
 
 

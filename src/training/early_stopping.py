@@ -17,7 +17,7 @@ re-deriving constraints on every trial.
 """
 import optuna
 
-from p4model.refusals import CONSTRAINTS
+from p4model.refusals import CONSTRAINTS, LEGACY_CONSTRAINTS
 
 # The objective records violation MAGNITUDES rather than booleans so Optuna's
 # constrained TPE sampler can order infeasible trials by how badly they miss
@@ -25,7 +25,7 @@ from p4model.refusals import CONSTRAINTS
 # magnitudes are split over names does not change the search).
 #
 # One value per p4model.refusals.CONSTRAINTS name (decision 9.2): every refusal
-# source has its own constraint in its own unit (key bytes, PHV containers, bus
+# source has its own constraint in its own unit (key bits, PHV containers, bus
 # bytes, range rows, stages, blocks over, ...), and the objective sets every name
 # on every trial it finishes, 0 for a satisfied constraint. Without a constraint
 # here, a trial refused for it (which leaves the others at 0) would read as
@@ -41,9 +41,13 @@ def constraint_values(trial):
 
     A missing attribute means the objective never reached the point where it
     sets them -- the trial failed, was pruned, or is still running. That must
-    read as infeasible (inf), never as feasible-by-default.
+    read as infeasible (inf), never as feasible-by-default. A trial recorded
+    under a constraint's older name (refusals.LEGACY_CONSTRAINTS) is read
+    through it.
     """
-    return [trial.user_attrs.get(name, float('inf')) for name in CONSTRAINTS]
+    old = {new: name for name, new in LEGACY_CONSTRAINTS.items()}
+    attrs = trial.user_attrs
+    return [attrs.get(name, attrs.get(old.get(name), float('inf'))) for name in CONSTRAINTS]
 
 
 def is_feasible(trial):

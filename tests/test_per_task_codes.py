@@ -25,7 +25,7 @@ from p4model.errors import CrossbarKeyTooWide
 from p4model.packing import StageLoad, _stage_shards, crossbar_stages_needed
 from p4model.program import (APP_TASK, DDOS_TASK, PER_TASK_ENCODING, SHARED_TASK, TaskSpec,
                              feature_of_per_task_field, per_task_field, range_table_priority)
-from p4model.target import MAX_KEY_BYTES, TERNARY_CROSSBAR_STAGE_BYTES
+from p4model.target import MAX_TERNARY_KEY_BITS, TERNARY_CROSSBAR_STAGE_BYTES
 
 FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
             "flow_iat_min", "bwd_packet_length_max"]
@@ -499,13 +499,15 @@ def _load(index, fields, blocks=(1,), tables=1):
                      field_order=tuple(sorted(set(fields), key=repr)))
 
 
-def test_the_stage_limit_is_66_while_the_single_key_limit_is_65():
+def test_the_stage_has_66_crossbar_bytes_and_a_key_524_live_bits():
     assert TERNARY_CROSSBAR_STAGE_BYTES == 66
-    assert MAX_KEY_BYTES == 65
+    assert MAX_TERNARY_KEY_BITS == 524
+    _stage_shards(1, 66)
     with pytest.raises(CrossbarKeyTooWide):
-        _stage_shards(1, 66)
+        _stage_shards(1, 67)
     with pytest.raises(CrossbarKeyTooWide):
-        lanes.table_blocks((8,) * 66)
+        lanes.table_blocks((8,) * 66)                 # 528 live bits
+    assert lanes.table_blocks((8,) * 65 + (4,)) == 12  # 66 bytes, 524 bits: p4c compiles it
 
 
 def _two_key_plan(bytes_a, bytes_b):

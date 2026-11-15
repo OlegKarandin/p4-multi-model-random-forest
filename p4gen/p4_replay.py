@@ -13,7 +13,7 @@ from p4model.errors import CrossbarKeyTooWide, NoSplitTree, ProgramShapeRefused
 from p4model.packing import (_alone_blocks, crossbar_stages_needed,
                               packed_alone_blocks)
 from p4model import refusals
-from p4model.tables import check_key_bytes
+from p4model.tables import check_key_bits
 from p4model.program import (ORIENTATION_REGISTER, PLACEMENT_PRIORITY, SHARED_TASK,
                                  feature_of_per_task_field, feature_of_per_tree_field)
 from p4model.ranges import compiler_range_rows
@@ -545,19 +545,30 @@ def tree_key_slices(program, table):
                  for key in keys)
 
 
+def tree_key_bits(program, table):
+    """The LIVE bits of one tree table's key, what p4c's 524-bit check sums
+    (tables.check_key_bits): its key slices' widths -- a packed tree's own slices
+    of the code_pk_ fields, any other tree its code fields' live (keyed) bits."""
+    if is_packed(program):
+        return sum(hi - lo + 1 for key in program.tables[table]
+                   for hi, lo in program.key_slices.get((table, key), ()))
+    return sum(int(program.bits.get(key, 0)) for key in program.tables[table])
+
+
 def _field_price(program, name):
     """A tree table's price per 512-row block of entries: its key alone in a
     stage, as p4c's ternary crossbar allocator lays out its pinned containers
     (xbar.alone_blocks; lanes.table_blocks prices training's keys the same
-    way), and CrossbarKeyTooWide where no allocation exists."""
+    way), and CrossbarKeyTooWide where the key cannot be placed in one stage
+    (packing._alone_blocks None: no allocation, or a word over 12 blocks)."""
     key = tree_key_slices(program, name)
     if not key:
         return lanes.table_blocks(())
     price = _alone_blocks(key)
     if price is None:
         raise CrossbarKeyTooWide(
-            "%s's key does not fit one stage's ternary crossbar" % name,
-            sum(program.widths[k] for k in program.tables[name]))
+            "%s's key cannot be placed in one stage's ternary crossbar" % name,
+            tree_key_bits(program, name))
     return price
 
 
@@ -596,13 +607,13 @@ def _packed_price(program, name):
     """A packed tree table's price per 512-row block of entries: its key's
     stand-alone price (packing.packed_alone_blocks, p4c's crossbar allocation),
     as evaluation._pool_inputs charges it, and CrossbarKeyTooWide where training
-    raises it (no allocation)."""
+    raises it (the key cannot be placed in one stage)."""
     key = tree_key_bytes(program, name)
     price = packed_alone_blocks(key)
     if price is None:
         raise CrossbarKeyTooWide(
-            "%s's key of %d bytes does not fit a stage's ternary crossbar"
-            % (name, len(key)), len(key))
+            "%s's key of %d bytes cannot be placed in one stage's ternary crossbar"
+            % (name, len(key)), tree_key_bits(program, name))
     return price
 
 
@@ -792,12 +803,13 @@ def check_trees(program):
     """The per-table refusals training applies to the same design, from the
     program text, in training's order (evaluation._pool_inputs): a tree table
     with no key raises NoSplitTree (R6); a packed code field over the action data
-    bus ActionDataTooWide (packed.check_bus_bytes, R4); a tree key over
-    target.MAX_KEY_BYTES crossbar bytes CrossbarKeyTooWide (tables.check_key_bytes,
+    bus ActionDataTooWide (packed.check_bus_bytes, R4); a tree key of more than
+    target.MAX_TERNARY_KEY_BITS live bits CrossbarKeyTooWide (tables.check_key_bits,
     R2) -- for a packed program after the PHV count, as packed.layout_for refuses a
-    container before any key is priced, otherwise before it, each tree's key byte
+    container before any key is priced, otherwise before it, each tree's key bit
     check followed by its crossbar allocation (_field_price: CrossbarKeyTooWide
-    where none exists, R3) as training's per-tree lanes.table_blocks does, so a
+    where the key cannot be placed in one stage, R3) as training's per-tree
+    lanes.table_blocks does, so a
     design with both a key and a PHV problem is refused for its key on both
     paths. The PHV count is phv.check (R5); a packed key with no allocation is
     refused by the pricing (_packed_price), after the PHV count as in training."""
@@ -812,10 +824,8 @@ def check_trees(program):
                                    sum(program.containers[name]) // 8)
         phv.check(phv.containers_used(program))
     for name in trees:
-        if packed_program:
-            check_key_bytes(len(tree_key_bytes(program, name)))
-        else:
-            check_key_bytes(sum(program.widths[key] for key in program.tables[name]))
+        check_key_bits(tree_key_bits(program, name))
+        if not packed_program:
             _field_price(program, name)
     if not packed_program:
         phv.check(phv.containers_used(program))

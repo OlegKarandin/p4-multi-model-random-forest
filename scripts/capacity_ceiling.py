@@ -11,8 +11,9 @@ only as "chosen manually because larger values gave overly long codewords".
 This script replaces that sentence with a table: it measures, over a grid of
 bounds, where the 512-bit codeword limit (`MAX_CODEWORD_LENGTH`) starts to
 bind, and applies the adoption rule to the measurement. That limit is no longer
-the model's (decision 6b removed it; the one key limit is target.MAX_KEY_BYTES):
-this script keeps 512 bits as its own yardstick, MAX_CODEWORD_LENGTH below.
+the model's (decision 6b removed it; the key-size rule is p4c's 524 live bits plus
+the crossbar fit, target.MAX_TERNARY_KEY_BITS): this script keeps its own frozen
+yardstick, MAX_CODEWORD_LENGTH below.
 
 Method. For every cell of the grid `n_trees x max_depth`, and for each of the
 first 3 campaign splits, one App forest and one DDoS forest are fitted on the
@@ -128,7 +129,6 @@ from sklearn.ensemble import RandomForestClassifier
 from p4gen.build_p4_script import (
     INFINITE, dt_thresholds_float_to_int,
     get_feature_intervals, get_joint_feature_intervals)
-from p4model.target import MAX_KEY_BYTES
 from p4gen.evaluation import (
     TOFINO_PIPELINE_STAGES,
     multi_model_memory_evaluation)
@@ -139,9 +139,11 @@ from src.training.train_model import (
     CCP_ALPHA_MIN, MIN_SAMPLES_SPLIT_MULT_MAX, MIN_SAMPLES_SPLIT_MULT_MIN,
     min_samples_split_from_mult)
 
-# The 512-bit codeword limit the model no longer has (decision 6b: it was 8 x the
-# 64-byte key limit): this analysis script keeps the figure as its own yardstick.
-MAX_CODEWORD_LENGTH = MAX_KEY_BYTES * 8
+# The codeword limit the model no longer has (decision 6b: it was 8 x the 64-byte
+# key limit, 512): this analysis script keeps a yardstick of its own, frozen at the
+# value it read until Task 32 (8 x the 65-byte limit of decision 6a, which the
+# 524-live-bit rule replaced).
+MAX_CODEWORD_LENGTH = 520
 
 SELECTED_FEATURES = [
     'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',

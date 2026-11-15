@@ -414,14 +414,20 @@ def test_table_blocks_of_the_empty_key_is_the_band_floor():
   assert lanes.table_blocks((0, 0)) == codeword_bits_to_blocks(0)
 
 
-def test_table_blocks_rejects_a_key_over_the_crossbar_before_enumerating(monkeypatch):
+def test_table_blocks_rejects_a_key_over_the_limits_before_enumerating(monkeypatch):
+  # 66 x 8 = 528 live bits: p4c's bit check (524) refuses it before placement;
+  # 67 one-bit fields = 67 bytes, more than the stage's 66 crossbar byte slots.
   def boom(*_):
-    raise AssertionError('the crossbar must not run for a 66-byte key')
+    raise AssertionError('the crossbar must not run for these keys')
   monkeypatch.setattr(lanes.xbar, 'alone_blocks', boom)
   lanes._table_blocks.cache_clear()
   with pytest.raises(CrossbarKeyTooWide) as info:
     lanes.table_blocks((8,) * 66)
-  assert info.value.args[1] == 66
+  assert info.value.args[1] == 528
+  with pytest.raises(CrossbarKeyTooWide) as info:
+    lanes.table_blocks((1,) * 67)
+  assert info.value.args[1] == 67
+  lanes._table_blocks.cache_clear()
 
 
 def test_table_blocks_raises_when_the_crossbar_cannot_fit_the_key(monkeypatch):
@@ -429,7 +435,7 @@ def test_table_blocks_raises_when_the_crossbar_cannot_fit_the_key(monkeypatch):
   lanes._table_blocks.cache_clear()
   with pytest.raises(CrossbarKeyTooWide) as info:
     lanes.table_blocks((27, 52))
-  assert info.value.args[1] == 11
+  assert info.value.args[1] == 79
   lanes._table_blocks.cache_clear()
 
 

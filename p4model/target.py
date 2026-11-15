@@ -57,27 +57,36 @@ TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 # Provenance: mau/tofino/memories.h:54, TERNARY_TABLES_MAX (model_audit_2026-
 # 09-27.md Appendix C).
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
-# The one limit on a LONE table key, in crossbar bytes (decision 6a): the training refusal,
-# the replay, tables' ladder and the packer's stage test all read it, via this module.
-# 65 is p4c's own limit, probed by the Task 17 compile experiment (design-review decision
-# 6a, gate G3; results/encoding_evidence_2026_11/model8/impl/experiment_report.md, "Extra
-# 6a"): hand-written programs with one ternary table whose key is N header-field bytes
-# compile at 64 and at 65 bytes (12 blocks each, both with 8-bit fields and with 32-bit
-# fields plus one 8-bit) and are refused at 66 ("uses 528b as ternary match key. Maximum
-# number of bits allowed is 524b": 66 bytes less the 4-bit version nibble). The ported
-# crossbar prices the 65-byte key at 12 blocks, as p4c does. Untested: a 66-byte key whose
-# bytes are not all full. (It was 64, from a key-width sweep whose widest table was exactly
-# 64 bytes, reviews/p4_tofino_reference.md 4.3.) The 512-bit codeword limit that used to
-# sit beside it was 64 times 8 and is gone (decision 6b).
-MAX_KEY_BYTES = 65
+# The key-size rule on a LONE ternary table key is p4c's own two checks (decision 6a, Task 32),
+# read by every site that refuses a key -- training, the replay's check_trees, the packer and
+# threshold alignment (tables.check_key_bits and the crossbar port's fit):
+#   1. LIVE key bits <= MAX_TERNARY_KEY_BITS. p4c sums bits.size() of every key slice of the
+#      table and errors above 524 ("uses 528b as ternary match key. Maximum number of bits
+#      allowed is 524b"): open-p4studio bf-p4c phv/table_phv_constraints.cpp:88. Bits, not
+#      bytes: a 66-byte key of 524 live bits passes it. 524 = the stage's 66 crossbar bytes
+#      less the 4-bit version nibble.
+#   2. The ported crossbar (xbar.py) places the key in one stage's 12 groups AND one 512-row
+#      word takes at most TCAM_ROWS_PER_STAGE blocks (a word chains its blocks down one
+#      column; tables.word_blocks). It is this second half, not a byte count, that refuses a
+#      66-byte key of 524 bits with no one-nibble byte: 66 whole bytes = 12 groups x 5 + 6
+#      whole midbytes, so the version bits need a 13th block per word.
+# Evidence (Task 26 B, p4c 9.13.4, model8/impl/probe_6a_precise.md, 5 compiles): 65 x 8 + one
+# 4-bit (66 bytes, 524 bits) compiles at 12 blocks; 64 x 8 + two 6-bit (524 bits) is refused at
+# placement ("could not fit in stage 0 with 512 entries"; port: 13 blocks per word); 66 x 8
+# (528 bits) is refused by the bit check; 16 x 32 + one 12-bit compiles at 12; 15 x 32 + two
+# 22-bit is refused (port: no fit in 12 groups). The rule predicts all 5. It replaced
+# MAX_KEY_BYTES = 65 (Task 17: 64 and 65 bytes compile, 66 x 8 refused), which falsely refused
+# the two compiling 66-byte keys.
+MAX_TERNARY_KEY_BITS = 524
 # What one stage's crossbar holds across ALL its keys, as opposed to the limit
 # above, which is for one table's key. 12 groups x 5 private bytes + 6 midbytes
 # (p4c's input_xbar.cpp:1319 says 66), and real stages of 65 and 66 distinct bytes
 # were built. Replay of 691 designs: 5 stage depths corrected, 0 regressions.
 # Bytes alone do not admit a stage at 65-66: the ternary crossbar port
 # (packing._crossbar_stage, xbar.py, since 2026-11-13) still has to find every
-# key an allocation, and refuses the stage when it cannot. Since then only the
-# range pool's packer (crossbar_stages_needed's fits) reads this constant.
+# key an allocation, and refuses the stage when it cannot. Since then it is read
+# by the range pool's packer (crossbar_stages_needed's fits), packing._stage_shards'
+# guard and lanes' shortcut for a key of more bytes than the crossbar has slots.
 TERNARY_CROSSBAR_STAGE_BYTES = 66
 # RETIRED 2026-09-29: TERNARY_CROSSBAR_MIXED_KEY_BYTES_PER_STAGE = 62, the
 # "greedy-give-up safety net" that refused a stage holding two different keys

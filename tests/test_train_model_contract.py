@@ -173,10 +173,10 @@ def _only(trial, name, magnitude):
     assert {n: trial.user_attrs[n] for n in CONSTRAINTS} == violations(name, magnitude)
 
 
-def test_crossbar_key_too_wide_records_key_bytes_over(monkeypatch):
-    """Task 10 (F3): a table whose key exceeds the stage crossbar is a
-    distinct failure from an over-budget model. The objective must record
-    `key_bytes_over` (bytes over target.MAX_KEY_BYTES), leave every other
+def test_crossbar_key_too_wide_records_key_too_wide(monkeypatch):
+    """Task 10 (F3): a table whose key p4c refuses is a distinct failure from
+    an over-budget model. The objective must record `key_too_wide` (live bits
+    over target.MAX_TERNARY_KEY_BITS), leave every other
     constraint at 0, and return the infeasible triple rather than crash the
     search."""
     import optuna
@@ -194,11 +194,11 @@ def test_crossbar_key_too_wide_records_key_bytes_over(monkeypatch):
         return study
 
     monkeypatch.setattr(tm.optuna, 'create_study', capture)
-    reported_width = 100
+    reported_bits = 600
     monkeypatch.setattr(
         tm, 'multi_model_memory_evaluation',
         lambda *a, **k: (_ for _ in ()).throw(
-            CrossbarKeyTooWide('table key too wide', reported_width)))
+            CrossbarKeyTooWide('table key too wide', reported_bits)))
 
     with pytest.raises(NoFeasibleSolution):
         _call(cfg=TrainConfig(n_trials=5, min_feasible_before_stop=2, lookback=2))
@@ -206,7 +206,7 @@ def test_crossbar_key_too_wide_records_key_bytes_over(monkeypatch):
     trials = captured['study'].trials
     assert trials, 'the search should have run at least one trial'
     for trial in trials:
-        _only(trial, 'key_bytes_over', reported_width - target.MAX_KEY_BYTES)
+        _only(trial, 'key_too_wide', reported_bits - target.MAX_TERNARY_KEY_BITS)
         assert trial.values == [-1.0, -1.0, float('inf')]
 
 
@@ -794,9 +794,9 @@ def test_default_config_still_declares_no_ccp_alpha_dimension():
     assert 'ccp_alpha_B' not in names
 
 
-def test_a_key_with_no_lane_fit_inside_64_bytes_is_still_a_violation(monkeypatch):
-    """Review focus 1: table_blocks raises CrossbarKeyTooWide with a byte width
-    <= 64 when no lane layout fits. byte_width - 64 would be <= 0, which
+def test_a_key_with_no_crossbar_fit_inside_the_bit_limit_is_still_a_violation(monkeypatch):
+    """Review focus 1: table_blocks raises CrossbarKeyTooWide with live bits
+    <= 524 when the crossbar cannot place the key. bits - 524 would be <= 0, which
     early_stopping.is_feasible reads as FEASIBLE. The violation is floored at 1."""
     import optuna
     import src.training.train_model as tm
@@ -817,15 +817,15 @@ def test_a_key_with_no_lane_fit_inside_64_bytes_is_still_a_violation(monkeypatch
     with pytest.raises(NoFeasibleSolution):
         _call(cfg=TrainConfig(n_trials=3, min_feasible_before_stop=2, lookback=2))
     for trial in captured['study'].trials:
-        _only(trial, 'key_bytes_over', 1)
+        _only(trial, 'key_too_wide', 1)
         assert not early_stopping.is_feasible(trial)
 
 
-def test_key_bytes_over_is_the_overflow_floored_at_one():
-    assert CrossbarKeyTooWide('', 100).magnitude == 100 - target.MAX_KEY_BYTES
-    assert CrossbarKeyTooWide('', 64).magnitude == 1
+def test_key_too_wide_is_the_bit_overflow_floored_at_one():
+    assert CrossbarKeyTooWide('', 600).magnitude == 600 - target.MAX_TERNARY_KEY_BITS
+    assert CrossbarKeyTooWide('', 524).magnitude == 1
     assert CrossbarKeyTooWide('', 11).magnitude == 1
-    assert CrossbarKeyTooWide('', 100).constraint == 'key_bytes_over'
+    assert CrossbarKeyTooWide('', 600).constraint == 'key_too_wide'
 
 
 def test_the_result_carries_the_reference_and_the_trial_table():

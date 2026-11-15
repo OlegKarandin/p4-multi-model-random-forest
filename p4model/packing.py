@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 from p4model import lanes, target, xbar
 from p4model.errors import CrossbarKeyTooWide, PlacementFailed
-from p4model.tables import check_key_bytes
+from p4model.tables import word_blocks
 from p4model.target import (
     ACTION_DATA_BUS_WORDS,
     ACTION_RAM_WORD_BYTES,
@@ -182,11 +182,14 @@ def _stage_shards(block_count, byte_width):
   column holds genuinely spreads them further, each shard still carrying the
   table's full key width. Splitting a table's KEY across stages is not real: a
   key is one indivisible match, TCAM compares a whole row in one clock, and a
-  stage's crossbar physically cannot deliver more than
-  target.MAX_KEY_BYTES bytes -- a table whose key exceeds that
-  budget is rejected by the compiler outright, not spread across stages. Raise
-  rather than silently pricing that impossible design as
-  `ceil(byte_width / budget)` stages.
+  stage's crossbar physically cannot deliver more than its
+  target.TERNARY_CROSSBAR_STAGE_BYTES (66) byte slots -- a table whose key
+  exceeds that is rejected by the compiler outright, not spread across
+  stages. Raise rather than silently pricing that impossible design as
+  `ceil(byte_width / budget)` stages (and rather than letting the range
+  pool's eager placement look for a stage forever). The key-size rule itself
+  (p4c's 524 live bits and the crossbar port's fit, decision 6a) is applied
+  where keys are priced; this is the crossbar's own capacity, a guard.
 
   The split is at TCAM_ROWS_PER_STAGE (one column), not TCAM_BLOCKS_PER_STAGE
   (the whole stage), because fits_two_columns places each shard inside one
@@ -206,7 +209,11 @@ def _stage_shards(block_count, byte_width):
   prediction. It is the one non-monotone (cost-lowering) change in this work,
   licensed because it corrects rounding rather than relaxing a measured
   limit."""
-  check_key_bytes(byte_width)
+  if byte_width > TERNARY_CROSSBAR_STAGE_BYTES:
+    # Live bits are not known here; 8 per byte is an upper bound.
+    raise CrossbarKeyTooWide(
+        "table key of %d crossbar bytes is wider than a stage's %d crossbar byte "
+        "slots" % (byte_width, TERNARY_CROSSBAR_STAGE_BYTES), 8 * byte_width)
   shards, remaining = [], block_count
   while remaining > TCAM_ROWS_PER_STAGE:
     shards.append((TCAM_ROWS_PER_STAGE, byte_width))
@@ -251,8 +258,8 @@ def _field_units(table_specs, key_fields, key_slices, levels, priorities):
     per_row = _alone_blocks(key)
     if per_row is None:
       raise CrossbarKeyTooWide(
-          "table %d's key of %d bytes does not fit one stage's ternary crossbar"
-          % (idx, byte_width), byte_width)
+          "table %d's key of %d bytes cannot be placed in one stage's ternary crossbar"
+          % (idx, byte_width), sum(int(used) for _, slices in key for _, used in slices))
     units.extend(_row_chunks(idx, _rows_of(block_count, max(1, per_row)),
                              max(1, per_row), fields, key,
                              levels[idx], priorities[idx]))
@@ -261,7 +268,9 @@ def _field_units(table_specs, key_fields, key_slices, levels, priorities):
 
 @functools.lru_cache(maxsize=16384)
 def _alone_blocks(key):
-  return xbar.alone_blocks(key) if key else 1
+  """A key of whole fields alone in a stage: its blocks per 512-row word, or
+  None when it cannot be placed in one stage (tables.word_blocks)."""
+  return word_blocks(xbar.alone_blocks(key)) if key else 1
 
 
 def _rows_of(block_count, per_row):
@@ -360,7 +369,8 @@ def _place_in_order(units, admit, seed_at, last_seed):
 def packed_alone_blocks(key):
   """A packed tree key's price per 512-row word ALONE in a stage: the blocks
   of p4c's crossbar allocation of its bytes (xbar.tree_key) in an empty
-  stage, or None when no allocation in 12 groups exists. Memoised on the key's
+  stage, or None when it cannot be placed in one stage (tables.word_blocks: no
+  allocation in 12 groups, or a word over 12 blocks). Memoised on the key's
   shape: a byte's container identity (packed.key_bytes' 4th element) only
   matters between tables, so it is renamed to its first appearance in the key
   first. The lane count lanes.standalone priced it until 2026-11-13 (equal on
@@ -376,15 +386,15 @@ def _packed_alone_blocks(key):
   key_bytes = xbar.tree_key(key, 0)
   if not xbar.StageXbar(tie='whole_first').allocate(key_bytes):
     return None
-  return xbar.blocks_per_row(key_bytes)
+  return word_blocks(xbar.blocks_per_row(key_bytes))
 
 
 def _packed_units(table_specs, key_fields, key_bytes, levels, priorities):
   """table_specs -> _Units for keys whose bytes are known (packed.key_bytes).
   A table's rows are its blocks / its key's price alone (packed_alone_blocks),
-  rounded up; chunked as _field_units does. A key with no allocation in 12
-  groups cannot be placed by any stage and is refused here, as
-  CrossbarKeyTooWide."""
+  rounded up; chunked as _field_units does. A key that cannot be placed in
+  one stage (packed_alone_blocks None) is refused here, as CrossbarKeyTooWide
+  (live bits unknown here: 0, magnitude 1)."""
   units = []
   for idx, (block_count, byte_width) in enumerate(table_specs):
     _stage_shards(block_count, byte_width)   # raises for an impossible key
@@ -392,8 +402,8 @@ def _packed_units(table_specs, key_fields, key_bytes, levels, priorities):
     per_row = packed_alone_blocks(key)
     if per_row is None:
       raise CrossbarKeyTooWide(
-          "table %d's key of %d bytes does not fit %d crossbar groups"
-          % (idx, len(key), TERNARY_CROSSBAR_GROUPS_PER_STAGE), byte_width)
+          "table %d's key of %d bytes cannot be placed in one stage's %d crossbar "
+          "groups" % (idx, len(key), TERNARY_CROSSBAR_GROUPS_PER_STAGE), 0)
     fields = (key_fields[idx] if key_fields is not None
               else frozenset({(("<private>", idx), byte_width)}))
     units.extend(_row_chunks(idx, _rows_of(block_count, per_row), per_row, fields,
@@ -451,9 +461,14 @@ def _stage_state(seed_fields, units, mode):
   placed = crossbar.find_alloc(key_bytes)
   if placed is None:
     return None
+  # A word wider than a column cannot be placed in this stage either
+  # (tables.word_blocks): the table waits, as in p4c.
+  blocks = word_blocks(xbar.blocks_per_row(key_bytes))
+  if blocks is None:
+    return None
   crossbar.commit(placed)
   per_row = dict(per_row)
-  per_row[table_idx] = xbar.blocks_per_row(key_bytes)
+  per_row[table_idx] = blocks
   return crossbar, numbering, per_row
 
 
