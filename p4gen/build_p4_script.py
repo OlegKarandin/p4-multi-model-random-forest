@@ -6,7 +6,7 @@ from sklearn.tree import _tree as _sklearn_tree
 import csv
 import json
 from collections import Counter
-from itertools import groupby, product
+from itertools import product
 
 from p4gen.feature_registers import FEATURE_REGISTER_CATALOG
 from p4gen import p4_gen_config
@@ -1534,6 +1534,12 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
       # (program.placement_priorities; two tasks: ddos 2, app 1); p4c breaks
       # ties within a priority by declaration order, which the "last-listed
       # tree first" rule relies on.
+      # Kept (design review 5.1/5.2, gate G3 2026-11-15): it forbids nothing in
+      # PHV, it fixes the ORDER p4c's placer serves ready tables in. Free on
+      # 160/160 p4c compiles of the Task 17 base designs (deleting every
+      # @placement_priority changed no p4c stage depth or block count, every
+      # model table on the same p4c stage); kept because earlier campaign
+      # evidence showed it load-bearing for disjoint designs at scale.
       table_name = "get_classification_tree_"+task+"_"+str(i)
       table_template = table_template.replace(
           "    table "+table_name+" {",
@@ -1578,6 +1584,8 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
     table_template = table_template.replace("<SIZE>", str(size))
     # Above every tree's priority, so p4c serves the range pool first, as the
     # model's packer assumes (program.range_table_priority has the evidence).
+    # Kept at gate G3 (5.1/5.2) with the tree priorities: free on 160/160 p4c
+    # compiles (see the tree tables' comment above).
     table_template = table_template.replace(
         "    table table_"+str(feature_idx)+"_"+feature+" {",
         "    @placement_priority("+str(range_priority)+")"
@@ -1935,53 +1943,52 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # value fields, codeword fields), so it is opened here rather than beside
   # the first @pa_container_size that used to be its only writer.
   phv_pragmas = ""
-  # meta.fwd out of PHV overlays (2026-11-09). p4c otherwise put the 1-bit
-  # flag in a 16-bit container overlaid with a bwd register's value field (119
-  # of the 272 per-tree pilot compiles) and then held every bwd register
-  # behind the `if (meta.fwd == 1)` gateway (ANTI_NEXT_TABLE_METADATA, an edge
-  # the program does not contain). With the pin, p4c orders the two gated
-  # blocks by their chains, which register_stage_schedule follows. Measured
-  # on the 272 pilot designs: p4c's stage depth the same on 267 of the 268
-  # that compiled both ways and one stage lower on one, blocks the same on
-  # 269 of 271 (+2 on two); PHV containers unchanged on the 45 checked. Report
-  # results/encoding_evidence_2026_11/model3/report.md, "I1b follow-up".
-  # Since decisions 1a / 7.1 option B (2026-11-14) there are no gated blocks
-  # (every register body reads meta.fwd instead); the pin stays, and the model
-  # no longer reads it. Whether it still matters is tested separately
-  # (design review K7, 3.1).
-  phv_pragmas += '@pa_no_overlay("ingress", "ig_md.fwd")\n'
+  # PHV pins, and what each one forbids p4c's PHV allocator to do:
+  #   * SPACE pin, @pa_solitary(f): no other field sits in f's container at
+  #     the same time (no packing);
+  #   * TIME pin, @pa_no_overlay(f): no other field reuses f's container
+  #     before or after f's live range (no overlay);
+  #   * SIZE pin, @pa_container_size(f, s...): f lives in containers of
+  #     exactly these sizes, low container first.
+  # The pin set was decided at gate G3 (2026-11-15) on the Task 17 / 17b
+  # drop-one-pin compile experiment: 160 DEV designs, 40 per encoding, every
+  # number below is p4c's committed allocation
+  # (results/encoding_evidence_2026_11/model8/impl/G3_decisions.md,
+  # experiment_report.md, remeasure.md). The checker program_checks.
+  # check_program requires exactly this set.
+  #
+  # DROPPED at G3 (3.1): @pa_no_overlay(fwd). It once kept the 1-bit
+  # direction flag out of an overlay with a bwd register's value field, which
+  # held every bwd register behind the old `if (meta.fwd == 1)` gateway. Since
+  # decisions 1a / 7.1 option B (2026-11-14) there is no gated block (every
+  # register body reads meta.fwd), and dropping the pin was free on 160/160
+  # p4c compiles (no stage depth, block or PHV container change).
   for task in program_tasks:
     name, bits = task.name, bit_per_classes[task.name]
     if n_trees[name] > 0:
       for i in range(n_trees[name]):
         metadata_code += "\tbit<"+str(bits)+"> class_tree_"+name+"_"+str(i)+";\n"
-        # Each tree's classification table writes exactly this field, and a
-        # Tofino stage has ONE action ALU per PHV CONTAINER -- not per field.
-        # These are bit<1> (binary DDoS) or bit<2> (3-class App), so the
-        # allocator packs several into one container to save space, and every
-        # tree table sharing a container is then forced into its own stage.
-        # Measured (reviews/p4_tofino_reference.md Sec 7, Mechanism A):
+        # SPACE pin, KEPT at G3 (3.2, load-bearing). Each tree's
+        # classification table writes exactly this field, and a Tofino stage
+        # has ONE action ALU per PHV CONTAINER -- not per field. These are
+        # bit<1> (binary DDoS) or bit<2> (3-class App), so without the pin the
+        # allocator packs several into one container, and every tree table
+        # sharing a container is then forced into its own stage. Evidence
+        # (p4c): dropping it costs about +1 stage on most of the 160 designs
+        # and model exactness falls to 3-16 of 20 per cell (Task 17); earlier,
         # independent_low_sd8 put class_tree_ddos_1..5 in H0[15:11] and its
-        # classification pool spanned 5 stages instead of 2; @pa_solitary took
-        # the whole program from 12 stages to 9 -- exactly what
-        # evaluation.stage_depth predicts -- with TCAM and SRAM totals
-        # unchanged and 5 more PHV containers used.
+        # classification pool spanned 5 stages instead of 2 (12 -> 9 stages
+        # with the pin; reviews/p4_tofino_reference.md Sec 7, Mechanism A).
         #
         # There is no classification_<task> field to pin: the vote action
         # exports the winner into ig_tm_md (program.VOTE_EXPORT).
         phv_pragmas += ('@pa_solitary("ingress", "ig_md.class_tree_'
                         + name + "_" + str(i) + '")\n')
-        # C5 (Phase 3 step 1): also forbid the allocator from overlaying this
-        # field with another one in the same container across control flows.
-        # @pa_solitary alone still lets two class_tree_* fields sharing a
-        # container overlay each other when they are written on mutually
-        # exclusive paths, which would make the field's PHV placement -- and
-        # therefore which stage its table lands in -- depend on overlay
-        # decisions the (later) stage simulation cannot see. code_<feature>
-        # fields get the same pragma since spec 2026-09-29 (emitted with their
-        # @pa_solitary, below) -- for a different reason, explained there.
-        phv_pragmas += ('@pa_no_overlay("ingress", "ig_md.class_tree_'
-                        + name + "_" + str(i) + '")\n')
+        # DROPPED at G3 (3.3): @pa_no_overlay(class_tree_*). Free on 160/160
+        # p4c compiles (no stage depth or block change after the 17b fix) and
+        # 2.6-3.7 PHV containers cheaper on average. The overlay edge it
+        # prevented only repeats an order that already exists: everything a
+        # class field could overlay is read before the trees run.
   # Tier 3 + Task 3: every RESOLVED entry gets its own codeword field
   # (code_<resolved_name>), but the raw tracked-value field (<raw>_val) is
   # declared exactly once per DISTINCT raw feature name -- never twice just
@@ -1998,6 +2005,11 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # accidentally correct. One pragma per DISTINCT raw field (never per
   # resolved name): two namespaced entries share one raw field, and a
   # duplicate pragma for the same field is a compile error.
+  # SIZE pin, KEPT at G3 (3.4, load-bearing): it forbids a 32-bit (or 8-bit)
+  # container for the range key. Evidence (p4c, Task 17): dropping it costs
+  # +1.4..+11 TCAM blocks per encoding on average, a stage on most designs,
+  # and 2 of the 160 designs no longer compile (a range key that does not fit
+  # in under 5 PHV nibbles).
   #
   # The pragma names the field the way the PHV logs do -- `ig_md.<raw>_val`,
   # after SwitchIngressParser's `out metadata_t ig_md` parameter, NOT the
@@ -2021,21 +2033,23 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       metadata_code += "\tbit<16> "+value_field+";\n"
       phv_pragmas += '@pa_container_size("ingress", "ig_md.'+value_field+'", 16)\n'
 
-  # Each codeword field is written by exactly one range table's action, and is
-  # made solitary for the same reason as class_tree_* above: one action ALU
-  # per PHV container. These fields are wide and ragged (their width is an
-  # interval count, not a multiple of 32), so the allocator lays the full
-  # 32-bit chunks into whole W containers and then CO-PACKS the leftovers of
-  # two different codewords into one container. Measured: joint_low_sd7 put
-  # code_fwd_packet_length_max[135:128] and code_bwd_packet_length_max[87:64]
-  # both in W8, so its two range tables -- both ready in the same stage, 1
-  # TCAM block each, nothing else competing -- took two stages instead of one
-  # (10 -> 9 stages once pinned). One pragma per RESOLVED name, matching the
-  # declaration exactly: under disjoint namespacing app_/ddos_ entries have
-  # separate codeword fields even when they share one raw value field.
-  # Spec 2026-09-29: two more pragmas per codeword field, pinning p4c to what
-  # the resource model assumes rather than modelling p4c's PHV choices.
-  #   * @pa_no_overlay on EVERY code_* field. p4c may overlay a range table's
+  # Code fields. Each codeword field is written by exactly one range table's
+  # action. One pragma per RESOLVED name, matching the declaration exactly:
+  # under disjoint namespacing app_/ddos_ entries have separate codeword
+  # fields even when they share one raw value field.
+  # DROPPED at G3 (3.5): @pa_solitary(code_*) (joint / disjoint / per-task).
+  # It was added when code fields were declared at their live, ragged width
+  # (an interval count), and p4c co-packed the leftovers of two codewords into
+  # one container (joint_low_sd7: code_fwd_packet_length_max[135:128] and
+  # code_bwd_packet_length_max[87:64] both in W8, two range tables a stage
+  # apart, 10 -> 9 stages once pinned). Since decision 4.3 every code field is
+  # DECLARED at its containers' full width (below), so its SIZE pin fills
+  # every container it gets and no other field can share one: the space pin
+  # is redundant. Free on 120/120 p4c compiles (no stage depth or block
+  # change, PHV within 1 container).
+  # The two pins each codeword field keeps, pinning p4c to what the resource
+  # model assumes rather than modelling p4c's PHV choices (spec 2026-09-29):
+  #   * TIME pin, KEPT (3.6): @pa_no_overlay on EVERY code_* field. p4c may overlay a range table's
   #     output onto a live field with a disjoint live range; each overlay adds
   #     a hidden "all readers of the old field first" placement edge
   #     (phv/add_initialization.cpp), and Tofino-1's backfill snapshot then
@@ -2044,9 +2058,10 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   #     tables in 65 of 73 archived compiles were delayed this way; with the
   #     pragma, 0. Pinning OUR side blocks every partner -- pinning the
   #     partners (*_val, fwd) left residual overlays on flow_hash /
-  #     now_pseudo_us.
-  #   * @pa_container_size on every TREE-KEY code_* field, to the layout
-  #     lanes.layout gives it (the width rule). No-overlay alone changes PHV
+  #     now_pseudo_us. Not re-tested at G3 (decided KEEP beforehand).
+  #   * SIZE pin, KEPT: @pa_container_size on every code_* field, to the layout
+  #     lanes.layout gives it (the plain width rule, decision 4.1, unchanged
+  #     at G3). No-overlay alone changes PHV
   #     pressure and p4c then put some 17-32-bit fields whole in W containers:
   #     same bytes, worse lanes, +1 block per tree. The model's 62-byte
   #     mixed-key refusal was retired on the strength of these pins
@@ -2057,12 +2072,15 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # feasible stage_depth 60/60, blocks 60/60; cost +4.7 PHV containers).
   # Per-tree codes: one packed field per feature (spec 2026-11-11-packed-codes-
   # stage-pin Sec 3.1), declared at its containers' bits and pinned to them,
-  # low container first, plus @pa_no_overlay for the reason given above (kept by
-  # the user's choice, 2026-11-13, although removing it changed no p4c stage or
-  # block count on the 370 development programs); no @pa_solitary (spec Sec
-  # 3.1). Without @pa_container_size, stages were worse on 15 of 30 k<=8 probe
-  # designs (results/encoding_evidence_2026_11/model4, spec Sec 3.4), and the
-  # crossbar simulation needs the containers to know each key byte's lane.
+  # low container first (SIZE pin: without it, stages were worse on 15 of 30
+  # k<=8 probe designs, results/encoding_evidence_2026_11/model4, spec Sec
+  # 3.4, and the crossbar simulation needs the containers to know each key
+  # byte's lane), plus the TIME pin @pa_no_overlay, KEPT at G3 (3.7) for
+  # uniformity with the other encodings' code fields (3.6): dropping it was
+  # free on 40/40 p4c compiles (same stage depth and blocks, 3-4 PHV
+  # containers fewer) although p4c then moved some tables between stages on
+  # 13/40 (same totals); no @pa_solitary (spec Sec 3.1; the declared width
+  # fills the containers, as for 3.5).
   if tree_codes:
     for feature, containers in layout.containers.items():
       field = "code_" + packed_field(feature)
@@ -2076,9 +2094,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # every field (evaluation._pool_inputs), so the two PHV counts agree.
   code_container_sizes = ({} if tree_codes else code_field_container_sizes(
       resolved_plan, [task.name for task in program_tasks]))
-  # Every other encoding: each field's @pa_solitary, then its @pa_no_overlay and
-  # @pa_container_size. (The groupby once also gathered the per-field per-tree
-  # program's codes of one (feature, reader); every group here is one field.)
+  # Every other encoding: each field's @pa_no_overlay and @pa_container_size
+  # (no @pa_solitary since G3, 3.5 above).
   # Decision 4.3 (uniformity with the packed per-tree field): a pinned field is
   # DECLARED at its containers' full width, its live code in the low bits and 0
   # above (the range action writes it whole), and every tree keys the live bits
@@ -2090,19 +2107,14 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       name: (sum(code_container_sizes[name]) if name in code_container_sizes
              else len(intervals) - 1)
       for name, (_, intervals, _) in resolved_plan.items()}
-  for _, group in groupby(resolved_plan.items() if not tree_codes else (),
-                          key=lambda item: (item[1][0], frozenset(item[1][2]))):
-    group = [resolved_name for resolved_name, _ in group]
-    for resolved_name in group:
-      metadata_code += ("\tbit<" + str(code_field_bits[resolved_name]) + "> code_"
-                        + resolved_name + ";\n")
-      phv_pragmas += '@pa_solitary("ingress", "ig_md.code_'+resolved_name+'")\n'
-    for resolved_name in group:
-      phv_pragmas += '@pa_no_overlay("ingress", "ig_md.code_'+resolved_name+'")\n'
-      if resolved_name in code_container_sizes:
-        phv_pragmas += ('@pa_container_size("ingress", "ig_md.code_' + resolved_name + '", '
-                        + ", ".join(str(size) for size in code_container_sizes[resolved_name])
-                        + ')\n')
+  for resolved_name in (resolved_plan if not tree_codes else ()):
+    metadata_code += ("\tbit<" + str(code_field_bits[resolved_name]) + "> code_"
+                      + resolved_name + ";\n")
+    phv_pragmas += '@pa_no_overlay("ingress", "ig_md.code_'+resolved_name+'")\n'
+    if resolved_name in code_container_sizes:
+      phv_pragmas += ('@pa_container_size("ingress", "ig_md.code_' + resolved_name + '", '
+                      + ", ".join(str(size) for size in code_container_sizes[resolved_name])
+                      + ')\n')
 
   # Task 3, point 3: registers must be resolved against the DEDUPLICATED set
   # of RAW feature names, never the (possibly namespaced) resolved names --
@@ -2112,8 +2124,23 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       generate_P4_registers_and_apply(raw_feature_intervals))
   # One bit<16> scratch field per dependency register used (iat_field_name),
   # declared first, where the template's single current_iat used to be.
+  scratch_fields = iat_scratch_fields(raw_feature_intervals)
   metadata_code = "".join("\tbit<16> " + field + ";\n"
-                          for field in iat_scratch_fields(raw_feature_intervals)) + metadata_code
+                          for field in scratch_fields) + metadata_code
+  # SIZE pin, ADDED at G3 (2026-11-15) on every IAT scratch field: it forbids a
+  # 32-bit (or 8-bit) container, so two scratch fields can no longer share one
+  # W container. Without it p4c packed fwd_current_iat and bwd_current_iat
+  # into one 32-bit container (beside $hash_field_argument0) in 35 of the 83
+  # Task 17b base designs that have both the fwd and the bwd last-arrival
+  # register; two actions cannot write one container in one stage, so p4c ran
+  # the second register a stage later ("action dependency ... due to PHV
+  # allocation"), and 5 of the 35 (all k<=8) lost a whole stage the model does
+  # not price. Probe (p4c, 81 compiles, impl/remeasure.md): with this pin p4c
+  # co-schedules the two registers on 83/83, the 5 become exact (10 -> 9
+  # stages), no other stage or block count moves, +2.6 PHV containers. It is
+  # what p4model.phv already assumes (one 16-bit container per scratch field).
+  for field in scratch_fields:
+    phv_pragmas += '@pa_container_size("ingress", "ig_md.' + field + '", 16)\n'
 
   # F2: a feature with no FEATURE_REGISTER_CATALOG entry is silently skipped
   # by generate_P4_registers_and_apply above, but everything else in this

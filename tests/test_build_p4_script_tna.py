@@ -1924,7 +1924,9 @@ def test_generate_P4_code_pins_a_shared_raw_field_only_once(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# @pa_solitary on every field a MATCH TABLE's action writes.
+# @pa_solitary (a SPACE pin: no other field in the container at the same time)
+# on every class_tree_* field, and since gate G3 (2026-11-15, decision 3.5) on
+# no code_* field.
 #
 # A Tofino stage has one action ALU per PHV CONTAINER, not per field. Two
 # tables whose actions write fields the PHV allocator packed into the same
@@ -1932,30 +1934,20 @@ def test_generate_P4_code_pins_a_shared_raw_field_only_once(tmp_path):
 # dependency between <A> and table <B> due to PHV allocation advances stage",
 # not as any resource being full, which is why no capacity-based cost model
 # can see it (reviews/p4_tofino_reference.md Sec 7, Mechanism A).
-#
-# It bites both generated pools, because both write fields the allocator
-# likes to co-pack:
 #   * class_tree_<task>_<i> is bit<1>/bit<2>, so several fit one container --
 #     measured, independent_low_sd8 put class_tree_ddos_1..5 in H0[15:11],
-#     forcing those five tree tables into five separate stages.
-#   * code_<resolved> is wide and ragged, so its leftover past the last full
-#     32-bit chunk co-packs with another codeword's -- measured, joint_low_sd7
-#     put code_fwd_packet_length_max[135:128] and
-#     code_bwd_packet_length_max[87:64] both in W8, costing its two range
-#     tables a stage.
-#
-# @pa_solitary forbids the sharing. Measured over 8 recompiled calibration
-# rows: 1-3 stages recovered, TCAM/SRAM totals unchanged, PHV container count
-# +5 on independent_low_sd8 (12 stages -> 9, which is exactly what
-# evaluation.stage_depth predicts, with the placement matching table for
-# table). Same argument as the @pa_container_size block above, one layer up.
+#     forcing those five tree tables into five separate stages. Kept (3.2).
+#   * code_<resolved> fields are declared at their containers' full width
+#     (decision 4.3) and pinned by @pa_container_size, so no other field can
+#     share their containers: the space pin was redundant, and dropping it was
+#     free on 120/120 p4c compiles (G3).
 # ---------------------------------------------------------------------------
 
 _PA_SOLITARY_RE = re.compile(
     r'@pa_solitary\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)')
 
 
-def test_generate_P4_code_makes_every_codeword_field_solitary(tmp_path):
+def test_generate_P4_code_makes_no_codeword_field_solitary(tmp_path):
   clf_app = _tiny_app_forest()
   clf_ddos = _tiny_ddos_forest()
   app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
@@ -1972,7 +1964,7 @@ def test_generate_P4_code_makes_every_codeword_field_solitary(tmp_path):
   solitary = set(_PA_SOLITARY_RE.findall(text))
 
   assert declared, "fixture produced no codeword fields at all"
-  assert declared <= solitary
+  assert not declared & solitary
 
 
 def test_generate_P4_code_makes_every_per_tree_result_field_solitary(tmp_path):
@@ -1998,9 +1990,10 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
   # Same regression the @pa_container_size pair above guards: p4c silently
   # ignores a pragma naming a field that does not exist, so a stale or
   # mis-spelled name would stop pinning with no error anywhere. Assert the
-  # solitary set is exactly the code_*/class_tree_* fields declared -- and in
-  # particular that no classification_<task> field exists any more: the vote
-  # action exports the winner into ig_tm_md (decision 1f).
+  # solitary set is exactly the class_tree_* fields declared (no code_* field
+  # since G3, 3.5) -- and in particular that no classification_<task> field
+  # exists any more: the vote action exports the winner into ig_tm_md
+  # (decision 1f).
   clf_app = _tiny_app_forest()
   clf_ddos = _tiny_ddos_forest()
   app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
@@ -2013,8 +2006,7 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
   with open(written_path) as f:
     text = f.read()
 
-  declared = (set(re.findall(r"bit<\d+> (code_[A-Za-z0-9_]+);", text)) |
-              set(re.findall(r"bit<\d+> (class_tree_[A-Za-z0-9_]+);", text)))
+  declared = set(re.findall(r"bit<\d+> (class_tree_[A-Za-z0-9_]+);", text))
   solitary = _PA_SOLITARY_RE.findall(text)
 
   assert set(solitary) == declared
@@ -2026,16 +2018,14 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
 
 # ---------------------------------------------------------------------------
 # C5 (Phase 3 step 1): @placement_priority on every classification tree
-# table, and @pa_no_overlay next to every class_tree_* @pa_solitary.
+# table. (C5 also added @pa_no_overlay next to every class_tree_*
+# @pa_solitary; gate G3 dropped it, 3.3: free on 160/160 p4c compiles.)
 #
-# These two pragmas pin a deterministic tree order (ddos tables placed ahead
-# of app tables, at the SAME priority within a task) and a predictable PHV
-# layout for the per-tree result fields, so a later packer change can
+# The priority pins a deterministic tree order (ddos tables placed ahead
+# of app tables, at the SAME priority within a task), so the packer can
 # simulate p4c's greedy crossbar placement instead of charging a fitted
 # worst-case margin for "don't know which key goes first"
-# (CLAUDE.md's "Ternary block cost" / "Crowded stage" section;
-# reviews/model_audit_2026-09-27.md, finding C5). This task only adds the
-# pragmas to the generated P4 -- the packer still uses the old margin.
+# (reviews/model_audit_2026-09-27.md, finding C5).
 # ---------------------------------------------------------------------------
 
 _PLACEMENT_PRIORITY_TABLE_RE = re.compile(
@@ -2103,7 +2093,11 @@ def test_generate_P4_code_placement_priority_pragma_precedes_its_table(tmp_path)
   assert found > 0, "fixture produced no classification tree tables at all"
 
 
-def test_generate_P4_code_every_solitary_field_gets_pa_no_overlay_next_to_it(tmp_path):
+def test_generate_P4_code_pa_no_overlay_on_exactly_the_code_fields(tmp_path):
+  # Gate G3 (2026-11-15): the TIME pin @pa_no_overlay stays on every code_*
+  # field (3.6) and on nothing else -- dropped on meta.fwd (3.1) and on the
+  # class_tree_* fields (3.3), both free on 160/160 p4c compiles. Never
+  # duplicated (a duplicate pragma is a p4c error).
   clf_app = _tiny_app_forest()
   clf_ddos = _tiny_ddos_forest()
   app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
@@ -2116,27 +2110,14 @@ def test_generate_P4_code_every_solitary_field_gets_pa_no_overlay_next_to_it(tmp
   with open(written_path) as f:
     text = f.read()
 
-  solitary = set(_PA_SOLITARY_RE.findall(text))
+  declared = set(re.findall(r"bit<\d+> (code_[A-Za-z0-9_]+);", text))
   no_overlay_list = re.findall(
       r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)', text)
 
-  assert any(f.startswith("class_tree_") for f in solitary)
-  assert any(f.startswith("code_") for f in solitary)
-  # Every solitary field -- class_tree_* (C5) and, since spec 2026-09-29,
-  # code_* -- gets @pa_no_overlay: no more, no fewer, never duplicated (a
-  # duplicate pragma is a p4c error). Plus meta.fwd (2026-11-09), pinned out
-  # of overlays without @pa_solitary, the first PHV pragma of the program.
-  assert no_overlay_list[0] == "fwd" and "fwd" not in solitary
-  no_overlay_list = no_overlay_list[1:]
-  assert set(no_overlay_list) == solitary
+  assert declared
+  assert set(no_overlay_list) == declared
   assert len(no_overlay_list) == len(set(no_overlay_list))
-
-  # Each @pa_no_overlay sits directly under its own @pa_solitary line.
-  for field in solitary:
-    assert (
-        '@pa_solitary("ingress", "ig_md.' + field + '")\n'
-        '@pa_no_overlay("ingress", "ig_md.' + field + '")\n'
-    ) in text
+  assert '"ig_md.fwd"' not in text
 
 
 # ---------------------------------------------------------------------------
@@ -2506,8 +2487,9 @@ def test_code_field_full_width(tmp_path, encoding):
     field = "code_" + name
     # declared width == the sum of its @pa_container_size values (the plain width rule's)
     assert declared[field] == sum(pins[field]) == sum(lanes.container_sizes(len(intervals) - 1))
-    # the pins on the field stay (whether @pa_solitary is redundant is measured later)
-    assert '@pa_solitary("ingress", "ig_md.%s")' % field in text
+    # the time pin stays; the space pin was dropped at gate G3 (3.5: the declared
+    # width fills the containers, so no other field can share one)
+    assert '@pa_solitary("ingress", "ig_md.%s")' % field not in text
     assert '@pa_no_overlay("ingress", "ig_md.%s")' % field in text
   # every range action parameter is as wide as the field it writes, so the action
   # writes the field whole (the live code zero-extended)

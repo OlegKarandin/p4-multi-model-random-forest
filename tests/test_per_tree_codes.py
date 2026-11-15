@@ -217,13 +217,8 @@ _OLD_FLAG_SHAS = {
 }
 
 
-# Every program pins meta.fwd out of PHV overlays since 2026-11-09 (build_p4_script;
-# test_every_encoding_pins_fwd_once): the frozen programs above plus that one line.
-_FWD_PIN = '@pa_no_overlay("ingress", "ig_md.fwd")\n'
-
-
 def _sha(text):
-  return hashlib.sha256(text.replace(_FWD_PIN, "", 1).encode("utf-8")).hexdigest()
+  return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _two_task(tmp_path, app, ddos, names, intervals, **kwargs):
@@ -253,15 +248,60 @@ def test_each_encoding_writes_the_program_the_old_flag_wrote(tmp_path, encoding)
           == _OLD_FLAG_SHAS[(frozen, "three")])
 
 
+_PIN_LINE = re.compile(r'^@(pa_\w+)\("ingress", "ig_md\.(\w+)"((?:, \d+)*)\)$', re.M)
+_DECLARED = re.compile(r'^\tbit<(\d+)> (\w+);$', re.M)
+
+
+def _g3_pin_set(text):
+  """The PHV pin set gate G3 (2026-11-15) fixed, from the program's declarations:
+  pa_solitary on every class_tree_*; pa_container_size 16 on every <f>_val and every IAT
+  scratch field <chain>_current_iat; pa_no_overlay and pa_container_size on every code
+  field (code_pk_* too). Nothing on meta.fwd."""
+  pins = set()
+  for bits, field in _DECLARED.findall(text):
+    if field.startswith("class_tree_"):
+      pins.add(("pa_solitary", field, ""))
+    elif field.endswith("_current_iat") or (field.endswith("_val") and not field.startswith("code_")):
+      pins.add(("pa_container_size", field, ", 16"))
+    elif field.startswith("code_"):
+      pins.add(("pa_no_overlay", field, ""))
+  return pins
+
+
+@pytest.mark.parametrize("seed", [0, 1])
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING,
                                       PER_TREE_ENCODING])
-def test_every_encoding_pins_fwd_once(tmp_path, encoding):
-  app, ddos, names = _rng_design(0)
-  own = (_own(app, names), _own(ddos, names))
-  text = _two_task(tmp_path, app, ddos, names, own, encoding=encoding)
-  assert text.count(_FWD_PIN) == 1
-  # ahead of every other PHV pragma, where the 45-design pin batch put it
-  assert text.index(_FWD_PIN) < text.index("@pa_solitary")
+def test_every_encoding_carries_exactly_the_g3_pin_set(tmp_path, encoding, seed):
+  app, ddos, names = _rng_design(seed)
+  if encoding == JOINT_ENCODING:
+    joint = bps.get_joint_feature_intervals(app, names, ddos, names)
+    intervals = (joint, joint)
+  else:
+    intervals = (_own(app, names), _own(ddos, names))
+  text = _two_task(tmp_path, app, ddos, names, intervals, encoding=encoding)
+  lines = _PIN_LINE.findall(text)
+  assert len(lines) == len(set(lines)), "a duplicate pragma is a p4c error"
+  code_sizes = {field: sizes for pin, field, sizes in lines
+                if pin == "pa_container_size" and field.startswith("code_")}
+  others = {line for line in lines
+            if not (line[0] == "pa_container_size" and line[1].startswith("code_"))}
+  assert others == _g3_pin_set(text)
+  declared = dict((field, int(bits)) for bits, field in _DECLARED.findall(text))
+  codes = {field for field in declared if field.startswith("code_")}
+  assert set(code_sizes) == codes
+  for field, sizes in code_sizes.items():
+    assert sum(int(s) for s in sizes.split(",") if s.strip()) == declared[field]
+  # the scratch pin is there (every design here has an IAT chain) ...
+  scratch = [field for field in declared if field.endswith("_current_iat")]
+  assert scratch
+  for field in scratch:
+    assert '@pa_container_size("ingress", "ig_md.%s", 16)\n' % field in text
+  # ... and the three pins dropped at G3 are not (3.1, 3.3, 3.5)
+  assert '"ig_md.fwd"' not in text
+  assert not re.search(r'@pa_no_overlay\("ingress", "ig_md\.class_tree_', text)
+  assert not re.search(r'@pa_solitary\("ingress", "ig_md\.code_', text)
+  # and the program passes the replay's shape check, which requires exactly this set
+  assert model_breakdown(parse_program_text(text))["refusal"] != "program_shape"
 
 
 def test_the_default_encoding_is_joint(tmp_path):

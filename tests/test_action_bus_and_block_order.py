@@ -213,15 +213,17 @@ def test_the_model_ignores_the_programs_fwd_pin(tmp_path):
                               selected_features_app=names, selected_features_ddos=names)
   with open(path, encoding="utf-8") as handle:
     text = handle.read()
+  # The generator no longer writes the pin (gate G3, 3.1: free on 160/160 p4c
+  # compiles). Adding it back changes no price, but the shape check (decision
+  # 8.2) refuses the text: it is an older generator's program.
   pin = '@pa_no_overlay("ingress", "ig_md.fwd")\n'
-  assert pin in text
+  assert pin not in text
   assert not hasattr(parse_program_text(text), "fwd_pinned")
-  # The pin changes no price; a program without it is refused by the shape
-  # check (decision 8.2), since the generator always emits it.
-  assert price_program(parse_program_text(text.replace(pin, ""))) == price_program(
-      parse_program_text(text))
-  assert model_breakdown(parse_program_text(text.replace(pin, "")))["refusal_reason"] == (
-      "missing_pin:pa_no_overlay:fwd")
+  first = text.index("@pa_")
+  pinned = text[:first] + pin + text[first:]
+  assert price_program(parse_program_text(pinned)) == price_program(parse_program_text(text))
+  assert model_breakdown(parse_program_text(pinned))["refusal_reason"] == (
+      "unexpected_shape:pin:pa_no_overlay:fwd")
 
 
 def test_replay_refuses_a_gated_register_block():

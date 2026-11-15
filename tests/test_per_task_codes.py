@@ -126,9 +126,9 @@ def test_program_declares_and_pins_every_code_field(tmp_path):
             field = "code_tk_%s_%s" % (task, feature)
             # declared at its containers' full width (decision 4.3)
             assert "bit<%d> %s;" % (sum(lanes.container_sizes(width, lay)), field) in text
-            # All three pragmas: dropping @pa_solitary let p4c pack code fields of
-            # different tables into one container and made stage results false.
-            assert '@pa_solitary("ingress", "ig_md.%s")' % field in text
+            # The time and size pins; the space pin @pa_solitary was dropped at
+            # gate G3 (3.5): the full-width declaration fills the containers.
+            assert '@pa_solitary("ingress", "ig_md.%s")' % field not in text
             assert '@pa_no_overlay("ingress", "ig_md.%s")' % field in text
             assert ('@pa_container_size("ingress", "ig_md.%s", %s)'
                     % (field, ", ".join(map(str, lanes.container_sizes(width, lay))))) in text

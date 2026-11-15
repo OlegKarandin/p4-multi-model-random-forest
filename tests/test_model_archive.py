@@ -52,18 +52,18 @@ def test_an_exact_archive_passes(tmp_path, monkeypatch, capsys):
 
 
 def test_a_refused_program_is_reported_not_raised(tmp_path, monkeypatch, capsys):
-    # The real replay on a stand-in program with none of the generator's pins: a
-    # named refusal, reported as MODEL_REFUSED:<reason> (decision 8.2).
+    # The real replay on a stand-in program with no declarations, pins or apply
+    # block: a named refusal, reported as MODEL_REFUSED:<reason> (decision 8.2).
     archive = _archive(tmp_path, ["d1"])
     _p4c(monkeypatch, {"d1": 11})
     results = model_archive.check(archive, known_misses={})
-    assert results[0]["misses"] == {"refusal": "MODEL_REFUSED:missing_pin:pa_no_overlay:fwd"}
+    assert results[0]["misses"] == {"refusal": "MODEL_REFUSED:unexpected_shape:no_ingress_apply"}
     assert results[0]["model_stage_depth"] is None
     out = capsys.readouterr().out
-    assert "d1: MODEL_REFUSED:missing_pin:pa_no_overlay:fwd (UNEXPECTED)" in out
+    assert "d1: MODEL_REFUSED:unexpected_shape:no_ingress_apply (UNEXPECTED)" in out
     assert "refused by the model 1" in out
     assert model_archive.main_exit_code(results, known_misses={}) == 1
-    listed = {"d1": {"refusal": "MODEL_REFUSED:missing_pin:pa_no_overlay:fwd"}}
+    listed = {"d1": {"refusal": "MODEL_REFUSED:unexpected_shape:no_ingress_apply"}}
     assert model_archive.main_exit_code(model_archive.check(archive, listed), listed) == 0
 
 

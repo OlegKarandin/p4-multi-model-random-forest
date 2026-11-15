@@ -134,10 +134,29 @@ def test_each_pin_the_generator_emits_is_required(tmp_path, encoding):
         assert breakdown["stage_depth"] is None and breakdown["blocks"] is None
         seen[pin] += 1
     expected = {"pa_no_overlay", "pa_solitary", "pa_container_size", "placement_priority"}
-    if encoding == PER_TREE_ENCODING:
-        assert seen["pa_solitary"] == sum(1 for line in lines if "class_tree_" in line
-                                          and "@pa_solitary" in line)
+    # pa_solitary is on the class_tree_* fields only since gate G3 (3.5)
+    assert seen["pa_solitary"] == sum(1 for line in lines if "class_tree_" in line
+                                      and "@pa_solitary" in line)
     assert set(seen) == expected, seen
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_each_pin_dropped_at_g3_is_refused_when_present(tmp_path, encoding):
+    """A text carrying a pin gate G3 dropped (3.1 fwd no-overlay, 3.3 class_tree_*
+    no-overlay, 3.5 code_* solitary) is an older generator's program: refused
+    unexpected_shape:pin:<pin>:<field>, although the pin changes no price."""
+    (_, text), = _texts(tmp_path, encoding, 1, min_features=3)
+    program = parse_program_text(text)
+    first = text.index("@pa_")
+    dropped = [("pa_no_overlay", "fwd"), ("pa_no_overlay", sorted(program.class_fields)[0])]
+    codes = sorted(name for name in program.declared if name.startswith("code_"))
+    dropped.append(("pa_solitary", codes[0]))
+    for pin, field in dropped:
+        added = text[:first] + '@%s("ingress", "ig_md.%s")\n' % (pin, field) + text[first:]
+        with pytest.raises(ProgramShapeRefused) as refused:
+            check_program(parse_program_text(added))
+        assert refused.value.reason == "unexpected_shape:pin:%s:%s" % (pin, field)
+        assert price_program(parse_program_text(added)) == price_program(program)
 
 
 def test_a_pre_task_2_program_is_refused_as_a_gated_register_block(tmp_path):

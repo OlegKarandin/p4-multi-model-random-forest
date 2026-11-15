@@ -597,7 +597,7 @@ def code_container_order(field, width, slice_index):
 def field_key(fields, numbering):
   """A key of whole code FIELDS -- every encoding but per-tree -- as Bytes. `fields` is a sequence of
   (field_id, slices), slices being (kind, used bits) per container, low first (fill_low, lanes.layout). Each field
-  starts at bit 0 of its own containers (@pa_solitary), so a container's byte k carries bits 8k.. and only the top
+  starts at bit 0 of its own containers (declared at their full width, decision 4.3), so a container's byte k carries bits 8k.. and only the top
   byte can be part-used: at most 4 live bits make it a one-nibble byte. `numbering` maps (field_id, slice index) to
   a container name and is shared by every key of a stage, so two tables keying the same field name the same
   container bytes and p4c's found-byte path shares their slots. The containers are ORDERED by

@@ -334,34 +334,54 @@ def _require(pins, pin, field):
 
 
 def _check_pins(program, pins):
-  """A1, A7-A10 and the code-field pins of decisions 4.1 / 4.3: every pin the
-  generator emits is present, every pinned code field is declared at its
-  containers' full width, and (joint / disjoint / per-task, not the packed
-  code_pk_ fields) its split is lanes.container_sizes of its live width, the
-  layout training prices the key with."""
-  _require(pins, "pa_no_overlay", "fwd")
+  """A1, A7-A10 and the code-field pins of decisions 4.1 / 4.3, with the pin set
+  of gate G3 (2026-11-15; build_p4_script.generate_p4_program documents each pin
+  and its evidence): every pin the generator emits is present, and no other --
+
+    class_tree_*        pa_solitary                    (3.2)
+    <f>_val             pa_container_size 16           (3.4)
+    <chain>_current_iat pa_container_size 16           (G3: IAT scratch fields)
+    code_* / code_pk_*  pa_no_overlay, pa_container_size (3.6 / 3.7; none of
+                        the latter for a field with no bits)
+
+  Pins dropped at G3 (pa_no_overlay on fwd and class_tree_*, pa_solitary on
+  code_*) are refused as unexpected_shape:pin:<pin>:<field>, like any pin this
+  generator does not write: such a text is an older generator's program, whose
+  PHV p4c allocates under other constraints. Every pinned code field is
+  declared at its containers' full width, and (joint / disjoint / per-task, not
+  the packed code_pk_ fields) its split is lanes.container_sizes of its live
+  width, the layout training prices the key with."""
+  expected = set()
+
+  def need(pin, field):
+    expected.add((pin, field))
+    return _require(pins, pin, field)
+
   for field in program.class_fields:
-    _require(pins, "pa_solitary", field)
-    _require(pins, "pa_no_overlay", field)
+    need("pa_solitary", field)
+  for field in program.scratch_fields:
+    if tuple(need("pa_container_size", field)) != (16,):
+      raise ProgramShapeRefused("unexpected_shape:scratch_container:%s" % field)
   for field in sorted(program.declared):
     bits = program.declared[field]
     if field.endswith("_val") and not field.startswith("code_"):
       if bits != 16:
         raise ProgramShapeRefused("unexpected_shape:val_width:%s" % field)
-      if tuple(_require(pins, "pa_container_size", field)) != (16,):
+      if tuple(need("pa_container_size", field)) != (16,):
         raise ProgramShapeRefused("unexpected_shape:val_container:%s" % field)
     elif field.startswith("code_"):
-      if not field.startswith(_PACKED):
-        _require(pins, "pa_solitary", field)
-      _require(pins, "pa_no_overlay", field)
+      need("pa_no_overlay", field)
       if bits == 0:
         continue
-      sizes = _require(pins, "pa_container_size", field)
+      sizes = need("pa_container_size", field)
       if sum(sizes) != bits:
         raise ProgramShapeRefused("unexpected_shape:code_width:%s" % field)
       if not field.startswith(_PACKED) and (
           list(sizes) != lanes.container_sizes(program.bits.get(field, bits))):
         raise ProgramShapeRefused("unexpected_shape:code_container:%s" % field)
+  for pin, field, _ in program.pragmas:
+    if (pin, field) not in expected:
+      raise ProgramShapeRefused("unexpected_shape:pin:%s:%s" % (pin, field))
 
 
 def _check_priorities(program):
@@ -476,13 +496,15 @@ def check_program(program):
     stage_pin                    an @stage line (A17)
     gated_register_block         a RegisterAction executed inside `if (meta.fwd ...)`
                                  (every program before decisions 1a / 7.1 option B)
-    missing_pin:<pin>:<field>    a pin the generator emits is absent: pa_no_overlay on
-                                 fwd, pa_solitary + pa_no_overlay on class_tree_*,
-                                 pa_container_size 16 on *_val, pa_solitary (not on
-                                 code_pk_*), pa_no_overlay, pa_container_size on code_*,
-                                 placement_priority on every tree and range table
+    missing_pin:<pin>:<field>    a pin the generator emits is absent: pa_solitary on
+                                 class_tree_*, pa_container_size 16 on *_val and on
+                                 every <chain>_current_iat, pa_no_overlay and
+                                 pa_container_size on code_*, placement_priority on
+                                 every tree and range table
     unexpected_shape:<what>      a declared width, priority, key or apply order other
-                                 than the generator's
+                                 than the generator's, or (pin:<pin>:<field>) a PHV pin
+                                 the generator does not write (the pins dropped at
+                                 gate G3 among them)
 
   A program the generator writes passes; an archived program of an older generator
   is refused, never priced as if it were current."""

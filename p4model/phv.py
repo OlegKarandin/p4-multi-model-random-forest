@@ -9,8 +9,9 @@ ONE counting function, `count`, fed by two thin adapters: `from_pool` (the pool
   * the template fields (target.PHV_TEMPLATE_FIELDS);
   * one 16-bit container per raw `<feature>_val` field;
   * one 16-bit container per IAT scratch field in use (`<chain>_current_iat`,
-    build_p4_script.iat_field_name) -- this program's own fields, treated as one
-    H each;
+    build_p4_script.iat_field_name) -- this program's own fields, each pinned to
+    one 16-bit container by the generator since gate G3 (2026-11-15:
+    @pa_container_size(<chain>_current_iat, 16), which program_checks requires);
   * one 8-bit container per `class_tree_<task>_<i>` field;
   * each code field's pinned containers: lanes.container_sizes for joint /
     disjoint / per-task fields (`@pa_container_size` of the generator), the
