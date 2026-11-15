@@ -19,7 +19,7 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 struct metadata_t {
     bit<12> flow_hash;
     bit<1>  fwd;
-    bit<16> now_pseudo_us;
+    bit<32> now_pseudo_us;
 
 	bit<1> class_tree_ddos_0;
 	bit<1> class_tree_ddos_1;
@@ -101,10 +101,12 @@ control SwitchIngress(
 
 	RegisterAction<bit<32>, bit<12>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
 		void apply(inout bit<32> value, out bit<1> rv) {
-			if (value == 0) {
+			if (value == 0 || value == hdr.ipv4.src_addr) {
 				value = hdr.ipv4.src_addr;
+				rv = 1w1;
+			} else {
+				rv = 1w0;
 			}
-			rv = (value == hdr.ipv4.src_addr) ? 1w1 : 1w0;
 		}
 	};
 

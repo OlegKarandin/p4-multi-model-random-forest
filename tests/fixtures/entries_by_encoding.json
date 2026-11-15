@@ -1,146 +1,146 @@
 {
  "disjoint/seed0/discount_off": {
   "entries": 331,
-  "sha256": "bd2eb96b04aa10cc788b60b90f853737751448ddf42e016c6dbfee485bb663f2"
+  "sha256": "a8f9c54b11b8c062e1af059b26442c2297f891d0311adb139dbc2d6b3b21fac2"
  },
  "disjoint/seed0/discount_on": {
   "entries": 256,
-  "sha256": "df39740eea5e56b538f402d490f49ea5b46bdbb6b9d44f5a156480a7cee3989a"
+  "sha256": "bc71e86b8efafa4ab48f5b75aa0b6fe9de0ff4bbd8462b6cb98d0b359f65413a"
  },
  "disjoint/seed1/discount_off": {
   "entries": 23,
-  "sha256": "68258a5b49514e8109ae293c7d2f7b738081bcf83765e8ba5866cf4d3e75e00a"
+  "sha256": "21b0b4145129d6abe2540ea418daac8d3b0c1ee313dc34b060c1e9c0b5fc20c5"
  },
  "disjoint/seed1/discount_on": {
   "entries": 23,
-  "sha256": "dcc30e5c186d06d6ae32cbc065b337d774b03d334ba5cd741a9e0d5421569c07"
+  "sha256": "a7af021879f9f43aeed8c973b39dde00cd30060a8b7e500ee492c2fc9ca9b1a9"
  },
  "disjoint/seed2/discount_off": {
-  "entries": 723,
-  "sha256": "7a0d438c0967b84fde8893b96fab22fe163698c3f1942d18c7422d9dd61f5613"
+  "entries": 722,
+  "sha256": "443cbfda331668f943edbe76436eda2d7ce3f278f719636d1306f9f2a525f4fa"
  },
  "disjoint/seed2/discount_on": {
-  "entries": 549,
-  "sha256": "18c4cfb851aac92686c5aed760a01ceaf33da46d885f654ecb23eb035a735581"
+  "entries": 548,
+  "sha256": "5f1a0dda4cdf516873ca8a319a55dac592bcff07d279d4d41362ec63c3663914"
  },
  "disjoint/seed3/discount_off": {
   "entries": 10,
-  "sha256": "7b7f53c2b0a470363e6ea64cc6d92f0e07bf6b317706f8257bef2437dbb074b3"
+  "sha256": "ec0f1bf3a6a222d6cf362bae8b2d3722359cbfdcf7cc9d846c9f650c5541c809"
  },
  "disjoint/seed3/discount_on": {
   "entries": 10,
-  "sha256": "edbcb1a2d7fd7bd626a428b2db3310bc2387064a43ac2c593412c4150718dbaf"
+  "sha256": "815784fbecb42782c6571f85700d0983b44830ca86350e81468556a45a37db0c"
  },
  "disjoint/seed4/discount_off": {
   "entries": 14,
-  "sha256": "fe8f1244ca5d73d56cc4d17896a4ff1009526250d773f8b0336c53151f7f92f7"
+  "sha256": "42ffdabf323dc4fa5d60e64549a31066d42358f517b96ff2335b17351e9f45a4"
  },
  "disjoint/seed4/discount_on": {
   "entries": 14,
-  "sha256": "cecec4272d5a3430fd4d61e55fd0d81391726983393f76c58ea5930e3649f5ac"
+  "sha256": "3645ebc3759b2e733f5215cc667db2ce6b788db929b4b9098d2be7d2c733c964"
  },
  "disjoint/seed5/discount_off": {
   "entries": 276,
-  "sha256": "2fdf4d6300675cc0bacf6203c2d97a5ae116888d84f0595aba6eb447067b42df"
+  "sha256": "5ff1fcd549534ddd7f92654907cecdebc30056338b111413097c33ed69e91aa2"
  },
  "disjoint/seed5/discount_on": {
   "entries": 206,
-  "sha256": "38a5ce62c71898e11947fb39eeb1b84200cc28ba24bbf17c91f0d75d5cf2be32"
+  "sha256": "265778a6db251bbe1ded9ca0765f5547dcdce8ac763e1b3b2debfd5add9e19bd"
  },
  "joint/seed0/discount_off": {
   "entries": 327,
-  "sha256": "b975d04909f447acad7a5bb7fed29408f1383f2f11a93755e7fe994c13640a93"
+  "sha256": "2e63cb39674893167a8a3a1ea6d661ef97746b3e6b0998cc0b32addda3435c51"
  },
  "joint/seed0/discount_on": {
   "entries": 252,
-  "sha256": "bb95af5b37d350628173c0476a8bd8b8371b05c966857b527fd509bdaf176510"
+  "sha256": "e876055e90bf18508d32d357eb5e63959992a396c8881d0bbf3658bcb9f6af92"
  },
  "joint/seed1/discount_off": {
   "entries": 22,
-  "sha256": "4836838cfd7b61763efe374d7eb07e01f045ef57ce6b12298e5e28e44d9fcbe4"
+  "sha256": "70f6626c1c736704a54adf5e4dcc5187103a76a02500a4b752c9823a45e382f4"
  },
  "joint/seed1/discount_on": {
   "entries": 22,
-  "sha256": "4df49f5435703ac6d5cbd8537a37540cfd7222dbeaee989bdfcb293eaebb7b75"
+  "sha256": "cb62aa71306a4aa32a1a77fd72f77adc813d440e66d5a24f001064ffb42eb57c"
  },
  "joint/seed2/discount_off": {
-  "entries": 717,
-  "sha256": "c0c30f375a31fa330cbef3dcf5e3033244a520e33d626425165435750aa50177"
+  "entries": 715,
+  "sha256": "bb4b66b50d588eee45fcbd6b3004d4b320c0136256387af0fd681672471549b0"
  },
  "joint/seed2/discount_on": {
-  "entries": 543,
-  "sha256": "eee8362a455b985e82062c363f8560d73968d655e218c4ff975cae6ccfadfff5"
+  "entries": 541,
+  "sha256": "cb05cab49bb5f0c80418ad118fa8264d0400f7ac5db42ae8ae5d017a2d0f7b46"
  },
  "joint/seed3/discount_off": {
   "entries": 9,
-  "sha256": "aa5d1b4171542d3cb50aa9d799a3f5fd8bbf2dccb69aa004cf2da8c93fa8dc62"
+  "sha256": "16d83cc6306065c847fb1d4f85f2db9128e286477bce6473ba8f09c0bef964c3"
  },
  "joint/seed3/discount_on": {
   "entries": 9,
-  "sha256": "35d85837d83aa7c98b5897ed26f126734e9d22050a5de16128ca0f5db8b6e4da"
+  "sha256": "6ca5e68e41cc5d9f27e5f88c7ebd6d796bc8cd755047c91ab8ae3d8e2a1e5ade"
  },
  "joint/seed4/discount_off": {
   "entries": 13,
-  "sha256": "3bf3963cec3ac2c717100252dbd084a987d3bdd90b6de0f54201b792e90b2255"
+  "sha256": "9fb1bc9a443e08fc40ed3156a688c3bab60712bb04af34b93d8bcbc3f4ed6707"
  },
  "joint/seed4/discount_on": {
   "entries": 13,
-  "sha256": "91919507482851acfe099614e2fc835d2858d998cf0c58eff52e7546cc9e4e69"
+  "sha256": "08499e51dc8a48a1c3624c30d6e7b713947461bad6a0b575ddf5e59538020006"
  },
  "joint/seed5/discount_off": {
   "entries": 274,
-  "sha256": "c8db1099db3a31d83fbd62363726a6313f6f8823335f85caca54eef4feef7f10"
+  "sha256": "f4e0bebd958743ed78d270e988d4179cc47095d8d7b679655429174079f33758"
  },
  "joint/seed5/discount_on": {
   "entries": 204,
-  "sha256": "53a91ca681dd73398b361db9377685e63192fef6a0245afe3602a71b1e36b696"
+  "sha256": "f21d53db647fb3e004b3e8bdcf600f8733884d9d7155e22687dfb27862da5ff2"
  },
  "per_task/seed0/discount_off": {
   "entries": 327,
-  "sha256": "a2524b8a4d8256c5d50ac03dbd468cba1ad4c334a4fbcf814a2d9e1b6d1652c8"
+  "sha256": "f6976c4180f3eaa6498fb2ecf80ade87b989e60daec1237ce0443b8726612fd0"
  },
  "per_task/seed0/discount_on": {
   "entries": 252,
-  "sha256": "542d50ebd4e0b9f2b2c160c24de4935edd06c84793066cefb9ecd2bcf82ce8f5"
+  "sha256": "be302e912d2552a2753b434d87c736987867c62f0caac9ca7b5b0e13370a9b45"
  },
  "per_task/seed1/discount_off": {
   "entries": 22,
-  "sha256": "1942b522e86a9ced09844ed01f83a4c69360534a599a4fee3b202cd1eb5498c6"
+  "sha256": "83b33ddaa8f3c6ca876fc461a3e51f9a3f7718b085c7ce61a66e063d5d240b4d"
  },
  "per_task/seed1/discount_on": {
   "entries": 22,
-  "sha256": "e0bdc663804651c8f9a4d239d1472c07fde99c168bf533e86f32f5cd08360183"
+  "sha256": "b80b8a3a8c836681196d2b87c50beb8862b5f6c3fca75ea831b84f94d3815e7d"
  },
  "per_task/seed2/discount_off": {
-  "entries": 717,
-  "sha256": "00bc8f771a1f6cf0d3501feb44569226e3789968b74a37185336a2d29a9a7e54"
+  "entries": 715,
+  "sha256": "72e45e5a2b8af702f2bdab27ae4ce726b2d11514bf70565e959d17dcac32118e"
  },
  "per_task/seed2/discount_on": {
-  "entries": 543,
-  "sha256": "80d9e51c3e5b67110132385bf0a09bfc1a1b8668ec1a0ef335b5f1656f9f2858"
+  "entries": 541,
+  "sha256": "02aa2cb013afba3a926168c73aca50a44e927af2de9c0e8751db2b89b5aef7b8"
  },
  "per_task/seed3/discount_off": {
   "entries": 9,
-  "sha256": "03b6cfe5d7f4cfa422be01c840cbea0180367e2fe7a0cbba6dba62355550d892"
+  "sha256": "f1e125c9a4333dbd3c8a2c5c7052c46e0120d4fb6f14ff0a8a7feaf2f9446a13"
  },
  "per_task/seed3/discount_on": {
   "entries": 9,
-  "sha256": "b2578f1e7a72acbedbc53b4513465dbc0ba7857784df022a8160320b3979d094"
+  "sha256": "2c9372b8e5e56ea0bbd38b17a38d51cedd42ee47fbe19bdb75197cbb69018aa5"
  },
  "per_task/seed4/discount_off": {
   "entries": 13,
-  "sha256": "88df400cc963f002962ec6cc937334c7958d0497564f14380f840ba6f231776d"
+  "sha256": "b7ef013213fed487f8fb9334fa139c3286953e130780a30322ac793ac6605764"
  },
  "per_task/seed4/discount_on": {
   "entries": 13,
-  "sha256": "d10ceb43dfe0d23dbc7d7a74043da03e3d7c040dc69714b6ccb885a2ba20a7b3"
+  "sha256": "82b62d203fbb63c2f62e3bcd6e238ffc252dbb89ce7d63102e792e63a7e8ccbd"
  },
  "per_task/seed5/discount_off": {
   "entries": 274,
-  "sha256": "a0121802e8ade12ee5829783984e29a84d24af2028a324e35b4de368d686accb"
+  "sha256": "f3bf6f27838e8365a456ebcc5edd7dbc9fb245b19408ff7723da3456215cc9e9"
  },
  "per_task/seed5/discount_on": {
   "entries": 204,
-  "sha256": "4b0f3b3dd77fae35aefed7b5e1ddc04249659453aa2465ec085f662cd71a6caf"
+  "sha256": "7d00a01d43c52b5a326f45f09feea17b40d0d8dcb5366665dd7d351424d1bfec"
  }
 }

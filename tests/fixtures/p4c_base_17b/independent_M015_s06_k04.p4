@@ -38,7 +38,7 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 struct metadata_t {
     bit<12> flow_hash;
     bit<1>  fwd;
-    bit<16> now_pseudo_us;
+    bit<32> now_pseudo_us;
 
 	bit<16> bwd_current_iat;
 	bit<16> fwd_current_iat;
@@ -116,9 +116,9 @@ control SwitchIngress(
 	@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")
 	Hash<bit<12>>(HashAlgorithm_t.CRC32) flow_hash_calc;
 	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
-	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) bwd_last_arrival_time_reg;
+	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) bwd_last_arrival_time_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) bwd_iat_mean_reg;
-	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_last_arrival_time_reg;
+	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) fwd_last_arrival_time_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) fwd_iat_min_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) min_packet_length_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) packet_length_mean_reg;
@@ -137,23 +137,29 @@ control SwitchIngress(
 	}
 
 	action calc_timestamp() {
-		meta.now_pseudo_us = ig_prsr_md.global_tstamp[25:10];
+		meta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];
 	}
 
 	RegisterAction<bit<32>, bit<12>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
 		void apply(inout bit<32> value, out bit<1> rv) {
-			if (value == 0) {
+			if (value == 0 || value == hdr.ipv4.src_addr) {
 				value = hdr.ipv4.src_addr;
+				rv = 1w1;
+			} else {
+				rv = 1w0;
 			}
-			rv = (value == hdr.ipv4.src_addr) ? 1w1 : 1w0;
 		}
 	};
 
-	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_last_arrival_time_reg) bwd_last_arrival_time_action = {
-		void apply(inout bit<16> value, out bit<16> rv) {
+	RegisterAction<bit<32>, bit<12>, bit<32>>(bwd_last_arrival_time_reg) bwd_last_arrival_time_action = {
+		void apply(inout bit<32> value, out bit<32> rv) {
 			if (meta.fwd == 0) {
-				rv = meta.now_pseudo_us - value;
-				value = meta.now_pseudo_us;
+				if (meta.now_pseudo_us - value > 65535) {
+					rv = 65535;
+				} else {
+					rv = meta.now_pseudo_us |-| value;
+				}
+				value = meta.now_pseudo_us - 1;
 			} else {
 				rv = 0;
 			}
@@ -164,18 +170,22 @@ control SwitchIngress(
 
 	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_iat_mean_reg) bwd_iat_mean_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
-			if (meta.fwd == 0) {
+			if (meta.bwd_current_iat != 0) {
 				value = bwd_iat_mean_halve_unit.execute(value + meta.bwd_current_iat);
 			}
 			rv = value;
 		}
 	};
 
-	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_last_arrival_time_reg) fwd_last_arrival_time_action = {
-		void apply(inout bit<16> value, out bit<16> rv) {
+	RegisterAction<bit<32>, bit<12>, bit<32>>(fwd_last_arrival_time_reg) fwd_last_arrival_time_action = {
+		void apply(inout bit<32> value, out bit<32> rv) {
 			if (meta.fwd == 1) {
-				rv = meta.now_pseudo_us - value;
-				value = meta.now_pseudo_us;
+				if (meta.now_pseudo_us - value > 65535) {
+					rv = 65535;
+				} else {
+					rv = meta.now_pseudo_us |-| value;
+				}
+				value = meta.now_pseudo_us - 1;
 			} else {
 				rv = 0;
 			}
@@ -184,8 +194,8 @@ control SwitchIngress(
 
 	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_iat_min_reg) fwd_iat_min_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
-			if (meta.fwd == 1 && meta.fwd_current_iat < value) {
-				value = meta.fwd_current_iat;
+			if (meta.fwd_current_iat != 0 && meta.fwd_current_iat <= value) {
+				value = meta.fwd_current_iat - 1;
 			}
 			rv = value;
 		}
@@ -211,8 +221,8 @@ control SwitchIngress(
 
 	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_iat_min_reg) bwd_iat_min_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
-			if (meta.fwd == 0 && meta.bwd_current_iat < value) {
-				value = meta.bwd_current_iat;
+			if (meta.bwd_current_iat != 0 && meta.bwd_current_iat <= value) {
+				value = meta.bwd_current_iat - 1;
 			}
 			rv = value;
 		}
@@ -222,7 +232,7 @@ control SwitchIngress(
 
 	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_iat_mean_reg) fwd_iat_mean_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
-			if (meta.fwd == 1) {
+			if (meta.fwd_current_iat != 0) {
 				value = fwd_iat_mean_halve_unit.execute(value + meta.fwd_current_iat);
 			}
 			rv = value;
@@ -407,13 +417,13 @@ control SwitchIngress(
 			meta.min_packet_length_val = min_packet_length_action.execute(meta.flow_hash);
 			meta.packet_length_mean_val = packet_length_mean_action.execute(meta.flow_hash);
 
-			meta.fwd_current_iat = fwd_last_arrival_time_action.execute(meta.flow_hash);
-			meta.fwd_iat_min_val = fwd_iat_min_action.execute(meta.flow_hash);
+			meta.fwd_current_iat = (bit<16>) fwd_last_arrival_time_action.execute(meta.flow_hash);
+			meta.fwd_iat_min_val = fwd_iat_min_action.execute(meta.flow_hash) + 1;
 			meta.fwd_iat_mean_val = fwd_iat_mean_action.execute(meta.flow_hash);
 
-			meta.bwd_current_iat = bwd_last_arrival_time_action.execute(meta.flow_hash);
+			meta.bwd_current_iat = (bit<16>) bwd_last_arrival_time_action.execute(meta.flow_hash);
 			meta.bwd_iat_mean_val = bwd_iat_mean_action.execute(meta.flow_hash);
-			meta.bwd_iat_min_val = bwd_iat_min_action.execute(meta.flow_hash);
+			meta.bwd_iat_min_val = bwd_iat_min_action.execute(meta.flow_hash) + 1;
 
 
 			table_0_bwd_iat_mean.apply();

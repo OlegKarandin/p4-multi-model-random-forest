@@ -146,13 +146,21 @@ def _p4_expr(text):
     text = text.replace("(bit<16>)", "")
     text = re.sub(r"\w+_halve_unit\.execute\(", "_halve(", text)
     text = re.sub(r"(\w+)_action\.execute\(meta\.flow_hash\)", r'_run("\1")', text)
-    text = text.replace("&&", " and ").replace("hdr.ipv4.total_len", 'pkt["len"]')
+    # saturating subtraction (C1f's gap): a |-| b = max(a - b, 0)
+    text = re.sub(r"([\w.\[\]\"]+) \|-\| ([\w.\[\]\"]+)", r"_ssub(\1, \2)", text)
+    text = re.sub(r"\b\d+w(0x[0-9A-Fa-f]+|\d+)\b", r"\1", text)      # 1w1, 32w0xFFFFFFFF
+    text = text.replace("&&", " and ").replace("||", " or ")
+    text = text.replace("hdr.ipv4.total_len", 'pkt["len"]').replace("hdr.ipv4.src_addr", 'pkt["src"]')
     return re.sub(r"meta\.(\w+)", r'meta["\1"]', text)
 
 
 def _p4_to_python(lines):
     """P4 statements (one per line) -> Python source: if / else / assignments /
-    calls, every assignment wrapped to 16 bits."""
+    calls, every assignment wrapped to the body's width (`_w`). A condition is
+    evaluated exactly, without wrapping: the stateful ALU compares on 34-bit
+    zero-extended operands (p4c CheckStatefulAlu; Task 33b live: a chain's first
+    packet, `now - 0xFFFFFFFF > 65535`, does not fire), unlike the P4 text's mod
+    2^32."""
     out, depth = [], 0
     for line in (line.strip() for line in lines):
         if not line:
@@ -185,28 +193,29 @@ class _Switch:
     def __init__(self, features):
         regs, actions, apply_code, _ = generate_P4_registers_and_apply(
             {f: None for f in features})
-        self.initial = {name: int(init or 0) for init, name in re.findall(
-            r"Register<bit<16>, bit<\d+>>\(MAX_NUM_FLOWS(?:, (\d+))?\) (\w+)_reg;", regs)}
+        self.initial = {name: int(re.sub(r"^\d+w", "", init or "0"), 0) for init, name in re.findall(
+            r"Register<bit<\d+>, bit<\d+>>\(MAX_NUM_FLOWS(?:, (\w+))?\) (\w+)_reg;", regs)}
         self.bodies = {}
-        for name, body in re.findall(
-                r"\((\w+)_reg\) \w+_action = \{\n\t\tvoid apply\(inout bit<16> value, "
-                r"out bit<16> rv\) \{\n(.*?)\n\t\t\}\n\t\};", actions, re.S):
+        # every RegisterAction, the orientation's (flow_forward_srcaddr_reg) included
+        for register, width, body in re.findall(
+                r"\((\w+)_reg\) \w+_action = \{\n\t\tvoid apply\(inout bit<(\d+)> value, "
+                r"out bit<\d+> rv\) \{\n(.*?)\n\t\t\}\n\t\};", actions, re.S):
+            name = "flow_orientation" if register == "flow_forward_srcaddr" else register
             source = "def body(value, meta, pkt):\n  rv = None\n%s\n  return value, rv\n" % (
                 "\n".join("  " + line for line in _p4_to_python(body.splitlines()).splitlines()))
-            scope = {"_w": lambda x: x & _MASK, "_halve": lambda x: (x & _MASK) // 2}
+            mask = (1 << int(width)) - 1
+            scope = {"_w": lambda x, mask=mask: x & mask, "_halve": lambda x: (x & _MASK) // 2,
+                     "_ssub": lambda a, b: max(a - b, 0)}
             exec(source, scope)
             self.bodies[name] = scope["body"]
+        self.initial["flow_orientation"] = self.initial.pop("flow_forward_srcaddr")
         self.apply = compile(_p4_to_python(apply_code.splitlines()), "<apply>", "exec")
         self.state = {}
-        self.first_src = {}
 
     def packet(self, pkt):
         meta = {}
 
         def run(name):
-            if name == "flow_orientation":
-                first = self.first_src.setdefault(pkt["flow"], pkt["src"])
-                return int(first == pkt["src"])
             key = (name, pkt["flow"])
             value, rv = self.bodies[name](self.state.get(key, self.initial[name]), meta, pkt)
             self.state[key] = value
@@ -231,16 +240,18 @@ def _trace(n=40, flows=3, seed=7):
         flow = i % flows if i < 2 * flows else rng.randrange(flows)
         # the first two packets of every flow go one each way
         src = ends[flow][0 if i < flows else 1] if i < 2 * flows else rng.choice(ends[flow])
-        now += rng.randint(1, 50)
+        # one idle time past the 16-bit range (V1o's clamp), the rest short
+        now += 100000 if i == 25 else rng.randint(0, 50)
         packets.append({"flow": flow, "src": src, "now": now, "len": rng.randint(40, 1500)})
     return packets
 
 
 def _expected(feature, history):
-    """The statistic of `feature` over its own direction's packets of the flow so
-    far (history: [(fwd, now, len)]): registers start at 0 (a first IAT is the
-    packet's timestamp) except minimums, which start at 65535; means are the
-    alpha = 1/2 EWMA the catalog documents."""
+    """CICFlowMeter's statistic of `feature` over its own direction's packets of the
+    flow so far (history: [(fwd, now, len)]), in the switch's encoding (V1o + C1f,
+    Task 34): an IAT of g ticks is min(g + 1, 65535), the chain's first packet has
+    none; Max / Min / Mean of no IAT are 0; means are the alpha = 1/2 EWMA the
+    catalog documents (from 0, over the IATs only)."""
     entry = FEATURE_REGISTER_CATALOG[feature]
     gate = entry.get("gated_by")
     own = [(now, length) for fwd, now, length in history
@@ -249,15 +260,18 @@ def _expected(feature, history):
     if "packet_length" in value_body:
         samples = [length for _, length in own]
     else:
-        samples = [now - previous for (now, _), previous
-                   in zip(own, [0] + [now for now, _ in own])]
+        samples = [min(now - previous + 1, 0xFFFF)
+                   for (now, _), (previous, _) in zip(own[1:], own[:-1])]
     if value_body.startswith("running_max"):
         return max(samples, default=0)
     if value_body.startswith("running_min"):
-        return min(samples, default=0xFFFF)
+        return min(samples, default=0 if value_body == "running_min_iat" else 0xFFFF)
+    # The P4 text's Mean: bit<16> `value + x`, then halved -- the sum wraps at 2^16 (a
+    # clamped 65535 IAT does). Pre-existing and left as is (the Mean registers are a
+    # separate decision; p4c even compiles value + f(x), Task 33b).
     mean = 0
     for sample in samples:
-        mean = (mean + sample) // 2
+        mean = ((mean + sample) & 0xFFFF) // 2
     return mean
 
 

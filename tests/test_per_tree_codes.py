@@ -216,22 +216,25 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # include and the empty /* CLASSIFICATION */ marker's blank lines gone, the timestamp written
 # `ig_prsr_md.global_tstamp[25:10]` (14/14; each generated text == every edit applied to its
 # pre-A1 text). And for @pa_solitary(flow_hash) (Task 32 addendum F3): each text the previous one
-# plus that one pragma line (14/14).
+# plus that one pragma line (14/14). Re-frozen 2026-11-15 (Task 34: V1o 32-bit clock and clamp,
+# C1f first-packet rule, Task 33b orientation fix): each text is its previous one with Task 33's
+# probe edit c1f (the compiled, live-checked register bodies) and the orientation body of
+# live_prog_orient (impl/scripts/t34_text_diff.py, 14/14).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "a3822c2874ce0527a0b73c6dd80b0dab8163f2a0627b3ea7103275fe01da4731",
-    ("disjoint", 0): "8a6a5f6b8971c8b5eb6038de3aa5d6671b4509ed4502fdd89cf6758b05282684",
-    ("per_task", 0): "517aa6ddab665642a811a0f75d58bad12f87fa4556357e2e9ad0d6b8f073411c",
-    ("joint", 1): "5ea6ed8b620eee15e9fd7279968e41271e803fdfa1354c6c870eb4ffe5c7c985",
-    ("disjoint", 1): "9e596558265cf813ec69b45c897922825fccfa09e8f81c44e351c452534902e7",
-    ("per_task", 1): "fe61a4c935ff6d5b7566cf232db3d717ea00d416e3e0c316b37721d306d315dd",
-    ("joint", 2): "5d873ee48690591df4562811424ba1dd6ad86091eaa6ffbe22fe7292e430d115",
-    ("disjoint", 2): "5a61ffd28cf86ca4090c07e091e12d315b7b48f1bc90809f018f2695e3b701e1",
-    ("per_task", 2): "b113fe5ca59ccfab357c8d8a16d5bd0f082e445c6dd80dde8a9fa4be95422b14",
-    ("joint", 3): "f1aada5debf6eacb493a6e8ff4a1e3651e77aa4359bc8c7acc079ea93a0df91b",
-    ("disjoint", 3): "bbfb0d8f69950cb693ca26b15f7bada486ac17f5d6830298798f2db72d80b612",
-    ("per_task", 3): "97357fc1788d4f45427312b4b2dd9586974c302604bf32a965be2fb340f03205",
-    ("disjoint", "three"): "3495501e9a9b75bfdee7de58410c6ea36e45765deaa8e866e11be4cbd0980cb2",
-    ("per_task", "three"): "ca8edc68ba41f907a39cfd20b0967de497061938b0b0aa7bb9b082ef283c9673",
+    ("joint", 0): "ef338da6addc3175528d361cf2d75e5418c5e0ead471643b92bb9b753e395d4b",
+    ("disjoint", 0): "1db65880b2429b8e5e3fafb32e73b6d4574f61f50ee2d39d5bb0d3ebca103350",
+    ("per_task", 0): "af553c5d451af329d8d8dbb8a961fb4ff2a59c7eca91d088cf4f19e1f43d08fe",
+    ("joint", 1): "7d0479d572e9532cbf3c0c39de68222b6b4132996f4c34925fd77d7682254989",
+    ("disjoint", 1): "51868521d2a2c708badce6012fc3495a81bebbd58762f7066d3a51959b98cffe",
+    ("per_task", 1): "106a8a4403e49e2495f774955d2f60fb91aedfd26fc3178a5ecfa19ce81148eb",
+    ("joint", 2): "2f7d990cbc6d5ad818da734188caecabcb39c8cc8679bcb82f4001318614b9f7",
+    ("disjoint", 2): "df9d82680708be9dd93aae561538293e75fa178d9bb5e7e7d7a74482f34f8ec1",
+    ("per_task", 2): "e202de89a3681fb6a28ed0a391a039a1b9dd2169bb88bb390f74d05ae5fcba90",
+    ("joint", 3): "b0d97c21b928b2ea5176d7b9e5aee60f83e17bc0ac3918210ddf2156eca74586",
+    ("disjoint", 3): "72b1cd384fb38005e7e1268b0e036c9cc4740f2cc3990f40f243a50b72fa1833",
+    ("per_task", 3): "45c14308c0e36994d73cf08f45faed79bd94105b98ec1f6673d7ef8f9f2ce15d",
+    ("disjoint", "three"): "37e5099481a3f4c3673857f8c374190ff87ba545645f4d0560d7c805c3bd0aa3",
+    ("per_task", "three"): "f63e1dd594409b8203a1d6053db64f9c1c9c8217159fe484803ee0810204e66a",
 }
 
 
@@ -379,7 +382,11 @@ def _frozen_hash(entries):
 @pytest.mark.parametrize("discount", [False, True])
 def test_each_encoding_writes_exactly_the_frozen_entries(encoding, seed, discount):
   """Gate B5: the entries the old per_task_codes flag wrote, frozen 2026-11-08 before
-  `encoding` replaced it (joint and disjoint were both flag off; the intervals decide)."""
+  `encoding` replaced it (joint and disjoint were both flag off; the intervals decide).
+  Re-frozen 2026-11-15 (Task 34, IAT thresholds in 1.024 us ticks): every record is its
+  old one with an IAT feature's range bounds through build_p4_script.switch_range, the
+  10 intervals whose bounds collapse onto one tick dropped, nothing else changed
+  (impl/scripts/t34_entries.py, 36/36)."""
   with open(_ENTRIES_FIXTURE, encoding="utf-8") as handle:
     frozen = json.load(handle)
   entries = bps.generate_table_entries(_entry_tasks(encoding, seed),
