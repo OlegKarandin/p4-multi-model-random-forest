@@ -28,8 +28,8 @@ from src.verify.verdicts import MODEL_REFUSED_PREFIX
 # every one by shape (MODEL_REFUSED:gated_register_block), so it no longer
 # scores the model and its old misses (stage_depth 72/73 under the crossbar
 # port) are history, not expectations. The whole-program check on programs of
-# the CURRENT generator is tests/test_p4c_base_17b.py (12 Task 17b base
-# compiles; 10/12 exact, two named misses); a new archive for this command
+# the CURRENT generator is tests/test_p4c_base_17b.py (12 Task 17b base designs
+# recompiled with the G3 pins in Task 23; 11/12 exact, one named miss); a new archive for this command
 # needs new compiles.
 KNOWN_MISSES = {}
 

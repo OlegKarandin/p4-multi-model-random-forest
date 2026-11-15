@@ -1,21 +1,22 @@
 """Whole-program check of the model against p4c on programs the CURRENT generator writes.
 
-Twelve base programs of the Task 17b compile experiment (generator at e1e08dd: decisions 1a / 7.1 option B, 1f
-vote export, 2.3 key pruning, 4.3 full-width pinned codes, the forwarding assignments first), three per encoding
-and mixed k, committed with p4c's committed allocation (mau.resources.log per table: blocks summed over stages,
-stage; table_summary.log stage count) in tests/fixtures/p4c_base_17b.json. Source:
-results/encoding_evidence_2026_11/model8/impl/t17b_experiment (Codespace /workspaces/dr_exp17b), built by
-model8/impl/scripts/t18_fixture.py. The old calibration archive (compiler_calibration_pragmas_2026_09_29) can no
-longer score the model: every program in it is refused by shape (test_model_archive).
+Twelve base programs of the Task 17b compile experiment, regenerated with the final pins of gate G3 (Task 23,
+generator at ae34590: decisions 1a / 7.1 option B, 1f vote export, 2.3 key pruning, 4.3 full-width pinned codes,
+the forwarding assignments first, and the G3 pin set -- no @pa_no_overlay on fwd / class_tree_*, no @pa_solitary
+on code_*, @pa_container_size 16 on every IAT scratch field), three per encoding and mixed k, committed with p4c's
+committed allocation (mau.resources.log per table: blocks summed over stages, stage; table_summary.log stage
+count) in tests/fixtures/p4c_base_17b.json. Source: results/encoding_evidence_2026_11/model8/impl/t23 (Codespace
+/workspaces/t23), built by model8/impl/scripts/t18_fixture.py. The old calibration archive
+(compiler_calibration_pragmas_2026_09_29) can no longer score the model: every program in it is refused by shape
+(test_model_archive).
 
 model_breakdown must give p4c's stage depth and blocks, and p4c's stage and blocks for every table it prices, on
-every program; the two named misses are pinned (Task 18, impl/remeasure.md):
-  * independent_M015_s06_k04 (k<=8): stage depth 9 vs p4c 10. p4c packed the IAT scratch fields fwd_current_iat
-    and bwd_current_iat into one 32-bit container and so placed bwd_last_arrival_time's register a stage after
-    fwd_last_arrival_time's ("action dependency ... due to PHV allocation"); the two bwd range tables and both
-    trees follow it. The model's register schedule co-schedules the two registers.
+every program; the one named miss is pinned (Task 18, impl/remeasure.md):
   * joint-tree_M075_s02_k07 (k<=8): blocks 33 vs p4c 34; get_classification_tree_app_1 7 vs 8 (a per-tree block
     under-price, unchanged since Task 17).
+independent_M015_s06_k04 (k<=8), a pinned miss until Task 23 (model 9 vs p4c 10: p4c packed fwd_current_iat and
+bwd_current_iat into one 32-bit container and ran the second last-arrival register a stage late), is exact since
+the scratch fields are pinned to 16-bit containers (p4c 10 -> 9 stages).
 """
 import json
 import os
@@ -32,13 +33,6 @@ with open(_FIXTURE + ".json", encoding="utf-8") as _handle:
 
 # row -> {"stage_depth"/"blocks": (model, p4c), table: {"stage"/"blocks": (model, p4c)}}
 KNOWN_MISSES = {
-    "independent_M015_s06_k04": {
-        "stage_depth": (9, 10),
-        "table_0_bwd_iat_mean": {"stage": (6, 7)},
-        "table_4_bwd_iat_min": {"stage": (6, 7)},
-        "get_classification_tree_app_0": {"stage": (7, 8)},
-        "get_classification_tree_ddos_0": {"stage": (7, 8)},
-    },
     "joint-tree_M075_s02_k07": {
         "blocks": (33, 34),
         "get_classification_tree_app_1": {"blocks": (7, 8)},

@@ -628,7 +628,7 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   Measured under the ternary crossbar port (2026-11-13) on the step-2 replay
   of the 7,650 campaign_2026_11 compiles (model7/findings.md Part 4), and on
   programs of the current generator by tests/test_p4c_base_17b.py (12 Task 17b
-  base compiles; Task 18, results/encoding_evidence_2026_11/model8/impl/
+  base designs, recompiled with the G3 pins; Task 23, results/encoding_evidence_2026_11/model8/impl/
   remeasure.md). The older calibration archive
   (compiler_calibration_pragmas_2026_09_29) predates decisions 1a / 7.1 option
   B and is refused by shape, so it no longer scores this placement.

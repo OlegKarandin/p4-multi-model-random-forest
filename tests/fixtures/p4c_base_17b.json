@@ -1,21 +1,21 @@
 {
  "independent_M015_s06_k04": {
   "encoding": "disjoint",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 4,
-  "stage_depth": 10,
+  "stage_depth": 9,
   "tables": {
    "get_classification_tree_app_0": [
     4,
-    8
+    7
    ],
    "get_classification_tree_ddos_0": [
     1,
-    8
+    7
    ],
    "table_0_bwd_iat_mean": [
     1,
-    7
+    6
    ],
    "table_1_app_fwd_iat_min": [
     1,
@@ -31,7 +31,7 @@
    ],
    "table_4_bwd_iat_min": [
     1,
-    7
+    6
    ],
    "table_5_fwd_iat_mean": [
     1,
@@ -47,18 +47,18 @@
    ],
    "vote_app": [
     0,
-    9
+    8
    ],
    "vote_ddos": [
     0,
-    9
+    8
    ]
   },
-  "text_md5": "016afe9ff609939a478f684e7dcbc6ab"
+  "text_md5": "95fd550e1bdc1ede857d01f5df9d7d26"
  },
  "independent_M035_s11_k13": {
   "encoding": "disjoint",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 13,
   "stage_depth": 11,
   "tables": {
@@ -183,11 +183,11 @@
     10
    ]
   },
-  "text_md5": "25e2880a08ff971c8b910675cc788fae"
+  "text_md5": "e6ca58dab5eaa16e89c02e51051aa04f"
  },
  "independent_M050_s13_k07": {
   "encoding": "disjoint",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 7,
   "stage_depth": 10,
   "tables": {
@@ -272,11 +272,11 @@
     8
    ]
   },
-  "text_md5": "1240acdd93c188d0f1ea0bdb5b3ec77c"
+  "text_md5": "cf13f7ea34eda40adc55e697e1e4322e"
  },
  "joint-off_M025_s02_k01": {
   "encoding": "joint",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 1,
   "stage_depth": 8,
   "tables": {
@@ -309,11 +309,11 @@
     7
    ]
   },
-  "text_md5": "238f247d94c17ff71cb2d2ed008640e5"
+  "text_md5": "3acf88f646763b80cc59559ea1e4f3de"
  },
  "joint-off_M025_s06_k17": {
   "encoding": "joint",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 17,
   "stage_depth": 11,
   "tables": {
@@ -398,11 +398,11 @@
     10
    ]
   },
-  "text_md5": "0a5aee62a53e68aa1b5e4d9284c90856"
+  "text_md5": "4ece2b8ccb1e9046a7f2e1c57d2e7cbb"
  },
  "joint-off_M075_s19_k07": {
   "encoding": "joint",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 7,
   "stage_depth": 10,
   "tables": {
@@ -475,11 +475,11 @@
     8
    ]
   },
-  "text_md5": "3fd1d1a1fd94478f80155c822da0670e"
+  "text_md5": "5e6c607e1188eb90aa082cf74f4d6096"
  },
  "joint-task_M035_s24_k07": {
   "encoding": "per_task",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 7,
   "stage_depth": 10,
   "tables": {
@@ -544,11 +544,11 @@
     8
    ]
   },
-  "text_md5": "bfca76a496063b7f4b059777eedcae90"
+  "text_md5": "d724205d5518642d3c214d0c3c044c07"
  },
  "joint-task_M055_s20_k16": {
   "encoding": "per_task",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 16,
   "stage_depth": 12,
   "tables": {
@@ -649,11 +649,11 @@
     10
    ]
   },
-  "text_md5": "47434790ea0aafed103d6cef359f231e"
+  "text_md5": "00ba3f83d0230ad48f739a66a774fa1f"
  },
  "joint-task_M075_s13_k04": {
   "encoding": "per_task",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 4,
   "stage_depth": 10,
   "tables": {
@@ -706,11 +706,11 @@
     7
    ]
   },
-  "text_md5": "d3c4b73883cc25bfb50e778cf56955c7"
+  "text_md5": "02b6e38a18fdb22d6a129a4cf30d6c91"
  },
  "joint-tree_M015_s02_k06": {
   "encoding": "per_tree",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 6,
   "stage_depth": 9,
   "tables": {
@@ -763,11 +763,11 @@
     8
    ]
   },
-  "text_md5": "10566d31e20fb5227f38986485267a44"
+  "text_md5": "fdea06f26762bdf5fca6747f2d829d8d"
  },
  "joint-tree_M055_s00_k13": {
   "encoding": "per_tree",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 13,
   "stage_depth": 11,
   "tables": {
@@ -856,11 +856,11 @@
     9
    ]
   },
-  "text_md5": "d800f51174c3416d6518811772dd14b3"
+  "text_md5": "0bf39e29b68cf94d01ffb790dd2b4f8c"
  },
  "joint-tree_M075_s02_k07": {
   "encoding": "per_tree",
-  "generator_commit": "e1e08dd74edfe10f99e6dc10d5cd8590dc820970",
+  "generator_commit": "ae345901f413cb449552851c737629dc2769f6c8",
   "k": 7,
   "stage_depth": 10,
   "tables": {
@@ -933,6 +933,6 @@
     8
    ]
   },
-  "text_md5": "c34f133de1ce3bac4907743e84383fda"
+  "text_md5": "8777248b170625313dc36ff611c3e5ca"
  }
 }
