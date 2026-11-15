@@ -1,0 +1,11 @@
+Third-party code in this repository
+
+p4model/xbar.py
+  Upstream project: open-p4studio (https://github.com/p4lang/open-p4studio)
+  Upstream commit: 0e81a46
+  Upstream files:
+    p4c/backends/tofino/bf-p4c/mau/tofino/input_xbar.cpp
+    p4c/backends/tofino/bf-p4c/mau/input_xbar.cpp
+  Copyright: Copyright (C) 2024 Intel Corporation
+  Licence: Apache License 2.0 (see LICENSE)
+  Changes: ported from C++ to Python; ternary input-crossbar allocation only; adapted to this project's data structures.

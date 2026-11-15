@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# Portions derived from open-p4studio (https://github.com/p4lang/open-p4studio), commit 0e81a46,
+# p4c/backends/tofino/bf-p4c/mau/tofino/input_xbar.cpp and mau/input_xbar.cpp:
+# Copyright (C) 2024 Intel Corporation. Licensed under the Apache License, Version 2.0.
+# Ported to Python, ternary input-crossbar path only, and modified for this project.
 """p4c's Tofino ternary input-crossbar allocation, ported (spec 2026-11-13, crossbar port).
 
 Which crossbar slots a stage's tree keys take, and so how many TCAM blocks each costs, depends on the order p4c
