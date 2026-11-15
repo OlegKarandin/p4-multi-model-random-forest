@@ -499,13 +499,13 @@ def _load(index, fields, blocks=(1,), tables=1):
                      field_order=tuple(sorted(set(fields), key=repr)))
 
 
-def test_the_stage_limit_is_66_while_the_single_key_limit_stays_64():
+def test_the_stage_limit_is_66_while_the_single_key_limit_is_65():
     assert TERNARY_CROSSBAR_STAGE_BYTES == 66
-    assert MAX_KEY_BYTES == 64
+    assert MAX_KEY_BYTES == 65
     with pytest.raises(CrossbarKeyTooWide):
-        _stage_shards(1, 65)
+        _stage_shards(1, 66)
     with pytest.raises(CrossbarKeyTooWide):
-        lanes.table_blocks((8,) * 65)
+        lanes.table_blocks((8,) * 66)
 
 
 def _two_key_plan(bytes_a, bytes_b):

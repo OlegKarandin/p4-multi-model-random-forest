@@ -60,12 +60,17 @@ TERNARY_MATCHING_ENTRIES_PER_BLOCK = 512
 TERNARY_CROSSBAR_MAX_TABLES_PER_STAGE = 8    # hard cap, binds for narrow keys (<=64 bits)
 # The one limit on a LONE table key, in crossbar bytes (decision 6a): the training refusal,
 # the replay, tables' ladder and the packer's stage test all read it, via this module.
-# 64 is a measured Tofino-1 figure (a key-width sweep of 8..512 bits with two exact
-# saturations, one table at exactly 64 bytes; reviews/p4_tofino_reference.md 4.3); whether
-# p4c also accepts 65 or 66 is the open probe of design-review decision 6a (GATE G3). The
-# 512-bit codeword limit that used to sit beside it was this number times 8 and is gone
-# (decision 6b).
-MAX_KEY_BYTES = 64
+# 65 is p4c's own limit, probed by the Task 17 compile experiment (design-review decision
+# 6a, gate G3; results/encoding_evidence_2026_11/model8/impl/experiment_report.md, "Extra
+# 6a"): hand-written programs with one ternary table whose key is N header-field bytes
+# compile at 64 and at 65 bytes (12 blocks each, both with 8-bit fields and with 32-bit
+# fields plus one 8-bit) and are refused at 66 ("uses 528b as ternary match key. Maximum
+# number of bits allowed is 524b": 66 bytes less the 4-bit version nibble). The ported
+# crossbar prices the 65-byte key at 12 blocks, as p4c does. Untested: a 66-byte key whose
+# bytes are not all full. (It was 64, from a key-width sweep whose widest table was exactly
+# 64 bytes, reviews/p4_tofino_reference.md 4.3.) The 512-bit codeword limit that used to
+# sit beside it was 64 times 8 and is gone (decision 6b).
+MAX_KEY_BYTES = 65
 # What one stage's crossbar holds across ALL its keys, as opposed to the limit
 # above, which is for one table's key. 12 groups x 5 private bytes + 6 midbytes
 # (p4c's input_xbar.cpp:1319 says 66), and real stages of 65 and 66 distinct bytes

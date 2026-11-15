@@ -338,12 +338,12 @@ def test_table_blocks_of_the_empty_key_is_the_ladders_floor():
 
 def test_table_blocks_rejects_a_key_over_the_crossbar_before_enumerating(monkeypatch):
   def boom(*_):
-    raise AssertionError('the crossbar must not run for a 65-byte key')
+    raise AssertionError('the crossbar must not run for a 66-byte key')
   monkeypatch.setattr(lanes.xbar, 'alone_blocks', boom)
   lanes._table_blocks.cache_clear()
   with pytest.raises(CrossbarKeyTooWide) as info:
-    lanes.table_blocks((8,) * 65)
-  assert info.value.args[1] == 65
+    lanes.table_blocks((8,) * 66)
+  assert info.value.args[1] == 66
 
 
 def test_table_blocks_raises_when_the_crossbar_cannot_fit_the_key(monkeypatch):

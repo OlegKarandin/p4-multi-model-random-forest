@@ -1,7 +1,7 @@
 """Decision 6a: ONE limit on a lone table key, target.MAX_KEY_BYTES, read by every
-site that refuses a key. Each site is exercised at the limit and one byte past it
-with the constant moved to 65 (the value the open probe may decide on), so a site
-that kept its own copy of 64 would fail here."""
+site that refuses a key. Each site is exercised at the limit and one byte past it,
+so a site that kept its own copy of the old 64 would fail here. 65 is p4c's limit
+(Task 17 probe: 64 and 65 bytes compile at 12 blocks, 66 is refused, 528b > 524b)."""
 import pytest
 
 from p4gen import evaluation as ev
@@ -9,9 +9,8 @@ from p4model import lanes, packing, tables, target
 from p4model.errors import CrossbarKeyTooWide
 
 
-@pytest.fixture(autouse=True)
-def _limit_is_65(monkeypatch):
-  monkeypatch.setattr(target, "MAX_KEY_BYTES", 65)
+def test_the_limit_is_the_probed_65_bytes():
+  assert target.MAX_KEY_BYTES == 65
 
 
 def _byte_wide_intervals(n_fields):
@@ -52,10 +51,9 @@ def test_one_key_limit(site):
   assert excinfo.value.args[1] == 66
 
 
-def test_a_range_key_counts_four_crossbar_byte_slots(monkeypatch):
+def test_a_range_key_counts_four_crossbar_byte_slots():
   """Decision 6f: RANGE_LO + RANGE_HI per byte of the 16-bit key, the unit
   xbar.range_key uses; the specs and the stage fields carry the same 4."""
-  monkeypatch.undo()
   intervals = {"Flow IAT Max": [(0, 10), (11, 20)]}
   (fields,) = tables.range_key_fields_for(intervals)
   assert {size for _, size in fields} == {4}
