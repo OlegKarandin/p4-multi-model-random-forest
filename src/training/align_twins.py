@@ -26,6 +26,7 @@ from sklearn.metrics import accuracy_score
 
 from p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
 from p4gen.switch_semantics import switch_predict
+from p4model.refusals import REFUSAL_ERRORS
 from src.training.campaign_run import INF, atomic_write_text, run_paths, split_csv_name
 from src.training.campaign_run import row_id as make_row_id
 from src.training.row_artifacts import RowContext, load_forests, write_row_artifacts
@@ -34,6 +35,11 @@ from src.training.threshold_alignment import align_with_policy
 from src.verify.runner import copy_record
 
 CAMPAIGN_RANDOM_STATE = 42          # campaign_runner.DATA_RANDOM_STATE
+# A twin the model refuses (p4model.refusals.REFUSAL_ERRORS) is written as
+# 'ModelRefused:<constraint>' -- deliberately NOT the TwinInvariantViolation
+# prefix, so the R11 count (campaign_data.count_twin_invariant_violations)
+# counts only twins that cost more than their source.
+MODEL_REFUSED_PREFIX = 'ModelRefused'
 SOURCE_ARM_SLUG = 'joint-off'
 TWIN_ARM_SLUG = 'joint-off-al'
 _ROW_ID = re.compile(r'^(?P<arm>.+)_M(?P<M>\d{3}|inf)_s(?P<split>\d+)_k(?P<k>\d+)$')
@@ -90,7 +96,10 @@ def build_twin(ctx, source, forests, data, write_artifacts=True):
         app.X_val_align[:, cols_app], app.y_val_align,
         ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
         align_stats=stats)
-    usage = _usage(model_A, model_B, names_app, names_ddos)
+    try:
+        usage = _usage(model_A, model_B, names_app, names_ddos)
+    except REFUSAL_ERRORS as exc:
+        usage, refused = None, exc
 
     tid = twin_row_id(source['row_id'])
     row = dict(source)
@@ -99,6 +108,13 @@ def build_twin(ctx, source, forests, data, write_artifacts=True):
                 'align_attempted': stats.get('attempted'), 'align_accepted': stats.get('accepted'),
                 'intervals_before': stats.get('intervals_before'),
                 'intervals_after': stats.get('intervals_after')})
+
+    if usage is None:
+        # One refused twin must not crash its whole (M, split): the row is
+        # infeasible and nothing is written for it (interim review I2).
+        row['infeasible'] = '{}:{}'.format(MODEL_REFUSED_PREFIX, refused.constraint)
+        row['twin_identical'] = ''
+        return row
 
     src_blocks, src_depth = int(source['blocks']), int(source['stage_depth'])
     if usage.blocks > src_blocks or usage.stage_depth > src_depth:

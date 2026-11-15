@@ -428,9 +428,14 @@ def _rescored_model(paths, row_id, model):
     `model_refusal` set and no numbers, and is classified MODEL_REFUSED:<reason>
     (verdicts.classify) instead of stopping the rescore: an archived program of
     an older generator -- @stage pins, gated register blocks -- is one."""
+    return _rescored(paths, row_id, model)[0]
+
+
+def _rescored(paths, row_id, model):
+    """(_rescored_model's model, the replay's refusal constraint or None)."""
     p4_path = os.path.join(paths.designs, row_id + '.p4')
     if _generator_failed(paths, row_id, model):
-        return model
+        return model, None
     if not os.path.isfile(p4_path):
         raise FileNotFoundError(
             f"{row_id}: cannot rescore, designs/{row_id}.p4 is missing")
@@ -439,23 +444,38 @@ def _rescored_model(paths, row_id, model):
     # As row_artifacts.write_row_artifacts.
     model.update(replayed_fields(fresh, model.get('training_stage_depth'),
                                  model.get('training_blocks'), model.get('M')))
-    return model
+    return model, fresh.get('refusal')
 
 
-def rescore(run_dir):
+class RefusedProgramsError(RuntimeError):
+    """--rescore found programs the current replay refuses for their SHAPE
+    (constraint program_shape: an older generator's program) and was not
+    given allow_refused; nothing was rewritten. args = (message, row ids)."""
+
+
+def rescore(run_dir, allow_refused=False):
     """Reclassify every verified row with the current model code and the
     p4c numbers re-parsed from its tarball. Never compiles. Keeps the
     compile's own provenance (p4c image, open-p4studio commit, verified_utc,
     p4c errors/warnings, compile_seconds); verifier_git_commit becomes the
-    rescoring commit. A program the current replay refuses is classified
-    MODEL_REFUSED:<reason> (_rescored_model), never left half-rescored."""
+    rescoring commit.
+
+    Every record is computed before any is written. If the current replay
+    refuses any program for its shape (constraint program_shape -- typically
+    a run made by an older generator: @stage pins, gated register blocks),
+    raises RefusedProgramsError and rewrites NOTHING, unless allow_refused:
+    then each such row is classified MODEL_REFUSED:<reason> (_rescored_model)
+    and every record is written (interim review I3)."""
     paths = run_paths(run_dir).ensure()
+    records, shape_refused = [], []
     for name in sorted(os.listdir(paths.verify)):
         if not name.endswith('.json'):
             continue
         old = _read_json(os.path.join(paths.verify, name))
         row_id = old['row_id']
-        model = _rescored_model(paths, row_id, _load_model(paths, row_id))
+        model, refusal = _rescored(paths, row_id, _load_model(paths, row_id))
+        if refusal == 'program_shape':
+            shape_refused.append(row_id)
         failure = old.get('failure')
         # A copied twin has no tarball: its program is byte-identical to its
         # source's, so the source's logs are its logs.
@@ -479,6 +499,14 @@ def rescore(run_dir):
                              'p4c_errors', 'p4c_warnings', 'p4c_image',
                              'open_p4studio_commit', 'verified_utc')})
         record['copied_from'] = copied_from
+        records.append((name, record))
+    if shape_refused and not allow_refused:
+        raise RefusedProgramsError(
+            f"cannot rescore {run_dir}: the current replay refuses {len(shape_refused)} "
+            f"program(s) for their shape (program_shape), e.g. {shape_refused[:5]}; "
+            "nothing was rewritten (pass --allow-refused to record them as MODEL_REFUSED)",
+            shape_refused)
+    for name, record in records:
         atomic_write_text(os.path.join(paths.verify, name), canonical_json(record))
     return merge_verification(run_dir)
 

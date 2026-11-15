@@ -10,6 +10,8 @@ import pandas as pd
 import pytest
 
 from p4gen.evaluation import multi_model_memory_evaluation
+from p4model.errors import PlacementFailed, RangeEntriesDoNotFit
+from p4model.refusals import CONSTRAINTS
 from src.training import align_twins
 from src.training import row_artifacts as ra
 from src.training.campaign_run import (atomic_write_text, canonical_json, run_paths,
@@ -140,6 +142,27 @@ def test_build_twin_invariant_violation_writes_nothing_and_marks_the_row(tmp_pat
     assert twin['infeasible'].startswith('TwinInvariantViolation')
     assert not os.path.exists(os.path.join(str(tmp_path), 'designs', twin['row_id'] + '.p4'))
     assert not os.path.exists(os.path.join(str(tmp_path), 'designs', twin['row_id'] + '.model.json'))
+
+
+@pytest.mark.parametrize('error', [
+    lambda: RangeEntriesDoNotFit('range entries over', 3),
+    lambda: PlacementFailed('no placement'),
+])
+def test_build_twin_model_refusal_marks_the_row_and_writes_nothing(tmp_path, monkeypatch, error):
+    # Interim review I2: a refusal is a named infeasible row, not a crash, and
+    # never the TwinInvariantViolation prefix (the R11 count stays honest).
+    exc = error()
+    def refuses(*args):
+        raise exc
+    monkeypatch.setattr(align_twins, '_usage', refuses)
+    ctx, source = _source(tmp_path)
+    forests = ra.load_forests(os.path.join(str(tmp_path), 'forests', source['row_id'] + '.joblib'))
+    twin = align_twins.build_twin(ctx, source, forests, _synthetic_data())
+    assert twin['infeasible'] == 'ModelRefused:' + exc.constraint
+    assert exc.constraint in CONSTRAINTS
+    assert not twin['infeasible'].startswith('TwinInvariantViolation')
+    assert twin['twin_identical'] == ''
+    assert not os.path.exists(os.path.join(str(tmp_path), 'designs', twin['row_id'] + '.p4'))
 
 
 def _serial(max_workers):

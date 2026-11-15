@@ -473,10 +473,7 @@ def test_rescore_raises_when_a_rows_program_is_missing(tmp_path):
         runner.rescore(run_dir)
 
 
-def test_rescore_reports_a_refused_program_as_model_refused(tmp_path, monkeypatch):
-    """A program the current replay refuses (decision 8.2) -- here one with an
-    @stage pin -- is classified MODEL_REFUSED:<reason>; the rescore does not stop,
-    and the rows before and after it are rescored as usual."""
+def _run_with_a_shape_refused_program(tmp_path, monkeypatch):
     run_dir = _run_dir(tmp_path, rows=("a", "p", "z"))
     for row_id in ("a", "p", "z"):
         runner.verify_row(run_dir, row_id, compile_fn=FakeCompiler())
@@ -488,7 +485,47 @@ def test_rescore_reports_a_refused_program_as_model_refused(tmp_path, monkeypatc
     monkeypatch.setattr(runner, "model_breakdown", lambda program, row_id: (
         real(program, row_id) if program.stage_pins
         else {"stage_depth": 12, "blocks": 6, "tables": _TABLES}))
-    runner.rescore(run_dir)
+    return run_dir
+
+
+def _verify_files(run_dir):
+    paths = [os.path.join(run_dir, "verify", name)
+             for name in sorted(os.listdir(os.path.join(run_dir, "verify")))]
+    csv_path = os.path.join(run_dir, "verification.csv")
+    out = {csv_path: None}
+    if os.path.isfile(csv_path):
+        paths.append(csv_path)
+    for path in paths:
+        with open(path, "rb") as handle:
+            out[path] = handle.read()
+    return out
+
+
+def test_rescore_refuses_a_shape_refused_program_and_rewrites_nothing(tmp_path, monkeypatch,
+                                                                       capsys):
+    """Interim review I3: a program the current replay refuses for its shape
+    (program_shape: an older generator's) stops the rescore before any record
+    is written, unless --allow-refused."""
+    run_dir = _run_with_a_shape_refused_program(tmp_path, monkeypatch)
+    runner.merge_verification(run_dir)
+    before = _verify_files(run_dir)
+    assert before[os.path.join(run_dir, "verification.csv")] is not None
+    with pytest.raises(runner.RefusedProgramsError) as caught:
+        runner.rescore(run_dir)
+    assert caught.value.args[1] == ["p"]
+    assert _verify_files(run_dir) == before
+    assert cli.main(["--run", str(run_dir), "--rescore"]) == 2
+    assert "nothing was rewritten" in capsys.readouterr().err
+    assert _verify_files(run_dir) == before
+
+
+def test_rescore_reports_a_refused_program_as_model_refused(tmp_path, monkeypatch):
+    """A program the current replay refuses (decision 8.2) -- here one with an
+    @stage pin -- is classified MODEL_REFUSED:<reason> under --allow-refused;
+    the rescore does not stop, and the rows before and after it are rescored
+    as usual."""
+    run_dir = _run_with_a_shape_refused_program(tmp_path, monkeypatch)
+    assert cli.main(["--run", str(run_dir), "--rescore", "--allow-refused"]) == 0
     assert _verify_json(run_dir, "p")["verdict"] == "MODEL_REFUSED:stage_pin"
     assert _verify_json(run_dir, "p")["model_stage_depth"] is None
     assert [_verify_json(run_dir, r)["verdict"] for r in ("a", "z")] == ["EXACT", "EXACT"]
