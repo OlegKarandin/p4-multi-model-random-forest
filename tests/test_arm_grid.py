@@ -29,8 +29,8 @@ def test_result_paths_are_self_describing_and_unique_per_arm():
     paths = {Job(arm, cfg, 25, 0).csv_path('run') for arm, cfg in m.PRIMARY_ARMS}
 
     assert len(paths) == 2
-    assert any(p.endswith('rf_t7_d14_M025_independent_s00.csv') for p in paths)
-    assert any(p.endswith('rf_t7_d14_M025_joint-off_s00.csv') for p in paths)
+    assert any(p.endswith('rf_t15_d20_M025_independent_s00.csv') for p in paths)
+    assert any(p.endswith('rf_t15_d20_M025_joint-off_s00.csv') for p in paths)
 
 
 def test_result_paths_record_the_effective_search_bounds():

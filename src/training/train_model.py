@@ -38,6 +38,7 @@ from src.training.errors import NoFeasibleSolution
 
 import optuna
 from optuna.samplers import TPESampler
+from src.training.config import SEARCH_MAX_DEPTH, SEARCH_MAX_TREES  # noqa: F401  (decision 9.1: one statement, config.py)
 optuna.logging.set_verbosity(optuna.logging.CRITICAL)
 
 # Positive floor for log-uniform ccp_alpha sampling -- suggest_float(..., log=True)

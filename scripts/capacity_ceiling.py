@@ -1,5 +1,8 @@
 """Capacity-ceiling rederivation (P4, spec B.7 / F10i).
 
+NOTE (decision 9.1, 2026-11-15): the shipped defaults are no longer the (7, 14) this script's history derived: they are
+config.SEARCH_MAX_TREES = 15 and SEARCH_MAX_DEPTH = 20 (model8/impl/bounds.md). The text below is the historical derivation.
+
 `TrainConfig.n_trees` and `TrainConfig.max_depth` are *inclusive search
 bounds*, not fixed hyperparameters: `train_model.rf_params` suggests
 `n_estimators in [1, cfg.n_trees]` and `max_depth in [2, cfg.max_depth]`

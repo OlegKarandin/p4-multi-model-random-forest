@@ -698,6 +698,29 @@ def test_search_declares_the_multiplier_range():
     assert (dist.low, dist.high) == (2, 66)
 
 
+def test_search_declares_odd_trees_to_15_and_depth_to_20():
+    # decision 9.1: one shared search space for every arm
+    trees = _search_distributions()['n_estimators_A']
+    assert (trees.low, trees.high, trees.step) == (1, 15, 2)
+    depth = _search_distributions()['max_depth_A']
+    assert (depth.low, depth.high) == (2, 20)
+
+
+def test_warm_start_jitter_keeps_trees_odd_within_1_15_and_depth_in_range():
+    import numpy as np
+    import src.training.train_model as tm
+    rng = np.random.default_rng(1)
+    for n0 in (1, 3, 13, 15):
+        for d0 in (2, 10, 20):
+            for _ in range(100):
+                out = tm._vary_hyperparams(
+                    {'min_samples_leaf_A': 5, 'min_samples_split_mult_A': 2,
+                     'n_estimators_A': n0, 'max_depth_A': d0},
+                    tm.SEARCH_MAX_TREES, tm.SEARCH_MAX_DEPTH, rng)
+                assert out['n_estimators_A'] % 2 == 1 and 1 <= out['n_estimators_A'] <= 15
+                assert 2 <= out['max_depth_A'] <= 20
+
+
 def test_leaf_jitter_stays_inside_the_bounds_and_moves_small_values():
     import numpy as np
     import src.training.train_model as tm
@@ -709,7 +732,9 @@ def test_leaf_jitter_stays_inside_the_bounds_and_moves_small_values():
         for _ in range(200):
             out = tm._vary_hyperparams(
                 {'min_samples_leaf_A': start, 'min_samples_split_mult_A': 2,
-                 'n_estimators_A': 3, 'max_depth_A': 5}, 7, 14, rng)
+                 'n_estimators_A': 3, 'max_depth_A': 5}, 15, 20, rng)
+            assert 1 <= out['n_estimators_A'] <= 15
+            assert 2 <= out['max_depth_A'] <= 20
             assert lo <= out['min_samples_leaf_A'] <= hi
             assert out['n_estimators_A'] % 2 == 1
             assert (tm.MIN_SAMPLES_SPLIT_MULT_MIN <= out['min_samples_split_mult_A']

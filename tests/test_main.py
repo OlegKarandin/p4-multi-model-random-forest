@@ -308,7 +308,7 @@ def test_compute_mode_runs_one_arm_per_job_and_writes_one_file_each(tmp_path):
     written = sorted(p.name for p in rows_dir.iterdir())
     assert len(written) == 4
     assert all(name.endswith('.csv') for name in written)   # no .partial left
-    assert 'rf_t7_d14_M025_joint-off_s01.csv' in written
+    assert 'rf_t15_d20_M025_joint-off_s01.csv' in written
 
 
 def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp_path):
@@ -318,8 +318,8 @@ def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp
     import pandas as pd
     _run_compute(_compute_args(tmp_path, "--arm-slugs", "independent,joint"), [])
     rows_dir = tmp_path / "run" / "rows"
-    independent_df = pd.read_csv(rows_dir / 'rf_t7_d14_M025_independent_s00.csv')
-    joint_df = pd.read_csv(rows_dir / 'rf_t7_d14_M025_joint_s00.csv')
+    independent_df = pd.read_csv(rows_dir / 'rf_t15_d20_M025_independent_s00.csv')
+    joint_df = pd.read_csv(rows_dir / 'rf_t15_d20_M025_joint_s00.csv')
 
     assert (~independent_df['alignment_enabled']).all()
     assert joint_df['alignment_enabled'].all()

@@ -50,7 +50,7 @@ def test_job_csv_path_names_the_split_file(tmp_path):
     job = runner.Job(arm='joint', cfg=TrainConfig(), M=INF, split=1)
     assert job.slug == 'joint'
     path = job.csv_path(str(tmp_path))
-    assert os.path.basename(path) == 'rf_t7_d14_Minf_joint_s01.csv'
+    assert os.path.basename(path) == 'rf_t15_d20_Minf_joint_s01.csv'
     assert os.path.dirname(path) == os.path.join(str(tmp_path), 'rows')
 
 
@@ -112,8 +112,8 @@ def test_run_jobs_writes_one_csv_with_M_and_budgeted(tmp_path, monkeypatch,
         assert (frame['M'].astype(int) == want_M).all()
     assert (frame['budgeted'].astype(str) == str(want_budgeted)).all()
     assert (frame['alignment_enabled'].astype(str) == 'True').all()
-    assert (frame['n_trees'].astype(int) == 7).all()
-    assert (frame['max_depth'].astype(int) == 14).all()
+    assert (frame['n_trees'].astype(int) == 15).all()
+    assert (frame['max_depth'].astype(int) == 20).all()
     assert 'delta_select' in frame.columns
     # The worker got this job's identity and the fixed data seed.
     (call,) = calls

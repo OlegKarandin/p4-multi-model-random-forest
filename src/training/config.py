@@ -14,6 +14,14 @@ from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
 SELECTION_RULES = ('balanced', 'tied_cheapest')
 
+# The ONE statement of the forest-size search bounds (decision 9.1, Task 19 sweep): one shared search space for every arm.
+# max_depth: feasible share was flat from depth 14 to 20 (and to 32) at fixed ccp_alpha, so 20 is a cap, not a measured edge.
+# n_estimators: odd 1..15 (voting); 15 is the largest odd count with any feasible design over the four encodings (per_tree;
+# joint 7, disjoint/per_task 11) at ccp_alpha 1e-3 -- the tree bound DEPENDS on ccp_alpha (at 1e-4 only 1 tree is feasible).
+# train_model re-exports both for the search and the warm-start jitter.
+SEARCH_MAX_TREES = 15
+SEARCH_MAX_DEPTH = 20
+
 # The arm names `_run_elimination` and the rows' `arm` column use, and the
 # encoding each is priced and generated under. `joint`, `joint-task` and
 # `joint-tree` all eliminate ONE shared feature list; they differ in the leaf keys.
@@ -99,22 +107,12 @@ class TrainConfig:
         (max_depth - 1) = 104, is attained at the grid's own top corner
         (15, 14).
 
-        n_trees is NOT set from that ceiling: it is set by a utilisation
-        argument instead (design 2026-09-03 spec 2.1(b)) -- the archive
-        never reaches 11 trees and p75 is 3, so headroom the ceiling would
-        permit goes unused in practice. n_trees = 7 regardless of what the
-        grid allows. max_depth is kept at its previous value of 14 even
-        though the measurement did not rule out raising it: spec 2.1's
-        boxed warning is that codeword length is essentially total leaf
-        count across both forests, and `joint` pools both models' leaves
-        into one codeword while `independent` never pools, so
-        raising max_depth would push `joint` toward CrossbarKeyTooWide faster
-        than `independent`, widening a dimension that structurally
-        disadvantages the arm under study -- raising it is therefore a
-        separate, explicit decision, not an automatic consequence of this
-        measurement. The predecessor (7, 10) was a placeholder whose
-        comment said P4 would derive it; nothing had measured the ceiling,
-        which is what this replaces.
+        Decision 9.1 (2026-11-15 model-only sweep, model8/impl/bounds.md) set the defaults to
+        SEARCH_MAX_TREES = 15 (odd 1..15) and SEARCH_MAX_DEPTH = 20, one search space for every arm: the
+        feasible share is flat in depth from 14 to 32, and 15 trees is the largest odd count with anything
+        feasible over the encodings (per_tree; joint 7, disjoint/per_task 11) at ccp_alpha 1e-3. The tree bound
+        depends on ccp_alpha (at 1e-4 only 1 tree is feasible), which the sweep fixed. The paragraphs above
+        describe the older capacity-ceiling derivation of (7, 14).
     n_trees_min : inclusive lower bound on the search space for n_trees.
         Defaults to 1, which is `rf_params`'s old hardcoded lower bound.
         Set to n_trees to pin that dimension (the T-pinning mechanism used by
@@ -136,8 +134,8 @@ class TrainConfig:
     alignment_enabled: bool = True
     delta_select: float = 0.02
     align_objective: str = 'blocks'
-    n_trees: int = 7
-    max_depth: int = 14
+    n_trees: int = SEARCH_MAX_TREES
+    max_depth: int = SEARCH_MAX_DEPTH
     n_trials: int = 1000
     min_feasible_before_stop: int = 25
     lookback: int = 20
