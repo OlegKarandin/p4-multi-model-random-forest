@@ -48,15 +48,17 @@ def widths_of(tree_intervals):
           for task, trees in tree_intervals.items()}
 
 
-def budgets(n_features, n_trees, n_scratch=0, n_constants=0):
+def budgets(n_features, n_trees, n_scratch=0, n_constants=0, coarse_clock=False):
   """Containers left for code fields, per size: the ingress containers minus the
   program's own fields (phv.budgets; target.PHV_TEMPLATE_FIELDS, measured
-  in Task 31 on 160 compiles of the generator): the 32-bit template fields, one 16-bit value field per selected
+  in Task 31 on 160 compiles of the generator): the 32-bit template fields plus the
+  coarse clock's two (phv.COARSE_CLOCK_CONTAINERS, when a Task 38 duration is
+  selected), one 16-bit value field per selected
   feature plus one per IAT scratch field plus one per call-site constant (C1f's Min
   read) plus the 16-bit template fields, one
   8-bit container per class field (n_trees of them: phv.class_fields, none for a
   one-tree task since review A2) plus the 8-bit template fields."""
-  return phv.budgets(n_features, n_scratch, n_trees, n_constants)
+  return phv.budgets(n_features, n_scratch, n_trees, n_constants, coarse_clock)
 
 
 @dataclass(frozen=True)
@@ -121,7 +123,7 @@ def pack_bytes(found):
   return [(n, codes) for n, codes, _ in units]
 
 
-def layout_for(widths, features, task_order, n_scratch=0, n_constants=0):
+def layout_for(widths, features, task_order, n_scratch=0, n_constants=0, coarse_clock=False):
   """The packed layout (spec Sec 3.2, decision 4.4). Features in `features` order
   that have a code; within a feature the codes in task_order, then tree index
   (program order), packed into bytes by pack_bytes; the units are then ordered by
@@ -134,7 +136,8 @@ def layout_for(widths, features, task_order, n_scratch=0, n_constants=0):
   the field that cannot be placed (the layout stops at the first such field).
   `n_scratch` is the number of IAT scratch fields the program declares and
   `n_constants` the number of its call-site constants (16-bit containers of its
-  own, phv.budgets).
+  own, phv.budgets); `coarse_clock`: the program computes the Task 38 coarse clock
+  (two 32-bit containers of its own).
 
   Lane balancing (spec Sec 3.2 rule 2, design review 3.13, unchanged per byte): at
   each byte offset take the remaining unit whose trees' per-lane key-byte counts
@@ -155,7 +158,7 @@ def layout_for(widths, features, task_order, n_scratch=0, n_constants=0):
            for feature in features}
   codes = {feature: found for feature, found in codes.items() if found}
   left = budgets(len(codes), phv.class_fields(len(widths.get(task, [])) for task in task_order),
-                 n_scratch, n_constants)
+                 n_scratch, n_constants, coarse_clock)
   lane_count = {}                                   # (task, tree) -> key bytes per lane
   containers, place = {}, {}
   for feature, found in codes.items():

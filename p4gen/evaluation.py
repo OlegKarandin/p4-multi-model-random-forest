@@ -22,6 +22,7 @@ from p4gen.build_p4_script import (
     merge_tree_nodes,
     most_common_class_and_dropped_codewords,
     tree_nodes_for,
+    uses_coarse_clock,
 )
 
 
@@ -512,7 +513,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     layout = packed.layout_for(packed.widths_of(own), list(feature_intervals),
                                [APP_TASK, DDOS_TASK],
                                len(iat_scratch_fields(feature_intervals)),
-                               len(call_site_constants(feature_intervals)))
+                               len(call_site_constants(feature_intervals)),
+                               uses_coarse_clock(feature_intervals))
 
     position = {feature: index for index, feature in enumerate(feature_intervals)}
     ternary_entries, codeword_length = 0, 0
@@ -703,6 +705,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
                 "scratch": len(iat_scratch_fields(raw_features)),
                 # C1f's Min read `+ 1`: one 16-bit container per constant (Task 33)
                 "constants": len(call_site_constants(raw_features)),
+                # Task 38: the coarse clock of the durations, two 32-bit containers
+                "coarse_clock": uses_coarse_clock(raw_features),
                 # one class field per tree of a task with more than one tree (A2)
                 "trees": phv.class_fields([ternary_task.count(task) for task in set(ternary_task)]),
                 "code_containers": code_containers}

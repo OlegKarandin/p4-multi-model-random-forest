@@ -1058,7 +1058,8 @@ def per_tree_layout(table_plan, tree_intervals, tasks):
   layout = packed.layout_for(packed.widths_of(tree_intervals), list(table_plan),
                              [task.name for task in reversed(list(tasks))],
                              len(iat_scratch_fields(list(table_plan))),
-                             len(call_site_constants(list(table_plan))))
+                             len(call_site_constants(list(table_plan))),
+                             uses_coarse_clock(list(table_plan)))
   uncoded = [feature for feature in table_plan if feature not in layout.containers]
   if uncoded:
     raise ValueError("no tree has a code on {}: the tasks' intervals hold thresholds "
