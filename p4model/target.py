@@ -171,36 +171,43 @@ PHV_INGRESS_CONTAINERS = {8: 48, 16: 80, 32: 48}
 # does not count itself (it adds one 16-bit container per _val and per IAT scratch field,
 # one 8-bit per class_tree field, and each code field's pinned containers). Only the
 # tuple LENGTHS are used.
-# PROVISIONAL (decision 6c, re-measured in Task 18 on the 160 Task 17b base compiles,
-# generator e1e08dd, all pins of that commit; results/encoding_evidence_2026_11/model8/
-# impl/remeasure.md, script impl/scripts/t18_phv_budgets.py). Gate G3 may drop pins, which
-# moves PHV: re-run the script on the new compiles and reset these lengths.
+# Decision 6c, measured in Task 23 (2026-11-15) on p4c's allocation of the 160 Task 17b
+# base designs compiled with the FINAL pin set of gate G3 (generator ae34590:
+# results/encoding_evidence_2026_11/model8/impl/remeasure.md "Task 23: final pins", script
+# impl/scripts/t18_phv_budgets.py). Re-run the script and reset the lengths whenever a
+# generator change moves PHV.
 # Each length is the MEDIAN over the 160 of p4c's containers of that size minus the
-# model's own count of the rest (8-bit 6, 16-bit 5, 32-bit 5; ranges 4-7, 3-7, 5-8),
-# because p4c packs and overlays the small fields differently per program. Where the
-# fields really sit (p4c, 160 designs):
+# model's own count of the rest (8-bit 3, 16-bit 6, 32-bit 5; ranges -2..5, 5..8, 3..8),
+# because p4c packs and overlays the small fields differently per program. Model minus
+# p4c after: 8-bit -2..+5 (exact 31/160), 16-bit -2..+1 (60/160), 32-bit -3..+2 (107/160),
+# all sizes summed -4..+6. Where the fields really sit (p4c, 160 designs):
 #   8-bit: mirror_type alone 160; ipv4.protocol alone 160; ig_tm_md.qid (the app vote
-#     export, decision 1f) alone in an 8-bit container 118 (else 16/32-bit); the three
-#     header valid bits with ig_md.fwd 100 (else in a 16/32-bit container); bypass_egress
-#     with ig_tm_md.ingress_cos (the ddos vote export) 122; slices of
-#     ig_intr_md_from_prsr.global_tstamp / ig_md.now_pseudo_us (8-bit in 126 / 126).
+#     export, decision 1f) alone 133 (else 32-bit alone 19); the header valid bits with
+#     ig_md.fwd (8-bit 115, else 32-bit 42); bypass_egress with ig_tm_md.ingress_cos (the
+#     ddos vote export, 8-bit 133-139); timestamp slices (8-bit 125). That is ~6 own 8-bit
+#     containers, but the length is 3: since @pa_no_overlay(class_tree_*) was dropped (G3,
+#     3.3) p4c OVERLAYS almost every class_tree field (one container in all 160 designs
+#     holds a class field alone) into a container that is dead by the time the trees run -- a _val's 16-bit
+#     container (236 containers), an IAT scratch field's (255) or an own 8-bit one (58) --
+#     while p4model.phv.count still charges one 8-bit container per class field. The
+#     median nets the two.
 #   16-bit: ucast_egress_port, tcp.src_port, tcp.dst_port, ipv4.total_len and a p4c
-#     temporary ($tmp<n>) alone 160; now_pseudo_us alone 111; ingress_port shares a
-#     _val's container 160/160 and $hash_field_argument1 145/160 (counted with the vals).
-#   32-bit: ipv4.src_addr, ipv4.dst_addr, ig_md.flow_hash (158), a temporary (158) alone;
-#     $hash_field_argument0, shared 100/160 with IAT scratch fields.
-#   IAT scratch (<chain>_current_iat, counted as one 16-bit each): p4c puts fwd/bwd ones in
-#     the 32-bit $hash_field_argument0 container (fwd 81/92, bwd 54/114, both together in
-#     35), else in a 16-bit container beside $hash_field_argument1 or the timestamp;
-#     flow_current_iat mostly in 8-bit containers beside the timestamp.
-# Until 2026-11-15 (model4's 68 packed compiles): 4 x 8-bit, 5 x 16-bit, 5 x 32-bit; the
-# vote export (1f) and the forwarding assignments moved first (17b A) added the 8-bit ones.
+#     temporary ($tmp<n>) alone 160; ig_md.now_pseudo_us alone 123 (of the 126 designs
+#     that keep it); $hash_field_argument1 alone 68, else with a _val; ingress_port shares
+#     a _val's container 160/160.
+#   32-bit: ipv4.src_addr, ipv4.dst_addr and $hash_field_argument0 alone 160;
+#     ig_md.flow_hash and a temporary alone 145.
+#   IAT scratch (<chain>_current_iat): one 16-bit container each since the G3 pin
+#     (@pa_container_size 16), as counted here; before it p4c put fwd/bwd ones in the
+#     32-bit $hash_field_argument0 container (both together in 35 of 83 designs).
+# History: 4 / 5 / 5 until 2026-11-15 (model4's 68 packed compiles); 6 / 5 / 5 from Task 18
+# (all pins of e1e08dd: the vote export (1f) and the forwarding assignments moved first
+# added 8-bit ones); 3 / 6 / 5 from Task 23 (G3 pins: class fields overlaid, scratch fields
+# in 16-bit containers).
 PHV_TEMPLATE_FIELDS = {
-    8: ('ig_intr_md_for_dprsr.mirror_type', 'hdr.ipv4.protocol', 'ig_tm_md.qid',
-        'header-valid bits + ig_md.fwd', 'bypass_egress + ig_tm_md.ingress_cos',
-        'global_tstamp / now_pseudo_us slices'),
+    8: ('ig_intr_md_for_dprsr.mirror_type', 'hdr.ipv4.protocol', 'ig_tm_md.qid'),
     16: ('ig_intr_md_for_tm.ucast_egress_port', 'hdr.tcp.src_port', 'hdr.tcp.dst_port',
-         'hdr.ipv4.total_len', 'a temporary ($tmp<n>)'),
+         'hdr.ipv4.total_len', 'a temporary ($tmp<n>)', 'ig_md.now_pseudo_us'),
     32: ('hdr.ipv4.src_addr', 'hdr.ipv4.dst_addr', '$hash_field_argument0',
          'ig_md.flow_hash', 'a temporary ($tmp<n>)'),
 }
