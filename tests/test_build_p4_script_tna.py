@@ -2020,7 +2020,8 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
 
   # ...plus the timestamp, in a program that computes one (review A1b).
   assert "calc_timestamp();" in text
-  assert set(solitary) == declared | {"now_pseudo_us"}
+  # ...and the flow index, in every program (Task 31 miss).
+  assert set(solitary) == declared | {"now_pseudo_us", "flow_hash"}
   assert len(solitary) == len(set(solitary)), "duplicate @pa_solitary is a p4c error"
   assert "classification_app" not in set(solitary)
   assert "classification_ddos" not in set(solitary)

@@ -13,7 +13,10 @@ And again for review A2 (a one-tree task has no vote table; Codespace /workspace
 1 lower again on the 5 programs whose LAST tree belongs to a one-tree task (3 with one tree per task, 2 with app 1 /
 ddos 3-5 trees), unchanged on the other 7, blocks unchanged; the model's depth exact on 12/12. Recompiled once more
 with the @name keys (B1) and the clean-ups (Task 31's 160-design run, /workspaces/dr_t31_out/final, a0cbb9f): every
-p4c number of the 12 identical to the A2 compiles.
+p4c number of the 12 identical to the A2 compiles. The texts were regenerated once more with
+@pa_solitary(flow_hash) (2026-11-15, Task 32 addendum F3; impl/scripts/t32_fixture_texts.py: each text is its old
+text plus that one pragma line, 12/12) and NOT recompiled yet: the p4c numbers are still the a0cbb9f compiles of the
+texts without the pin (the pin changes no model number; the final 160-design recompile follows the next task).
 The old calibration archive
 (compiler_calibration_pragmas_2026_09_29) can no longer score the model: every program in it is refused by shape
 (test_model_archive).

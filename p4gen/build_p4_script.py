@@ -2181,6 +2181,18 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # shifted timestamp must split where its source bits split.)
   if uses_timestamp(raw_feature_intervals):
     phv_pragmas += '@pa_solitary("ingress", "ig_md.now_pseudo_us")\n'
+  # SPACE pin, ADDED 2026-11-15 (Task 31 miss, user's free-pin policy) on the flow
+  # index, in every program: no other field may share flow_hash's container. On
+  # 1 of the 160 Task 31 compiles (joint-task_M015_s13_k14) p4c packed
+  # flow_hash[11:0] into H15 beside ig_tm_md.bypass_egress, which the forwarding
+  # assignment writes in stage 0, so tbl_calc_flow_hash waited for stage 1
+  # ("action dependency ... due to PHV allocation advances stage to 1") and every
+  # later table ran a stage after program.FLOW_HASH_LEVEL = 1 says (model 7, p4c
+  # 8: an UNDER). Same mechanism as the now_pseudo_us pin above. Probe (p4c, 3
+  # compiles, text edit only; Task 31 report): with the pin that design is 7
+  # stages (= model), blocks unchanged, PHV +1; two control designs unchanged
+  # (PHV +1). program_checks.check_program requires it.
+  phv_pragmas += '@pa_solitary("ingress", "ig_md.flow_hash")\n'
 
   # F2: a feature with no FEATURE_REGISTER_CATALOG entry is silently skipped
   # by generate_P4_registers_and_apply above, but everything else in this

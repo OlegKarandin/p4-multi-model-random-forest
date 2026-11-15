@@ -135,11 +135,14 @@ def test_each_pin_the_generator_emits_is_required(tmp_path, encoding):
         seen[pin] += 1
     expected = {"pa_no_overlay", "pa_solitary", "pa_container_size", "placement_priority"}
     # pa_solitary is on the class_tree_* fields only since gate G3 (3.5), plus
-    # now_pseudo_us in a program with a timestamp since review A1b
+    # now_pseudo_us in a program with a timestamp since review A1b, plus flow_hash
+    # in every program since the Task 31 miss
     assert seen["pa_solitary"] == sum(1 for line in lines if ("class_tree_" in line
-                                                              or "now_pseudo_us" in line)
+                                                              or "now_pseudo_us" in line
+                                                              or '"ig_md.flow_hash"' in line)
                                       and "@pa_solitary" in line)
     assert ("calc_timestamp();" in text) == ('"ig_md.now_pseudo_us"' in text)
+    assert '@pa_solitary("ingress", "ig_md.flow_hash")' in text
     assert set(seen) == expected, seen
 
 

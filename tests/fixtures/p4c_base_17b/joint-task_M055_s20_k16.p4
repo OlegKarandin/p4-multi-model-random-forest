@@ -98,6 +98,7 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 @pa_container_size("ingress", "ig_md.flow_current_iat", 16)
 @pa_container_size("ingress", "ig_md.fwd_current_iat", 16)
 @pa_solitary("ingress", "ig_md.now_pseudo_us")
+@pa_solitary("ingress", "ig_md.flow_hash")
 struct metadata_t {
     bit<12> flow_hash;
     bit<1>  fwd;
