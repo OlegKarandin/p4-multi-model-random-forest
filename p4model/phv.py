@@ -12,7 +12,8 @@ ONE counting function, `count`, fed by two thin adapters: `from_pool` (the pool
     build_p4_script.iat_field_name) -- this program's own fields, each pinned to
     one 16-bit container by the generator since gate G3 (2026-11-15:
     @pa_container_size(<chain>_current_iat, 16), which program_checks requires);
-  * one 8-bit container per `class_tree_<task>_<i>` field;
+  * one 8-bit container per `class_tree_<task>_<i>` field (a task with one tree
+    has none since review A2: class_fields);
   * each code field's pinned containers: lanes.container_sizes for joint /
     disjoint / per-task fields (`@pa_container_size` of the generator), the
     packed layout's containers for a `code_pk_<f>` field.
@@ -40,6 +41,13 @@ def count(n_vals, n_scratch, n_trees, code_containers):
     for size in containers:
       used[size] += 1
   return used
+
+
+def class_fields(tree_counts):
+  """The class_tree_<task>_<i> fields a program declares, from its trees per task:
+  one per tree of a task with more than one tree, none for a one-tree task (its
+  tree action writes the export field, review A2)."""
+  return sum(n for n in tree_counts if n > 1)
 
 
 def budgets(n_vals, n_scratch, n_trees):

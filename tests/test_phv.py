@@ -56,7 +56,7 @@ def test_phv_count_joint(tmp_path):
   vals = re.findall(r"bit<16>\s+\w+_val;", text)
   scratch = re.findall(r"bit<16>\s+\w+_current_iat;", text)
   classes = re.findall(r"bit<\d+>\s+class_tree_\w+;", text)
-  assert vals and classes and code
+  assert vals and code
   by_hand = {size: len(PHV_TEMPLATE_FIELDS[size]) for size in (8, 16, 32)}
   by_hand[16] += len(vals) + len(scratch)
   by_hand[8] += len(classes)
@@ -69,7 +69,10 @@ def test_phv_count_joint(tmp_path):
   assert phv.containers_used(program) == by_hand
   pool = evaluation._pool_inputs(app, ddos, names, names, JOINT_ENCODING)
   assert phv.containers_used(pool) == by_hand
-  assert len(classes) == len(app.estimators_) + len(ddos.estimators_)
+  # one class field per tree of a task with more than one tree (a one-tree task has
+  # none since review A2)
+  assert len(classes) == phv.class_fields([len(app.estimators_), len(ddos.estimators_)])
+  assert phv.class_fields([1, 1]) == 0 and phv.class_fields([1, 3]) == 3
 
 
 @pytest.mark.parametrize("encoding", ENCODINGS)

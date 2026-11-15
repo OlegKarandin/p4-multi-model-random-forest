@@ -84,6 +84,22 @@
      "independent_low_sd5"
     ],
     "summary": "RE-PINNED to EXACT (p4c's tcam_real). 'lane_price_2026_10' above accepted an UNDER of 3 on this row: the three ddos trees key (27, 52), which the lane count priced at 2 blocks per tree and p4c charged 3. The per-table price and the stage simulation are now p4c's ternary crossbar allocation, ported (p4model/xbar.py, lanes.table_blocks = xbar.alone_blocks of the pinned layout): it prices the key at 3, the stage at 12, the design at 16 -- p4c's numbers. Every other row is unchanged."
+   },
+   {
+    "id": "one_tree_no_vote_2026_11_15",
+    "row_deltas": {
+     "independent_high_sd6": -1,
+     "independent_high_sd7": -1,
+     "joint_high_sd6": -1,
+     "joint_low_sd5": -1
+    },
+    "rows": [
+     "independent_high_sd6",
+     "independent_high_sd7",
+     "joint_high_sd6",
+     "joint_low_sd5"
+    ],
+    "summary": "Generator review A2 (Task 31): a task with ONE tree has no vote table -- its tree action writes the export field -- so it adds no vote epilogue stage (usage.pipeline_depth). These rows have one tree per task, so stage_depth is 1 lower; every other usage and plan number is unchanged. p4c: one stage less on 10/10 two-one-tree programs of the Task 28 probe and the Task 31 recompiles. The pools keep the range_levels they were dumped with (the 3-stage hash prologue of their time)."
    }
   ],
   "note": "Inputs captured at evaluation._pool_inputs; outputs from usage.assemble_usage.",
@@ -1753,7 +1769,7 @@
      "range_tables": 18,
      "register_count": 15,
      "register_depth": 8,
-     "stage_depth": 11,
+     "stage_depth": 10,
      "stages": 6,
      "ternary_depth": 10,
      "ternary_entries": 50,
@@ -2239,7 +2255,7 @@
      "range_tables": 22,
      "register_count": 17,
      "register_depth": 8,
-     "stage_depth": 11,
+     "stage_depth": 10,
      "stages": 6,
      "ternary_depth": 10,
      "ternary_entries": 61,
@@ -4124,7 +4140,7 @@
      "range_tables": 1,
      "register_count": 1,
      "register_depth": 5,
-     "stage_depth": 8,
+     "stage_depth": 7,
      "stages": 2,
      "ternary_depth": 7,
      "ternary_entries": 194,
@@ -5113,7 +5129,7 @@
      "range_tables": 13,
      "register_count": 16,
      "register_depth": 8,
-     "stage_depth": 11,
+     "stage_depth": 10,
      "stages": 6,
      "ternary_depth": 10,
      "ternary_entries": 87,

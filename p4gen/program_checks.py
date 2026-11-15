@@ -428,7 +428,8 @@ def _check_apply(program):
   """A11-A14: registers unconditional and executed once each, in the catalog's
   call-site order for the range tables' features; the prologue (calc_flow_hash)
   before the first register, the orientation register first; then range tables,
-  trees, and one exact-match vote table per task after every tree, all at one
+  trees, and one exact-match vote table per task with more than one tree (none
+  for a one-tree task, review A2) after every tree, all at one
   nesting depth. The forwarding assignments to ig_tm_md come first, before
   anything else and only there (a trailing copy is a stage the model does not
   price)."""
@@ -487,7 +488,10 @@ def _check_apply(program):
     if rank < last:
       raise ProgramShapeRefused("unexpected_shape:apply_order")
     last = rank
-  if sorted(votes) != sorted(trees):
+  # One vote table per task with MORE THAN ONE tree; a one-tree task has none
+  # (review A2: its tree action writes the export field), and the model prices
+  # a vote stage exactly for the tasks that have one (usage.pipeline_depth).
+  if sorted(votes) != sorted(task for task, names in trees.items() if len(names) > 1):
     raise ProgramShapeRefused("unexpected_shape:vote_tables")
   for task in votes:
     keys = program.exact_keys.get("vote_" + task, [])

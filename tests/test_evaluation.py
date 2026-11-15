@@ -1241,8 +1241,9 @@ def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
     # report depth 6 against the real compiler's 9; with the readiness origin
     # and the vote epilogue corrected it reports 9 -- the same number, on the
     # same program, that p4_compile.parse_compile_logs measured (under the old
-    # 3-stage hash prologue; 2 less since review A1).
-    assert usage.stage_depth == ev.FLOW_HASH_LEVEL + 6
+    # 3-stage hash prologue; 2 less since review A1, and 1 less again since
+    # review A2: one tree per task, so no vote stage).
+    assert usage.stage_depth == ev.FLOW_HASH_LEVEL + 5
 
 
 def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth():
@@ -1255,8 +1256,9 @@ def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth
         clf_app, clf_ddos, ["g0", "g1", "g2", "g3"], ["g0", "g1", "g2", "g3"], "joint")
 
     assert usage.stages == 2
-    # FLOW_HASH_LEVEL hash stages + 1 range + 1 classification + 1 vote.
-    assert usage.stage_depth == ev.FLOW_HASH_LEVEL + 3
+    # FLOW_HASH_LEVEL hash stages + 1 range + 1 classification; no vote stage:
+    # one tree per task (review A2).
+    assert usage.stage_depth == ev.FLOW_HASH_LEVEL + 2
 
 
 @pytest.mark.parametrize("encoding", ["joint", "disjoint"])

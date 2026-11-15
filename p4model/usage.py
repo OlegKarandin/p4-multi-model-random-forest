@@ -216,6 +216,42 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
   return levels
 
 
+def pipeline_depth(range_depth, tree_stages, tree_tasks, voting_tasks):
+  """The program's stage depth: the last stage any table uses, + 1.
+
+  Each task with a vote table adds VOTE_EPILOGUE_STAGES after its own last
+  tree (decision 2.7: the vote reads every tree's class field, p4c places it
+  exactly one stage after that task's last tree, 15,268/15,268); a task with
+  ONE tree has no vote table (review A2, 2026-11-15) -- its tree writes the
+  export field itself -- so it ends with its tree. So the depth is the max of
+  the range pool's depth and, per task, its last tree's stage + 1 (+ the
+  epilogue if it votes). p4c (Task 28): -1 stage exactly where every task
+  reaching the last tree stage has one tree, exact 12/12 with this rule.
+
+  range_depth  : the range pool's StagePlan.depth
+  tree_stages  : one stage per tree (ternary StagePlan.table_stages)
+  tree_tasks   : the tree's task, positionally aligned
+  voting_tasks : the tasks that have a vote table (training: more than one
+                 tree, as the generator emits; the replay: a vote_<task> table
+                 in the program text)"""
+  if len(tree_stages) != len(tree_tasks):
+    raise ValueError("pipeline_depth: %d tree stages for %d tree task labels"
+                     % (len(tree_stages), len(tree_tasks)))
+  last = {}
+  for stage, task in zip(tree_stages, tree_tasks):
+    last[task] = max(last.get(task, stage), stage)
+  return max([range_depth] + [stage + 1 + (VOTE_EPILOGUE_STAGES if task in voting_tasks else 0)
+                              for task, stage in last.items()])
+
+
+def voting_tasks_of(tree_tasks):
+  """The tasks the generator gives a vote table: those with more than one tree."""
+  counts = {}
+  for task in tree_tasks:
+    counts[task] = counts.get(task, 0) + 1
+  return {task for task, count in counts.items() if count > 1}
+
+
 def check_shared_stages(range_plan, ternary_plan):
   """PlacementFailed when a stage both pools use breaks a per-stage limit with
   both pools' tables in it. The seeded placement already guarantees it; checked
@@ -349,11 +385,13 @@ def assemble_usage(pool):
   # defensive widening for the degenerate case of zero ternary tables (where
   # crossbar_stages_needed's dependency-aware branch would otherwise report
   # depth 0), not something the real M2-shaped models ever hit.
-  # ...plus VOTE_EPILOGUE_STAGES: the vote tables read every tree's class, so
-  # they always occupy one further stage past the classification pool, and
-  # stage_depth is the quantity TOFINO_PIPELINE_STAGES is checked against.
-  # Measured as exactly 1 on all 19 calibration compiles.
-  stage_depth = max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES
+  # ...plus VOTE_EPILOGUE_STAGES for each task with a vote table: the vote reads
+  # every tree's class, so it occupies one further stage past its task's last
+  # tree, and stage_depth is the quantity TOFINO_PIPELINE_STAGES is checked
+  # against. Measured as exactly 1 on all 19 calibration compiles. A task with
+  # one tree has no vote table since review A2 (pipeline_depth).
+  stage_depth = pipeline_depth(range_plan.depth, ternary_plan.table_stages, ternary_task,
+                               voting_tasks_of(ternary_task))
 
   # register_depth reuses range_levels (already computed above on both
   # branches, positionally aligned with feature_intervals) rather than

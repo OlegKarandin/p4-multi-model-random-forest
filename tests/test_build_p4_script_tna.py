@@ -300,13 +300,19 @@ def test_generate_P4_actions_num_trees_app_1_now_named_with_tree_suffix():
       bit_per_classes_app=1, bit_per_classes_ddos=1,
   )
 
+  # One tree per task: each tree action writes its task's export field (review A2).
   assert "action classify_flow_codeword_app_0(bit<1> class){" in action_templates
-  assert "meta.class_tree_app_0 = class;" in action_templates
+  assert "\t\tig_tm_md.qid = (bit<5>) class;\n" in action_templates
   assert "action classify_flow_codeword_app(" not in action_templates
 
   assert "action classify_flow_codeword_ddos_0(bit<1> class){" in action_templates
-  assert "meta.class_tree_ddos_0 = class;" in action_templates
+  assert "\t\tig_tm_md.ingress_cos = (bit<3>) class;\n" in action_templates
   assert "action classify_flow_codeword_ddos(" not in action_templates
+  assert "class_tree_" not in action_templates
+  # Two trees: each writes its own class field, which the vote table reads.
+  two = generate_P4_actions(FEATURE_INTERVALS_2F, num_trees_app=2, num_trees_ddos=1,
+                            bit_per_classes_app=1, bit_per_classes_ddos=1)
+  assert "meta.class_tree_app_0 = class;" in two and "meta.class_tree_app_1 = class;" in two
 
   # Still unconditional -- no if/Mux, matching M1's validated shape.
   assert "if (" not in action_templates
@@ -1003,8 +1009,10 @@ def test_generate_P4_code_contains_expected_m1_feature_text(m1_ddos_only_output)
 
 
 def test_generate_P4_code_ddos_task_artifacts_present(m1_ddos_only_output):
-  assert "ig_tm_md.ingress_cos = (bit<3>) winner;" in m1_ddos_only_output
-  assert "class_tree_ddos_0" in m1_ddos_only_output
+  # One ddos tree: its action writes the export itself, no vote, no class field (A2).
+  assert "\t\tig_tm_md.ingress_cos = (bit<3>) class;\n" in m1_ddos_only_output
+  assert "class_tree_ddos_0" not in m1_ddos_only_output
+  assert "vote_ddos" not in m1_ddos_only_output
   assert "classify_flow_codeword_ddos" in m1_ddos_only_output
 
 
@@ -2289,12 +2297,17 @@ def test_vote_result_exported(tmp_path):
   with open(path) as f:
     text = f.read()
   assert "ig_tm_md.qid = (bit<5>) winner;" in text
-  assert "ig_tm_md.ingress_cos = (bit<3>) winner;" in text
-  # Each export lives in its own vote action, which the vote table runs.
-  for task, field in (("app", "ig_tm_md.qid"), ("ddos", "ig_tm_md.ingress_cos")):
-    action = text.index("action set_classification_%s(" % task)
-    assert text.index(field + " = ", action) < text.index("table vote_%s" % task)
-    assert "vote_%s.apply();" % task in text
+  # The two-tree app task's export lives in its vote action, which the vote table runs.
+  action = text.index("action set_classification_app(")
+  assert text.index("ig_tm_md.qid = ", action) < text.index("table vote_app")
+  assert "vote_app.apply();" in text
+  # The one-tree ddos task has no vote (review A2): its tree action writes the
+  # export with the vote action's cast, and there is no class field to write.
+  action = text.index("action classify_flow_codeword_ddos_0(bit<1> class){\n")
+  assert text[action:].split("}", 1)[0].endswith("\t\tig_tm_md.ingress_cos = (bit<3>) class;\n\t")
+  assert "vote_ddos" not in text and "set_classification_ddos" not in text
+  assert "class_tree_ddos_" not in text
+  assert text.count("ig_tm_md.ingress_cos = ") == 1 and text.count("ig_tm_md.qid = ") == 1
 
 
 def test_vote_export_rejects_unmapped_task():

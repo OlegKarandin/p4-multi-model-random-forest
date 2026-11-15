@@ -11,7 +11,6 @@
 
 const bit<32> MAX_NUM_FLOWS = 4096;
 
-@pa_solitary("ingress", "ig_md.class_tree_app_0")
 @pa_solitary("ingress", "ig_md.class_tree_ddos_0")
 @pa_solitary("ingress", "ig_md.class_tree_ddos_1")
 @pa_solitary("ingress", "ig_md.class_tree_ddos_2")
@@ -64,7 +63,6 @@ struct metadata_t {
 	bit<16> bwd_current_iat;
 	bit<16> flow_current_iat;
 	bit<16> fwd_current_iat;
-	bit<2> class_tree_app_0;
 	bit<1> class_tree_ddos_0;
 	bit<1> class_tree_ddos_1;
 	bit<1> class_tree_ddos_2;
@@ -308,7 +306,7 @@ control SwitchIngress(
 
 
 	action classify_flow_codeword_app_0(bit<2> class){
-		meta.class_tree_app_0 = class;
+		ig_tm_md.qid = (bit<5>) class;
 	}
 
 	action classify_flow_codeword_ddos_0(bit<1> class){
@@ -603,25 +601,7 @@ control SwitchIngress(
         }
         size = 19;
     }   
-    	action set_classification_app(bit<2> winner) {
-		ig_tm_md.qid = (bit<5>) winner;
-	}
-
-	table vote_app {
-		key = {
-			meta.class_tree_app_0 : exact;
-		}
-		actions = {
-			set_classification_app;
-		}
-		size = 3;
-		const entries = {
-			(0) : set_classification_app(0);
-			(1) : set_classification_app(1);
-			(2) : set_classification_app(2);
-		}
-	}
-	action set_classification_ddos(bit<1> winner) {
+    	action set_classification_ddos(bit<1> winner) {
 		ig_tm_md.ingress_cos = (bit<3>) winner;
 	}
 
@@ -649,8 +629,9 @@ control SwitchIngress(
 
 
     apply {
-        // First, not last: the vote actions write ig_tm_md (qid, ingress_cos), so p4c
-        // orders a trailing assignment to ig_tm_md after the votes, in a stage of its own.
+        // First, not last: the vote actions (and a one-tree task's tree action) write
+        // ig_tm_md (qid, ingress_cos), so p4c orders a trailing assignment to ig_tm_md
+        // after them, in a stage of its own.
         ig_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
         ig_tm_md.bypass_egress = 1w1;
 
@@ -697,7 +678,6 @@ control SwitchIngress(
 			get_classification_tree_ddos_0.apply();
 			get_classification_tree_ddos_1.apply();
 			get_classification_tree_ddos_2.apply();
-			vote_app.apply();
 			vote_ddos.apply();
 
 

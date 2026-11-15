@@ -13,7 +13,6 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 
 @pa_solitary("ingress", "ig_md.class_tree_app_0")
 @pa_solitary("ingress", "ig_md.class_tree_app_1")
-@pa_solitary("ingress", "ig_md.class_tree_ddos_0")
 @pa_container_size("ingress", "ig_md.flow_iat_max_val", 16)
 @pa_container_size("ingress", "ig_md.fwd_packet_length_max_val", 16)
 @pa_no_overlay("ingress", "ig_md.code_app_flow_iat_max")
@@ -32,7 +31,6 @@ struct metadata_t {
 	bit<16> flow_current_iat;
 	bit<2> class_tree_app_0;
 	bit<2> class_tree_app_1;
-	bit<1> class_tree_ddos_0;
 	bit<16> flow_iat_max_val;
 	bit<16> fwd_packet_length_max_val;
 	bit<8> code_app_flow_iat_max;
@@ -161,7 +159,7 @@ control SwitchIngress(
 	}
 
 	action classify_flow_codeword_ddos_0(bit<1> class){
-		meta.class_tree_ddos_0 = class;
+		ig_tm_md.ingress_cos = (bit<3>) class;
 	}
 
     
@@ -270,28 +268,12 @@ control SwitchIngress(
 			(2, 2) : set_classification_app(2);
 		}
 	}
-	action set_classification_ddos(bit<1> winner) {
-		ig_tm_md.ingress_cos = (bit<3>) winner;
-	}
-
-	table vote_ddos {
-		key = {
-			meta.class_tree_ddos_0 : exact;
-		}
-		actions = {
-			set_classification_ddos;
-		}
-		size = 2;
-		const entries = {
-			(0) : set_classification_ddos(0);
-			(1) : set_classification_ddos(1);
-		}
-	}
 
 
     apply {
-        // First, not last: the vote actions write ig_tm_md (qid, ingress_cos), so p4c
-        // orders a trailing assignment to ig_tm_md after the votes, in a stage of its own.
+        // First, not last: the vote actions (and a one-tree task's tree action) write
+        // ig_tm_md (qid, ingress_cos), so p4c orders a trailing assignment to ig_tm_md
+        // after them, in a stage of its own.
         ig_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
         ig_tm_md.bypass_egress = 1w1;
 
@@ -317,7 +299,6 @@ control SwitchIngress(
 
 			get_classification_tree_ddos_0.apply();
 			vote_app.apply();
-			vote_ddos.apply();
 
 
 

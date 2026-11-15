@@ -35,7 +35,9 @@ FLOW_HASH_LEVEL = 1
 # stage past the last classification table. Measured: exactly 1 in all 19
 # compiles, with no exceptions and no scaling. stage_depth is the quantity
 # checked against TOFINO_PIPELINE_STAGES, so leaving this out understated the
-# depth of every design by one whole stage.
+# depth of every design by one whole stage. Per task, one stage after ITS last
+# tree (decision 2.7), and only for a task with a vote table: since review A2
+# (2026-11-15) a task with one tree has none (usage.pipeline_depth).
 VOTE_EPILOGUE_STAGES = 1
 
 # flow_forward_srcaddr_reg backs flow_orientation_action, which resolves

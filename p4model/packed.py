@@ -53,7 +53,8 @@ def budgets(n_features, n_trees, n_scratch=0):
   program's own fields (phv.budgets; target.PHV_TEMPLATE_FIELDS, measured
   in Task 23 on 160 compiles of the final generator): the 32-bit template fields, one 16-bit value field per selected
   feature plus one per IAT scratch field plus the 16-bit template fields, one
-  8-bit class field per tree plus the 8-bit template fields."""
+  8-bit container per class field (n_trees of them: phv.class_fields, none for a
+  one-tree task since review A2) plus the 8-bit template fields."""
   return phv.budgets(n_features, n_scratch, n_trees)
 
 
@@ -151,7 +152,8 @@ def layout_for(widths, features, task_order, n_scratch=0):
                      if feature in tree]
            for feature in features}
   codes = {feature: found for feature, found in codes.items() if found}
-  left = budgets(len(codes), sum(len(widths.get(task, [])) for task in task_order), n_scratch)
+  left = budgets(len(codes), phv.class_fields(len(widths.get(task, [])) for task in task_order),
+                 n_scratch)
   lane_count = {}                                   # (task, tree) -> key bytes per lane
   containers, place = {}, {}
   for feature, found in codes.items():

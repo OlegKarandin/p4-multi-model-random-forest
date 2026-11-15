@@ -1307,12 +1307,19 @@ def generate_actions(feature_intervals, task_trees, per_task_writes=None,
   # `tree` parameter, no conditional, no Mux -- this generalizes uniformly to
   # any tree count per task, including 1. Validated against the real
   # TNA compiler in p4/tofino_spike/tna_m2_numtrees3_spike.p4.
+  # A task with ONE tree (review A2, adopted 2026-11-15) has no vote: its tree's
+  # action writes the task's export field itself, with the vote action's cast
+  # (vote_export), and there is no class_tree_<task>_0 field and no vote table.
   for task, n_trees, bits in task_trees:
     if n_trees > 0:
       classification_action_template = ""
       for i in range(n_trees):
         classification_action_template += "\taction classify_flow_codeword_"+task+"_"+str(i)+"(bit<"+str(bits)+"> class){\n"
-        classification_action_template += "\t\tmeta.class_tree_"+task+"_"+str(i)+" = class;\n"
+        if n_trees == 1:
+          export_field, export_bits = vote_export(task, bits)
+          classification_action_template += "\t\t%s = (bit<%d>) class;\n" % (export_field, export_bits)
+        else:
+          classification_action_template += "\t\tmeta.class_tree_"+task+"_"+str(i)+" = class;\n"
         classification_action_template += "\t}\n\n"
 
       action_templates += classification_action_template
@@ -1610,6 +1617,23 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
   return table_templates, apply_templates
 
 
+def vote_export(task, class_bits):
+  """(export field, its bits) the task's result is written to (decision 1f,
+  program.VOTE_EXPORT): by the vote action, or by the tree action of a task
+  with one tree (review A2). ValueError for a task with no destination or a
+  class wider than it."""
+  if task not in VOTE_EXPORT:
+    raise ValueError(
+        "task %r has trees but no vote export destination; program.VOTE_EXPORT "
+        "maps only %s" % (task, sorted(VOTE_EXPORT)))
+  export_field = VOTE_EXPORT[task]
+  export_bits = VOTE_EXPORT_BITS[export_field]
+  if class_bits > export_bits:
+    raise ValueError("task %r needs %d bits for its class but %s holds %d"
+                     % (task, class_bits, export_field, export_bits))
+  return export_field, export_bits
+
+
 def generate_voting_code(num_trees, num_classes, task):
   """
   Returns (table_declaration_text, apply_call_text). Replaces the previous
@@ -1628,15 +1652,7 @@ def generate_voting_code(num_trees, num_classes, task):
   statistics.mode() table.
   """
   bit_per_classes = math.ceil(math.log2(num_classes)) or 1
-  if task not in VOTE_EXPORT:
-    raise ValueError(
-        "task %r has trees but no vote export destination; program.VOTE_EXPORT "
-        "maps only %s" % (task, sorted(VOTE_EXPORT)))
-  export_field = VOTE_EXPORT[task]
-  export_bits = VOTE_EXPORT_BITS[export_field]
-  if bit_per_classes > export_bits:
-    raise ValueError("task %r needs %d bits for its class but %s holds %d"
-                     % (task, bit_per_classes, export_field, export_bits))
+  export_field, export_bits = vote_export(task, bit_per_classes)
   # The table emits exactly num_classes ** num_trees const entries (see the
   # product() loop below), so that IS its size -- the real logical entry
   # count, per reviews/p4_tofino_reference.md Sec 4.4. A `max(32, ...)` floor
@@ -1744,7 +1760,9 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   (generate_table_entries) are written beside it under that name; None
   writes the program only. Per task: get_classification_tree_<task>_<i> /
   classify_flow_codeword_<task>_<i> / meta.class_tree_<task>_<i> for its
-  tree i (ids per task, from 0), and one vote_<task> table. Registers stay
+  tree i (ids per task, from 0), and one vote_<task> table; a task with one
+  tree has neither the class field nor the vote table, its tree action writes
+  the task's export field (review A2). Registers stay
   one per distinct raw feature across all tasks; codeword fields follow
   resolve_feature_plan.
 
@@ -1973,7 +1991,9 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # p4c compiles (no stage depth, block or PHV container change).
   for task in program_tasks:
     name, bits = task.name, bit_per_classes[task.name]
-    if n_trees[name] > 0:
+    # A one-tree task has no class field (review A2): its tree action writes
+    # the export field directly (generate_actions), so there is nothing to pin.
+    if n_trees[name] > 1:
       for i in range(n_trees[name]):
         metadata_code += "\tbit<"+str(bits)+"> class_tree_"+name+"_"+str(i)+";\n"
         # SPACE pin, KEPT at G3 (3.2, load-bearing). Each tree's
@@ -2328,12 +2348,20 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       raw_feature_names=raw_feature_names,
       feature_table_sizes=feature_table_sizes, priorities=priorities)
 
-  # generate code to vote between the trees -- one vote table per task that
-  # actually has trees. generate_voting_code returns (table_decl,
+  # generate code to vote between the trees -- one vote table per task with
+  # MORE THAN ONE tree. generate_voting_code returns (table_decl,
   # apply_call); the table declaration joins the other TABLES text, the apply
   # call joins the other APPLY text.
+  # A one-tree task has no vote table (review A2, adopted 2026-11-15): with N = 1
+  # the vote is the identity, and its tree action writes the export field itself
+  # (generate_actions), the same value in the same field for every packet. p4c
+  # (Task 28, impl/probe_generator_A1_A2.md): one stage less on 10/10 programs
+  # where both tasks have one tree, no change on the 2 where the other task still
+  # votes, blocks unchanged, no remaining table moved stage, qid and ingress_cos
+  # still in separate containers. The model prices no vote stage for such a task
+  # (usage.pipeline_depth).
   for task in program_tasks:
-    if n_trees[task.name] > 0:
+    if n_trees[task.name] > 1:
       vote_table, vote_apply = generate_voting_code(n_trees[task.name],
                                                     task.num_classes, task.name)
       table_templates += vote_table

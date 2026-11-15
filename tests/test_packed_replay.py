@@ -383,5 +383,16 @@ def _after_hash_rewrite(recorded):
   from p4model.program import FLOW_HASH_LEVEL
   shift = 3 - FLOW_HASH_LEVEL
   depth, blocks, tables = recorded
-  return (depth - shift, blocks,
-          re.sub(r"@(\d+)", lambda m: "@%d" % (int(m.group(1)) - shift), tables))
+  tables = re.sub(r"@(\d+)", lambda m: "@%d" % (int(m.group(1)) - shift), tables)
+  # ...and, since review A2, no vote stage for a task with one tree: the depth is the
+  # last stage + 1 of the range pool and of each task's trees, + 1 for a task that votes.
+  trees = re.findall(r"get_classification_tree_(\w+?)_\d+:\d+@(\d+)", tables)
+  ranges = [int(s) for s in re.findall(r"table_\d+_\w+:\d+@(\d+)", tables)]
+  last = {}
+  for task, stage in trees:
+    last[task] = max(last.get(task, 0), int(stage))
+  counts = {task: sum(1 for t, _ in trees if t == task) for task in last}
+  new_depth = max([max(ranges, default=-1) + 1] + [
+      stage + 1 + (1 if counts[task] > 1 else 0) for task, stage in last.items()])
+  assert new_depth <= depth - shift
+  return (new_depth, blocks, tables)

@@ -699,7 +699,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   raw_features = set(emitted_features)
   phv_fields = {"vals": len(raw_features),
                 "scratch": len(iat_scratch_fields(raw_features)),
-                "trees": len(ternary_table_specs),
+                # one class field per tree of a task with more than one tree (A2)
+                "trees": phv.class_fields([ternary_task.count(task) for task in set(ternary_task)]),
                 "code_containers": code_containers}
   phv.check(phv.from_pool({"phv_fields": phv_fields}))
 

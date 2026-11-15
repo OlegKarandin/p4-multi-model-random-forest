@@ -152,11 +152,14 @@ def test_three_task_program_generates_parses_and_prices(tmp_path, encoding):
     # Tree ids are per task, from 0, with no global offset.
     assert sorted((task, int(i)) for _, task, i in found) == [
         ("app", 0), ("app", 1), ("ddos", 0), ("ddos", 1), ("third", 0)]
-    for task in ("ddos", "app", "third"):
+    for task in ("ddos", "app"):
         assert "table vote_%s" % task in text
         assert not re.search(r"bit<\d+> classification_%s;" % task, text)
         assert "set_classification_%s(bit<%d> winner)" % (
-            task, {"ddos": 1, "app": 2, "third": 2}[task]) in text
+            task, {"ddos": 1, "app": 2}[task]) in text
+    # One tree: no vote (review A2), the tree action writes the export.
+    assert "vote_third" not in text and "class_tree_third_" not in text
+    assert "action classify_flow_codeword_third_0(bit<2> class){\n\t\tig_tm_md.ingress_cos" in text
     program = parse_program(path)
     trees = {name: p for name, p in program.priorities.items()
              if name.startswith("get_classification_tree_")}

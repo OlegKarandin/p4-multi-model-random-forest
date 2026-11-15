@@ -9,6 +9,9 @@ count) in tests/fixtures/p4c_base_17b.json. Source: results/encoding_evidence_20
 /workspaces/t23), built by model8/impl/scripts/t18_fixture.py. Regenerated and recompiled for the symmetric 12-bit
 flow hash (review A1, Task 31; model8/impl/scripts/exp31.py fixture, Codespace /workspaces/dr_t31_out/fixA1): every
 text is its old text with that edit (t31_text_diff.py, 12/12), p4c stage depth 2 lower on 12/12, blocks unchanged.
+And again for review A2 (a one-tree task has no vote table; Codespace /workspaces/dr_t31_out/fixA2): p4c stage depth
+1 lower again on the 5 programs whose LAST tree belongs to a one-tree task (3 with one tree per task, 2 with app 1 /
+ddos 3-5 trees), unchanged on the other 7, blocks unchanged; the model's depth exact on 12/12.
 The old calibration archive
 (compiler_calibration_pragmas_2026_09_29) can no longer score the model: every program in it is refused by shape
 (test_model_archive).
@@ -36,6 +39,16 @@ with open(_FIXTURE + ".json", encoding="utf-8") as _handle:
 
 # row -> {"stage_depth"/"blocks": (model, p4c), table: {"stage"/"blocks": (model, p4c)}}
 KNOWN_MISSES = {
+    # Since review A2 (Task 31): a register-ALU tie the model breaks the other way. At stage 2 four of five ready
+    # registers fit; p4c (table_placement_1.log) keeps fwd_packet_length_max_reg over bwd_last_arrival_time_reg
+    # "for reason: fewer total dependencies in dominance frontier" -- their downward dependence tails now tie,
+    # because the app task's tree (the end of both chains) no longer feeds a vote table -- while the model's
+    # schedule (longer register tail first) runs bwd_last_arrival_time first. Both fwd_packet_length_max range
+    # tables then land a stage earlier in p4c than in the model; stage depth and blocks exact.
+    "independent_M050_s13_k07": {
+        "table_11_ddos_fwd_packet_length_max": {"stage": (4, 3)},
+        "table_4_app_fwd_packet_length_max": {"stage": (4, 3)},
+    },
     "joint-tree_M075_s02_k07": {
         "blocks": (33, 34),
         "get_classification_tree_app_1": {"blocks": (7, 8)},
@@ -81,12 +94,17 @@ def test_model_breakdown_gives_p4c_numbers(row):
 @pytest.mark.parametrize("row", sorted(P4C))
 def test_p4c_puts_each_vote_one_stage_after_its_tasks_last_tree(row):
     """S26 / decision 2.7 on these programs (VOTE_EPILOGUE_STAGES): each vote one stage after its own task's last
-    tree, and the last stage holds a vote."""
+    tree, and the last stage holds a vote or, since review A2, the tree of a one-tree task (which has no vote
+    table)."""
     tables = P4C[row]["tables"]
     stages = []
     for task in ("app", "ddos"):
         trees = [stage for name, (_, stage) in tables.items()
                  if name.startswith("get_classification_tree_%s_" % task)]
+        if len(trees) == 1:
+            assert "vote_" + task not in tables
+            stages.append(trees[0])
+            continue
         vote = tables["vote_" + task][1]
         assert vote == max(trees) + VOTE_EPILOGUE_STAGES
         stages.append(vote)

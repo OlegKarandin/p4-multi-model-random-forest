@@ -15,14 +15,13 @@ from p4model.packing import (_alone_blocks, crossbar_stages_needed,
 from p4model import refusals
 from p4model.tables import check_key_bytes
 from p4model.program import (ORIENTATION_REGISTER, PLACEMENT_PRIORITY, SHARED_TASK,
-                                 VOTE_EPILOGUE_STAGES, feature_of_per_task_field,
-                                 feature_of_per_tree_field)
+                                 feature_of_per_task_field, feature_of_per_tree_field)
 from p4model.ranges import compiler_range_rows
 from p4model.registers import readiness_levels_for
 from p4model import lanes, packed, phv, xbar
 from p4model.tables import tree_entries_to_blocks
 from p4model.target import RANGE_KEY_SLOTS_PER_BYTE, TERNARY_MATCHING_ENTRIES_PER_BLOCK
-from p4model.usage import check_shared_stages, tree_readiness_levels
+from p4model.usage import check_shared_stages, pipeline_depth, tree_readiness_levels
 
 
 @dataclass(frozen=True)
@@ -766,9 +765,8 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
             seed_stages=range_plan.stage_loads,
             placement_priority=priorities)
         check_shared_stages(range_plan, ternary_plan)
-        predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
-        return ReplayPlans(predicted, range_plan, ternary_plan, range_names,
-                           ternary_names)
+        return ReplayPlans(_depth(program, range_plan, ternary_plan, ternary_task),
+                           range_plan, ternary_plan, range_names, ternary_names)
 
     # The packed pool, placed by key_bytes exactly as usage.assemble_usage
     # places it.
@@ -777,9 +775,16 @@ def replay_plans(row_id, program, blocks, readiness_levels=None):
         key_bytes=ternary_key_bytes, seed_stages=range_plan.stage_loads,
         placement_priority=priorities)
     check_shared_stages(range_plan, ternary_plan)
-    predicted = (max(range_plan.depth, ternary_plan.depth) + VOTE_EPILOGUE_STAGES)
-    return ReplayPlans(predicted, range_plan, ternary_plan, range_names,
-                       ternary_names)
+    return ReplayPlans(_depth(program, range_plan, ternary_plan, ternary_task),
+                       range_plan, ternary_plan, range_names, ternary_names)
+
+
+def _depth(program, range_plan, ternary_plan, ternary_task):
+    """The program's stage depth as usage.assemble_usage computes it
+    (usage.pipeline_depth): a vote epilogue only for a task whose vote_<task>
+    table the program declares -- since review A2 a one-tree task has none."""
+    voting = {task for task in set(ternary_task) if 'vote_' + task in program.tables}
+    return pipeline_depth(range_plan.depth, ternary_plan.table_stages, ternary_task, voting)
 
 
 def check_trees(program):
