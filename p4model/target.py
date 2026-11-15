@@ -212,6 +212,9 @@ PHV_INGRESS_CONTAINERS = {8: 48, 16: 80, 32: 48}
 # (all pins of e1e08dd: the vote export (1f) and the forwarding assignments moved first
 # added 8-bit ones); 3 / 6 / 5 from Task 23 (G3 pins: class fields overlaid, scratch fields
 # in 16-bit containers); 5 / 4 / 3 from Task 31 (hash rewrite A1, one-tree tasks A2).
+# NOT re-measured for Task 34 (2026-11-15): the 32-bit clock of V1o (now_pseudo_us bit<32>, which p4c splits
+# B + H + H, +1..+3 containers on Task 29's designs) and the @pa_solitary(flow_hash) pin (~+1, Task 32) are not in
+# these lengths yet; the C1f Min read constant is counted by p4model.phv itself (one 16-bit container each).
 PHV_TEMPLATE_FIELDS = {
     8: ('ig_intr_md_for_dprsr.mirror_type', 'hdr.ipv4.protocol', 'ig_tm_md.qid',
         'ig_md.flow_hash', 'the timestamp\'s 8-bit piece (global_tstamp / now_pseudo_us)'),

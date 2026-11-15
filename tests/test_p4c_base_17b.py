@@ -17,6 +17,12 @@ p4c number of the 12 identical to the A2 compiles. The texts were regenerated on
 @pa_solitary(flow_hash) (2026-11-15, Task 32 addendum F3; impl/scripts/t32_fixture_texts.py: each text is its old
 text plus that one pragma line, 12/12) and NOT recompiled yet: the p4c numbers are still the a0cbb9f compiles of the
 texts without the pin (the pin changes no model number; the final 160-design recompile follows the next task).
+Regenerated again for Task 34 (V1o 32-bit clock and clamp, C1f first-packet rule, Task 33b orientation fix; each text
+its old text with Task 33's compiled probe edit c1f and the orientation body, impl/scripts/t34_text_diff.py, 12/12)
+and recompiled on the Codespace (impl/t34, generator fe925f3, 12 compiles, every one 0 errors with a binary): every
+p4c table's blocks and stage and every stage depth identical to the a0cbb9f compiles (12/12), so only text_md5 /
+generator_commit changed in the json; p4c PHV +0..+6 containers over Task 31 (the 32-bit clock, the flow_hash pin,
+one container per Min read constant).
 The old calibration archive
 (compiler_calibration_pragmas_2026_09_29) can no longer score the model: every program in it is refused by shape
 (test_model_archive).
