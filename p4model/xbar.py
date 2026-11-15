@@ -27,9 +27,18 @@ for an 8-bit container, two of four for a 16-bit one, one of four for a 32-bit o
 
 The one input the model does not know is p4c's PHV container NUMBERING. It only orders key bytes of equal alignment,
 and so decides whether a midbyte takes a whole byte or a half byte. The model settles it with tie='whole_first' (a
-midbyte takes a whole byte when one is eligible), which is never cheaper than p4c on this account (0 under-priced
-programs; over by one block on 2.3% / 8.2% of k<=8 / k>=9 programs). tie='index' is p4c's own order. Code-field
-containers are numbered widest field first (code_container_order, an ordering assumption, P12).
+midbyte takes a whole byte when one is eligible). tie='index' is p4c's own order. Code-field containers are numbered
+widest field first (code_container_order, an ordering assumption, P12).
+whole_first is NOT a one-sided bound. Evidence (Task 39 fix round 1, impl/scripts/t39_ties.py, p4c's own stage
+contents and placement order, the model's key bytes; impl/t39/ties/report_all.txt):
+  * 3,199 per-tree DEV compiles of the model6 / model7 investigations (generators before the design review): 0 of
+    15,120 tree tables in shared stages priced under p4c; over on 31 / 104 tables (k<=8 / k>=9), i.e. 37 of 1,549 /
+    136 of 1,650 programs over by one block or more;
+  * the 38 per-tree programs of the Task 39 recompile (final generator): 4 of 170 shared-stage tables UNDER by one
+    block (joint-tree_M075_s02_k07 app_1, M055_s00_k11 app_0, M055_s03_k12 app_0, M075_s01_k09 app_1), 3 of them
+    still under when the bytes carry p4c's ACTUAL container numbers (only p4c's numbers with tie='index' reproduce
+    p4c on all of them, and on every table of every archive).
+nibble_first and index-on-the-model's-numbering under-price far more often (219 and 69 of the 3,237 programs).
 """
 from collections import defaultdict
 import re

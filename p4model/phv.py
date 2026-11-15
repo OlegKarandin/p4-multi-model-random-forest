@@ -58,9 +58,12 @@ COARSE_CLOCK_CONTAINERS = (32, 32)
 # field and its source slice over one 8-bit and two 16-bit containers each (B + H + H):
 # on 105 / 105 of the Task 39 recompiles that compute it, the containers holding any
 # slice of the two fields are exactly 2 B + 4 H, and 0 on the 55 that do not
-# (impl/scripts/t39_phv_fields.py). In 46 of the 105 the two B containers also hold a
-# class field p4c overlaid there (dead by then); the count does not net that, as it
-# does not for any class field.
+# (impl/scripts/t39_phv_fields.py). The six are not always the clock's alone: in 46 of
+# the 105 the two B containers also hold a class field p4c overlaid there (dead by
+# then), and in 33 of the 105 one or two of the four H containers also hold a *_val
+# field (fwd_iat_max_val 25, bwd_iat_max_val 12, ...), which count charges a 16-bit
+# container of its own. The count does not net either sharing, so on those designs it
+# OVER-counts (the safe direction), as it does for every overlaid class field.
 FINE_CLOCK_FIELD = 'now_pseudo_us'
 FINE_CLOCK_CONTAINERS = (8, 8, 16, 16, 16, 16)
 
@@ -102,7 +105,10 @@ def budgets(n_vals, n_scratch, n_trees, n_constants=0, coarse_clock=False, fine_
 def from_pool(pool):
   """`count` over the pool's "phv_fields" (evaluation._pool_inputs); a pool built
   before C1f has no "constants" (0), one built before Task 38 no "coarse_clock", one
-  built before Task 39 no "fine_clock" (its template then held the fine clock)."""
+  built before Task 39 no "fine_clock". Such a pool is counted WITHOUT the fine clock
+  under today's template (which no longer holds it), so a stored pre-Task-39 pool
+  that computes the fine clock is under-counted by 2 B + 4 H if re-scored; pools are
+  rebuilt by every run, so nothing re-scores one today."""
   fields = pool['phv_fields']
   return count(fields['vals'], fields['scratch'], fields['trees'], fields['code_containers'],
                fields.get('constants', 0), fields.get('coarse_clock', False),
