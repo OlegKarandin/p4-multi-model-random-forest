@@ -400,7 +400,9 @@ def test_table_blocks_pins_the_two_known_ladder_disagreements_off_the_compiled_s
   # Lane-higher: three 49-56-bit fields (spec Sec I.2, review decision 6; the
   # deleted ladder said 4).
   assert lanes.table_blocks((54, 55, 56)) == 5
-  # Lane-lower: the dsp41 probe key.
+  # Lane-lower: the dsp41 probe key, on the generator's pinned layout (W32 | W32
+  # | W20), never compiled; p4c's unpinned compiles of it (W24 | W32 | W28) cost
+  # 5 alone, which the port gives on that layout (tests/test_tcam_block_ledger.py).
   assert lanes.table_blocks((84, 84)) == 4
 
 

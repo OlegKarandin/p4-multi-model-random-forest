@@ -44,10 +44,19 @@ def test_the_port_matches_the_fresh_compile_sweep(field_bits, real_blocks, why):
     assert table_blocks(field_bits) == real_blocks, why
 
 
-def test_the_one_sweep_point_the_port_prices_below():
-    # (84, 84): the version sweep's compile charged 5; the port prices 4, which
-    # is p4c's charge on the dsp41 probe of the same key under the generator's
-    # pins (tests/test_lanes.py). Recorded, not resolved here.
+def test_the_84_84_key_on_p4cs_layout_and_on_the_generators_pins():
+    # (84, 84): every p4c compile of this key pinned NO containers. p4c charged
+    # it 5 alone (results/tcam_version_sweep.csv d_unreachable_B22) and 5 at 43
+    # of the 45 spacer widths of results/tcam_discount_scan.csv (7 at dsp41 /
+    # dsp42, where it shares a stage), laying each 84-bit field out W24 | W32 |
+    # W28 (prog.bfa; tests/test_packing.py). On that layout the port gives 5,
+    # p4c's number. The 4 below is the port on the layout the GENERATOR pins
+    # (lanes.layout, fill-low W32 | W32 | W20), which has never been compiled:
+    # an untested prediction on the under-price side (Task 32 review Important
+    # 1; a pinned compile is queued for the final recompile).
+    from p4model import xbar
+    p4c_layout = tuple((i, (("W", 24), ("W", 32), ("W", 28))) for i in range(2))
+    assert xbar.alone_blocks(p4c_layout) == 5
     assert table_blocks((84, 84)) == 4
 
 
