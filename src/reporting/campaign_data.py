@@ -679,6 +679,22 @@ def _coerce_M(series):
     return pd.to_numeric(series.replace({'': 'inf'}), errors='raise').astype('float64')
 
 
+TWIN_VIOLATION_PREFIX = 'TwinInvariantViolation'
+
+
+def count_twin_invariant_violations(results_dir):
+    """Number of aligned twins (joint-off-al) the twin pass rejected with a
+    TwinInvariantViolation (R11): the twin used more blocks or stages than its
+    source. `load_campaign` drops those rows (infeasible != ''), so they are
+    counted here from the raw `rows/` files. 0 for a legacy flat directory."""
+    total = 0
+    for path in sorted(glob.glob(os.path.join(results_dir, 'rows', '*.csv'))):
+        frame = pd.read_csv(path, keep_default_na=False, na_values=[], dtype=str)
+        if 'infeasible' in frame.columns:
+            total += int(frame['infeasible'].str.startswith(TWIN_VIOLATION_PREFIX).sum())
+    return total
+
+
 def load_verification(results_dir):
     """The raw verification.csv of a run, every line -- including designs
     load_campaign drops as p4c-infeasible (O1) -- with each row's

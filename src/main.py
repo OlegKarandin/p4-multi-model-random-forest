@@ -16,7 +16,8 @@ from src.training import campaign_run
 from src.training.campaign_runner import plan_jobs, run_jobs
 
 from src.reporting.campaign_data import (
-    UnverifiedRowsError, load_campaign, load_verification)
+    UnverifiedRowsError, count_twin_invariant_violations, load_campaign,
+    load_verification)
 from src.reporting import claims
 from src.reporting import figures
 from src.reporting.manifest import git_provenance, write_campaign_manifest
@@ -570,7 +571,9 @@ def run_plot_mode(results_dir='results', output_dir=None,
         expected_family_size=expected_family_size,
         expected_noninferiority_family_size=expected_noninferiority_family_size,
         expected_substitution_family_size=expected_substitution_family_size,
-        verification=verification)
+        verification=verification,
+        twin_invariant_violations=(count_twin_invariant_violations(results_dir)
+                                   if verification is not None else None))
 
     for deliverable in deliverables:
         print(f"\n=== {deliverable.number}. {deliverable.title} ===")

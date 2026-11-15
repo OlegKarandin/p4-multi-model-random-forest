@@ -49,6 +49,50 @@ CASES = [
 ]
 
 
+def _bff(model, p4c, M=35):
+    return classify(model, p4c, M).verdict
+
+
+def test_budget_false_feasible_is_model_within_m_and_p4c_over_m():
+    got = classify(_model(blocks=30), _p4c(blocks=40), 35)
+    assert got.verdict == "BUDGET_FALSE_FEASIBLE" and got.p4c_over_budget
+    assert got.tables_differing == [{"table": "t", "model": 30, "p4c": 40}]
+
+
+def test_budget_false_feasible_boundaries():
+    assert _bff(_model(blocks=35), _p4c(blocks=36)) == "BUDGET_FALSE_FEASIBLE"
+    # model already over M: an ordinary UNDER (the model knew it was over)
+    assert _bff(_model(blocks=36), _p4c(blocks=40)) == "UNDER"
+    # p4c exactly at M is within budget
+    assert _bff(_model(blocks=30), _p4c(blocks=35)) == "UNDER"
+    # M = inf never triggers
+    assert classify(_model(blocks=30), _p4c(blocks=500), INF).verdict == "UNDER"
+    # no model block number: cannot claim it was within budget
+    assert _bff(_model(10, None), _p4c(blocks=40)) == "UNDER"
+    # model over-predicts blocks but p4c still busts M: OVER stays OVER
+    # only when the model was over M too
+    assert _bff(_model(blocks=50), _p4c(blocks=40)) == "OVER"
+
+
+def test_budget_false_feasible_precedence_pairings():
+    # stage FALSE_FEASIBLE beats it (p4c over stages, blocks over M too)
+    ff = classify(_model(blocks=30), _p4c(13, 40), 35)
+    assert ff.verdict == "FALSE_FEASIBLE" and ff.p4c_over_budget
+    # FALSE_INFEASIBLE beats it
+    fi = classify(_model(13, blocks=30, feasible=False), _p4c(12, 40), 35)
+    assert fi.verdict == "FALSE_INFEASIBLE"
+    # beats UNDER on depth (model depth below p4c, blocks bust M)
+    assert _bff(_model(9, 30), _p4c(10, 40)) == "BUDGET_FALSE_FEASIBLE"
+    # beats OVER on depth (model deeper, but its blocks fit and p4c's do not)
+    assert _bff(_model(11, 30), _p4c(10, 40)) == "BUDGET_FALSE_FEASIBLE"
+    # EXACT blocks over M (model also over M) is still EXACT
+    assert _bff(_model(blocks=40), _p4c(blocks=40)) == "EXACT"
+    # compile error and model refusal take precedence (no p4c numbers / model)
+    assert classify(_model(blocks=30), None, 35, "COMPILE_ERROR").verdict == "COMPILE_ERROR"
+    refused = dict(_model(blocks=30), model_refusal="stage_pin")
+    assert classify(refused, _p4c(blocks=40), 35).verdict == "MODEL_REFUSED:stage_pin"
+
+
 @pytest.mark.parametrize("name,model,p4c,M,failure,want", CASES, ids=[c[0] for c in CASES])
 def test_classify(name, model, p4c, M, failure, want):
     assert classify(model, p4c, M, failure) == want

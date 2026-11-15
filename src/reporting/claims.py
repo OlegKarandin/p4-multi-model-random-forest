@@ -1324,6 +1324,10 @@ def _cell_order(frame):
         .reset_index(drop=True)
 
 
+COMPILE_FAILURE_VERDICTS = ('COMPILE_ERROR', 'TIMEOUT')
+COMPILE_ERROR_ON_FEASIBLE = 'COMPILE_FAILURE_ON_MODEL_FEASIBLE'
+
+
 def agreement_table(verification):
     """Model-vs-p4c agreement per arm x M (spec section 7.3), from the frame
     `campaign_data.load_verification` returns -- EVERY verified design,
@@ -1339,7 +1343,12 @@ def agreement_table(verification):
       column reads as `blocks_exact / (n - blocks_na - unverified)` at most.
       An unverified row (compile error / timeout) is exact on neither.
     * `misses`, every row whose `verdict` is not `EXACT`, with both numbers
-      and `tables_differing` parsed to a list of `{table, model, p4c}`.
+      and `tables_differing` parsed to a list of `{table, model, p4c}`, and a
+      `miss_class` (the verdict, except a COMPILE_ERROR/TIMEOUT on a
+      model-feasible design, 8.4, which is `COMPILE_FAILURE_ON_MODEL_FEASIBLE`).
+      A compile failure on a model-INFEASIBLE design is no model miss: it is
+      left out of `misses` and counted in `compile_error_model_infeasible`.
+      The summary also counts `budget_false_feasible` rows (8.4b).
 
     Accepts the literal CSV text load_verification keeps ('True'/'False',
     '' for None) or parsed bools and numbers; `M` may be inf.
@@ -1353,6 +1362,17 @@ def agreement_table(verification):
     frame['_stage_exact'] = frame['model_stage_depth'] == frame['p4c_stage_depth']
     frame['_blocks_exact'] = frame['model_blocks'] == frame['p4c_blocks']
     frame['_blocks_na'] = ~unverified & frame['p4c_blocks'].isna()
+    # Decision 8.4: a compile error / timeout on a design the MODEL calls
+    # feasible is a miss class of its own; on a model-infeasible design it is
+    # not a model miss and is only counted. A frame without the column is read
+    # as model-feasible (the old, stricter reading).
+    model_feasible = _as_bool(frame['model_hw_feasible']) \
+        if 'model_hw_feasible' in frame.columns \
+        else pd.Series(True, index=frame.index)
+    no_compile = frame['verdict'].isin(COMPILE_FAILURE_VERDICTS)
+    frame['_ce_feasible'] = no_compile & model_feasible
+    frame['_ce_infeasible'] = no_compile & ~model_feasible
+    frame['_budget_ff'] = frame['verdict'] == 'BUDGET_FALSE_FEASIBLE'
 
     rows = []
     for (arm, M), cell in frame.groupby(['arm_slug', 'M'], sort=False):
@@ -1361,15 +1381,25 @@ def agreement_table(verification):
             'stage_depth_exact': int(cell['_stage_exact'].sum()),
             'blocks_exact': int(cell['_blocks_exact'].sum()),
             'blocks_na': int(cell['_blocks_na'].sum()),
+            'budget_false_feasible': int(cell['_budget_ff'].sum()),
+            'compile_error_model_feasible': int(cell['_ce_feasible'].sum()),
+            'compile_error_model_infeasible': int(cell['_ce_infeasible'].sum()),
         })
-    summary = pd.DataFrame(rows, columns=['arm_slug', 'M', 'n', 'stage_depth_exact',
-                                          'blocks_exact', 'blocks_na'])
+    summary = pd.DataFrame(rows, columns=[
+        'arm_slug', 'M', 'n', 'stage_depth_exact', 'blocks_exact', 'blocks_na',
+        'budget_false_feasible', 'compile_error_model_feasible',
+        'compile_error_model_infeasible'])
     if len(summary):
         summary = _cell_order(summary)
 
     miss_columns = ['row_id', 'verdict', 'model_stage_depth', 'p4c_stage_depth',
                     'model_blocks', 'p4c_blocks', 'tables_differing']
-    misses = frame.loc[frame['verdict'] != 'EXACT', miss_columns].copy()
+    is_miss = (frame['verdict'] != 'EXACT') & ~frame['_ce_infeasible']
+    misses = frame.loc[is_miss, miss_columns].copy()
+    misses['miss_class'] = [
+        COMPILE_ERROR_ON_FEASIBLE if feasible_ce else verdict
+        for verdict, feasible_ce in zip(misses['verdict'],
+                                        frame.loc[is_miss, '_ce_feasible'])]
     misses['tables_differing'] = [_as_list(v) for v in misses['tables_differing']]
     return summary, misses.reset_index(drop=True)
 

@@ -1936,7 +1936,8 @@ def _tables_differing_text(tables):
         for entry in tables)
 
 
-def table_9_agreement(verification, output_dir=DEFAULT_FIGURE_DIR):
+def table_9_agreement(verification, output_dir=DEFAULT_FIGURE_DIR,
+                      twin_invariant_violations=None):
     """Model-vs-p4c agreement per arm x M, and every miss -- rendered from
     `claims.agreement_table`, not recomputed (spec section 7.3).
 
@@ -1968,10 +1969,21 @@ def table_9_agreement(verification, output_dir=DEFAULT_FIGURE_DIR):
         'so blocks agreement reads out of `n - blocks_na` at most. An '
         'unverified row (compile error or timeout) is exact on neither. '
         'Below the summary, every row whose verdict is not EXACT, with both '
-        'numbers and the tables that differ.'.format(n_rows))
+        'numbers and the tables that differ. `budget_false_feasible` counts '
+        'designs whose model blocks fit M but p4c\'s do not; '
+        '`compile_error_model_feasible` counts compile errors and timeouts on '
+        'designs the model called feasible (each is a named miss, class '
+        'COMPILE_FAILURE_ON_MODEL_FEASIBLE); `compile_error_model_infeasible` '
+        'counts the same on model-infeasible designs, which are not model '
+        'misses and are not listed.'.format(n_rows))
 
+    twin_line = ('Twin-invariant violations (aligned twins rejected for '
+                 'exceeding their source): {}'.format(
+                     'not recorded' if twin_invariant_violations is None
+                     else int(twin_invariant_violations)))
     body = '\n'.join([
         _markdown_table(summary) if len(summary) else '(no verified rows)',
+        '', twin_line,
         '', '## Misses ({})'.format(len(misses)), '',
         _markdown_table(misses_markdown) if len(misses_markdown)
         else '(none: every verified row is EXACT)'])
@@ -2082,7 +2094,7 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
                expected_family_size=None,
                expected_noninferiority_family_size=None,
                expected_substitution_family_size=None,
-               verification=None):
+               verification=None, twin_invariant_violations=None):
     """Render every §C.5 deliverable and return them in order.
 
     `verification` is `campaign_data.load_verification`'s frame for a
@@ -2125,7 +2137,9 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
                                    baseline=baseline))
     if verification is not None:
         deliverables.append(
-            table_9_agreement(verification, output_dir=output_dir))
+            table_9_agreement(
+                verification, output_dir=output_dir,
+                twin_invariant_violations=twin_invariant_violations))
         deliverables.append(table_10_budget_binding(df, output_dir=output_dir))
         if claims.TWIN_ARM_SLUG in set(df['arm_slug']):
             deliverables.append(

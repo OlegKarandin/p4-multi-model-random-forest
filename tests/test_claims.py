@@ -1301,7 +1301,10 @@ def test_agreement_table_counts_exact_out_of_n_per_arm_and_M():
     summary, misses = agreement_table(_verification_frame(lines))
 
     assert list(summary.columns) == ['arm_slug', 'M', 'n', 'stage_depth_exact',
-                                     'blocks_exact', 'blocks_na']
+                                     'blocks_exact', 'blocks_na',
+                                     'budget_false_feasible',
+                                     'compile_error_model_feasible',
+                                     'compile_error_model_infeasible']
     cell = summary[(summary['arm_slug'] == 'joint') & (summary['M'] == 25)].iloc[0]
     assert (cell['n'], cell['stage_depth_exact'], cell['blocks_exact'],
             cell['blocks_na']) == (3, 2, 1, 1)
@@ -1313,7 +1316,7 @@ def test_agreement_table_counts_exact_out_of_n_per_arm_and_M():
 
     assert list(misses.columns) == ['row_id', 'verdict', 'model_stage_depth',
                                     'p4c_stage_depth', 'model_blocks',
-                                    'p4c_blocks', 'tables_differing']
+                                    'p4c_blocks', 'tables_differing', 'miss_class']
     assert sorted(misses['verdict']) == ['COMPILE_ERROR', 'FALSE_FEASIBLE', 'UNDER']
     under = misses[misses['verdict'] == 'UNDER'].iloc[0]
     assert under['tables_differing'] == [{'model': 4, 'p4c': 6, 'table': 'tbl_x'}]
@@ -1322,6 +1325,43 @@ def test_agreement_table_counts_exact_out_of_n_per_arm_and_M():
     assert false_feasible['row_id'] == 'joint_M025_s02_k05'
     assert false_feasible['p4c_stage_depth'] == 13
     assert np.isnan(false_feasible['p4c_blocks'])
+
+
+def test_agreement_table_names_compile_failures_and_budget_false_feasibles():
+    lines = [
+        _verification_line('joint-off', 25, 0, unverified=True,
+                           verdict='COMPILE_ERROR'),
+        _verification_line('joint-off', 25, 1, unverified=True, verdict='TIMEOUT'),
+        _verification_line('joint-off', 25, 2, unverified=True,
+                           verdict='COMPILE_ERROR'),
+        _verification_line('joint-off', 25, 3, verdict='BUDGET_FALSE_FEASIBLE',
+                           model_blocks=24, p4c_blocks=27),
+        _verification_line('joint-off', 25, 4),
+    ]
+    for line in lines:
+        line['model_hw_feasible'] = 'True'
+    lines[2]['model_hw_feasible'] = 'False'
+    summary, misses = agreement_table(_verification_frame(lines))
+
+    cell = summary.iloc[0]
+    assert (cell['n'], cell['budget_false_feasible'],
+            cell['compile_error_model_feasible'],
+            cell['compile_error_model_infeasible']) == (5, 1, 2, 1)
+    by_row = dict(zip(misses['row_id'], misses['miss_class']))
+    assert by_row == {
+        'joint-off_M025_s00_k05': 'COMPILE_FAILURE_ON_MODEL_FEASIBLE',
+        'joint-off_M025_s01_k05': 'COMPILE_FAILURE_ON_MODEL_FEASIBLE',
+        'joint-off_M025_s03_k05': 'BUDGET_FALSE_FEASIBLE'}   # s02: model-infeasible, no miss
+
+
+def test_count_twin_invariant_violations(tmp_path):
+    from src.reporting.campaign_data import count_twin_invariant_violations
+    rows = tmp_path / 'rows'
+    rows.mkdir()
+    (rows / 'a.csv').write_text(
+        'row_id,infeasible\nx,TwinInvariantViolation: blocks 5 > 4 or stage_depth 3 > 3\n'
+        'y,\nz,TwinInvariantViolation: blocks 9 > 8 or stage_depth 3 > 3\nw,other\n')
+    assert count_twin_invariant_violations(str(tmp_path)) == 2
 
 
 def test_agreement_table_accepts_parsed_bools_as_well_as_csv_text():

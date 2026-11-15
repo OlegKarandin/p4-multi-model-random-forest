@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from p4gen.p4_ground_truth import P4cNumbers
 from p4model.target import TOFINO_PIPELINE_STAGES
 
-VERDICTS = ('FALSE_FEASIBLE', 'UNDER', 'FALSE_INFEASIBLE', 'OVER', 'EXACT',
-            'COMPILE_ERROR', 'TIMEOUT')
+VERDICTS = ('FALSE_FEASIBLE', 'BUDGET_FALSE_FEASIBLE', 'UNDER', 'FALSE_INFEASIBLE',
+            'OVER', 'EXACT', 'COMPILE_ERROR', 'TIMEOUT')
 
 # A program the model's replay refuses outright (model.json's model_refusal,
 # p4_replay.model_breakdown) has no prediction to classify: its verdict is
@@ -57,6 +57,21 @@ def _cmp(model_value, p4c_value):
 
 
 def classify(model, p4c, M, failure=None):
+    """Verdict of one design. Precedence, first match wins (decision 8.4):
+
+    1. MODEL_REFUSED:<reason>  the model refused the program (no numbers).
+    2. COMPILE_ERROR / TIMEOUT  no p4c stage count (unverified). Deliverable 9
+       counts one on a model-feasible design as its own miss class.
+    3. FALSE_FEASIBLE          model feasible, p4c over the stage limit.
+    4. FALSE_INFEASIBLE        model infeasible, p4c within the stage limit.
+    5. BUDGET_FALSE_FEASIBLE   model feasible, p4c within the stage limit, the
+       model's blocks <= M but p4c's blocks > M (never for M = inf, or when the
+       model has no block number). Ranked above UNDER because it is the
+       consequential under-prediction: the design was selected as within budget
+       and is not. A stage-level false verdict (3, 4) keeps priority, so a
+       stage FALSE_FEASIBLE stays FALSE_FEASIBLE even when it also busts M.
+    6. UNDER, 7. OVER, 8. EXACT  as before.
+    """
     if model.get('model_refusal'):
         # Checked first: with no model numbers there is nothing to compare. The
         # p4c side is kept and flagged as usual; the row is unverified only when
@@ -82,6 +97,12 @@ def classify(model, p4c, M, failure=None):
         return out('FALSE_FEASIBLE')
     if not feasible and not over_stages:
         return out('FALSE_INFEASIBLE')
+
+    model_blocks = model.get('blocks')
+    if (feasible and over_budget and model_blocks is not None
+            and M != float('inf') and model_blocks <= M):
+        differing = _tables_differing(model, p4c) if p4c.allocated else []
+        return out('BUDGET_FALSE_FEASIBLE', differing)
 
     cmps = [_cmp(model.get('stage_depth'), p4c.stage_depth)]
     differing = []
