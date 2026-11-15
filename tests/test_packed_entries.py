@@ -25,7 +25,7 @@ from tests.test_packed_program import _specs
 from tests.test_per_task_codes import FEATURES, _forest, _own, _rng_design, switch_equivalent_rows
 
 _SLICE = re.compile(r"^code_pk_(\w+?)_(\d+)_(\d+)_$")
-DEEP_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean"]
+DEEP_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_total"]
 
 
 def _deep_forest(n_classes, seed, depth, n_trees=2):
@@ -210,7 +210,7 @@ def test_entry_key_names_are_the_programs_keys_as_bf_rt_names_them(tmp_path, cas
 
 def test_a_slice_is_named_with_its_field_bounds():
   assert bps.bfrt_key_name("meta.code_pk_flow_iat_max[19:8]") == "code_pk_flow_iat_max_19_8_"
-  assert bps.bfrt_key_name("meta.code_pk_bwd_iat_mean[127:64]") == "code_pk_bwd_iat_mean_127_64_"
+  assert bps.bfrt_key_name("meta.code_pk_bwd_iat_total[127:64]") == "code_pk_bwd_iat_total_127_64_"
   assert bps.bfrt_key_name("meta.flow_iat_max_val") == "flow_iat_max_val"
 
 

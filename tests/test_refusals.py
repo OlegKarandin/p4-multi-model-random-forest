@@ -136,12 +136,17 @@ def test_each_pin_the_generator_emits_is_required(tmp_path, encoding):
     expected = {"pa_no_overlay", "pa_solitary", "pa_container_size", "placement_priority"}
     # pa_solitary is on the class_tree_* fields only since gate G3 (3.5), plus
     # now_pseudo_us in a program with a timestamp since review A1b, plus flow_hash
-    # in every program since the Task 31 miss
+    # in every program since the Task 31 miss, plus now_coarse in a program with a
+    # duration since Task 38
     assert seen["pa_solitary"] == sum(1 for line in lines if ("class_tree_" in line
                                                               or "now_pseudo_us" in line
+                                                              or "now_coarse" in line
                                                               or '"ig_md.flow_hash"' in line)
                                       and "@pa_solitary" in line)
-    assert ("calc_timestamp();" in text) == ('"ig_md.now_pseudo_us"' in text)
+    assert ("meta.now_pseudo_us = " in text) == ('"ig_md.now_pseudo_us"' in text)
+    assert ("meta.now_coarse = " in text) == ('"ig_md.now_coarse"' in text)
+    assert ("calc_timestamp();" in text) == ('"ig_md.now_pseudo_us"' in text
+                                             or '"ig_md.now_coarse"' in text)
     assert '@pa_solitary("ingress", "ig_md.flow_hash")' in text
     assert set(seen) == expected, seen
 
@@ -266,61 +271,115 @@ def test_a_silently_miscompiled_stateful_alu_body_is_refused(tmp_path, old, new,
     assert model_breakdown(parse_program_text(changed))["refusal_reason"] == reason
 
 
+def _with_math_unit(text, argument):
+    """The text with flow_iat_min's update replaced by a MathUnit call on `argument`
+    and the unit declared (the generator writes no MathUnit since Task 38)."""
+    old = "\t\t\t\tvalue = meta.flow_current_iat - 1;\n"
+    assert text.count(old) == 1
+    changed = text.replace(old, "\t\t\t\tvalue = flow_iat_min_halve_unit.execute(%s);\n" % argument)
+    action = "\tRegisterAction<bit<16>, bit<12>, bit<16>>(flow_iat_min_reg)"
+    return changed.replace(action, "\tMathUnit<bit<16>>(MathOp_t.MUL, 1, 2) flow_iat_min_halve_unit;\n\n"
+                           + action, 1)
+
+
 def test_a_math_unit_argument_that_is_an_expression_is_refused(tmp_path):
     """(c) p4c wraps only the last operand of a MathUnit argument in the math table
-    (Task 33b). The Mean bodies' own `value + <field>` is accepted until the Mean
-    decision; any other expression is refused."""
+    (Task 33b). Any expression is refused -- since Task 38 the old Mean bodies' own
+    `value + <field>` too (it was exempt until the Mean decision) -- and a plain field
+    passes."""
     text = _iat_text(tmp_path)
-    mean = "flow_iat_mean_halve_unit.execute(value + meta.flow_current_iat)"
-    assert mean in text
     check_program(parse_program_text(text))
-    for argument in ("value + meta.flow_current_iat + 1", "meta.flow_current_iat >> 1",
+    for argument in ("value + meta.flow_current_iat", "value + (bit<16>)hdr.ipv4.total_len",
+                     "value + meta.flow_current_iat + 1", "meta.flow_current_iat >> 1",
                      "value - meta.flow_current_iat", "(value + meta.flow_current_iat)"):
-        changed = text.replace(mean, "flow_iat_mean_halve_unit.execute(%s)" % argument, 1)
         with pytest.raises(ProgramShapeRefused) as refused:
-            check_program(parse_program_text(changed))
-        assert refused.value.reason == "salu_math_expression:flow_iat_mean_action", argument
+            check_program(parse_program_text(_with_math_unit(text, argument)))
+        assert refused.value.reason == "salu_math_expression:flow_iat_min_action", argument
     for argument in ("value", "meta.flow_current_iat", "(bit<16>)hdr.ipv4.total_len"):
-        check_program(parse_program_text(
-            text.replace(mean, "flow_iat_mean_halve_unit.execute(%s)" % argument, 1)))
+        check_program(parse_program_text(_with_math_unit(text, argument)))
 
 
-def test_the_pending_mean_form_is_accepted_in_a_mean_action_only(tmp_path):
-    """Task 34 review minors 3-5: `value + <field>` passes only in a <f>_mean_action; a
-    shift is not a compare; unreadable RegisterActions are refused, not skipped."""
+PRE_T38 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "pre_t38")
+
+
+def test_a_pre_task_38_program_with_mean_features_is_refused():
+    """Task 38: the Means left the catalog. A program of the generator before it (the
+    p4c_base_17b fixture text of joint-off_M025_s06_k17 at ae32c8f, all six Means,
+    copied to tests/fixtures/pre_t38) is refused for its first Mean range table, and its
+    Mean bodies -- the MathUnit form p4c miscompiles, exempt until Task 38 -- are refused
+    by the stateful-ALU check on their own."""
+    from p4gen.program_checks import _check_stateful_alu
+    with open(os.path.join(PRE_T38, "joint-off_M025_s06_k17.p4"), encoding="utf-8") as handle:
+        old = parse_program_text(handle.read())
+    assert len(old.math_units) == 6
+    with pytest.raises(ProgramShapeRefused, match="^unexpected_shape:feature:\\w+_mean$"):
+        check_program(old)
+    assert model_breakdown(old)["refusal_reason"].startswith("unexpected_shape:feature:")
+    with pytest.raises(ProgramShapeRefused, match="^salu_math_expression:\\w+_mean_action$"):
+        _check_stateful_alu(old)
+
+
+@pytest.mark.parametrize("old,new,reason", [
+    # Task 37: the one-clock P3c form (global_tstamp[47:16]) failed PHV allocation beside the fine clock
+    ("meta.now_coarse = ig_intr_md.ingress_mac_tstamp[47:16];",
+     "meta.now_coarse = ig_prsr_md.global_tstamp[47:16];", "unexpected_shape:timestamp:now_coarse"),
+    ("meta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];",
+     "meta.now_pseudo_us = ig_prsr_md.global_tstamp[25:10];", "unexpected_shape:timestamp:now_pseudo_us"),
+    ("meta.now_coarse = ig_intr_md.ingress_mac_tstamp[47:16];",
+     "meta.now_coarse = ig_intr_md.ingress_mac_tstamp[47:16];\n\t\tmeta.now_coarse = 0;",
+     "unexpected_shape:timestamp"),
+    ('@pa_solitary("ingress", "ig_md.now_coarse")\n', "", "missing_pin:pa_solitary:now_coarse"),
+])
+def test_the_clocks_are_the_generators_and_pinned(tmp_path, old, new, reason):
+    """Task 38: calc_timestamp writes now_pseudo_us (a last-arrival register remains) and
+    now_coarse (a duration is selected), each from the generator's source and pinned."""
+    text = _iat_text(tmp_path)
+    program = parse_program_text(text)
+    assert program.timestamp_writes == (
+        ("now_pseudo_us", "ig_prsr_md.global_tstamp[41:10]"),
+        ("now_coarse", "ig_intr_md.ingress_mac_tstamp[47:16]"))
+    assert text.count(old) == 1
+    with pytest.raises(ProgramShapeRefused) as refused:
+        check_program(parse_program_text(text.replace(old, new)))
+    assert refused.value.reason == reason
+
+
+def test_a_shift_is_not_a_compare_and_unreadable_bodies_are_refused(tmp_path):
+    """Task 34 review minors 4-5: a shift is not a compare; unreadable RegisterActions
+    are refused, not skipped; a write to a member of a struct word counts as a write
+    (Task 38's {first, dur} pair) for the compare-after-write rule."""
     import dataclasses
     from p4gen import program_checks
     text = _iat_text(tmp_path)
     program = parse_program_text(text)
-    moved = dict(program.register_bodies)
-    moved["flow_iat_min_action"] = moved["flow_iat_mean_action"]
-    with pytest.raises(ProgramShapeRefused) as refused:
-        check_program(dataclasses.replace(program, register_bodies=moved))
-    assert refused.value.reason == "salu_math_expression:flow_iat_min_action"
     assert program_checks._compares("value >> 1") == []
     assert program_checks._compares("x << 2 == value") == ["x << 2 == value"]
     with pytest.raises(ProgramShapeRefused, match="^unexpected_shape:register_body$"):
         check_program(dataclasses.replace(program, register_bodies=None))
     assert program_checks.register_action_bodies(
         "RegisterAction<bit<16>, bit<12>, bit<16>>(r_reg) r_action = { void apply(") is None
+    pair = program_checks._parse("value.dur = 1; if (value.dur > 5) { rv = 1; }")
+    assert program_checks._salu_hazard(pair, ())[0] == "salu_compare_after_write"
 
 
 def test_every_generated_register_body_passes_the_stateful_alu_check():
-    """Every body kind, ungated and direction-owned, as the generator writes it."""
+    """Every body kind, ungated and direction-owned, as the generator writes it (the
+    Task 38 bodies with no exemption, as Task 37 found them)."""
     from p4gen.program_checks import _check_stateful_alu
     from p4model.catalog import FEATURE_REGISTER_CATALOG
     _, actions, _, _ = bps.generate_P4_registers_and_apply(
         {name: None for name in FEATURE_REGISTER_CATALOG})
     program = parse_program_text(actions)
     assert len(program.register_bodies) == 22        # 21 catalog registers + orientation
-    assert len(program.math_units) == 6
+    assert len(program.math_units) == 0
     _check_stateful_alu(program)
 
 
 def _iat_text(tmp_path):
-    """A generated joint program with flow_iat_min, flow_iat_mean and the orientation."""
+    """A generated joint program with flow_iat_min, flow_duration (both clocks) and the
+    orientation."""
     from tests.test_per_task_codes import _forest
-    names = ["flow_iat_min", "flow_iat_mean", "fwd_packet_length_max"]
+    names = ["flow_iat_min", "flow_duration", "fwd_packet_length_max"]
     app, ddos = _forest(3, 2, names), _forest(2, 1, names)
     joint = bps.get_joint_feature_intervals(app, names, ddos, names)
     path = bps.generate_P4_code(3, 2, app, ddos, feature_intervals_app=joint,
@@ -616,6 +675,24 @@ _KNOWN_REGISTER_MISSES = {
 }
 
 
+def _pre_task_38_catalog():
+    """The catalog these probe programs were generated with: today's plus the six Mean
+    entries Task 38 removed (each Mean: its chain's last-arrival register, if an IAT
+    Mean, then one 16-bit value register; the bodies do not enter the schedule)."""
+    from p4model.catalog import FEATURE_REGISTER_CATALOG
+    catalog = dict(FEATURE_REGISTER_CATALOG)
+    for chain, gate in (("flow", None), ("fwd", "fwd"), ("bwd", "bwd")):
+        catalog[chain + "_iat_mean"] = {"registers": [
+            {"name": chain + "_last_arrival_time", "role": "dependency", "width": 32, "body": "iat_delta"},
+            {"name": chain + "_iat_mean", "role": "value", "width": 16, "body": "mathunit_ewma"}],
+            "gated_by": gate}
+        length = ("" if chain == "flow" else chain + "_") + "packet_length_mean"
+        catalog[length] = {"registers": [
+            {"name": length, "role": "value", "width": 16, "body": "mathunit_ewma_packet_length"}],
+            "gated_by": gate}
+    return catalog
+
+
 def test_the_register_schedule_matches_p4c_on_the_probe_compiles(monkeypatch):
     """Six programs compiled by p4c (results/encoding_evidence_2026_11/model8/impl/
     probe_7_1b, Task 2 of the model8 plan, option B: one unconditional register
@@ -631,7 +708,9 @@ def test_the_register_schedule_matches_p4c_on_the_probe_compiles(monkeypatch):
     misses are pinned below. The texts also predate the symmetric 12-bit hash
     (review A1): their hash prologue is 3 stages, so the schedule is run with
     program.FLOW_HASH_LEVEL = 3, the value of their generator (registers.py reads
-    the constant through the module, so the patch reaches the schedule)."""
+    the constant through the module, so the patch reaches the schedule), and they
+    carry Mean features, so it is run with the catalog of their generator
+    (_pre_task_38_catalog)."""
     from p4model import program as program_constants
     monkeypatch.setattr(program_constants, "FLOW_HASH_LEVEL", 3)
     with open(_PROBE + ".json", encoding="utf-8") as handle:
@@ -652,7 +731,8 @@ def test_the_register_schedule_matches_p4c_on_the_probe_compiles(monkeypatch):
             for table in read:
                 feature = tables[table][0][:-len("_val")]
                 dependents[feature] = dependents.get(feature, 0) + 1
-        placed = register_stage_schedule(features, dependents=dependents,
+        placed = register_stage_schedule(features, catalog=_pre_task_38_catalog(),
+                                         dependents=dependents,
                                          call_order=program.register_calls)
         for register, stage in numbers["register_stages"].items():
             total += 1

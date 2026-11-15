@@ -205,15 +205,15 @@ def _two_feature_forest(names, n_classes, seed):
 
 def test_disjoint_key_order_is_the_texts_with_a_shared_feature_after_a_ddos_only_one(tmp_path):
     """Disjoint: a ddos tree keying a shared field (flow_iat_max, listed with the app
-    fields) and a ddos-only one that sorts before it (bwd_iat_mean, listed after them)
+    fields) and a ddos-only one that sorts before it (bwd_iat_total, listed after them)
     keys them in the program's order, and training's key slices list them in that order
     too (the order decides the crossbar container numbering by first use)."""
     from p4gen import build_p4_script as bps
     from p4gen.evaluation import _pool_inputs
-    names_app, names_ddos = ["flow_iat_max", "fwd_packet_length_max"], ["flow_iat_max", "bwd_iat_mean"]
+    names_app, names_ddos = ["flow_iat_max", "fwd_packet_length_max"], ["flow_iat_max", "bwd_iat_total"]
     app, ddos = _two_feature_forest(names_app, 3, 2), _two_feature_forest(names_ddos, 2, 5)
     ia, idd = bps.get_feature_intervals(app, names_app), bps.get_feature_intervals(ddos, names_ddos)
-    assert ia["flow_iat_max"] == idd["flow_iat_max"] and "bwd_iat_mean" in idd
+    assert ia["flow_iat_max"] == idd["flow_iat_max"] and "bwd_iat_total" in idd
     written = bps.generate_P4_code(
         3, 2, app, ddos, feature_intervals_app=ia, feature_intervals_ddos=idd,
         output_dir=str(tmp_path) + os.sep, output_filename="order.p4",
@@ -229,7 +229,7 @@ def test_disjoint_key_order_is_the_texts_with_a_shared_feature_after_a_ddos_only
         # training names each field as the program does (the crossbar numbers containers by name)
         text = rp.tree_key_slices(program, name)
         assert [field_id for field_id, _ in slices] == [field for field, _ in text], name
-        both |= [raw[field] for field, _ in text] == ["flow_iat_max", "bwd_iat_mean"]
+        both |= [raw[field] for field, _ in text] == ["flow_iat_max", "bwd_iat_total"]
     assert both      # some ddos tree keys the shared field and the ddos-only one
 
 
@@ -304,6 +304,7 @@ def test_training_equals_replay_pruned(tmp_path, encoding):
     refuses, the other refuses the same way."""
     from p4gen import build_p4_script as bps
     from p4gen.evaluation import multi_model_memory_evaluation
+    from src.training.dataset import replace_means
     from src.training.row_artifacts import load_forests
 
     designs = _saved_designs(encoding)
@@ -312,7 +313,9 @@ def test_training_equals_replay_pruned(tmp_path, encoding):
     for path in designs:
         stored = load_forests(path)
         app, ddos = stored["app"], stored["ddos"]
-        names_app, names_ddos = stored["features_app"], stored["features_ddos"]
+        # saved before Task 38: each Mean under the name of its replacement
+        names_app = replace_means(stored["features_app"])
+        names_ddos = replace_means(stored["features_ddos"])
         if encoding == "joint":
             ia = idd = bps.get_joint_feature_intervals(app, names_app, ddos, names_ddos)
         else:

@@ -27,7 +27,7 @@ from p4model.program import (APP_TASK, DDOS_TASK, PER_TASK_ENCODING, SHARED_TASK
                              feature_of_per_task_field, per_task_field, range_table_priority)
 from p4model.target import MAX_TERNARY_KEY_BITS, TERNARY_CROSSBAR_STAGE_BYTES
 
-FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
+FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_total",
             "flow_iat_min", "bwd_packet_length_max"]
 
 

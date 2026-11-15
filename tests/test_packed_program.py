@@ -95,10 +95,10 @@ def test_the_generator_builds_the_layout_the_training_pool_builds(tmp_path, monk
   key only if both call it with the same orders. Spy on every call and compare."""
   real, calls = packed.layout_for, []
 
-  def spy(widths, features, task_order, n_scratch=0, n_constants=0):
-    layout = real(widths, features, task_order, n_scratch, n_constants)
+  def spy(widths, features, task_order, n_scratch=0, n_constants=0, coarse_clock=False):
+    layout = real(widths, features, task_order, n_scratch, n_constants, coarse_clock)
     calls.append((widths, [f for f in features if f in layout.containers], list(task_order),
-                  layout, (n_scratch, n_constants)))
+                  layout, (n_scratch, n_constants, coarse_clock)))
     return layout
 
   monkeypatch.setattr(packed, "layout_for", spy)

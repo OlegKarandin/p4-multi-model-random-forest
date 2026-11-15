@@ -141,8 +141,9 @@ def test_process_single_split_splices_compile_results_onto_correct_iteration(tmp
 
     Uses 3 starting features -- FEATURE_REGISTER_CATALOG's three
     dependency-free entries (flow_iat_max, fwd_iat_max,
-    fwd_packet_length_max; the catalog's fourth entry, flow_iat_mean,
-    requires flow_iat_max to also survive elimination alongside it -- see
+    fwd_packet_length_max; the catalog's fourth entry then, flow_iat_mean
+    (flow_duration since Task 38, which has no dependency register), was
+    thought to require flow_iat_max to also survive elimination alongside it -- see
     generate_P4_registers_and_apply's guard -- so it's avoided here to keep
     this test's real-compile path independent of elimination order) -- so
     both the disjoint ('single') and joint ('multi') loops each run exactly
@@ -597,7 +598,7 @@ def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp
                       side_effect=real_kickoff) as spy_kickoff:
         # FEATURE_REGISTER_CATALOG's three dependency-free entries (see
         # test_process_single_split_splices_compile_results_onto_correct_iteration
-        # above for why flow_iat_mean is avoided here).
+        # above for why the fourth entry is avoided here).
         catalog_features = ["flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"]
         result_single = fs._process_single_split(
             split_idx=1, X_app=X_app, X_ddos=X_ddos, y_app=y_app, y_ddos=y_ddos,

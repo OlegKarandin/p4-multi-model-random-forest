@@ -122,14 +122,14 @@ def test_schedule_single_block():
       "fwd_iat_max": H + 2, "bwd_iat_max": H + 2}
   # Four stateful ALUs per stage; ready registers ranked longer tail chain first, then
   # more dependent trees, then later in program order (S5).
-  features = ["min_packet_length", "packet_length_mean", "max_packet_length", "flow_iat_max",
+  features = ["min_packet_length", "packet_length_total", "max_packet_length", "flow_iat_max",
               "fwd_packet_length_max"]
   assert register_stage_schedule(features) == {
       ORIENTATION_REGISTER: H, "flow_last_arrival_time": H, "max_packet_length": H,
-      "packet_length_mean": H, "min_packet_length": H + 1, "flow_iat_max": H + 1,
+      "packet_length_total": H, "min_packet_length": H + 1, "flow_iat_max": H + 1,
       "fwd_packet_length_max": H + 1}
   favoured = register_stage_schedule(features, dependents={"min_packet_length": 5})
-  assert favoured["min_packet_length"] == H and favoured["packet_length_mean"] == H + 1
+  assert favoured["min_packet_length"] == H and favoured["packet_length_total"] == H + 1
 
 
 def test_a_direction_owned_register_still_waits_for_the_orientation_register():
@@ -147,7 +147,7 @@ def test_a_direction_owned_register_still_waits_for_the_orientation_register():
   assert placed[ORIENTATION_REGISTER] == FLOW_HASH_LEVEL + 1
   assert placed["g_val"] == FLOW_HASH_LEVEL + 2
   for features in (["fwd_iat_max", "bwd_packet_length_min", "flow_iat_min"],
-                   ["bwd_iat_mean", "fwd_packet_length_mean", "packet_length_mean"]):
+                   ["bwd_iat_total", "fwd_packet_length_total", "packet_length_total"]):
     placed = register_stage_schedule(features)
     for feature in features:
       entry = ev.FEATURE_REGISTER_CATALOG[feature]
@@ -164,10 +164,10 @@ def test_ties_follow_call_site_order_not_feature_order():
   # been bwd_packet_length_max.
   from p4model import registers
   features = ["bwd_packet_length_max", "fwd_packet_length_max", "fwd_packet_length_min",
-              "fwd_packet_length_mean", "bwd_packet_length_min"]
+              "fwd_packet_length_total", "bwd_packet_length_min"]
   assert registers.register_call_order(features) == [
       "flow_forward_srcaddr", "fwd_packet_length_max", "fwd_packet_length_min",
-      "fwd_packet_length_mean", "bwd_packet_length_max", "bwd_packet_length_min"]
+      "fwd_packet_length_total", "bwd_packet_length_max", "bwd_packet_length_min"]
   # (stage 4 when the hash prologue was 3 stages; FLOW_HASH_LEVEL + 1 in general)
   from p4model.program import FLOW_HASH_LEVEL
   placed = register_stage_schedule(features)

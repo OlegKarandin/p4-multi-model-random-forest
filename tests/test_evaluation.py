@@ -1027,8 +1027,13 @@ def test_feature_readiness_level_counts_hash_gating_and_chain_depth():
     H = p4program.FLOW_HASH_LEVEL
     # ungated, 2-deep chain (last_arrival_time -> max): H + 0 + 2
     assert ev.feature_readiness_level("flow_iat_max") == H + 2
-    # ungated, 2-deep chain (shared last_arrival_time -> mean): H + 0 + 2
-    assert ev.feature_readiness_level("flow_iat_mean") == H + 2
+    # ungated, 2-deep chain (shared last_arrival_time -> min; M2 had flow_iat_mean
+    # here, the same register shape, which Task 38 replaced): H + 0 + 2
+    assert ev.feature_readiness_level("flow_iat_min") == H + 2
+    # Task 38: the flow duration is one register, no dependency: H + 0 + 1
+    assert ev.feature_readiness_level("flow_duration") == H + 1
+    # and the Fwd / Bwd durations one owned register: H + 1 + 1
+    assert ev.feature_readiness_level("fwd_iat_total") == H + 2
     # fwd-gated, 1-deep chain: H + 1 + 1
     assert ev.feature_readiness_level("fwd_packet_length_max") == H + 2
     # fwd-gated, 2-deep chain: H + 1 + 2 -- the deepest, and the one the real
@@ -1085,7 +1090,8 @@ def test_feature_readiness_level_resolves_dotted_dataset_names():
     crossbar_stages_needed inert while `stages` was still being reported."""
     H = p4program.FLOW_HASH_LEVEL
     assert ev.feature_readiness_level("Flow.IAT.Max") == H + 2
-    assert ev.feature_readiness_level("Flow.IAT.Mean") == H + 2
+    assert ev.feature_readiness_level("Flow.IAT.Min") == H + 2
+    assert ev.feature_readiness_level("Flow.Duration") == H + 1
     assert ev.feature_readiness_level("Fwd.Packet.Length.Max") == H + 2
     assert ev.feature_readiness_level("Fwd.IAT.Max") == H + 3
 
@@ -1097,9 +1103,9 @@ def test_feature_readiness_level_unknown_dotted_feature_still_falls_back():
     normalisation-surviving catalog entry instead of a KeyError or a
     fallback -- bwd_packet_length_min is bwd-gated with one value register
     (no dependency register: packet-length bodies read hdr.ipv4.total_len
-    directly), and packet_length_mean is ungated with one value register."""
+    directly), and packet_length_total is ungated with one value register."""
     assert ev.feature_readiness_level("Bwd.Packet.Length.Min") == p4program.FLOW_HASH_LEVEL + 1 + 1
-    assert ev.feature_readiness_level("Packet.Length.Mean") == p4program.FLOW_HASH_LEVEL + 0 + 1
+    assert ev.feature_readiness_level("Packet.Length.Total") == p4program.FLOW_HASH_LEVEL + 0 + 1
 
 
 def test_readiness_levels_for_real_dataset_feature_names():
@@ -1161,11 +1167,13 @@ def test_classification_tables_are_placed_after_the_last_occupied_range_stage():
 
 
 def test_range_and_ternary_pools_reproduce_the_measured_m2_stage_count():
-    # The real M2 feature set. Real compile: range tables in 2 stages,
+    # The real M2 feature set, its flow_iat_mean as flow_iat_min (the same
+    # register shape: the shared last-arrival register, then one value register;
+    # Task 38 replaced the Mean). Real compile: range tables in 2 stages,
     # classification tables in 1 -> 3 stages of match tables.
     feature_intervals = {
         "flow_iat_max": [(0, 100), (101, 65535)],
-        "flow_iat_mean": [(0, 100), (101, 65535)],
+        "flow_iat_min": [(0, 100), (101, 65535)],
         "fwd_iat_max": [(0, 100), (101, 65535)],
         "fwd_packet_length_max": [(0, 100), (101, 65535)],
     }
@@ -1213,7 +1221,8 @@ def _forest_using_all_four_catalog_features(labels, seed):
     return bps.dt_thresholds_float_to_int(clf)
 
 
-_M2_CATALOG_FEATURES = ["flow_iat_max", "flow_iat_mean",
+# M2's set, its flow_iat_mean as flow_iat_min (the same register shape; Task 38)
+_M2_CATALOG_FEATURES = ["flow_iat_max", "flow_iat_min",
                         "fwd_iat_max", "fwd_packet_length_max"]
 
 
@@ -1532,10 +1541,10 @@ def test_feature_readiness_level_lands_on_the_stage_the_compiler_uses():
     # ran at stage 3), ONE since the symmetric 12-bit hash (review A1).
     # Measured against the committed placements of the old hash:
     #   independent_low_sd6  table_1_bwd_packet_length_max   -> real stage 5
-    #   independent_high_sd6 table_6_app_packet_length_mean  -> real stage 4
+    #   independent_high_sd6 table_6_app_packet_length_total  -> real stage 4
     # i.e. FLOW_HASH_LEVEL + 2 and + 1.
     assert ev.feature_readiness_level("bwd_packet_length_max") == p4program.FLOW_HASH_LEVEL + 2
-    assert ev.feature_readiness_level("packet_length_mean") == p4program.FLOW_HASH_LEVEL + 1
+    assert ev.feature_readiness_level("packet_length_total") == p4program.FLOW_HASH_LEVEL + 1
 
 
 # ---------------------------------------------------------------------------
@@ -1629,11 +1638,11 @@ def test_readiness_levels_push_past_the_chain_depth_at_campaign_feature_counts()
     # so its latest feature is ready at stage 8, not the 6 that chain depth
     # alone reports. Two whole stages of pipeline depth the model never saw.
     features = [
-        "bwd_iat_max", "bwd_iat_mean", "bwd_iat_min", "bwd_packet_length_max",
-        "bwd_packet_length_mean", "bwd_packet_length_min", "flow_iat_max",
-        "flow_iat_mean", "flow_iat_min", "fwd_iat_mean", "fwd_iat_min",
-        "fwd_packet_length_max", "fwd_packet_length_mean", "min_packet_length",
-        "packet_length_mean", "fwd_iat_max",
+        "bwd_iat_max", "bwd_iat_total", "bwd_iat_min", "bwd_packet_length_max",
+        "bwd_packet_length_total", "bwd_packet_length_min", "flow_iat_max",
+        "flow_duration", "flow_iat_min", "fwd_iat_total", "fwd_iat_min",
+        "fwd_packet_length_max", "fwd_packet_length_total", "min_packet_length",
+        "packet_length_total", "fwd_iat_max",
     ]
     feature_intervals = {name: [(0, 5)] for name in features}
 
@@ -1651,8 +1660,8 @@ def test_readiness_levels_are_independent_of_feature_order():
     # The schedule's makespan must be a property of the design, not of dict
     # iteration order. Verified over 300 shuffles of every calibration row's
     # feature list: the last-register stage never moved.
-    features = ["fwd_iat_max", "fwd_iat_min", "fwd_iat_mean", "bwd_iat_max",
-                "bwd_iat_min", "bwd_iat_mean", "flow_iat_max", "flow_iat_min"]
+    features = ["fwd_iat_max", "fwd_iat_min", "fwd_iat_total", "bwd_iat_max",
+                "bwd_iat_min", "bwd_iat_total", "flow_iat_max", "flow_iat_min"]
     forward = ev.register_stage_schedule(features)
     backward = ev.register_stage_schedule(list(reversed(features)))
     assert max(forward.values()) == max(backward.values())
@@ -1669,10 +1678,10 @@ def test_readiness_levels_schedule_both_models_registers_on_one_pipeline():
     # The other model's registers are bwd-owned, so their call sites come
     # later and win the ALU ties (S5, call-site order): this model's fwd value
     # registers spill a stage.
-    app = {"fwd_iat_max": [(0, 5)], "fwd_iat_mean": [(0, 5)]}
+    app = {"fwd_iat_max": [(0, 5)], "fwd_iat_total": [(0, 5)]}
     ddos = {"bwd_iat_max": [(0, 5)], "bwd_iat_min": [(0, 5)],
-            "bwd_iat_mean": [(0, 5)], "bwd_packet_length_max": [(0, 5)],
-            "bwd_packet_length_min": [(0, 5)], "bwd_packet_length_mean": [(0, 5)]}
+            "bwd_iat_total": [(0, 5)], "bwd_packet_length_max": [(0, 5)],
+            "bwd_packet_length_min": [(0, 5)], "bwd_packet_length_total": [(0, 5)]}
     union = list(app) + list(ddos)
 
     alone = ev.readiness_levels_for(app)

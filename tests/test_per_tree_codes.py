@@ -30,7 +30,7 @@ from p4model.target import ACTION_DATA_BUS_BYTES
 from tests.test_per_task_codes import FEATURES, _forest, _own, _rng_design, _three_tasks
 from tests.test_per_task_codes import _synthetic_vote_exports  # noqa: F401 (autouse fixture)
 
-DEEP_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean"]
+DEEP_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_total"]
 
 
 def _deep_forest(n_classes, seed, depth, n_trees=2):
@@ -219,22 +219,27 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # plus that one pragma line (14/14). Re-frozen 2026-11-15 (Task 34: V1o 32-bit clock and clamp,
 # C1f first-packet rule, Task 33b orientation fix): each text is its previous one with Task 33's
 # probe edit c1f (the compiled, live-checked register bodies) and the orientation body of
-# live_prog_orient (impl/scripts/t34_text_diff.py, 14/14).
+# live_prog_orient (impl/scripts/t34_text_diff.py, 14/14). Re-frozen 2026-11-15 (Task 38, P3h:
+# the pool's bwd_iat_mean is bwd_iat_total): each text is Task 37's P3h probe edit of its previous
+# one (p37_probe.p3c, the coarse clock from ingress_mac_tstamp; the Mean's register becomes the
+# {first, dur} pair, its chain's last-arrival register dropped) with bwd_iat_mean renamed, the
+# now_coarse declaration aside (impl/scripts/t38_refreeze.py, 14/14; seed 3 has no Mean and kept
+# its sha).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "ef338da6addc3175528d361cf2d75e5418c5e0ead471643b92bb9b753e395d4b",
-    ("disjoint", 0): "1db65880b2429b8e5e3fafb32e73b6d4574f61f50ee2d39d5bb0d3ebca103350",
-    ("per_task", 0): "af553c5d451af329d8d8dbb8a961fb4ff2a59c7eca91d088cf4f19e1f43d08fe",
-    ("joint", 1): "7d0479d572e9532cbf3c0c39de68222b6b4132996f4c34925fd77d7682254989",
-    ("disjoint", 1): "51868521d2a2c708badce6012fc3495a81bebbd58762f7066d3a51959b98cffe",
-    ("per_task", 1): "106a8a4403e49e2495f774955d2f60fb91aedfd26fc3178a5ecfa19ce81148eb",
-    ("joint", 2): "2f7d990cbc6d5ad818da734188caecabcb39c8cc8679bcb82f4001318614b9f7",
-    ("disjoint", 2): "df9d82680708be9dd93aae561538293e75fa178d9bb5e7e7d7a74482f34f8ec1",
-    ("per_task", 2): "e202de89a3681fb6a28ed0a391a039a1b9dd2169bb88bb390f74d05ae5fcba90",
+    ("joint", 0): "df665d89b4d77b2f0050c101987b4328023f3fce5ce76a34715b14e7c4db4dac",
+    ("disjoint", 0): "cbf4aa67c007ca1b12c3c04dea70bb61ea4f736330933765f6734c366797dbeb",
+    ("per_task", 0): "6b2f91480338cdd0ca4b9038152d19f90cdf2fe2e0c38bbe5a86b23e35ee0b70",
+    ("joint", 1): "8fbcb5e7f55bf3d1671fc49370e6de521988e6eb0fe209a87b6b8b621ffd5843",
+    ("disjoint", 1): "4b8f57fa46baebcd6215a8f0a9b88abf223ff4dcda1cc25f76eeacbb40ecb73f",
+    ("per_task", 1): "d4d6f04b880b4d093027b693423a25cfa596458659ca8138a13bd289f73eea09",
+    ("joint", 2): "ccdb30379aa428b4761e89762f9341d62e1e5158343139efe6545a8a41765988",
+    ("disjoint", 2): "d5a28e07f58bbdd4eea1681fbd7791def0c69a0b9ed1dd630b233b98b0ff1bab",
+    ("per_task", 2): "2e8bbb75102deec840199df1c4f9404396008bf5421593d82bcbac1e3c2969cc",
     ("joint", 3): "b0d97c21b928b2ea5176d7b9e5aee60f83e17bc0ac3918210ddf2156eca74586",
     ("disjoint", 3): "72b1cd384fb38005e7e1268b0e036c9cc4740f2cc3990f40f243a50b72fa1833",
     ("per_task", 3): "45c14308c0e36994d73cf08f45faed79bd94105b98ec1f6673d7ef8f9f2ce15d",
-    ("disjoint", "three"): "37e5099481a3f4c3673857f8c374190ff87ba545645f4d0560d7c805c3bd0aa3",
-    ("per_task", "three"): "f63e1dd594409b8203a1d6053db64f9c1c9c8217159fe484803ee0810204e66a",
+    ("disjoint", "three"): "ffb811b04b1ef94e8991173d12d8a061c14d19083c33b18d1cca7fe11cfeef48",
+    ("per_task", "three"): "feafa1cc4aedf214bc31b5777dd378d8a71fc06ec86972119e24747f8d4c7a69",
 }
 
 
@@ -279,10 +284,14 @@ def _g3_pin_set(text):
   scratch field <chain>_current_iat; pa_no_overlay and pa_container_size on every code
   field (code_pk_* too). Nothing on meta.fwd. Since review A1b, pa_solitary on
   now_pseudo_us in a program that computes the timestamp (calc_timestamp); since the
-  Task 31 miss, pa_solitary on flow_hash in every program."""
+  Task 31 miss, pa_solitary on flow_hash in every program; since Task 38, on each clock
+  calc_timestamp writes (now_pseudo_us for a last-arrival register, now_coarse for a
+  duration)."""
   pins = {("pa_solitary", "flow_hash", "")}
-  if "calc_timestamp();" in text:
-    pins.add(("pa_solitary", "now_pseudo_us", ""))
+  for clock in ("now_pseudo_us", "now_coarse"):
+    if "meta.%s = " % clock in text:
+      assert "calc_timestamp();" in text
+      pins.add(("pa_solitary", clock, ""))
   for bits, field in _DECLARED.findall(text):
     if field.startswith("class_tree_"):
       pins.add(("pa_solitary", field, ""))
@@ -293,7 +302,7 @@ def _g3_pin_set(text):
   return pins
 
 
-@pytest.mark.parametrize("seed", [0, 1])
+@pytest.mark.parametrize("seed", [0, 1, 7])
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING,
                                       PER_TREE_ENCODING])
 def test_every_encoding_carries_exactly_the_g3_pin_set(tmp_path, encoding, seed):
@@ -316,9 +325,10 @@ def test_every_encoding_carries_exactly_the_g3_pin_set(tmp_path, encoding, seed)
   assert set(code_sizes) == codes
   for field, sizes in code_sizes.items():
     assert sum(int(s) for s in sizes.split(",") if s.strip()) == declared[field]
-  # the scratch pin is there (every design here has an IAT chain) ...
+  # the scratch pin is there (seeds 0 and 7 have an IAT chain; seed 1 only the Task 38
+  # duration bwd_iat_total, which needs none) ...
   scratch = [field for field in declared if field.endswith("_current_iat")]
-  assert scratch
+  assert bool(scratch) == (seed != 1)
   for field in scratch:
     assert '@pa_container_size("ingress", "ig_md.%s", 16)\n' % field in text
   # ... and the three pins dropped at G3 are not (3.1, 3.3, 3.5)
@@ -386,7 +396,11 @@ def test_each_encoding_writes_exactly_the_frozen_entries(encoding, seed, discoun
   Re-frozen 2026-11-15 (Task 34, IAT thresholds in 1.024 us ticks): every record is its
   old one with an IAT feature's range bounds through build_p4_script.switch_range, the
   10 intervals whose bounds collapse onto one tick dropped, nothing else changed
-  (impl/scripts/t34_entries.py, 36/36)."""
+  (impl/scripts/t34_entries.py, 36/36). Re-frozen 2026-11-15 (Task 38: the pool's
+  bwd_iat_mean, an IAT feature, is the duration bwd_iat_total, installed unchanged): every
+  record outside the bwd_iat_total range tables is its old one renamed (36/36), those tables'
+  bounds are the trees' own, and the intervals the tick rule had collapsed are installed
+  (seed 2: +1 / +2 entries) (impl/scripts/t38_refreeze.py)."""
   with open(_ENTRIES_FIXTURE, encoding="utf-8") as handle:
     frozen = json.load(handle)
   entries = bps.generate_table_entries(_entry_tasks(encoding, seed),
@@ -559,17 +573,22 @@ def test_the_range_pool_is_the_per_task_arms():
 # every table's stage and the stage depth 2 lower, blocks unchanged (impl/scripts/
 # t31_replay_shas.py, 18/18). Re-frozen again for review A2 (no vote epilogue for a one-tree
 # task): 15/18 identical to the A1 breakdowns; seed 3 (one tree per task, all three encodings)
-# has every table on the same stage and the depth 1 lower (6 -> 5).
+# has every table on the same stage and the depth 1 lower (6 -> 5). Re-frozen 2026-11-15 (Task 38,
+# P3h: bwd_iat_mean -> bwd_iat_total, one register instead of the chain's two): seeds 0-2, which
+# have it, run its range table(s) one stage earlier (4 -> 3) and every tree after them with it,
+# stage depth 1 lower except joint seed 0 (7, its app_0 stays in stage 5; its four app trees take
+# their 31 blocks in another order); blocks unchanged; seeds 3-5 identical
+# (impl/scripts/t38_refreeze.py).
 _OTHER_REPLAY_SHAS = {
-    ("joint", 0): "136f87205545d86fce24eb52816209e2c2e15e8562baaf5258bb01062bbf0c2f",  # 2026-11-14 key pruning (2.3): depth 10 -> 9, blocks 36 -> 31
-    ("disjoint", 0): "0128bd277eb192835aa7039d6da5b1d779872e4e397d0c3298750c4bad167284",  # 2026-11-14 key pruning: same totals (9, 28)
-    ("per_task", 0): "2d2e77d72089d1ee0a77eed9f81f294acc55118ca8848b85edb2b1f9aa6bb8eb",  # 2026-11-14 key pruning: same totals (9, 24)
-    ("joint", 1): "db3da14cbbf4fbb2817eb8ba19781224bc1bb43e371ab2e88d30fe24569abedf",
-    ("disjoint", 1): "62da9ea31433f0536f1771cd522f2321069ddd041b79e41e38bf3f97d9ac222b",
-    ("per_task", 1): "db3da14cbbf4fbb2817eb8ba19781224bc1bb43e371ab2e88d30fe24569abedf",
-    ("joint", 2): "4524c5c9a816d47c59d4ab2e3d0e026ef87ecddc2be8e94a607e9403cd84046d",  # 2026-11-13: joint pool simulated, same totals
-    ("disjoint", 2): "3e58329a7613978ac00147f2ee666d99e513b2090232fa432c9b782cf79a35ca",
-    ("per_task", 2): "d673a49688a720e7c676909e91e4831bdabcdd94e447a6aad3f2b10ea8823759",
+    ("joint", 0): "03b34fc5643982368ac8c8e036084784c05352eea789838272638dfba1ee39d4",  # Task 38: 7 / 31
+    ("disjoint", 0): "70141230a6935f5741fd9c77eed0b074a82b62b48715e0b2e09058217217eb54",  # Task 38: 6 / 28
+    ("per_task", 0): "cdb0f981325ac339e4bebd223ee56f153dfd7b03aa9adc47aa077817fe454714",  # Task 38: 6 / 24
+    ("joint", 1): "cfd48594c1a38b86ca25a95b8e1ca561085fba9420b71c8b6ab5797c927c76bc",  # Task 38: 6 / 7
+    ("disjoint", 1): "c8a34fd77388dadf3b9e563513dd89d6482f3750c420727b7d4a2a8371b343e7",  # Task 38: 6 / 8
+    ("per_task", 1): "cfd48594c1a38b86ca25a95b8e1ca561085fba9420b71c8b6ab5797c927c76bc",  # Task 38: 6 / 7
+    ("joint", 2): "0a8dcd8d2099da84d36059ff583404fd99683c1e64e29122c219eae78731d8d0",  # Task 38: 11 / 91
+    ("disjoint", 2): "15b1c0f4baacfe5d3fc30b2fdbfbdb91a31288fbd07ce3ef625df45e8ffea91c",  # Task 38: 8 / 60
+    ("per_task", 2): "2c01ca7a2948710ddb6ac3fef7d61b46d14a535e132e50a4b39c1c83cfcf3311",  # Task 38: 8 / 57
     ("joint", 3): "0878d7fc5268df8ea6657c6e16f95e0a9512fddee02fe8cb7152a45fbaef3237",
     ("disjoint", 3): "870f08838561dc1b721b3e4bd340f0aba131ace8ed53fd68d042c54fd013346f",
     ("per_task", 3): "0878d7fc5268df8ea6657c6e16f95e0a9512fddee02fe8cb7152a45fbaef3237",

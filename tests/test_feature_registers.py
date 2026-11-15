@@ -52,15 +52,6 @@ try:
 except FileNotFoundError:
   SPIKE_CONTROL = None
 
-# M2's mean/EWMA ground truth spike (Task M2-B1) -- a small, standalone,
-# not-preprocessed .p4 file, so no line-range slicing is needed: the whole
-# file is the relevant content.
-M2_MEAN_SPIKE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "p4", "tofino_spike", "tna_m2_mean_spike.p4",
-)
-
-
 def _read_spike_if_present(path):
   """The tna_*.p4 spikes are gitignored (.gitignore: p4/tofino_spike/tna_*.p4),
   so a fresh clone or a worktree has none of them: None then, and the test that
@@ -71,8 +62,6 @@ def _read_spike_if_present(path):
   except FileNotFoundError:
     return None
 
-
-M2_MEAN_SPIKE = _read_spike_if_present(M2_MEAN_SPIKE_PATH)
 
 # Task 3: symmetric-hash flow-direction bookkeeping ground truth (compiled
 # clean against the real Tofino compiler this session, 0 errors) -- the
@@ -96,22 +85,25 @@ M1_FEATURE_INTERVALS = {
     "fwd_packet_length_max": None,
 }
 
-# M2-B1: flow_iat_max + flow_iat_mean share one dependency register
-# (flow_last_arrival_time) -- the shared-dependency dedup scenario this task
-# fixes.
+# M2-B1: flow_iat_max + flow_iat_min share one dependency register
+# (flow_last_arrival_time) -- the shared-dependency dedup scenario M2-B1
+# fixed (with flow_iat_mean then; Task 38 replaced it by flow_duration, which
+# has no dependency register and is here to show that).
 M2_MEAN_FEATURE_INTERVALS = {
     "flow_iat_max": None,
-    "flow_iat_mean": None,
+    "flow_iat_min": None,
+    "flow_duration": None,
 }
 
-# M2-B1: all three of M1's flow_iat_max, fwd_iat_max, plus M2's flow_iat_mean
+# M2-B1: M1's flow_iat_max, fwd_iat_max, plus flow_iat_min and flow_duration
 # together -- confirms flow_last_arrival_time (shared by flow_iat_max +
-# flow_iat_mean) and fwd_last_arrival_time (independent, fwd_iat_max only)
+# flow_iat_min) and fwd_last_arrival_time (independent, fwd_iat_max only)
 # don't cross-contaminate each other's dedup accounting.
 M2_MEAN_PLUS_FWD_FEATURE_INTERVALS = {
     "flow_iat_max": None,
     "fwd_iat_max": None,
-    "flow_iat_mean": None,
+    "flow_iat_min": None,
+    "flow_duration": None,
 }
 
 # Spike hand-wrote its own RegisterAction names; map each catalog register
@@ -177,18 +169,18 @@ def m2_mean_plus_fwd_generated():
 
 def test_catalog_has_exactly_the_eighteen_pool_features():
   # NOTE: this test's assertion has been updated twice now -- Task M2-B1 grew
-  # it from 3 to 4 keys (adding flow_iat_mean), and Task 9 grows it from 4 to
+  # it from 3 to 4 keys (adding flow_duration), and Task 9 grows it from 4 to
   # all 18 keys of main.py's feature pool (main.py:308-314), its own required
   # deliverable. This is the one pre-existing test whose assertion changes
   # each time the catalog's scope grows; every other M1/M2 test/behavior is
   # unaffected.
   assert set(FEATURE_REGISTER_CATALOG.keys()) == {
-      "flow_iat_max", "flow_iat_mean", "flow_iat_min",
-      "fwd_iat_max", "fwd_iat_mean", "fwd_iat_min",
-      "bwd_iat_max", "bwd_iat_mean", "bwd_iat_min",
-      "fwd_packet_length_max", "fwd_packet_length_min", "fwd_packet_length_mean",
-      "bwd_packet_length_max", "bwd_packet_length_min", "bwd_packet_length_mean",
-      "min_packet_length", "max_packet_length", "packet_length_mean",
+      "flow_iat_max", "flow_duration", "flow_iat_min",
+      "fwd_iat_max", "fwd_iat_total", "fwd_iat_min",
+      "bwd_iat_max", "bwd_iat_total", "bwd_iat_min",
+      "fwd_packet_length_max", "fwd_packet_length_min", "fwd_packet_length_total",
+      "bwd_packet_length_max", "bwd_packet_length_min", "bwd_packet_length_total",
+      "min_packet_length", "max_packet_length", "packet_length_total",
   }
 
 
@@ -232,13 +224,26 @@ def test_fwd_packet_length_max_catalog_entry():
   ]
 
 
-def test_flow_iat_mean_catalog_entry():
-  entry = FEATURE_REGISTER_CATALOG["flow_iat_mean"]
-  assert entry["gated_by"] is None
-  assert entry["registers"] == [
-      {"name": "flow_last_arrival_time", "role": "dependency", "width": 32, "body": "iat_delta"},
-      {"name": "flow_iat_mean", "role": "value", "width": 16, "body": "mathunit_ewma"},
-  ]
+def test_the_task_38_catalog_entries():
+  """P3h (Task 38): the six Means are replaced by three durations (one value
+  register each, no dependency register; the flow's 32-bit, the Fwd / Bwd ones
+  a 64-bit {first, dur} pair) and three saturating length Totals."""
+  for name in ("flow_iat_mean", "fwd_iat_mean", "bwd_iat_mean", "fwd_packet_length_mean",
+               "bwd_packet_length_mean", "packet_length_mean"):
+    assert name not in FEATURE_REGISTER_CATALOG
+  expected = {
+      "flow_duration": (None, 32, "coarse_duration"),
+      "fwd_iat_total": ("fwd", 64, "coarse_duration_pair"),
+      "bwd_iat_total": ("bwd", 64, "coarse_duration_pair"),
+      "fwd_packet_length_total": ("fwd", 16, "saturating_total_packet_length"),
+      "bwd_packet_length_total": ("bwd", 16, "saturating_total_packet_length"),
+      "packet_length_total": (None, 16, "saturating_total_packet_length"),
+  }
+  for feature, (gate, width, body) in expected.items():
+    entry = FEATURE_REGISTER_CATALOG[feature]
+    assert entry["gated_by"] == gate, feature
+    assert entry["registers"] == [{"name": feature, "role": "value", "width": width, "body": body}]
+  assert len(FEATURE_REGISTER_CATALOG) == 18
 
 
 # ---------------------------------------------------------------------------
@@ -283,11 +288,9 @@ def test_register_action_bodies_match_spike():
   # _REGISTER_ACTION_BODIES, against the M1 spike's hand-written action body
   # for that same register -- content only, not the (allowed-to-differ)
   # action name. Scoped to _SPIKE_ACTION_NAME_BY_REGISTER's own M1 feature
-  # set (not "every FEATURE_REGISTER_CATALOG entry") because M2's
-  # flow_iat_mean is validated against a *different* spike file
-  # (tna_m2_mean_spike.p4, exercised separately by
-  # test_mathunit_ewma_body_matches_spike) -- it has no entry in this M1
-  # spike's SPIKE_CONTROL text.
+  # set (not "every FEATURE_REGISTER_CATALOG entry"): the later kinds were
+  # validated by other compiles (the Task 38 ones by Task 37's, see
+  # test_the_task_38_bodies_are_the_compiled_p3h_text).
   for feature in ("flow_iat_max", "fwd_iat_max", "fwd_packet_length_max"):
     entry = FEATURE_REGISTER_CATALOG[feature]
     for reg in entry["registers"]:
@@ -427,27 +430,12 @@ def test_value_registers_assigned_with_val_suffix(m1_generated):
 
 
 # ---------------------------------------------------------------------------
-# M2-B1: flow_iat_mean catalog entry, mathunit_ewma body kind, and the
-# shared-dependency-register dedup fix.
+# M2-B1: the shared-dependency-register dedup fix; Task 38: the duration and
+# length-Total bodies (P3h).
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(M2_MEAN_SPIKE is None, reason='p4/tofino_spike/tna_m2_mean_spike.p4 is absent (gitignored, so never in a fresh clone or a worktree)')
-def test_mathunit_ewma_body_matches_spike(m2_mean_generated):
-  # Transcribed-verbatim check against the compiled ground-truth spike
-  # (p4/tofino_spike/tna_m2_mean_spike.p4, flow_iat_mean_ewma_action). The
-  # spike hand-wrote a single global `halve_unit` identifier; the generator
-  # parametrizes it per-register as `<name>_halve_unit` (so a future second
-  # mathunit_ewma register wouldn't collide on one shared MathUnit instance)
-  # -- substitute that one identifier before comparing body content.
-  spike_body = _extract_action_body(M2_MEAN_SPIKE, "flow_iat_mean_ewma_action")
-  generated_body = bps._REGISTER_ACTION_BODIES["mathunit_ewma"].format(
-      width=16, name="flow_iat_mean", iat="current_iat")  # the spike's field name
-  normalized_spike = [line.replace("halve_unit", "flow_iat_mean_halve_unit") for line in _normalize(spike_body)]
-  assert _normalize(generated_body) == normalized_spike
-
-
 def test_shared_dependency_register_executed_exactly_once(m2_mean_generated):
-  # The core dedup fix: flow_iat_max and flow_iat_mean both list
+  # The core dedup fix: flow_iat_max and flow_iat_min both list
   # "flow_last_arrival_time" as a dependency register. Before the fix,
   # _execute_lines emitted one .execute() call per (feature, register)
   # pair -- two calls for one register. After the fix, exactly one call
@@ -459,26 +447,103 @@ def test_shared_dependency_register_executed_exactly_once(m2_mean_generated):
   # execute call site, both consuming the one meta.flow_current_iat the
   # deduped dependency execution produced.
   assert "meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);" in apply_code
-  assert "meta.flow_iat_mean_val = flow_iat_mean_action.execute(meta.flow_hash);" in apply_code
+  assert "meta.flow_iat_min_val = flow_iat_min_action.execute(meta.flow_hash) + 1;" in apply_code
   assert apply_code.count("meta.flow_current_iat = ") == 1
+  # flow_duration has its own register only (Task 38), cast like a gap (V1o)
+  assert "meta.flow_duration_val = (bit<16>) flow_duration_action.execute(meta.flow_hash);" in apply_code
 
 
-def test_mathunit_declaration_emitted_before_register_action(m2_mean_generated):
-  _, register_actions_code, _, _ = m2_mean_generated
-  mathunit_idx = register_actions_code.index(
-      "MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) flow_iat_mean_halve_unit;")
-  action_idx = register_actions_code.index(
-      "RegisterAction<bit<16>, bit<12>, bit<16>>(flow_iat_mean_reg) flow_iat_mean_action = {")
-  assert mathunit_idx < action_idx
+# The register bodies Task 37 compiled (results/encoding_evidence_2026_11/model8/impl/
+# probe_p3c.md, variant P3h, joint-off_M025_s06_k17; the probe kept the old Mean names,
+# here renamed): exactly what the generator must write.
+_P3H_FLOW_DURATION = (
+    "\tRegisterAction<bit<32>, bit<12>, bit<32>>(flow_duration_reg) flow_duration_action = {\n"
+    "\t\tvoid apply(inout bit<32> value, out bit<32> rv) {\n"
+    "\t\t\tif (meta.now_coarse - value > 65535) {\n"
+    "\t\t\t\trv = 65535;\n"
+    "\t\t\t} else {\n"
+    "\t\t\t\trv = meta.now_coarse |-| value;\n"
+    "\t\t\t}\n"
+    "\t\t\tvalue = min(value, meta.now_coarse);\n"
+    "\t\t}\n"
+    "\t};\n")
+_P3H_BWD_DURATION = (
+    "\tRegisterAction<dur_pair_t, bit<12>, bit<32>>(bwd_iat_total_reg) bwd_iat_total_action = {\n"
+    "\t\tvoid apply(inout dur_pair_t value, out bit<32> rv) {\n"
+    "\t\t\tif (meta.fwd == 0) {\n"
+    "\t\t\t\tif (meta.now_coarse - value.first > 65535) {\n"
+    "\t\t\t\t\tvalue.dur = 65535;\n"
+    "\t\t\t\t} else {\n"
+    "\t\t\t\t\tvalue.dur = meta.now_coarse |-| value.first;\n"
+    "\t\t\t\t}\n"
+    "\t\t\t\tvalue.first = min(value.first, meta.now_coarse);\n"
+    "\t\t\t}\n"
+    "\t\t\trv = value.dur;\n"
+    "\t\t}\n"
+    "\t};\n")
+_P3H_LENGTH_TOTAL = (
+    "\tRegisterAction<bit<16>, bit<12>, bit<16>>(packet_length_total_reg) packet_length_total_action = {\n"
+    "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
+    "\t\t\tvalue = value |+| hdr.ipv4.total_len;\n"
+    "\t\t\trv = value;\n"
+    "\t\t}\n"
+    "\t};\n")
+_P3H_FWD_LENGTH_TOTAL = (
+    "\tRegisterAction<bit<16>, bit<12>, bit<16>>(fwd_packet_length_total_reg) fwd_packet_length_total_action = {\n"
+    "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
+    "\t\t\tif (meta.fwd == 1) {\n"
+    "\t\t\t\tvalue = value |+| hdr.ipv4.total_len;\n"
+    "\t\t\t}\n"
+    "\t\t\trv = value;\n"
+    "\t\t}\n"
+    "\t};\n")
 
-  # The MathUnit<> declaration is specific to "mathunit_ewma"-bodied
-  # registers -- must not leak in front of unrelated RegisterActions.
-  assert register_actions_code.count("MathUnit<bit<16>>(MathOp_t.MUL, 1, 2)") == 1
+
+def test_the_task_38_bodies_are_the_compiled_p3h_text():
+  registers, actions, apply_code, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
+  for body in (_P3H_FLOW_DURATION, _P3H_BWD_DURATION, _P3H_LENGTH_TOTAL, _P3H_FWD_LENGTH_TOTAL,
+               _P3H_BWD_DURATION.replace("bwd_", "fwd_").replace("meta.fwd == 0", "meta.fwd == 1")):
+    assert body in actions, body
+  assert ("\tRegister<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) flow_duration_reg;\n"
+          in registers)
+  for chain in ("fwd", "bwd"):
+    assert ("\tRegister<dur_pair_t, bit<12>>(MAX_NUM_FLOWS, {32w0xFFFFFFFF, 32w0}) %s_iat_total_reg;\n"
+            % chain in registers)
+    assert ("meta.%s_iat_total_val = (bit<16>) %s_iat_total_action.execute(meta.flow_hash);"
+            % (chain, chain) in apply_code)
+  for feature in ("fwd_packet_length_total", "bwd_packet_length_total", "packet_length_total"):
+    assert "\tRegister<bit<16>, bit<12>>(MAX_NUM_FLOWS) %s_reg;\n" % feature in registers
+    assert "meta.%s_val = %s_action.execute(meta.flow_hash);" % (feature, feature) in apply_code
+  # the Task 37 clocks: both, the coarse one from the MAC timestamp
+  assert ("\taction calc_timestamp() {\n"
+          "\t\tmeta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];\n"
+          "\t\tmeta.now_coarse = ig_intr_md.ingress_mac_tstamp[47:16];\n"
+          "\t}\n") in actions
+  # no MathUnit any more (the Mean bodies' MathUnit was miscompiled, Task 33b)
+  assert "MathUnit" not in registers + actions and "halve" not in actions
+
+
+@pytest.mark.parametrize("features,fine,coarse", [
+    ({"flow_duration": None}, False, True),            # no last-arrival register left
+    ({"flow_iat_max": None}, True, False),
+    ({"fwd_iat_total": None, "bwd_iat_min": None}, True, True),
+    ({"packet_length_total": None}, False, False),     # no clock at all
+])
+def test_calc_timestamp_writes_only_the_clocks_some_register_reads(features, fine, coarse):
+  _, actions, apply_code, _ = generate_P4_registers_and_apply(features)
+  assert ("meta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];" in actions) == fine
+  assert ("meta.now_coarse = ig_intr_md.ingress_mac_tstamp[47:16];" in actions) == coarse
+  assert ("calc_timestamp();" in apply_code) == (fine or coarse)
+  assert ("action calc_timestamp()" in actions) == (fine or coarse)
+  # a duration alone emits no last-arrival register (P3h: dropped when only the Mean used it)
+  assert ("_last_arrival_time_action" in actions) == fine
+  assert bps.uses_timestamp(features) == fine and bps.uses_coarse_clock(features) == coarse
+  assert bps.uses_duration_pair(features) == ("fwd_iat_total" in features)
 
 
 def test_dedup_does_not_cross_contaminate_flow_and_fwd_namespaces(m2_mean_plus_fwd_generated):
-  # flow_iat_max + fwd_iat_max + flow_iat_mean together: flow_last_arrival_time
-  # is shared (flow_iat_max + flow_iat_mean) and deduped to one execute call;
+  # flow_iat_max + fwd_iat_max + flow_duration together: flow_last_arrival_time
+  # is shared (flow_iat_max + flow_duration) and deduped to one execute call;
   # fwd_last_arrival_time is a wholly separate, independently-touched
   # register (only fwd_iat_max references it) -- confirming the dedup fix
   # tracks *register names*, not e.g. a blanket "first dependency only" rule
@@ -620,7 +685,7 @@ def test_shared_dependency_register_deduplicated_across_many_sharers():
   # And the emitted code backs up the count: exactly one real .execute()
   # call site for the shared register, regardless of 5 features referencing
   # it (mirrors test_shared_dependency_register_executed_exactly_once, here
-  # against a purely synthetic catalog rather than the real flow_iat_mean
+  # against a purely synthetic catalog rather than the real flow_duration
   # scenario).
   assert apply_code.count("shared_synthetic_reg_action.execute(meta.flow_hash)") == 1
 
@@ -712,23 +777,25 @@ def test_real_catalog_has_no_cross_gate_register_sharing():
   generate_P4_registers_and_apply(feature_intervals)
 
 
-def test_resolving_flow_iat_mean_alone_auto_executes_its_dependency():
+def test_resolving_flow_iat_min_alone_auto_executes_its_dependency():
   """Proves it is safe that Task 9 deleted the old
-  "flow_iat_mean requires flow_iat_max" guard: flow_iat_mean's own catalog
+  "flow_iat_mean requires flow_iat_max" guard: a feature's own catalog
   entry lists "flow_last_arrival_time" as its OWN dependency register (see
-  FEATURE_REGISTER_CATALOG["flow_iat_mean"]), so resolving flow_iat_mean by
-  itself -- with no flow_iat_max in the selected set at all -- still emits
-  the dependency's .execute() call site, and BEFORE the value assignment
-  that consumes its output. No external guard is needed: the auto-execution
-  falls out of _execute_lines walking each feature's own "registers" list.
+  FEATURE_REGISTER_CATALOG["flow_iat_min"]; flow_iat_mean, the feature the
+  guard was about, became flow_duration in Task 38 and has no dependency), so
+  resolving flow_iat_min by itself -- with no flow_iat_max in the selected set
+  at all -- still emits the dependency's .execute() call site, and BEFORE the
+  value assignment that consumes its output. No external guard is needed: the
+  auto-execution falls out of _execute_lines walking each feature's own
+  "registers" list.
   """
-  _, _, apply_code, resolved = generate_P4_registers_and_apply({"flow_iat_mean": None})
+  _, _, apply_code, resolved = generate_P4_registers_and_apply({"flow_iat_min": None})
 
-  assert resolved == {"flow_iat_mean"}
+  assert resolved == {"flow_iat_min"}
   assert "flow_iat_max" not in apply_code
 
   dependency_line = "flow_last_arrival_time_action.execute(meta.flow_hash)"
-  value_line = "meta.flow_iat_mean_val ="
+  value_line = "meta.flow_iat_min_val ="
   dependency_index = apply_code.index(dependency_line)
   value_index = apply_code.index(value_line)
   assert dependency_index < value_index, apply_code
@@ -737,11 +804,11 @@ def test_resolving_flow_iat_mean_alone_auto_executes_its_dependency():
 # Tests for register_names_for and register_width_bits (Task 5)
 
 def test_register_names_for_deduplicates_shared_dependency_registers():
-  """flow_last_arrival_time serves flow_iat_max AND flow_iat_mean, so the
+  """flow_last_arrival_time serves flow_iat_max AND flow_iat_min, so the
   union is strictly smaller than the naive per-feature sum (spec 4.1)."""
-  names = fr.register_names_for(['flow_iat_max', 'flow_iat_mean'])
+  names = fr.register_names_for(['flow_iat_max', 'flow_iat_min', 'flow_duration'])
   assert names.count('flow_last_arrival_time') == 1
-  assert len(names) == 3          # 1 shared dependency + 2 value registers
+  assert len(names) == 4          # 1 shared dependency + 3 value registers
 
 
 def test_register_names_for_normalises_training_feature_names():
@@ -763,11 +830,13 @@ def test_register_width_bits_happy_path():
   assert fr.register_width_bits("flow_last_arrival_time") == 32
   # flow_iat_max is a value register, width 16
   assert fr.register_width_bits("flow_iat_max") == 16
-  # Every value register has width 16, every last-arrival register 32
+  # Every value register has width 16, every last-arrival register and the flow
+  # duration 32, the Fwd / Bwd duration pairs 64 (Task 38)
   assert fr.register_width_bits("fwd_packet_length_max") == 16
+  wide = {"iat_delta": 32, "coarse_duration": 32, "coarse_duration_pair": 64}
   for entry in fr.FEATURE_REGISTER_CATALOG.values():
     for reg in entry["registers"]:
-      assert reg["width"] == (32 if reg["body"] == "iat_delta" else 16), reg
+      assert reg["width"] == wide.get(reg["body"], 16), reg
 
 
 def test_register_width_bits_miss_path():
@@ -839,10 +908,33 @@ def test_execute_order_is_ungated_then_fwd_then_bwd_features():
   assert got == ["flow_orientation"] + expected
 
 
+# Task 38: the duration is the one kind with different ungated and direction-owned
+# forms -- the flow's 32-bit register returns its clamp directly, the Fwd / Bwd pair
+# keeps it in `dur` so the other direction can read it.
+_OWNED_ONLY_KINDS = {"coarse_duration_pair": "coarse_duration"}
+
+
 def test_every_gated_body_kind_has_a_direction_read_template():
   gated_kinds = {body for gate, body in _register_gates().values() if gate is not None}
   assert gated_kinds <= set(bps._DIRECTION_READ_BODIES)
-  assert set(bps._DIRECTION_READ_BODIES) == set(bps._REGISTER_ACTION_BODIES)
+  ungated_kinds = {body for gate, body in _register_gates().values() if gate is None}
+  assert ungated_kinds <= set(bps._REGISTER_ACTION_BODIES)
+  assert (set(bps._DIRECTION_READ_BODIES) - set(_OWNED_ONLY_KINDS)
+          | set(_OWNED_ONLY_KINDS.values())) == set(bps._REGISTER_ACTION_BODIES)
+
+
+def test_the_duration_pair_is_the_flow_body_kept_in_dur():
+  """coarse_duration_pair with its direction test taken out = the flow's
+  coarse_duration with the word split into {first, dur}: the clamp writes dur
+  instead of rv, the min writes first, and rv = dur on every packet."""
+  flow = _normalize(bps._REGISTER_ACTION_BODIES["coarse_duration"].format(width=32))
+  for owner in (0, 1):
+    pair = _normalize(bps._DIRECTION_READ_BODIES["coarse_duration_pair"].format(owner=owner))
+    assert pair[0] == "void apply(inout dur_pair_t value, out bit<32> rv) {"
+    assert _without_direction_test(pair)[1:] == [
+        line.replace("rv =", "value.dur =").replace("value", "value.first")
+            .replace("value.first.dur", "value.dur")
+        for line in flow[1:-1]] + ["rv = value.dur;", "}"]
 
 
 def _without_direction_test(lines):
@@ -868,13 +960,15 @@ def _without_direction_test(lines):
   return out
 
 
-# C1f (Task 34): an IAT Mean / Min body skips an IAT of 0, and a direction-owned
-# chain's dependency register returns 0 in the other direction, so these kinds need
-# no meta.fwd test: their direction-read body IS the literal body.
-_DIRECTION_FREE_KINDS = {"mathunit_ewma", "running_min_iat"}
+# C1f (Task 34): an IAT Min body skips an IAT of 0, and a direction-owned chain's
+# dependency register returns 0 in the other direction, so this kind needs no meta.fwd
+# test: its direction-read body IS the literal body (the IAT Mean was one too, until
+# Task 38).
+_DIRECTION_FREE_KINDS = {"running_min_iat"}
 
 
-@pytest.mark.parametrize("body_kind", sorted(bps._REGISTER_ACTION_BODIES))
+@pytest.mark.parametrize("body_kind", sorted(set(bps._REGISTER_ACTION_BODIES)
+                                             & set(bps._DIRECTION_READ_BODIES)))
 def test_direction_read_template_updates_as_the_literal_body(body_kind):
   literal = _normalize(bps._REGISTER_ACTION_BODIES[body_kind].format(width=16, name="x",
                                                                        iat="x_iat"))
@@ -916,7 +1010,9 @@ def test_value_bodies_always_write_rv():
     for reg in entry["registers"]:
       body = _normalize(_extract_action_body(actions, " " + reg["name"] + "_action"))
       if reg["role"] == "value":
-        assert body[-2:] == ["rv = value;", "}"], (reg["name"], body)
+        # the Fwd / Bwd duration pair returns its dur half (Task 38)
+        rv = "rv = value.dur;" if reg["body"] == "coarse_duration_pair" else "rv = value;"
+        assert body[-2:] == [rv, "}"], (reg["name"], body)
       else:
         assert any(line.startswith("rv = 0") for line in body), (reg["name"], body)
 
@@ -949,7 +1045,7 @@ def test_no_two_dependency_registers_write_the_same_field():
 def test_iat_scratch_fields_are_declared_only_when_used(tmp_path):
   assert bps.iat_scratch_fields({"fwd_packet_length_max": None, "min_packet_length": None}) == []
   assert bps.iat_scratch_fields({"bwd_iat_max": None, "flow_iat_min": None,
-                                 "flow_iat_mean": None}) == ["bwd_current_iat", "flow_current_iat"]
+                                 "flow_duration": None}) == ["bwd_current_iat", "flow_current_iat"]
   template = open(bps.PATH_P4_CODE_TEMPLATE_INPUT, encoding="utf-8").read()
   assert "current_iat" not in template
 

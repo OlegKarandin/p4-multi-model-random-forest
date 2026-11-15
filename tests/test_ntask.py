@@ -32,7 +32,7 @@ def _synthetic_vote_exports(monkeypatch):
         monkeypatch.setitem(program.VOTE_EXPORT, name, "ig_tm_md.ingress_cos")
 
 
-FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
+FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_total",
             "flow_iat_min", "bwd_packet_length_max"]
 
 
@@ -177,15 +177,15 @@ def test_three_task_program_generates_parses_and_prices(tmp_path, encoding):
 def test_disjoint_three_task_program_names_groups_and_labels_their_range_tables(tmp_path):
     one = [(0, 10), (11, 65535)]
     two = [(0, 20), (21, 65535)]
-    common = ["flow_iat_max", "bwd_iat_mean"]
+    common = ["flow_iat_max", "bwd_iat_total"]
     tasks = [
-        _task("x", 2, 1, common, intervals={"flow_iat_max": one, "bwd_iat_mean": one}),
-        _task("y", 2, 2, common, intervals={"flow_iat_max": one, "bwd_iat_mean": two}),
-        _task("z", 2, 3, common, intervals={"flow_iat_max": two, "bwd_iat_mean": two}),
+        _task("x", 2, 1, common, intervals={"flow_iat_max": one, "bwd_iat_total": one}),
+        _task("y", 2, 2, common, intervals={"flow_iat_max": one, "bwd_iat_total": two}),
+        _task("z", 2, 3, common, intervals={"flow_iat_max": two, "bwd_iat_total": two}),
     ]
     path, text = _generate(tmp_path, tasks)
     for field in ("code_x_y_flow_iat_max", "code_z_flow_iat_max",
-                  "code_x_bwd_iat_mean", "code_y_z_bwd_iat_mean"):
+                  "code_x_bwd_iat_total", "code_y_z_bwd_iat_total"):
         assert re.search(r"bit<\d+> %s;" % field, text), field
     # Registers stay per distinct raw feature: one value field each.
     assert text.count("bit<16> flow_iat_max_val;") == 1
@@ -193,8 +193,8 @@ def test_disjoint_three_task_program_names_groups_and_labels_their_range_tables(
     range_labels = {name.split("_", 2)[2]: label for name, label in labels.items()
                     if name.startswith("table_")}
     assert range_labels == {"x_y_flow_iat_max": frozenset({"x", "y"}),
-                            "z_flow_iat_max": "z", "x_bwd_iat_mean": "x",
-                            "y_z_bwd_iat_mean": frozenset({"y", "z"})}
+                            "z_flow_iat_max": "z", "x_bwd_iat_total": "x",
+                            "y_z_bwd_iat_total": frozenset({"y", "z"})}
     model_breakdown(parse_program(path))
 
 

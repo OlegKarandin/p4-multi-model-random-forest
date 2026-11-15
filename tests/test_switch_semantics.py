@@ -148,9 +148,13 @@ def _p4_expr(text):
     text = re.sub(r"(\w+)_action\.execute\(meta\.flow_hash\)", r'_run("\1")', text)
     # saturating subtraction (C1f's gap): a |-| b = max(a - b, 0)
     text = re.sub(r"([\w.\[\]\"]+) \|-\| ([\w.\[\]\"]+)", r"_ssub(\1, \2)", text)
+    # saturating addition (Task 38's length Totals): a |+| b = min(a + b, top of the width)
+    text = re.sub(r"([\w.\[\]\"]+) \|\+\| ([\w.\[\]\"]+)", r"_sadd(\1, \2)", text)
     text = re.sub(r"\b\d+w(0x[0-9A-Fa-f]+|\d+)\b", r"\1", text)      # 1w1, 32w0xFFFFFFFF
     text = text.replace("&&", " and ").replace("||", " or ")
     text = text.replace("hdr.ipv4.total_len", 'pkt["len"]').replace("hdr.ipv4.src_addr", 'pkt["src"]')
+    # a member of a struct register word (Task 38's {first, dur} pair)
+    text = re.sub(r"\bvalue\.(\w+)", r'value["\1"]', text)
     return re.sub(r"meta\.(\w+)", r'meta["\1"]', text)
 
 
@@ -177,7 +181,7 @@ def _p4_to_python(lines):
             depth += 1
             continue
         assert line.endswith(";"), line
-        assign = re.match(r"^([\w.]+) = (.*);$", line)
+        assign = re.match(r"^([\w.\[\]\"]+) = (.*);$", line)
         if assign:
             out.append("  " * depth + "%s = _w(%s)" % (_p4_expr(assign.group(1)),
                                                       _p4_expr(assign.group(2))))
@@ -193,19 +197,26 @@ class _Switch:
     def __init__(self, features):
         regs, actions, apply_code, _ = generate_P4_registers_and_apply(
             {f: None for f in features})
-        self.initial = {name: int(re.sub(r"^\d+w", "", init or "0"), 0) for init, name in re.findall(
+        literal = lambda init: int(re.sub(r"^\d+w", "", init or "0"), 0)
+        self.initial = {name: literal(init) for init, name in re.findall(
             r"Register<bit<\d+>, bit<\d+>>\(MAX_NUM_FLOWS(?:, (\w+))?\) (\w+)_reg;", regs)}
+        # Task 38's {first, dur} pair registers: a dict word
+        for first, dur, name in re.findall(
+                r"Register<dur_pair_t, bit<\d+>>\(MAX_NUM_FLOWS, \{(\w+), (\w+)\}\) (\w+)_reg;", regs):
+            self.initial[name] = {"first": literal(first), "dur": literal(dur)}
         self.bodies = {}
         # every RegisterAction, the orientation's (flow_forward_srcaddr_reg) included
-        for register, width, body in re.findall(
-                r"\((\w+)_reg\) \w+_action = \{\n\t\tvoid apply\(inout bit<(\d+)> value, "
+        for register, word, body in re.findall(
+                r"\((\w+)_reg\) \w+_action = \{\n\t\tvoid apply\(inout (bit<\d+>|dur_pair_t) value, "
                 r"out bit<\d+> rv\) \{\n(.*?)\n\t\t\}\n\t\};", actions, re.S):
             name = "flow_orientation" if register == "flow_forward_srcaddr" else register
             source = "def body(value, meta, pkt):\n  rv = None\n%s\n  return value, rv\n" % (
                 "\n".join("  " + line for line in _p4_to_python(body.splitlines()).splitlines()))
-            mask = (1 << int(width)) - 1
+            # a pair's members are 32 bits each
+            mask = (1 << (32 if word == "dur_pair_t" else int(word[4:-1]))) - 1
             scope = {"_w": lambda x, mask=mask: x & mask, "_halve": lambda x: (x & _MASK) // 2,
-                     "_ssub": lambda a, b: max(a - b, 0)}
+                     "_ssub": lambda a, b: max(a - b, 0),
+                     "_sadd": lambda a, b, mask=mask: min(a + b, mask)}
             exec(source, scope)
             self.bodies[name] = scope["body"]
         self.initial["flow_orientation"] = self.initial.pop("flow_forward_srcaddr")
@@ -217,7 +228,8 @@ class _Switch:
 
         def run(name):
             key = (name, pkt["flow"])
-            value, rv = self.bodies[name](self.state.get(key, self.initial[name]), meta, pkt)
+            word = self.state.get(key, self.initial[name])
+            value, rv = self.bodies[name](dict(word) if isinstance(word, dict) else word, meta, pkt)
             self.state[key] = value
             return rv
 
@@ -225,7 +237,10 @@ class _Switch:
             meta["flow_hash"] = pkt["flow"]
 
         def calc_timestamp():
+            # the fine clock in 1.024 us ticks; the coarse one (Task 38) in 65.536 us =
+            # 64 fine ticks: both are slices of one nanosecond timestamp
             meta["now_pseudo_us"] = pkt["now"]
+            meta["now_coarse"] = pkt["now"] // 64
 
         exec(self.apply, {"_w": lambda x: x & _MASK, "_run": run, "meta": meta, "pkt": pkt,
                           "calc_flow_hash": calc_flow_hash, "calc_timestamp": calc_timestamp})
@@ -240,8 +255,9 @@ def _trace(n=40, flows=3, seed=7):
         flow = i % flows if i < 2 * flows else rng.randrange(flows)
         # the first two packets of every flow go one each way
         src = ends[flow][0 if i < flows else 1] if i < 2 * flows else rng.choice(ends[flow])
-        # one idle time past the 16-bit range (V1o's clamp), the rest short
-        now += 100000 if i == 25 else rng.randint(0, 50)
+        # one idle time past the 16-bit range (V1o's clamp), one past the coarse clock's
+        # 4.3 s (the durations' clamp, Task 38), the rest short
+        now += 100000 if i == 25 else 4300000 if i == 33 else rng.randint(0, 50)
         packets.append({"flow": flow, "src": src, "now": now, "len": rng.randint(40, 1500)})
     return packets
 
@@ -250,13 +266,16 @@ def _expected(feature, history):
     """CICFlowMeter's statistic of `feature` over its own direction's packets of the
     flow so far (history: [(fwd, now, len)]), in the switch's encoding (V1o + C1f,
     Task 34): an IAT of g ticks is min(g + 1, 65535), the chain's first packet has
-    none; Max / Min / Mean of no IAT are 0; means are the alpha = 1/2 EWMA the
-    catalog documents (from 0, over the IATs only)."""
+    none; Max / Min of no IAT are 0. Task 38: a duration is min(floor(t_last / T) -
+    floor(t_first / T), 65535) on the coarse clock (T = 64 fine ticks), 0 with fewer
+    than two packets; a length Total the saturating sum of the lengths."""
     entry = FEATURE_REGISTER_CATALOG[feature]
     gate = entry.get("gated_by")
     own = [(now, length) for fwd, now, length in history
            if gate is None or fwd == (gate == "fwd")]
     value_body = [r for r in entry["registers"] if r["role"] == "value"][0]["body"]
+    if value_body.startswith("coarse_duration"):
+        return min(own[-1][0] // 64 - own[0][0] // 64, 0xFFFF) if own else 0
     if "packet_length" in value_body:
         samples = [length for _, length in own]
     else:
@@ -266,13 +285,8 @@ def _expected(feature, history):
         return max(samples, default=0)
     if value_body.startswith("running_min"):
         return min(samples, default=0 if value_body == "running_min_iat" else 0xFFFF)
-    # The P4 text's Mean: bit<16> `value + x`, then halved -- the sum wraps at 2^16 (a
-    # clamped 65535 IAT does). Pre-existing and left as is (the Mean registers are a
-    # separate decision; p4c even compiles value + f(x), Task 33b).
-    mean = 0
-    for sample in samples:
-        mean = ((mean + sample) & 0xFFFF) // 2
-    return mean
+    assert value_body == "saturating_total_packet_length", value_body
+    return min(sum(samples), 0xFFFF)
 
 
 def test_option_b_switch_semantics():
@@ -280,6 +294,7 @@ def test_option_b_switch_semantics():
     histories = {}
     first_src = {}
     directions = set()
+    durations = set()
     for pkt in _trace():
         fwd = first_src.setdefault(pkt["flow"], pkt["src"]) == pkt["src"]
         directions.add((pkt["flow"], fwd))
@@ -292,6 +307,7 @@ def test_option_b_switch_semantics():
             # written on every packet, both directions
             assert feature + "_val" in meta, (feature, pkt)
             assert meta[feature + "_val"] == _expected(feature, history), (feature, pkt)
+        durations |= {meta[f + "_val"] for f in ("flow_duration", "fwd_iat_total", "bwd_iat_total")}
         # the other direction's registers are read, never updated
         for entry in FEATURE_REGISTER_CATALOG.values():
             gate = entry.get("gated_by")
@@ -302,3 +318,5 @@ def test_option_b_switch_semantics():
                 if key in before:
                     assert switch.state[key] == before[key], (reg["name"], pkt)
     assert len(directions) == 6  # 3 flows, both directions each
+    # the durations reach their clamp (the 4.3 s idle), and read 0 and small values too
+    assert {0, 0xFFFF} <= durations and len(durations) > 3

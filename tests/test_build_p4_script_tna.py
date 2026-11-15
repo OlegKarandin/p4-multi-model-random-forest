@@ -1329,7 +1329,7 @@ def _forest_over(names, labels, seed):
 
 def test_generated_identifiers_are_valid_p4_for_live_dotted_feature_names(tmp_path):
   # main.py:307-313's spelling -- the names dataset.py actually produces.
-  live_names = ['Fwd.Packet.Length.Max', 'Flow.IAT.Max', 'Flow.IAT.Mean', 'Fwd.IAT.Max']
+  live_names = ['Fwd.Packet.Length.Max', 'Flow.IAT.Max', 'Flow.Duration', 'Fwd.IAT.Max']
   clf_app = _forest_over(live_names, [0, 1, 2], seed=0)
   clf_ddos = _forest_over(live_names, [-1, 1], seed=1)
   feature_intervals = bps.get_feature_intervals(clf_app, live_names)
@@ -2147,13 +2147,13 @@ _PA_CODE_SIZE_RE = re.compile(
 # margin_independent_M50_k8_s13's two real keys (spec Sec 4 test 2); since decision 4.1
 # both pin by the plain width rule.
 _DDOS_WIDTHS = {"bwd_iat_min": 18, "bwd_packet_length_max": 19,
-                "bwd_packet_length_mean": 18, "fwd_iat_mean": 27,
+                "bwd_packet_length_total": 18, "fwd_iat_total": 27,
                 "fwd_iat_min": 21, "fwd_packet_length_max": 18,
-                "fwd_packet_length_mean": 24, "packet_length_mean": 19}
-_APP_WIDTHS = {"bwd_iat_mean": 33, "bwd_packet_length_max": 46,
-               "bwd_packet_length_mean": 31, "bwd_packet_length_min": 7,
+                "fwd_packet_length_total": 24, "packet_length_total": 19}
+_APP_WIDTHS = {"bwd_iat_total": 33, "bwd_packet_length_max": 46,
+               "bwd_packet_length_total": 31, "bwd_packet_length_min": 7,
                "flow_iat_min": 17, "fwd_packet_length_max": 39,
-               "fwd_packet_length_mean": 34, "packet_length_mean": 36}
+               "fwd_packet_length_total": 34, "packet_length_total": 36}
 
 
 def _intervals_of_width(width):
@@ -2221,16 +2221,16 @@ def test_tree_key_fields_are_pinned_to_the_layout_their_key_prices(tmp_path):
   expected = {
       # ddos key: 17..32-bit fields are whole W containers.
       "code_bwd_iat_min": [32], "code_ddos_bwd_packet_length_max": [32],
-      "code_ddos_bwd_packet_length_mean": [32], "code_fwd_iat_mean": [32],
+      "code_ddos_bwd_packet_length_total": [32], "code_fwd_iat_total": [32],
       "code_fwd_iat_min": [32], "code_ddos_fwd_packet_length_max": [32],
-      "code_ddos_fwd_packet_length_mean": [32],
-      "code_ddos_packet_length_mean": [32],
+      "code_ddos_fwd_packet_length_total": [32],
+      "code_ddos_packet_length_total": [32],
       # app key.
-      "code_bwd_iat_mean": [8, 32], "code_app_bwd_packet_length_max": [16, 32],
-      "code_app_bwd_packet_length_mean": [32], "code_bwd_packet_length_min": [8],
+      "code_bwd_iat_total": [8, 32], "code_app_bwd_packet_length_max": [16, 32],
+      "code_app_bwd_packet_length_total": [32], "code_bwd_packet_length_min": [8],
       "code_flow_iat_min": [32], "code_app_fwd_packet_length_max": [8, 32],
-      "code_app_fwd_packet_length_mean": [8, 32],
-      "code_app_packet_length_mean": [8, 32],
+      "code_app_fwd_packet_length_total": [8, 32],
+      "code_app_packet_length_total": [8, 32],
   }
   assert _code_pins(text) == expected
 
@@ -2267,9 +2267,9 @@ def test_a_shared_field_read_by_two_keys_is_pinned_once(tmp_path):
   shared = _intervals_of_width(19)
   app = {"flow_iat_max": shared, "fwd_iat_max": _intervals_of_width(64)}
   ddos = {"flow_iat_max": shared}
-  for name, w in zip(("bwd_iat_min", "bwd_iat_mean", "bwd_iat_max",
-                      "fwd_iat_min", "fwd_iat_mean", "flow_iat_mean",
-                      "packet_length_mean"),
+  for name, w in zip(("bwd_iat_min", "bwd_iat_total", "bwd_iat_max",
+                      "fwd_iat_min", "fwd_iat_total", "flow_duration",
+                      "packet_length_total"),
                      (18, 18, 18, 19, 21, 24, 27)):
     ddos[name] = _intervals_of_width(w)
   text = _generate(tmp_path, "shared.p4", app, ddos, clf_app=_tiny_app_forest())
@@ -2318,7 +2318,7 @@ def test_vote_export_rejects_unmapped_task():
 # Key pruning (decision 2.3) and stump refusal (R6), every encoding
 # ---------------------------------------------------------------------------
 
-_PRUNE_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean",
+_PRUNE_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_total",
                    "flow_iat_min", "bwd_packet_length_max"]
 
 
@@ -2662,15 +2662,6 @@ _C1F_FWD_MIN = (
     "\t\t\trv = value;\n"
     "\t\t}\n"
     "\t};\n")
-_C1F_BWD_MEAN = (
-    "\tRegisterAction<bit<16>, bit<12>, bit<16>>(bwd_iat_mean_reg) bwd_iat_mean_action = {\n"
-    "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
-    "\t\t\tif (meta.bwd_current_iat != 0) {\n"
-    "\t\t\t\tvalue = bwd_iat_mean_halve_unit.execute(value + meta.bwd_current_iat);\n"
-    "\t\t\t}\n"
-    "\t\t\trv = value;\n"
-    "\t\t}\n"
-    "\t};\n")
 _C1F_BWD_MAX = (
     "\tRegisterAction<bit<16>, bit<12>, bit<16>>(bwd_iat_max_reg) bwd_iat_max_action = {\n"
     "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
@@ -2712,9 +2703,11 @@ def test_iat_thresholds_are_written_in_1024_ns_ticks_plus_one():
   plain = bps._range_table_entries("t", "a", "fwd_packet_length_max_val", intervals)
   assert [(int(e["key_fields"]["fwd_packet_length_max_val"]["start"]),
            int(e["key_fields"]["fwd_packet_length_max_val"]["end"])) for e in plain] == intervals[::-1]
-  for feature in ("flow_iat_max", "fwd_iat_mean", "bwd_iat_min"):
+  for feature in ("flow_iat_max", "fwd_iat_max", "bwd_iat_min"):
     assert bps.is_iat_feature(feature)
-  for feature in ("min_packet_length", "bwd_packet_length_mean", "fwd_packet_length_max"):
+  # the Task 38 durations are trained in the switch's coarse ticks: installed unchanged
+  for feature in ("min_packet_length", "bwd_packet_length_total", "fwd_packet_length_max",
+                  "flow_duration", "fwd_iat_total", "bwd_iat_total"):
     assert not bps.is_iat_feature(feature)
     assert bps.switch_reading(feature, 77) == bps.switch_equivalent(feature, 77) == 77
 
@@ -2785,11 +2778,12 @@ def test_the_range_row_guard_counts_the_installed_tick_rows():
 
 
 @pytest.mark.parametrize("encoding", ["joint", "disjoint", "per_task", "per_tree"])
-@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("seed", [0, 1, 2, 7])
 def test_training_range_rows_equal_the_rows_of_the_installed_entries(encoding, seed):
   """Training's range_entries (evaluation._pool_inputs) == the physical rows of the range
   entries generate_table_entries writes for the same design (what p4/deploy_table_entries.py
-  installs), in every encoding: both count tick bounds for the IAT features."""
+  installs), in every encoding: both count tick bounds for the IAT features. Seeds 1 and 2
+  have a Task 38 duration (bwd_iat_total, installed unchanged) and no IAT feature."""
   from p4gen import evaluation
   from p4model.ranges import range_entry_count
   from tests.test_per_task_codes import _own, _rng_design
@@ -2807,7 +2801,7 @@ def test_training_range_rows_equal_the_rows_of_the_installed_entries(encoding, s
     if entry["table_name"].startswith("table_"):
       (span,) = entry["key_fields"].values()
       rows += range_entry_count(int(span["start"]), int(span["end"]))
-  assert any(bps.is_iat_feature(f) for f in names)
+  assert any(bps.is_iat_feature(f) for f in names) == (seed in (0, 7))
   assert pool["range_entries"] == rows, (encoding, seed)
 
 
@@ -2823,11 +2817,12 @@ def test_a_flows_first_packet_is_forward():
 
 def test_the_first_packet_of_a_chain_gives_no_iat():
   """C1f (Task 34): last-arrival registers start at 0xFFFFFFFF and store now - 1, the
-  gap is saturating (first packet 0); Min skips 0, stores min - 1 and is read + 1; Mean
-  folds only a non-zero IAT; Max unchanged; the direction-owned Min / Mean carry no
-  meta.fwd test. The bodies are the compiled, live-checked probe texts verbatim."""
-  features = {"flow_iat_min": None, "fwd_iat_min": None, "bwd_iat_mean": None,
-              "bwd_iat_max": None, "flow_iat_mean": None}
+  gap is saturating (first packet 0); Min skips 0, stores min - 1 and is read + 1; Max
+  unchanged; the direction-owned Min carries no meta.fwd test. The bodies are the
+  compiled, live-checked probe texts verbatim. (The IAT Mean's guarded body was here
+  until Task 38 replaced it; the durations beside the chains change none of them.)"""
+  features = {"flow_iat_min": None, "fwd_iat_min": None, "bwd_iat_total": None,
+              "bwd_iat_max": None, "flow_duration": None}
   registers, actions, apply_code, _ = bps.generate_P4_registers_and_apply(features)
   for chain in ("flow", "fwd", "bwd"):
     assert ("Register<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) %s_last_arrival_time_reg;\n"
@@ -2835,9 +2830,7 @@ def test_the_first_packet_of_a_chain_gives_no_iat():
   for name in ("flow_iat_min", "fwd_iat_min"):
     assert "Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) %s_reg;\n" % name in registers
     assert "meta.%s_val = %s_action.execute(meta.flow_hash) + 1;" % (name, name) in apply_code
-  for body in (_C1F_FLOW_DEPENDENCY, _C1F_BWD_DEPENDENCY, _C1F_FWD_MIN, _C1F_BWD_MEAN,
-               _C1F_BWD_MAX):
+  for body in (_C1F_FLOW_DEPENDENCY, _C1F_BWD_DEPENDENCY, _C1F_FWD_MIN, _C1F_BWD_MAX):
     assert body in actions, body.splitlines()[0]
-  assert "if (meta.flow_current_iat != 0) {\n" in actions        # the ungated Mean guard
   # no other call site carries a suffix
   assert len(re.findall(r"\) \+ 1;", apply_code)) == 2

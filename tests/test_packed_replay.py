@@ -161,18 +161,18 @@ _RECORDED_ON_39D83D6 = {
     'joint': {
         0: (10, 36,
             'table_1_bwd_packet_length_max:1@5 table_2_flow_iat_max:1@5 table_3_flow_iat_min:1@5 '
-            'table_0_bwd_iat_mean:1@6 get_classification_tree_app_0:4@7 '
+            'table_0_bwd_iat_total:1@6 get_classification_tree_app_0:4@7 '
             'get_classification_tree_app_1:4@7 get_classification_tree_app_2:4@7 '
             'get_classification_tree_app_3:4@7 get_classification_tree_ddos_0:4@7 '
             'get_classification_tree_ddos_1:4@7 get_classification_tree_ddos_2:4@8 '
             'get_classification_tree_ddos_3:4@8'),
         1: (9, 7,
-            'table_0_bwd_iat_mean:1@6 get_classification_tree_app_0:1@7 '
+            'table_0_bwd_iat_total:1@6 get_classification_tree_app_0:1@7 '
             'get_classification_tree_app_1:1@7 get_classification_tree_ddos_0:1@7 '
             'get_classification_tree_ddos_1:1@7 get_classification_tree_ddos_2:1@7 '
             'get_classification_tree_ddos_3:1@7'),
         2: (14, 91,
-            'table_1_bwd_packet_length_max:1@5 table_0_bwd_iat_mean:1@6 '
+            'table_1_bwd_packet_length_max:1@5 table_0_bwd_iat_total:1@6 '
             'table_2_fwd_packet_length_max:1@6 get_classification_tree_app_0:8@7 '
             'get_classification_tree_app_1:8@7 get_classification_tree_app_2:8@8 '
             'get_classification_tree_app_3:8@8 get_classification_tree_app_4:8@9 '
@@ -195,18 +195,18 @@ _RECORDED_ON_39D83D6 = {
     'per_task': {
         0: (9, 24,
             'table_1_bwd_packet_length_max:1@5 table_2_flow_iat_max:1@5 table_3_flow_iat_min:1@5 '
-            'table_0_bwd_iat_mean:1@6 get_classification_tree_app_0:4@7 '
+            'table_0_bwd_iat_total:1@6 get_classification_tree_app_0:4@7 '
             'get_classification_tree_app_1:4@7 get_classification_tree_app_2:4@7 '
             'get_classification_tree_app_3:4@7 get_classification_tree_ddos_0:1@7 '
             'get_classification_tree_ddos_1:1@7 get_classification_tree_ddos_2:1@7 '
             'get_classification_tree_ddos_3:1@7'),
         1: (9, 7,
-            'table_0_bwd_iat_mean:1@6 get_classification_tree_app_0:1@7 '
+            'table_0_bwd_iat_total:1@6 get_classification_tree_app_0:1@7 '
             'get_classification_tree_app_1:1@7 get_classification_tree_ddos_0:1@7 '
             'get_classification_tree_ddos_1:1@7 get_classification_tree_ddos_2:1@7 '
             'get_classification_tree_ddos_3:1@7'),
         2: (11, 57,
-            'table_1_bwd_packet_length_max:1@5 table_0_bwd_iat_mean:1@6 '
+            'table_1_bwd_packet_length_max:1@5 table_0_bwd_iat_total:1@6 '
             'table_2_fwd_packet_length_max:1@6 get_classification_tree_app_5:6@7 '
             'get_classification_tree_app_6:6@7 get_classification_tree_ddos_0:3@7 '
             'get_classification_tree_ddos_1:3@7 get_classification_tree_ddos_2:3@7 '
@@ -231,20 +231,20 @@ _RECORDED_ON_39D83D6 = {
             'table_1_app_bwd_packet_length_max:1@5 table_2_app_flow_iat_max:1@5 '
             'table_3_app_flow_iat_min:1@5 table_5_ddos_bwd_packet_length_max:1@5 '
             'table_6_ddos_flow_iat_max:1@5 table_7_ddos_flow_iat_min:1@5 '
-            'table_0_app_bwd_iat_mean:1@6 table_4_ddos_bwd_iat_mean:1@6 '
+            'table_0_app_bwd_iat_total:1@6 table_4_ddos_bwd_iat_total:1@6 '
             'get_classification_tree_app_0:4@7 get_classification_tree_app_1:4@7 '
             'get_classification_tree_app_2:4@7 get_classification_tree_app_3:4@7 '
             'get_classification_tree_ddos_0:1@7 get_classification_tree_ddos_1:1@7 '
             'get_classification_tree_ddos_2:1@7 get_classification_tree_ddos_3:1@7'),
         1: (9, 8,
-            'table_0_app_bwd_iat_mean:1@6 table_1_ddos_bwd_iat_mean:1@6 '
+            'table_0_app_bwd_iat_total:1@6 table_1_ddos_bwd_iat_total:1@6 '
             'get_classification_tree_app_0:1@7 get_classification_tree_app_1:1@7 '
             'get_classification_tree_ddos_0:1@7 get_classification_tree_ddos_1:1@7 '
             'get_classification_tree_ddos_2:1@7 get_classification_tree_ddos_3:1@7'),
         2: (11, 60,
             'table_1_app_bwd_packet_length_max:1@5 table_4_ddos_bwd_packet_length_max:1@5 '
-            'table_0_app_bwd_iat_mean:1@6 table_2_app_fwd_packet_length_max:1@6 '
-            'table_3_ddos_bwd_iat_mean:1@6 table_5_ddos_fwd_packet_length_max:1@6 '
+            'table_0_app_bwd_iat_total:1@6 table_2_app_fwd_packet_length_max:1@6 '
+            'table_3_ddos_bwd_iat_total:1@6 table_5_ddos_fwd_packet_length_max:1@6 '
             'get_classification_tree_app_5:6@7 get_classification_tree_app_6:6@7 '
             'get_classification_tree_ddos_0:3@7 get_classification_tree_ddos_1:3@7 '
             'get_classification_tree_ddos_2:3@7 get_classification_tree_ddos_3:3@7 '
@@ -275,12 +275,12 @@ _RECORDED_ON_39D83D6 = {
 # moves (packing.crossbar_stages_needed, "EVERY classification pool is simulated").
 _JOINT_ORDER_2026_11_13 = {
     0: ('table_1_bwd_packet_length_max:1@5 table_2_flow_iat_max:1@5 '
-        'table_3_flow_iat_min:1@5 table_0_bwd_iat_mean:1@6 '
+        'table_3_flow_iat_min:1@5 table_0_bwd_iat_total:1@6 '
         'get_classification_tree_app_2:4@7 get_classification_tree_app_3:4@7 '
         'get_classification_tree_ddos_0:4@7 get_classification_tree_ddos_1:4@7 '
         'get_classification_tree_ddos_2:4@7 get_classification_tree_ddos_3:4@7 '
         'get_classification_tree_app_0:4@8 get_classification_tree_app_1:4@8'),
-    2: ('table_1_bwd_packet_length_max:1@5 table_0_bwd_iat_mean:1@6 '
+    2: ('table_1_bwd_packet_length_max:1@5 table_0_bwd_iat_total:1@6 '
         'table_2_fwd_packet_length_max:1@6 get_classification_tree_ddos_2:8@7 '
         'get_classification_tree_ddos_3:8@7 get_classification_tree_ddos_0:8@8 '
         'get_classification_tree_ddos_1:8@8 get_classification_tree_app_5:8@9 '
@@ -301,7 +301,7 @@ _JOINT_ORDER_2026_11_13 = {
 _OPTION_B_2026_11_14 = {
     (JOINT_ENCODING, 2): (
         'table_1_bwd_packet_length_max:1@5 table_2_fwd_packet_length_max:1@5 '
-        'table_0_bwd_iat_mean:1@6 get_classification_tree_ddos_2:8@7 '
+        'table_0_bwd_iat_total:1@6 get_classification_tree_ddos_2:8@7 '
         'get_classification_tree_ddos_3:8@7 get_classification_tree_ddos_0:8@8 '
         'get_classification_tree_ddos_1:8@8 get_classification_tree_app_5:8@9 '
         'get_classification_tree_app_6:8@9 get_classification_tree_app_3:8@10 '
@@ -309,7 +309,7 @@ _OPTION_B_2026_11_14 = {
         'get_classification_tree_app_2:8@11 get_classification_tree_app_0:8@12'),
     (PER_TASK_ENCODING, 2): (
         'table_1_bwd_packet_length_max:1@5 table_2_fwd_packet_length_max:1@5 '
-        'table_0_bwd_iat_mean:1@6 get_classification_tree_app_5:6@7 '
+        'table_0_bwd_iat_total:1@6 get_classification_tree_app_5:6@7 '
         'get_classification_tree_app_6:6@7 get_classification_tree_ddos_0:3@7 '
         'get_classification_tree_ddos_1:3@7 get_classification_tree_ddos_2:3@7 '
         'get_classification_tree_ddos_3:3@7 get_classification_tree_app_1:6@8 '
@@ -318,7 +318,7 @@ _OPTION_B_2026_11_14 = {
     (DISJOINT_ENCODING, 2): (
         'table_1_app_bwd_packet_length_max:1@5 table_2_app_fwd_packet_length_max:1@5 '
         'table_4_ddos_bwd_packet_length_max:1@5 table_5_ddos_fwd_packet_length_max:1@5 '
-        'table_0_app_bwd_iat_mean:1@6 table_3_ddos_bwd_iat_mean:1@6 '
+        'table_0_app_bwd_iat_total:1@6 table_3_ddos_bwd_iat_total:1@6 '
         'get_classification_tree_app_5:6@7 get_classification_tree_app_6:6@7 '
         'get_classification_tree_ddos_0:3@7 get_classification_tree_ddos_1:3@7 '
         'get_classification_tree_ddos_2:3@7 get_classification_tree_ddos_3:3@7 '
@@ -337,14 +337,14 @@ _KEY_PRUNING_2026_11_14 = {
     (JOINT_ENCODING, 0): (9, 31, (
         'table_1_bwd_packet_length_max:1@5 table_2_flow_iat_max:1@5 table_3_flow_iat_min:1@5 '
         'get_classification_tree_ddos_0:1@6 get_classification_tree_ddos_1:4@6 '
-        'get_classification_tree_ddos_3:1@6 table_0_bwd_iat_mean:1@6 '
+        'get_classification_tree_ddos_3:1@6 table_0_bwd_iat_total:1@6 '
         'get_classification_tree_app_0:5@7 get_classification_tree_app_1:5@7 '
         'get_classification_tree_app_2:4@7 get_classification_tree_app_3:4@7 '
         'get_classification_tree_ddos_2:3@7')),
     (PER_TASK_ENCODING, 0): (9, 24, (
         'table_1_bwd_packet_length_max:1@5 table_2_flow_iat_max:1@5 table_3_flow_iat_min:1@5 '
         'get_classification_tree_ddos_0:1@6 get_classification_tree_ddos_1:1@6 '
-        'get_classification_tree_ddos_3:1@6 table_0_bwd_iat_mean:1@6 '
+        'get_classification_tree_ddos_3:1@6 table_0_bwd_iat_total:1@6 '
         'get_classification_tree_app_0:4@7 get_classification_tree_app_1:4@7 '
         'get_classification_tree_app_2:4@7 get_classification_tree_app_3:4@7 '
         'get_classification_tree_ddos_2:1@7')),
@@ -353,10 +353,80 @@ _KEY_PRUNING_2026_11_14 = {
         'table_3_app_flow_iat_min:1@5 table_5_ddos_bwd_packet_length_max:1@5 '
         'table_6_ddos_flow_iat_max:1@5 table_7_ddos_flow_iat_min:1@5 '
         'get_classification_tree_ddos_0:1@6 get_classification_tree_ddos_1:1@6 '
-        'get_classification_tree_ddos_3:1@6 table_0_app_bwd_iat_mean:1@6 '
-        'table_4_ddos_bwd_iat_mean:1@6 get_classification_tree_app_0:4@7 '
+        'get_classification_tree_ddos_3:1@6 table_0_app_bwd_iat_total:1@6 '
+        'table_4_ddos_bwd_iat_total:1@6 get_classification_tree_app_0:4@7 '
         'get_classification_tree_app_1:4@7 get_classification_tree_app_2:4@7 '
         'get_classification_tree_app_3:4@7 get_classification_tree_ddos_2:1@7')),
+}
+
+
+# Task 38 (P3h, 2026-11-15): FEATURES' bwd_iat_mean is bwd_iat_total, one register with no
+# dependency (the IAT Mean's chain was bwd_last_arrival_time -> mean), so its range table(s)
+# run one stage earlier (4 -> 3) on seeds 0-2, and every tree after them with it (stage depth
+# one lower, except joint seed 0, whose app_0 stays in stage 5); blocks unchanged in total.
+# On joint seed 0 the four app trees, now sharing stage 4 with the ddos trees, take 5/5/4 and 4
+# blocks in another order (31 in total). Listed by impl/scripts/t38_replay_overlay.py.
+_TASK_38_2026_11_15 = {
+    (JOINT_ENCODING, 0): (7, 31, (
+        'table_0_bwd_iat_total:1@3 table_1_bwd_packet_length_max:1@3 table_2_flow_iat_max:1@3 '
+        'table_3_flow_iat_min:1@3 get_classification_tree_app_1:5@4 get_classification_tree_app_2:5@4 '
+        'get_classification_tree_app_3:4@4 get_classification_tree_ddos_0:1@4 '
+        'get_classification_tree_ddos_1:4@4 get_classification_tree_ddos_2:3@4 '
+        'get_classification_tree_ddos_3:1@4 get_classification_tree_app_0:4@5')),
+    (JOINT_ENCODING, 1): (6, 7, (
+        'table_0_bwd_iat_total:1@3 get_classification_tree_app_0:1@4 get_classification_tree_app_1:1@4 '
+        'get_classification_tree_ddos_0:1@4 get_classification_tree_ddos_1:1@4 '
+        'get_classification_tree_ddos_2:1@4 get_classification_tree_ddos_3:1@4')),
+    (JOINT_ENCODING, 2): (11, 91, (
+        'table_0_bwd_iat_total:1@3 table_1_bwd_packet_length_max:1@3 table_2_fwd_packet_length_max:1@3 '
+        'get_classification_tree_ddos_2:8@4 get_classification_tree_ddos_3:8@4 '
+        'get_classification_tree_ddos_0:8@5 get_classification_tree_ddos_1:8@5 '
+        'get_classification_tree_app_5:8@6 get_classification_tree_app_6:8@6 '
+        'get_classification_tree_app_3:8@7 get_classification_tree_app_4:8@7 '
+        'get_classification_tree_app_1:8@8 get_classification_tree_app_2:8@8 '
+        'get_classification_tree_app_0:8@9')),
+    (PER_TASK_ENCODING, 0): (6, 24, (
+        'table_0_bwd_iat_total:1@3 table_1_bwd_packet_length_max:1@3 table_2_flow_iat_max:1@3 '
+        'table_3_flow_iat_min:1@3 get_classification_tree_app_0:4@4 get_classification_tree_app_1:4@4 '
+        'get_classification_tree_app_2:4@4 get_classification_tree_app_3:4@4 '
+        'get_classification_tree_ddos_0:1@4 get_classification_tree_ddos_1:1@4 '
+        'get_classification_tree_ddos_2:1@4 get_classification_tree_ddos_3:1@4')),
+    (PER_TASK_ENCODING, 1): (6, 7, (
+        'table_0_bwd_iat_total:1@3 get_classification_tree_app_0:1@4 get_classification_tree_app_1:1@4 '
+        'get_classification_tree_ddos_0:1@4 get_classification_tree_ddos_1:1@4 '
+        'get_classification_tree_ddos_2:1@4 get_classification_tree_ddos_3:1@4')),
+    (PER_TASK_ENCODING, 2): (8, 57, (
+        'table_0_bwd_iat_total:1@3 table_1_bwd_packet_length_max:1@3 table_2_fwd_packet_length_max:1@3 '
+        'get_classification_tree_app_5:6@4 get_classification_tree_app_6:6@4 '
+        'get_classification_tree_ddos_0:3@4 get_classification_tree_ddos_1:3@4 '
+        'get_classification_tree_ddos_2:3@4 get_classification_tree_ddos_3:3@4 '
+        'get_classification_tree_app_1:6@5 get_classification_tree_app_2:6@5 '
+        'get_classification_tree_app_3:6@5 get_classification_tree_app_4:6@5 '
+        'get_classification_tree_app_0:6@6')),
+    (DISJOINT_ENCODING, 0): (6, 28, (
+        'table_0_app_bwd_iat_total:1@3 table_1_app_bwd_packet_length_max:1@3 '
+        'table_2_app_flow_iat_max:1@3 table_3_app_flow_iat_min:1@3 table_4_ddos_bwd_iat_total:1@3 '
+        'table_5_ddos_bwd_packet_length_max:1@3 table_6_ddos_flow_iat_max:1@3 '
+        'table_7_ddos_flow_iat_min:1@3 get_classification_tree_app_0:4@4 '
+        'get_classification_tree_app_1:4@4 get_classification_tree_app_2:4@4 '
+        'get_classification_tree_app_3:4@4 get_classification_tree_ddos_0:1@4 '
+        'get_classification_tree_ddos_1:1@4 get_classification_tree_ddos_2:1@4 '
+        'get_classification_tree_ddos_3:1@4')),
+    (DISJOINT_ENCODING, 1): (6, 8, (
+        'table_0_app_bwd_iat_total:1@3 table_1_ddos_bwd_iat_total:1@3 '
+        'get_classification_tree_app_0:1@4 get_classification_tree_app_1:1@4 '
+        'get_classification_tree_ddos_0:1@4 get_classification_tree_ddos_1:1@4 '
+        'get_classification_tree_ddos_2:1@4 get_classification_tree_ddos_3:1@4')),
+    (DISJOINT_ENCODING, 2): (8, 60, (
+        'table_0_app_bwd_iat_total:1@3 table_1_app_bwd_packet_length_max:1@3 '
+        'table_2_app_fwd_packet_length_max:1@3 table_3_ddos_bwd_iat_total:1@3 '
+        'table_4_ddos_bwd_packet_length_max:1@3 table_5_ddos_fwd_packet_length_max:1@3 '
+        'get_classification_tree_app_5:6@4 get_classification_tree_app_6:6@4 '
+        'get_classification_tree_ddos_0:3@4 get_classification_tree_ddos_1:3@4 '
+        'get_classification_tree_ddos_2:3@4 get_classification_tree_ddos_3:3@4 '
+        'get_classification_tree_app_1:6@5 get_classification_tree_app_2:6@5 '
+        'get_classification_tree_app_3:6@5 get_classification_tree_app_4:6@5 '
+        'get_classification_tree_app_0:6@6')),
 }
 
 
@@ -373,6 +443,7 @@ def test_other_encodings_replay_as_before(tmp_path, encoding):
       recorded = recorded[:2] + (_OPTION_B_2026_11_14[(encoding, seed)],)
     recorded = _KEY_PRUNING_2026_11_14.get((encoding, seed), recorded)
     recorded = _after_hash_rewrite(recorded)
+    recorded = _TASK_38_2026_11_15.get((encoding, seed), recorded)
     assert (breakdown["stage_depth"], breakdown["blocks"], tables) == recorded, seed
 
 

@@ -124,7 +124,8 @@ def test_bus_bytes_are_the_fields_container_bytes():
 
 def test_a_budget_that_runs_out_mid_field_is_refused_not_filled_with_smaller_ones(monkeypatch):
   # decision 4.2 (was: falls to the next size). 20 bytes want five 32-bit containers, 3 left
-  monkeypatch.setattr(packed, "budgets", lambda n_features, n_trees, n_scratch=0, n_constants=0: {32: 3, 16: 80, 8: 40})
+  monkeypatch.setattr(packed, "budgets", lambda n_features, n_trees, n_scratch=0, n_constants=0,
+                      coarse_clock=False: {32: 3, 16: 80, 8: 40})
   with pytest.raises(PhvContainersExhausted) as refused:
     packed.layout_for(_w(app=[{"f": 32}] * 5), ["f"], ["app", "ddos"])
   assert refused.value.args[1] == 2

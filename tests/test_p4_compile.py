@@ -35,12 +35,12 @@ def _pin_native_p4c_off(request, monkeypatch):
 # dataset.py/main.py select, dot-separated. Shared by the fast catalog-drift
 # test and the slow real-compile acceptance test below.
 LIVE_POOL_FEATURE_NAMES = [
-    'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
-    'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
-    'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
-    'Fwd.IAT.Mean', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
-    'Bwd.IAT.Mean', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
-    'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
+    'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Total',
+    'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Total',
+    'Flow.Duration', 'Flow.IAT.Max', 'Flow.IAT.Min',
+    'Fwd.IAT.Total', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
+    'Bwd.IAT.Total', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
+    'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Total']
 
 
 def _forest_over(names, labels, seed):
@@ -546,12 +546,12 @@ def test_full_eighteen_feature_pool_compiles(tmp_path):
     """Every feature in main.py's pool must have a catalog entry that produces a
     program the real compiler accepts. This is the test Phase 2 exists to pass."""
     live_names = [  # main.py:307-313, verbatim
-        'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
-        'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
-        'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
-        'Fwd.IAT.Mean', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
-        'Bwd.IAT.Mean', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
-        'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
+        'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Total',
+        'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Total',
+        'Flow.Duration', 'Flow.IAT.Max', 'Flow.IAT.Min',
+        'Fwd.IAT.Total', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
+        'Bwd.IAT.Total', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
+        'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Total']
     clf_app = _forest_over(live_names, [0, 1, 2], seed=0)      # Task 4's helper
     clf_ddos = _forest_over(live_names, [-1, 1], seed=1)
     feature_intervals = bps.get_joint_feature_intervals(

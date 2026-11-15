@@ -39,6 +39,21 @@ def test_count_adds_the_template_the_own_fields_and_the_code_containers():
                   32: len(PHV_TEMPLATE_FIELDS[32]) + 1}
 
 
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_the_coarse_clock_takes_two_32_bit_containers_on_both_paths(tmp_path, encoding):
+  """Task 38: a program with a duration computes meta.now_coarse (one W, pinned
+  pa_solitary) from ingress_mac_tstamp[47:16] (another W): +2 32-bit containers in
+  training and in the replay; a program without one has neither."""
+  assert phv.count(1, 0, 0, (), coarse_clock=True)[32] == phv.count(1, 0, 0, ())[32] + 2
+  for seed, duration in ((0, True), (3, False)):     # seed 0 has bwd_iat_total, seed 3 none
+    app, ddos, names, path = _generate(tmp_path, encoding, seed)
+    program = parse_program(path)
+    assert ("now_coarse" in program.declared) == duration == bps.uses_coarse_clock(names)
+    pool = evaluation._pool_inputs(app, ddos, names, names, encoding)
+    assert pool["phv_fields"]["coarse_clock"] == duration
+    assert phv.containers_used(pool) == phv.containers_used(program)
+
+
 def test_check_names_the_size_and_the_shortfall():
   used = {8: 10, 16: PHV_INGRESS_CONTAINERS[16] + 3, 32: PHV_INGRESS_CONTAINERS[32] + 1}
   with pytest.raises(PhvContainersExhausted) as refused:
