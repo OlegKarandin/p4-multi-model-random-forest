@@ -145,13 +145,10 @@ from src.training.train_model import (
 # 524-live-bit rule replaced).
 MAX_CODEWORD_LENGTH = 520
 
-SELECTED_FEATURES = [
-    'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
-    'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
-    'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
-    'Fwd.IAT.Mean', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
-    'Bwd.IAT.Mean', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
-    'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
+# The campaign's pool (src.main.CAMPAIGN_FEATURES; the six Means replaced in Task 38:
+# the generator no longer has them).
+from src.main import CAMPAIGN_FEATURES  # noqa: E402
+SELECTED_FEATURES = list(CAMPAIGN_FEATURES)
 
 N_TREES_GRID = (1, 3, 5, 7, 9, 11, 15)
 MAX_DEPTH_GRID = (2, 4, 6, 8, 10, 12, 14)

@@ -41,13 +41,10 @@ from src.training import threshold_alignment as ta
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.training.splits import make_task_splits
 
-SELECTED_FEATURES = [
-    'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
-    'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
-    'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
-    'Fwd.IAT.Mean', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
-    'Bwd.IAT.Mean', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
-    'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
+# The campaign's pool (src.main.CAMPAIGN_FEATURES; the six Means replaced in Task 38:
+# the generator no longer has them).
+from src.main import CAMPAIGN_FEATURES  # noqa: E402
+SELECTED_FEATURES = list(CAMPAIGN_FEATURES)
 
 # There is no DELTAS tuple any more. It was (0.0, 0.02, 0.05, 0.10, 0.20) --
 # one instrumented run per swept tolerance, refitting between runs so each

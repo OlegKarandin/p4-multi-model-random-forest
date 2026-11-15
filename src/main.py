@@ -399,6 +399,19 @@ def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):
     return X_app, X_ddos, remaining_features
 
 
+# The campaign's feature pool before correlation pruning (load_campaign_data). Task 38
+# (P3h, 2026-11-15) replaced the six Means in place: Fwd/Bwd.Packet.Length.Mean and
+# Packet.Length.Mean -> the *.Packet.Length.Total sums, Flow/Fwd/Bwd.IAT.Mean -> the
+# durations Flow.Duration / Fwd.IAT.Total / Bwd.IAT.Total (dataset.DERIVED_FEATURES).
+CAMPAIGN_FEATURES = (
+    'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Total',
+    'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Total',
+    'Flow.Duration', 'Flow.IAT.Max', 'Flow.IAT.Min',
+    'Fwd.IAT.Total', 'Fwd.IAT.Max', 'Fwd.IAT.Min',
+    'Bwd.IAT.Total', 'Bwd.IAT.Max', 'Bwd.IAT.Min',
+    'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Total')
+
+
 def load_campaign_data():
     """The campaign's dataset, exactly as run_compute_mode sees it: both CSVs read, clipped at INFINITE, then correlation-pruned to
     the shared feature set.
@@ -412,13 +425,12 @@ def load_campaign_data():
     """
     threshold = INFINITE
 
-    selected_features = [
-        'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Mean',
-        'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Mean',
-        'Flow.IAT.Mean', 'Flow.IAT.Max', 'Flow.IAT.Min',
-        'Fwd.IAT.Mean',  'Fwd.IAT.Max',  'Fwd.IAT.Min',
-        'Bwd.IAT.Mean',  'Bwd.IAT.Max',  'Bwd.IAT.Min',
-        'Min.Packet.Length', 'Max.Packet.Length', 'Packet.Length.Mean']
+    # Task 38 (P3h, 2026-11-15): the six Means (which no Tofino-1 stateful ALU can
+    # compute) are replaced, each in its Mean's place in the column order, by the
+    # coarse-clock durations (Flow.Duration, Fwd.IAT.Total, Bwd.IAT.Total) and the
+    # length Totals, derived in the switch's unit by dataset.DERIVED_FEATURES. Runs
+    # before Task 38 used the Mean list (their forests and rows still name it).
+    selected_features = list(CAMPAIGN_FEATURES)
 
     df_app = read_app_dataset(selected_features, threshold)
     df_ddos = read_DDOS_dataset(selected_features, threshold)

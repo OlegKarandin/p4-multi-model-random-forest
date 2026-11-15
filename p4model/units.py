@@ -1,4 +1,5 @@
-"""The switch's unit for a feature value: the IAT features in 1.024 us ticks (Task 34).
+"""The switch's unit for a feature value: the IAT features in 1.024 us ticks (Task 34);
+every other feature, the Task 38 durations included, is trained in the switch's unit.
 
 One statement of the conversion, shared by the control plane's range-entry writer
 (p4gen.build_p4_script._range_table_entries, which re-exports these names) and the
@@ -30,7 +31,10 @@ def iat_ticks(threshold_us):
 
 def is_iat_feature(feature, catalog=None):
   '''Whether a feature's value is an inter-arrival time: its catalog entry has a
-  last-arrival ("iat_delta") register -- the IAT Max / Min / Mean features.'''
+  last-arrival ("iat_delta") register -- the IAT Max / Min features. The Task 38
+  durations (flow_duration, fwd_iat_total, bwd_iat_total) are not: they read the
+  coarse 65.536 us clock and are trained in its unit (src/training/dataset.py), so
+  their thresholds install unchanged, like every non-IAT feature's.'''
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
   entry = catalog.get(normalise_feature_name(feature), {})

@@ -56,7 +56,13 @@ FEATURE_REGISTER_CATALOG maps a lowercase feature name to:
                                       # last-arrival ("iat_delta") registers
                                       # since Task 34 (V1o: they hold the
                                       # 32-bit arrival clock, see
-                                      # build_p4_script._REGISTER_ACTION_BODIES).
+                                      # build_p4_script._REGISTER_ACTION_BODIES)
+                                      # and for the flow duration (Task 38: its
+                                      # 32-bit first arrival); 64 for the Fwd /
+                                      # Bwd duration pair registers {first, dur}
+                                      # (two 32-bit halves, Task 38). Whatever the
+                                      # width, the feature value <feature>_val is
+                                      # 16 bits.
             "body": <str>,           # symbolic RegisterAction body kind;
                                       # see build_p4_script.py's
                                       # _REGISTER_ACTION_BODIES for the
@@ -80,7 +86,8 @@ FEATURE_REGISTER_CATALOG maps a lowercase feature name to:
         #   validated by compiling p4/tofino_spike/tna_m3_bwd_gate_spike.p4
         #   (0 errors). Task 9 populated the bwd_* entries themselves
         #   (bwd_iat_max, bwd_iat_mean, bwd_iat_min, bwd_packet_length_max,
-        #   bwd_packet_length_min, bwd_packet_length_mean).
+        #   bwd_packet_length_min, bwd_packet_length_mean; the two Means are
+        #   bwd_iat_total / bwd_packet_length_total since Task 38).
 }
 
 A feature's "registers" list is ordered: a "dependency" register (if any)
@@ -97,15 +104,15 @@ p4/p4_code_RF_models.p4's apply block and validated by compiling
 p4/tofino_spike/tna_m1_flows_iat_spike.p4. Milestone 2 adds one more
 validated feature, flow_iat_mean (the App task's mean/EWMA feature),
 traced against and validated by compiling
-p4/tofino_spike/tna_m2_mean_spike.p4 -- see that entry's own comment below
-for the dependency-sharing design.
+p4/tofino_spike/tna_m2_mean_spike.p4 (flow_duration since Task 38, below).
 
 Task 9 (Phase 2's capstone) adds the remaining 14 features that make up
 main.py's full 18-feature pool (main.py:308-314): flow_iat_min,
 fwd_iat_mean, fwd_iat_min, bwd_iat_max, bwd_iat_mean, bwd_iat_min,
 fwd_packet_length_min, fwd_packet_length_mean, bwd_packet_length_max,
 bwd_packet_length_min, bwd_packet_length_mean, min_packet_length,
-max_packet_length, and packet_length_mean -- all wired from body kinds
+max_packet_length, and packet_length_mean (the five Means among them replaced
+in Task 38, below) -- all wired from body kinds
 already validated by real p4c compiles in Tasks 6-8 (bwd gating,
 running_min_iat, running_min_packet_length, mathunit_ewma_packet_length);
 no new body kinds or P4 syntax were introduced to add these entries. One
@@ -114,20 +121,35 @@ reusing the existing "iat_delta" body kind (the same body
 flow_last_arrival_time and fwd_last_arrival_time already use) -- it is a
 new register instance, not a new body kind.
 
-ACCURACY CAVEAT for every "*_mean" feature in this catalog: the
-"mathunit_ewma"/"mathunit_ewma_packet_length" body kinds compute an
-alpha=0.5 exponentially-weighted moving average (new = (old + current) / 2
-via Tofino's MathUnit<> hardware primitive), NOT the dataset column's
-faithful arithmetic mean. This was a known, deliberate redesign already
-accepted for flow_iat_mean (see p4/tofino_spike/tna_m2_mean_spike.p4's
-header comment for why the two simpler, truer-to-arithmetic-mean designs
-both failed against the real Tofino compiler) and Task 9 extends the same
-approximation to five more "*_mean" features: fwd_iat_mean, bwd_iat_mean,
-fwd_packet_length_mean, bwd_packet_length_mean, and packet_length_mean.
-Every downstream accuracy number for any of these six "*_mean" features is
-therefore the switch's EWMA approximation, not the dataset's column value
--- keep that in mind when comparing switch-side accuracy against
-sklearn-side accuracy for a model trained on the true column mean.
+Task 38 (P3h, user decision 2026-11-15) REPLACED the six Mean features. A
+Tofino-1 stateful ALU has no divide and no shift, and the MathUnit "EWMA"
+bodies the Means used were miscompiled by p4c into a running sum of halves
+(Task 33b, live; probe_mean.md), so no Mean was ever what its name says. In
+their place, each in the switch's own unit (dataset.py derives the training
+columns in the same unit, so the control plane installs every threshold
+unchanged):
+  * flow_duration, fwd_iat_total, bwd_iat_total: DURATIONS, last minus first
+    arrival of the flow / of the direction, on a coarse clock of 65.536 us
+    ticks (calc_timestamp: meta.now_coarse = ig_intr_md.ingress_mac_tstamp
+    [47:16]), clamped at 65535 (4.3 s). Body kinds "coarse_duration" (the
+    flow's: a 32-bit register holding the first arrival) and
+    "coarse_duration_pair" (Fwd / Bwd: a 64-bit {first, dur} pair, so the
+    other direction's packets read the owner's duration too). No dependency
+    register: a duration needs no gap, so a chain's last-arrival register is
+    emitted only when some IAT Max / Min of that chain is selected.
+  * fwd_packet_length_total, bwd_packet_length_total, packet_length_total:
+    saturating sums of hdr.ipv4.total_len (body kind
+    "saturating_total_packet_length", `value |+| total_len`), the flow's =
+    fwd + bwd in training.
+Evidence: Task 37 (results/encoding_evidence_2026_11/model8/impl/
+probe_p3c.md): p4c compiled exactly these bodies at no stage or block cost,
+and an exact emulation of the compiled program matched tofino-model live on
+64/64 packets. Each body's text and its evidence are at its emission site,
+build_p4_script._REGISTER_ACTION_BODIES / _DIRECTION_READ_BODIES. Before
+Task 38 the catalog had flow_iat_mean, fwd_iat_mean, bwd_iat_mean,
+fwd_packet_length_mean, bwd_packet_length_mean and packet_length_mean; a
+program or forest that names them is an older generator's (program_checks
+refuses such a text).
 
 Do not add entries for features not yet validated by a real p4c compile --
 resolving those is explicitly deferred to whichever later milestone needs
@@ -212,27 +234,17 @@ FEATURE_REGISTER_CATALOG = {
         ],
         "gated_by": "fwd",
     },
-    # Deliberately lists "flow_last_arrival_time" as its dependency -- the
-    # SAME dependency register "flow_iat_max" (above) already declares.
-    # generate_P4_registers_and_apply() dedupes shared dependency registers
-    # by name, so this is safe: whichever selected feature is resolved first
-    # .execute()s flow_last_arrival_time_reg once, and both features'
-    # "value" registers consume that single meta.flow_current_iat result.
-    # A catalog entry that lists its own dependency register can safely stand
-    # alone -- its dependency will be executed when that feature is resolved.
-    "flow_iat_mean": {
+    # Task 38 (replaces flow_iat_mean): the flow's duration in 65.536 us ticks,
+    # clamped at 65535. ONE value register holding the flow's first arrival
+    # (32 bits of the coarse clock), no dependency register: a duration needs no
+    # gap, so flow_last_arrival_time is emitted only for flow_iat_max / _min.
+    "flow_duration": {
         "registers": [
             {
-                "name": "flow_last_arrival_time",
-                "role": "dependency",
-                "width": 32,
-                "body": "iat_delta",
-            },
-            {
-                "name": "flow_iat_mean",
+                "name": "flow_duration",
                 "role": "value",
-                "width": 16,
-                "body": "mathunit_ewma",
+                "width": 32,
+                "body": "coarse_duration",
             },
         ],
         "gated_by": None,
@@ -243,12 +255,18 @@ FEATURE_REGISTER_CATALOG = {
     # Every body kind used below was already validated by a real p4c
     # compile in Tasks 6-8 -- this section only wires catalog entries
     # against them, dependency-first, per feature -- see the module
-    # docstring's "Task 9" paragraph above for the full list and the
-    # accuracy caveat that applies to every "*_mean" entry here.
+    # docstring's "Task 9" paragraph above for the full list. Task 38
+    # replaced the five Means among them (module docstring).
     # ------------------------------------------------------------------
 
-    # Shares "flow_last_arrival_time" with flow_iat_max/flow_iat_mean above
-    # (same dedup story as flow_iat_mean's comment describes).
+    # Lists "flow_last_arrival_time" as its dependency -- the SAME dependency
+    # register "flow_iat_max" (above) already declares.
+    # generate_P4_registers_and_apply() dedupes shared dependency registers
+    # by name, so this is safe: whichever selected feature is resolved first
+    # .execute()s flow_last_arrival_time_reg once, and both features'
+    # "value" registers consume that single meta.flow_current_iat result.
+    # A catalog entry that lists its own dependency register can safely stand
+    # alone -- its dependency will be executed when that feature is resolved.
     "flow_iat_min": {
         "registers": [
             {
@@ -266,25 +284,23 @@ FEATURE_REGISTER_CATALOG = {
         ],
         "gated_by": None,
     },
-    # Shares "fwd_last_arrival_time" with fwd_iat_max above.
-    "fwd_iat_mean": {
+    # Task 38 (replaces fwd_iat_mean): the forward direction's duration (CSV
+    # Fwd.IAT.Total = last minus first forward arrival) in 65.536 us ticks,
+    # clamped at 65535. ONE value register, a 64-bit {first, dur} pair: a register
+    # holding only the first arrival could not give the duration on a backward
+    # packet. No dependency register (see flow_duration).
+    "fwd_iat_total": {
         "registers": [
             {
-                "name": "fwd_last_arrival_time",
-                "role": "dependency",
-                "width": 32,
-                "body": "iat_delta",
-            },
-            {
-                "name": "fwd_iat_mean",
+                "name": "fwd_iat_total",
                 "role": "value",
-                "width": 16,
-                "body": "mathunit_ewma",
+                "width": 64,
+                "body": "coarse_duration_pair",
             },
         ],
         "gated_by": "fwd",
     },
-    # Shares "fwd_last_arrival_time" with fwd_iat_max/fwd_iat_mean above.
+    # Shares "fwd_last_arrival_time" with fwd_iat_max above.
     "fwd_iat_min": {
         "registers": [
             {
@@ -306,10 +322,10 @@ FEATURE_REGISTER_CATALOG = {
     # "bwd_last_arrival_time" is a NEW dependency register (Task 9) -- it
     # reuses the existing "iat_delta" body kind (the same body
     # flow_last_arrival_time and fwd_last_arrival_time already use above),
-    # just a new register instance for the backward direction. The three
-    # bwd_iat_* entries below all declare it and rely on
+    # just a new register instance for the backward direction. bwd_iat_max and
+    # bwd_iat_min both declare it and rely on
     # generate_P4_registers_and_apply()'s by-name dedup (same story as
-    # flow_iat_mean's comment above) to .execute() it exactly once.
+    # flow_iat_min's comment above) to .execute() it exactly once.
     "bwd_iat_max": {
         "registers": [
             {
@@ -327,19 +343,15 @@ FEATURE_REGISTER_CATALOG = {
         ],
         "gated_by": "bwd",
     },
-    "bwd_iat_mean": {
+    # Task 38 (replaces bwd_iat_mean): as fwd_iat_total, for the backward
+    # direction.
+    "bwd_iat_total": {
         "registers": [
             {
-                "name": "bwd_last_arrival_time",
-                "role": "dependency",
-                "width": 32,
-                "body": "iat_delta",
-            },
-            {
-                "name": "bwd_iat_mean",
+                "name": "bwd_iat_total",
                 "role": "value",
-                "width": 16,
-                "body": "mathunit_ewma",
+                "width": 64,
+                "body": "coarse_duration_pair",
             },
         ],
         "gated_by": "bwd",
@@ -366,8 +378,9 @@ FEATURE_REGISTER_CATALOG = {
     # value bodies read hdr.ipv4.total_len directly, not a dependency
     # register's meta.<chain>_current_iat scratch field
     # (see running_max_packet_length/running_min_packet_length/
-    # mathunit_ewma_packet_length in build_p4_script.py's
-    # _REGISTER_ACTION_BODIES).
+    # saturating_total_packet_length in build_p4_script.py's
+    # _REGISTER_ACTION_BODIES). The three *_packet_length_total entries replace
+    # the length Means (Task 38): a saturating 16-bit sum of the IP total lengths.
     "fwd_packet_length_min": {
         "registers": [
             {
@@ -379,13 +392,13 @@ FEATURE_REGISTER_CATALOG = {
         ],
         "gated_by": "fwd",
     },
-    "fwd_packet_length_mean": {
+    "fwd_packet_length_total": {
         "registers": [
             {
-                "name": "fwd_packet_length_mean",
+                "name": "fwd_packet_length_total",
                 "role": "value",
                 "width": 16,
-                "body": "mathunit_ewma_packet_length",
+                "body": "saturating_total_packet_length",
             },
         ],
         "gated_by": "fwd",
@@ -412,13 +425,13 @@ FEATURE_REGISTER_CATALOG = {
         ],
         "gated_by": "bwd",
     },
-    "bwd_packet_length_mean": {
+    "bwd_packet_length_total": {
         "registers": [
             {
-                "name": "bwd_packet_length_mean",
+                "name": "bwd_packet_length_total",
                 "role": "value",
                 "width": 16,
-                "body": "mathunit_ewma_packet_length",
+                "body": "saturating_total_packet_length",
             },
         ],
         "gated_by": "bwd",
@@ -445,13 +458,13 @@ FEATURE_REGISTER_CATALOG = {
         ],
         "gated_by": None,
     },
-    "packet_length_mean": {
+    "packet_length_total": {
         "registers": [
             {
-                "name": "packet_length_mean",
+                "name": "packet_length_total",
                 "role": "value",
                 "width": 16,
-                "body": "mathunit_ewma_packet_length",
+                "body": "saturating_total_packet_length",
             },
         ],
         "gated_by": None,
@@ -475,8 +488,8 @@ def register_names_for(features, catalog=None):
     entry that declares each register, across all selected features).
 
   Example:
-    >>> register_names_for(['flow_iat_max', 'flow_iat_mean'])
-    ('flow_last_arrival_time', 'flow_iat_max', 'flow_iat_mean')
+    >>> register_names_for(['flow_iat_max', 'flow_iat_min', 'flow_duration'])
+    ('flow_last_arrival_time', 'flow_iat_max', 'flow_iat_min', 'flow_duration')
 
   Note: This helper does NOT replicate the cross-gate sharing guard from
   generate_P4_registers_and_apply's _note_touch closure (build_p4_script.py
