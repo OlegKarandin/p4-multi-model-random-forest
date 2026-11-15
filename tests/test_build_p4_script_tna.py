@@ -2578,10 +2578,12 @@ def test_a_live_width_over_64_bits_is_keyed_as_slices_from_bit_0(tmp_path):
   # and they classify every input exactly as each tree does
   X = np.zeros((200, len(_PRUNE_FEATURES)), dtype=int)
   X[:, 0] = np.random.RandomState(0).randint(0, 7200, size=200)
+  from tests.test_per_task_codes import switch_equivalent_rows
+  same = switch_equivalent_rows(X, _PRUNE_FEATURES)   # IAT thresholds in ticks (Task 34)
   for s, row in enumerate(X):
     got = _switch_tree_classes(entries, dict(zip(_PRUNE_FEATURES, row)))
-    assert got["get_classification_tree_app_0"] == per_tree_class_indices(app, X)[0][s]
-    assert got["get_classification_tree_ddos_0"] == per_tree_class_indices(ddos, X)[0][s]
+    assert got["get_classification_tree_app_0"] == per_tree_class_indices(app, same)[0][s]
+    assert got["get_classification_tree_ddos_0"] == per_tree_class_indices(ddos, same)[0][s]
 
 
 def test_the_resources_hold_only_what_the_program_uses():
@@ -2691,6 +2693,54 @@ _ORIENTATION_FIXED = (
     "\t\t\t}\n"
     "\t\t}\n"
     "\t};\n")
+
+
+def test_iat_thresholds_are_written_in_1024_ns_ticks_plus_one():
+  """Task 34 (Task 29's round rule + C1f's + 1): T = floor((1000 t + 500) / 1024) + 1 for
+  the IAT features' range bounds only; the program text is unchanged."""
+  # 20 us and 21 us share a tick (Task 29's one round-rule collapse was 20/21 us)
+  assert [bps.iat_ticks(t) for t in (0, 1, 20, 21, 1000, 65534)] == [1, 2, 21, 21, 978, 63999]
+  assert bps.iat_ticks(10 ** 9) == INFINITE
+  intervals = [(0, 0), (1, 20), (21, 21), (22, 1000), (1001, INFINITE)]
+  entries = bps._range_table_entries("t", "a", "flow_iat_min_val", intervals)
+  spans = [(int(e["key_fields"]["flow_iat_min_val"]["start"]),
+            int(e["key_fields"]["flow_iat_min_val"]["end"])) for e in entries]
+  # highest first; (21, 21) shares tick 21 with 20: no entry, its code is never written
+  assert spans == [(979, INFINITE), (22, 978), (2, 21), (0, 1)]
+  assert len(entries) == len(intervals) - 1
+  # a packet-length feature's bounds are the trees' own
+  plain = bps._range_table_entries("t", "a", "fwd_packet_length_max_val", intervals)
+  assert [(int(e["key_fields"]["fwd_packet_length_max_val"]["start"]),
+           int(e["key_fields"]["fwd_packet_length_max_val"]["end"])) for e in plain] == intervals[::-1]
+  for feature in ("flow_iat_max", "fwd_iat_mean", "bwd_iat_min"):
+    assert bps.is_iat_feature(feature)
+  for feature in ("min_packet_length", "bwd_packet_length_mean", "fwd_packet_length_max"):
+    assert not bps.is_iat_feature(feature)
+    assert bps.switch_reading(feature, 77) == bps.switch_equivalent(feature, 77) == 77
+
+
+def test_the_iat_entries_match_the_trees_on_the_switch_equivalent_value():
+  """switch_equivalent's claim, over every microsecond value up to 3000 and thresholds at
+  every collapse point: reading r = iat_ticks(x) falls in the entry of the interval holding
+  switch_equivalent(x), which is x except where x - 1 reads the same tick."""
+  thresholds = [t for t in range(3000) if bps.iat_ticks(t) == bps.iat_ticks(t + 1)][:40] + [5, 700]
+  thresholds = sorted(set(thresholds))
+  intervals = bps.get_feature_intervals_from_thresholds([("flow_iat_max", t) for t in thresholds])[
+      "flow_iat_max"]
+  entries = bps._range_table_entries("t", "a", "flow_iat_max_val", intervals)
+  code_of = {int(e["action_params"]["code"]): (int(e["key_fields"]["flow_iat_max_val"]["start"]),
+                                               int(e["key_fields"]["flow_iat_max_val"]["end"]))
+             for e in entries}
+  moved = 0
+  for x in range(3000):
+    reading = bps.switch_reading("flow_iat_max", x)
+    hit = [code for code, (lo, hi) in code_of.items() if lo <= reading <= hi]
+    y = bps.switch_equivalent("flow_iat_max", x)
+    want = next(i for i, (lo, hi) in enumerate(intervals) if lo <= y <= hi)
+    assert hit == [int(bps.thermometer_code(len(intervals), want), 2)], x
+    assert y in (x, x - 1)
+    moved += y != x
+  assert moved > 40
 
 
 def test_a_flows_first_packet_is_forward():

@@ -15,6 +15,15 @@ sweeps. Reporting soft-vote accuracy therefore overstates the deployed artifact,
 and optimising against it ranks trials by an accuracy the switch never reaches.
 
 So every accuracy measurement in the pipeline goes through here.
+
+UNITS: accuracy here is computed in the SOFTWARE unit (the CSVs' microseconds for
+every IAT feature). The switch reads an IAT in 1.024 us ticks, a real gap of g ticks
+as g + 1 and "no IAT" as 0, and its control plane writes every IAT threshold t as
+build_p4_script.iat_ticks(t) = floor((1000 t + 500) / 1024) + 1 (Task 34). That
+conversion is not emulated here: on 200 DEV designs (feature-level emulation, Tasks
+29 and 33) the switch with it agrees with this software vote on 99.98 / 99.97% (app,
+k<=8 / k>=9) and 100.00 / 99.99% (ddos) of flows; the residual is +-1 tick of clock
+reading at a threshold. The switch's Mean registers are not the CSV mean (Task 33b).
 """
 import numpy as np
 from sklearn.metrics import accuracy_score

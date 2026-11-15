@@ -617,6 +617,65 @@ def _per_task_code(interval, own_intervals):
       interval, own_intervals[-1]))
 
 
+def iat_ticks(threshold_us):
+  '''An IAT threshold of the trees (integer microseconds, the CSVs' unit) in the
+  switch's IAT unit (Task 34; user decision 2026-11-15):
+  T = floor((1000 t + 500) / 1024) + 1, capped at INFINITE.
+
+  The switch's clock ticks every 1.024 us (calc_timestamp: global_tstamp[41:10]),
+  and an IAT is the difference of two floored clock readings: a gap of g ns reads
+  floor(g / 1024) or one more, with mean g / 1024, so the tree's `x_us <= t` is
+  matched best by centring on t + 0.5 us -- the ROUND rule floor((1000 t + 500) /
+  1024) (Task 29, impl/probe_timestamp.md: agreement with software 99.98 / 99.97%
+  app, 100.00 / 99.99% ddos on 200 DEV designs, 1 design with two thresholds on one
+  tick; the floor rule collapsed 60). The + 1 is C1f's: the switch holds a real gap
+  of g ticks as g + 1, 0 meaning "no IAT" (_REGISTER_ACTION_BODIES["iat_delta"]).
+  Accuracy elsewhere (switch_semantics) is computed in the software unit.'''
+  return min((1000 * int(threshold_us) + 500) // 1024 + 1, INFINITE)
+
+
+def is_iat_feature(feature, catalog=None):
+  '''Whether a feature's value is an inter-arrival time (its catalog entry has a
+  last-arrival "iat_delta" register): the IAT Max / Min / Mean features.'''
+  return uses_timestamp({feature: None}, catalog)
+
+
+def switch_reading(feature, value):
+  '''The value the switch matches for a feature value of the trees' unit, ideally
+  read (no clock jitter): iat_ticks(value) for an IAT feature (a gap of value us read
+  as round(value / 1.024) ticks, + 1 for C1f), else the value itself.'''
+  return iat_ticks(value) if is_iat_feature(feature) else value
+
+
+def switch_equivalent(feature, value):
+  '''The trees' value whose classification the switch reproduces EXACTLY when it reads
+  switch_reading(feature, value): the smallest y with the same reading. The switch's
+  range entries (switch_range) send reading r = iat_ticks(y) to the interval of y for
+  every threshold t (r <= iat_ticks(t) iff y <= t, by minimality), so the entries equal
+  the trees on y; y differs from value only where two microsecond values share a tick
+  (value - 1 shares it with value; never more than two do, since 1000 / 1024 > 1 / 2).
+  The identity for a non-IAT feature.'''
+  if not is_iat_feature(feature):
+    return value
+  y = int(value)
+  while y > 0 and iat_ticks(y - 1) == iat_ticks(value):
+    y -= 1
+  return y
+
+
+def switch_range(feature, interval):
+  '''A range table interval [lo, hi] of the trees' units in the switch's: the
+  identity for every feature but an IAT one, whose bounds are thresholds in
+  microseconds (hi = t, lo = previous t + 1) and go through iat_ticks; 0 and
+  INFINITE stay. Two thresholds on one tick leave an empty interval (lo > hi),
+  which _range_table_entries does not install.'''
+  lo, hi = interval
+  if not is_iat_feature(feature):
+    return lo, hi
+  return (0 if lo == 0 else iat_ticks(lo - 1) + 1,
+          INFINITE if hi >= INFINITE else iat_ticks(hi))
+
+
 def _range_table_entries(table_name, action_name, key_field, intervals, writes=None,
                          value_of=None):
   '''One feature's range table: one entry per interval, highest interval
@@ -625,9 +684,19 @@ def _range_table_entries(table_name, action_name, key_field, intervals, writes=N
   own intervals) per code a per-task table writes (resolve_per_task_plan).
   value_of: None, or interval -> the one value parameter `code` carries
   instead of the interval's code (the packed per-tree field, whose action
-  writes every tree's code at once: generate_per_tree_table_entries).'''
+  writes every tree's code at once: generate_per_tree_table_entries).
+
+  The key bounds are in the switch's unit (switch_range: IAT features in 1.024 us
+  ticks, Task 34); the program text, the codes and the declared table size stay
+  those of the trees' intervals, so an interval whose bounds collapse onto one
+  tick is simply not installed (its code is then never written, as the switch
+  cannot tell its values apart).'''
+  feature = key_field[:-len("_val")] if key_field.endswith("_val") else key_field
   entries = []
   for idx, interval in enumerate(intervals[::-1]):
+    start, end = switch_range(feature, interval)
+    if start > end:
+      continue
     if value_of is not None:
       params = {"code": str(value_of(interval))}
     elif writes is None:
@@ -646,7 +715,7 @@ def _range_table_entries(table_name, action_name, key_field, intervals, writes=N
         "action": action_name,
         "is_default_action": False,
         "priority": idx,
-        "key_fields": {key_field: {"start": str(interval[0]), "end": str(interval[1])}},
+        "key_fields": {key_field: {"start": str(start), "end": str(end)}},
         "action_params": params,
     })
   return entries

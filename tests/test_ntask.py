@@ -20,7 +20,7 @@ from p4gen.p4_replay import (model_breakdown, parse_program,
 from p4model.program import (APP_TASK, DDOS_TASK, PLACEMENT_PRIORITY,
                                  SHARED_TASK, TaskSpec, placement_priorities)
 from p4model.usage import tree_readiness_levels
-from tests.test_per_task_codes import _key_value
+from tests.test_per_task_codes import _key_value, switch_equivalent_rows
 
 @pytest.fixture(autouse=True)
 def _synthetic_vote_exports(monkeypatch):
@@ -301,9 +301,12 @@ def _switch_tree_classes(entries, row):
     for table, rows in by_table.items():
         if not table.startswith("table_"):
             continue
+        # the switch matches its own reading of the value (IAT features in ticks, Task 34)
         hits = [e for e in rows
                 for field, span in e["key_fields"].items()
-                if int(span["start"]) <= row[field[:-len("_val")]] <= int(span["end"])]
+                if int(span["start"]) <= bps.switch_reading(field[:-len("_val")],
+                                                            row[field[:-len("_val")]])
+                <= int(span["end"])]
         assert len(hits) == 1, (table, row)
         codes["code_" + hits[0]["action"][len("set_code_"):]] = int(hits[0]["action_params"]["code"])
     classes = {}
@@ -353,10 +356,11 @@ def test_entries_classify_every_input_exactly_as_each_tree_does(tmp_path, encodi
             assert sorted(entry["key_fields"]) == sorted(keys or declared[table])
     rng = np.random.RandomState(7)
     X = rng.randint(0, 2000, size=(200, len(FEATURES)))
+    same = switch_equivalent_rows(X, FEATURES)
     expected = {}
     for name, _, forest, names in members:
         columns = [FEATURES.index(f) for f in names]
-        for i, per_tree in enumerate(per_tree_class_indices(forest, X[:, columns])):
+        for i, per_tree in enumerate(per_tree_class_indices(forest, same[:, columns])):
             expected["get_classification_tree_%s_%d" % (name, i)] = per_tree
     for s, values in enumerate(X):
         got = _switch_tree_classes(entries, dict(zip(FEATURES, values)))

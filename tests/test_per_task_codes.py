@@ -359,8 +359,11 @@ def _switch_tree_classes(entries, row):
     for table, rows in by_table.items():
         if not table.startswith("table_"):
             continue
+        # the switch matches its own reading of the value (IAT features in ticks, Task 34)
         hits = [e for e in rows for field, span in e["key_fields"].items()
-                if int(span["start"]) <= row[field[:-len("_val")]] <= int(span["end"])]
+                if int(span["start"]) <= bps.switch_reading(field[:-len("_val")],
+                                                            row[field[:-len("_val")]])
+                <= int(span["end"])]
         assert len(hits) == 1, (table, row)
         feature = hits[0]["action"][len("set_code_"):]
         for param, value in hits[0]["action_params"].items():
@@ -379,6 +382,13 @@ def _switch_tree_classes(entries, row):
         assert len(hits) == 1, (table, row)
         classes[table] = int(hits[0]["action_params"]["class"])
     return classes
+
+
+def switch_equivalent_rows(X, names):
+    """X with each IAT column replaced by bps.switch_equivalent: the trees' values the
+    switch, reading bps.switch_reading of X (_switch_tree_classes), classifies exactly
+    as (Task 34: IAT thresholds in 1.024 us ticks)."""
+    return np.array([[bps.switch_equivalent(f, v) for f, v in zip(names, row)] for row in X])
 
 
 def _votes(classes, task, n_classes):
@@ -418,9 +428,10 @@ def test_entries_classify_every_input_exactly_as_each_tree_and_the_forest(tmp_pa
     edges = np.vstack([X[:1]] * 0 + [np.full((1, len(names)), v)
                                      for v in (0, 1, 500, 1000, 1999, 2000, 65535)])
     X = np.vstack([edges, rng.randint(0, 2100, size=(150, len(names))), X])
-    trees_app = per_tree_class_indices(app, X)
-    trees_ddos = per_tree_class_indices(ddos, X)
-    predicted_app, predicted_ddos = switch_predict(app, X), switch_predict(ddos, X)
+    same = switch_equivalent_rows(X, names)
+    trees_app = per_tree_class_indices(app, same)
+    trees_ddos = per_tree_class_indices(ddos, same)
+    predicted_app, predicted_ddos = switch_predict(app, same), switch_predict(ddos, same)
     for s, values in enumerate(X):
         got = _switch_tree_classes(entries, dict(zip(names, values)))
         expected = {"get_classification_tree_app_%d" % i: int(c)
@@ -481,10 +492,11 @@ def test_three_task_entries_classify_exactly_as_each_tree(tmp_path):
     tasks, forests, names = _three_tasks()
     entries = bps.generate_table_entries(tasks, encoding=PER_TASK_ENCODING)
     X = np.random.RandomState(3).randint(0, 2100, size=(120, len(FEATURES)))
+    same = switch_equivalent_rows(X, FEATURES)
     expected = {}
     for task in tasks:
         cols = [FEATURES.index(f) for f in names[task.name]]
-        for i, classes in enumerate(per_tree_class_indices(forests[task.name], X[:, cols])):
+        for i, classes in enumerate(per_tree_class_indices(forests[task.name], same[:, cols])):
             expected["get_classification_tree_%s_%d" % (task.name, i)] = classes
     for s, values in enumerate(X):
         got = _switch_tree_classes(entries, dict(zip(FEATURES, values)))

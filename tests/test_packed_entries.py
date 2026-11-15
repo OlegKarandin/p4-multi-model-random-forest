@@ -22,7 +22,7 @@ from p4model.errors import ActionDataTooWide, NoSplitTree
 from p4model.program import APP_TASK, DDOS_TASK, PER_TREE_ENCODING, TaskSpec
 from p4model.target import ACTION_DATA_BUS_BYTES
 from tests.test_packed_program import _specs
-from tests.test_per_task_codes import FEATURES, _forest, _own, _rng_design
+from tests.test_per_task_codes import FEATURES, _forest, _own, _rng_design, switch_equivalent_rows
 
 _SLICE = re.compile(r"^code_pk_(\w+?)_(\d+)_(\d+)_$")
 DEEP_FEATURES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_mean"]
@@ -88,7 +88,8 @@ def _play(entries, row):
     if not table.startswith("table_"):
       continue
     feature = rows[0]["action"][len("set_code_"):]
-    hits = [e for e in rows if int(e["key_fields"][feature + "_val"]["start"]) <= row[feature]
+    reading = bps.switch_reading(feature, row[feature])     # IAT features in ticks (Task 34)
+    hits = [e for e in rows if int(e["key_fields"][feature + "_val"]["start"]) <= reading
             <= int(e["key_fields"][feature + "_val"]["end"])]
     assert len(hits) == 1, (table, row)
     assert list(hits[0]["action_params"]) == ["code"]
@@ -146,7 +147,9 @@ def test_per_tree_entries_classify_every_input_exactly_as_each_tree(case, discou
   entries = bps.generate_table_entries(tasks, use_default_action_discount=discount,
                                        encoding=PER_TREE_ENCODING)
   X = _inputs(tasks, names, top, 7 if case == "deep" else case)
-  trees = {APP_TASK: per_tree_class_indices(app, X), DDOS_TASK: per_tree_class_indices(ddos, X)}
+  same = switch_equivalent_rows(X, names)
+  trees = {APP_TASK: per_tree_class_indices(app, same),
+           DDOS_TASK: per_tree_class_indices(ddos, same)}
   n_app = len(app.estimators_)
   for s, values in enumerate(X):
     got = _play(entries, dict(zip(names, values)))
@@ -174,7 +177,9 @@ def test_each_tree_writes_its_own_thermometer_code_at_its_offset(case):
       if f != feature:
         continue
       iv = own[task][tree][feature]
-      idx = next(j for j, (lo, hi) in enumerate(iv) if lo <= x <= hi)
+      # x is in the switch's unit (IAT features in ticks, Task 34): so are the bounds
+      idx = next(j for j, interval in enumerate(iv)
+                 for lo, hi in [bps.switch_range(feature, interval)] if lo <= x <= hi)
       code = int(bps.thermometer_code(len(iv), idx), 2)
       assert (value >> offset) & ((1 << bits) - 1) == code
       expected |= code << offset
