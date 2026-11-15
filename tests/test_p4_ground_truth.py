@@ -51,6 +51,25 @@ def test_committed_blocks_and_stages_skip_action_rows(tmp_path):
                                                "get_classification_tree_app_0": 7}
 
 
+_SPLIT_TABLE_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                                "p4c_split_table_mau_resources.txt")
+
+
+def test_a_table_split_across_stages_is_charged_every_stage(tmp_path):
+    """An excerpt of a real mau.resources.log (Task 17 compile experiment, program
+    bigtree_app_k8_Lnone_Q32_per_task_nodiscount: a 2,166-entry app tree, p4c 11 stages /
+    64 blocks): app_0 is listed in stages 7, 8 and 9 with 22, 22 and 11 TCAM blocks.
+    Keeping only the last row read it as 11."""
+    with open(_SPLIT_TABLE_LOG, encoding="utf-8") as handle:
+        logs = _logs(tmp_path, resources=handle.read())
+    blocks = gt.committed_blocks(logs)
+    assert blocks["get_classification_tree_app_0"] == 22 + 22 + 11
+    assert blocks["get_classification_tree_ddos_0"] == 1
+    assert blocks["table_0_bwd_iat_mean"] == 1
+    assert blocks["vote_app"] == blocks["vote_ddos"] == 0
+    assert sum(blocks.values()) == 57
+
+
 def test_no_allocation_section_means_none_not_zero(tmp_path):
     # A program over 12 stages never reaches allocation (independent_high_sd12).
     logs = _logs(tmp_path, resources="tofino supports up to 12 stages, using 13\n")

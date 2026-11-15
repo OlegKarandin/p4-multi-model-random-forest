@@ -1,0 +1,28 @@
++---------------------------------------------------------------------+
+|  Log file: mau.resources.log                                        |
+|  Compiler version: 9.13.4                                           |
+|  Created on: Sun Nov 15 01:23:50 2026                               |
+|  Run ID: 4f816b40be7440fb                                           |
++---------------------------------------------------------------------+
+
+Allocated Resource Usage
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+|                        Table                        | Stage  | Crossbar | Hash | Gateways | RAMs | TCAMs | Map  | Action |  VLIW |  Exm   |  Exm   |  Tind  |
+|                         Name                        | Number |  Bytes   | Bits |          |      |       | RAMs |  Data  | Slots | Search | Result | Result |
+|                                                     |        |          |      |          |      |       |      |  Bus   |       |  Bus   |  Bus   |  Bus   |
+|                                                     |        |          |      |          |      |       |      | Bytes  |       |        |        |        |
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+|          SwitchIngress.table_0_bwd_iat_mean         |   6    |    4     |  0   |    0     |  0   |   1   |  0   |   6    |   2   |   0    |   0    |   0    |
+|      SwitchIngress.table_0_bwd_iat_mean$action      |   6    |    0     |  0   |    0     |  1   |   0   |  0   |   0    |   0   |   0    |   0    |   0    |
+|     SwitchIngress.get_classification_tree_app_0     |   7    |    59    |  0   |    0     |  0   |   22  |  0   |   1    |   2   |   0    |   0    |   0    |
+|  SwitchIngress.get_classification_tree_app_0$action |   7    |    0     |  0   |    0     |  1   |   0   |  0   |   0    |   0   |   0    |   0    |   0    |
+|     SwitchIngress.get_classification_tree_ddos_0    |   7    |    5     |  0   |    0     |  0   |   1   |  0   |   1    |   2   |   0    |   0    |   0    |
+| SwitchIngress.get_classification_tree_ddos_0$action |   7    |    0     |  0   |    0     |  1   |   0   |  0   |   0    |   0   |   0    |   0    |   0    |
+|     SwitchIngress.get_classification_tree_app_0     |   8    |    59    |  0   |    0     |  0   |   22  |  0   |   1    |   2   |   0    |   0    |   0    |
+|  SwitchIngress.get_classification_tree_app_0$action |   8    |    0     |  0   |    0     |  1   |   0   |  0   |   0    |   0   |   0    |   0    |   0    |
+|     SwitchIngress.get_classification_tree_app_0     |   9    |    59    |  0   |    0     |  0   |   11  |  0   |   1    |   2   |   0    |   0    |   0    |
+|  SwitchIngress.get_classification_tree_app_0$action |   9    |    0     |  0   |    0     |  1   |   0   |  0   |   0    |   0   |   0    |   0    |   0    |
+|               SwitchIngress.vote_ddos               |   9    |    1     |  10  |    0     |  1   |   0   |  0   |   2    |   2   |   1    |   1    |   0    |
+|                SwitchIngress.vote_app               |   10   |    1     |  10  |    0     |  1   |   0   |  0   |   2    |   2   |   1    |   1    |   0    |
+|                     tbl_prog536                     |   10   |    0     |  0   |    0     |  0   |   0   |  0   |   0    |   1   |   0    |   0    |   1    |
+----------------------------------------------------------------------------------------------------------------------------------------------------------------

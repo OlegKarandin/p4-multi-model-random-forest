@@ -18,8 +18,12 @@ RESOURCE_TABLE_ROW = re.compile(
 
 def committed_blocks(logs_dir):
     """table basename -> physical TCAM block count, from the COMMITTED
-    allocation in mau.resources.log. Returns None when the backend never got
-    as far as allocating resources (see replay_stage_depth's raise)."""
+    allocation in mau.resources.log, SUMMED over every stage the table
+    occupies: p4c lists a table it splits across stages once per stage (a
+    >512-entry tree of 55 blocks as 22 + 22 + 11; Task 17 compile
+    experiment), and keeping only the last row under-counted it. Returns None
+    when the backend never got as far as allocating resources (see
+    replay_stage_depth's raise)."""
     path = os.path.join(logs_dir, 'mau.resources.log')
     with open(path, encoding='utf-8', errors='replace') as handle:
         text = handle.read()
@@ -29,7 +33,8 @@ def committed_blocks(logs_dir):
     for line in text.partition('Allocated Resource Usage')[2].splitlines():
         match = RESOURCE_TABLE_ROW.match(line)
         if match and not match.group(1).endswith('$action'):
-            blocks[match.group(1).split('.')[-1]] = int(match.group(7))
+            name = match.group(1).split('.')[-1]
+            blocks[name] = blocks.get(name, 0) + int(match.group(7))
     return blocks
 
 
