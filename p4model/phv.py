@@ -16,8 +16,9 @@ ONE counting function, `count`, fed by two thin adapters: `from_pool` (the pool
     disjoint / per-task fields (`@pa_container_size` of the generator), the
     packed layout's containers for a `code_pk_<f>` field.
 
-The budgets are the ingress counts (target.PHV_INGRESS_CONTAINERS) and are
-PROVISIONAL: decision 6c re-measures them on the final generator. Nothing is fitted
+The budgets are the ingress counts (target.PHV_INGRESS_CONTAINERS); the template
+counts were re-measured for decision 6c in Task 18 on the 160 Task 17b base compiles
+and stay PROVISIONAL until gate G3 settles the pins (target.py). Nothing is fitted
 here."""
 from p4model import lanes
 from p4model.errors import PhvContainersExhausted

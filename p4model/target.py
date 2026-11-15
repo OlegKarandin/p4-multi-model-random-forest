@@ -167,19 +167,42 @@ ACTION_RAM_WORD_BYTES = 16
 # Spec docs/superpowers/specs/2026-11-11-packed-codes-stage-pin-design.md Sec 7 (the 32-bit
 # entry is new there; the per-tree pilot never came near it).
 PHV_INGRESS_CONTAINERS = {8: 48, 16: 80, 32: 48}
-# The program's own fields that take a whole container of that size, in every compile
-# (spec Sec 3.3, MEASURED on the 68 packed compiles of model4: 32-bit used 3 or 5 by the
-# program, never more; 16-bit 6 to 22 = k + 5 at most; 8-bit 6 to 15). The 16-bit lists
-# stand for the 5 fixed fields; the packed layout adds one more per selected feature
-# (the range table's value field) and one 8-bit class field per tree (packed.budgets).
-# $hash_field_argument1 is p4c's name for the 16-bit operand of the flow hash.
+# The containers the program's own fields take, per size: everything p4model.phv.count
+# does not count itself (it adds one 16-bit container per _val and per IAT scratch field,
+# one 8-bit per class_tree field, and each code field's pinned containers). Only the
+# tuple LENGTHS are used.
+# PROVISIONAL (decision 6c, re-measured in Task 18 on the 160 Task 17b base compiles,
+# generator e1e08dd, all pins of that commit; results/encoding_evidence_2026_11/model8/
+# impl/remeasure.md, script impl/scripts/t18_phv_budgets.py). Gate G3 may drop pins, which
+# moves PHV: re-run the script on the new compiles and reset these lengths.
+# Each length is the MEDIAN over the 160 of p4c's containers of that size minus the
+# model's own count of the rest (8-bit 6, 16-bit 5, 32-bit 5; ranges 4-7, 3-7, 5-8),
+# because p4c packs and overlays the small fields differently per program. Where the
+# fields really sit (p4c, 160 designs):
+#   8-bit: mirror_type alone 160; ipv4.protocol alone 160; ig_tm_md.qid (the app vote
+#     export, decision 1f) alone in an 8-bit container 118 (else 16/32-bit); the three
+#     header valid bits with ig_md.fwd 100 (else in a 16/32-bit container); bypass_egress
+#     with ig_tm_md.ingress_cos (the ddos vote export) 122; slices of
+#     ig_intr_md_from_prsr.global_tstamp / ig_md.now_pseudo_us (8-bit in 126 / 126).
+#   16-bit: ucast_egress_port, tcp.src_port, tcp.dst_port, ipv4.total_len and a p4c
+#     temporary ($tmp<n>) alone 160; now_pseudo_us alone 111; ingress_port shares a
+#     _val's container 160/160 and $hash_field_argument1 145/160 (counted with the vals).
+#   32-bit: ipv4.src_addr, ipv4.dst_addr, ig_md.flow_hash (158), a temporary (158) alone;
+#     $hash_field_argument0, shared 100/160 with IAT scratch fields.
+#   IAT scratch (<chain>_current_iat, counted as one 16-bit each): p4c puts fwd/bwd ones in
+#     the 32-bit $hash_field_argument0 container (fwd 81/92, bwd 54/114, both together in
+#     35), else in a 16-bit container beside $hash_field_argument1 or the timestamp;
+#     flow_current_iat mostly in 8-bit containers beside the timestamp.
+# Until 2026-11-15 (model4's 68 packed compiles): 4 x 8-bit, 5 x 16-bit, 5 x 32-bit; the
+# vote export (1f) and the forwarding assignments moved first (17b A) added the 8-bit ones.
 PHV_TEMPLATE_FIELDS = {
-    8: ('ig_intr_md_for_dprsr.mirror_type', 'bypass_egress', 'hdr.ipv4.protocol',
-        'header-valid bits'),
-    16: ('ig_intr_md.ingress_port', 'ig_intr_md_for_tm.ucast_egress_port',
-         'hdr.tcp.src_port', 'hdr.tcp.dst_port', '$hash_field_argument1'),
-    32: ('hdr.ipv4.src_addr', 'hdr.ipv4.dst_addr', 'hash operand', 'ig_md.flow_hash',
-         'a temporary'),
+    8: ('ig_intr_md_for_dprsr.mirror_type', 'hdr.ipv4.protocol', 'ig_tm_md.qid',
+        'header-valid bits + ig_md.fwd', 'bypass_egress + ig_tm_md.ingress_cos',
+        'global_tstamp / now_pseudo_us slices'),
+    16: ('ig_intr_md_for_tm.ucast_egress_port', 'hdr.tcp.src_port', 'hdr.tcp.dst_port',
+         'hdr.ipv4.total_len', 'a temporary ($tmp<n>)'),
+    32: ('hdr.ipv4.src_addr', 'hdr.ipv4.dst_addr', '$hash_field_argument0',
+         'ig_md.flow_hash', 'a temporary ($tmp<n>)'),
 }
 # Words the action data bus carries: 128 bytes of 16-byte action RAM words. A packed code
 # field's range-table action may write at most this many (spec Sec 6 rule 3).

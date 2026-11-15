@@ -50,8 +50,8 @@ def widths_of(tree_intervals):
 
 def budgets(n_features, n_trees, n_scratch=0):
   """Containers left for code fields, per size: the ingress containers minus the
-  program's own fields (phv.budgets; spec Sec 3.3, measured on 68 packed
-  compiles): the 32-bit template fields, one 16-bit value field per selected
+  program's own fields (phv.budgets; target.PHV_TEMPLATE_FIELDS, re-measured
+  in Task 18 on 160 compiles of the current generator): the 32-bit template fields, one 16-bit value field per selected
   feature plus one per IAT scratch field plus the 16-bit template fields, one
   8-bit class field per tree plus the 8-bit template fields."""
   return phv.budgets(n_features, n_scratch, n_trees)

@@ -9,7 +9,7 @@ def _w(app=(), ddos=()):
   return {"app": [dict(t) for t in app], "ddos": [dict(t) for t in ddos]}
 
 def test_budgets_are_ingress_containers_minus_the_programs_own_fields():
-  assert packed.budgets(n_features=7, n_trees=6) == {32: 43, 16: 80 - 7 - 5, 8: 48 - 6 - 4}
+  assert packed.budgets(n_features=7, n_trees=6) == {32: 43, 16: 80 - 7 - 5, 8: 48 - 6 - 6}
 
 def test_budgets_count_the_scratch_fields():
   assert packed.budgets(n_features=7, n_trees=6, n_scratch=3)[16] == 80 - 7 - 3 - 5
