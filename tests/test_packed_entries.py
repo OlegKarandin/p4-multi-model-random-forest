@@ -64,10 +64,17 @@ def _program(tmp_path, tasks, **kwargs):
 
 
 def _program_tables(text):
-  """{table: [(bf_rt key name, match kind)]} of a program text, in key order."""
-  return {name: [(bps.bfrt_key_name(expression), kind)
-                 for expression, kind in re.findall(r"(meta\.[\w\[\]:]+)\s*:\s*(\w+);", block)]
-          for name, block in re.findall(r"table (\w+) \{\s*key = \{(.*?)\}", text, re.S)}
+  """{table: [(bf_rt key name, match kind)]} of a program text, in key order. A sliced key
+  carries its name as @name (review B1), which must be the bf_rt name of the expression."""
+  tables = {}
+  for name, block in re.findall(r"table (\w+) \{\s*key = \{(.*?)\}", text, re.S):
+    keys = []
+    for expression, kind, annotated in re.findall(
+        r'(meta\.[\w\[\]:]+)\s*:\s*(\w+)\s*(?:@name\("(\w+)"\))?\s*;', block):
+      assert annotated == ("" if "[" not in expression else bps.bfrt_key_name(expression))
+      keys.append((annotated or bps.bfrt_key_name(expression), kind))
+    tables[name] = keys
+  return tables
 
 
 def _play(entries, row):
