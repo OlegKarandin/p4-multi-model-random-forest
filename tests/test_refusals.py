@@ -84,10 +84,12 @@ def _identity_sample():
     while True:
         folder = os.path.join(here, relative)
         if os.path.isdir(folder):
+            # t<N> or t<N><letter> (t17b); t17b is newer than t17, older than t18
             tags = [name for name in os.listdir(folder)
-                    if re.fullmatch(r"t\d+", name) and os.path.isdir(os.path.join(folder, name))]
+                    if re.fullmatch(r"t\d+[a-z]?", name) and os.path.isdir(os.path.join(folder, name))]
             if tags:
-                return os.path.join(folder, max(tags, key=lambda t: int(t[1:])))
+                return os.path.join(folder, max(
+                    tags, key=lambda t: (int(re.match(r"t(\d+)", t).group(1)), t)))
             return None
         parent = os.path.dirname(here)
         if parent == here:
@@ -169,6 +171,13 @@ def test_a_pre_task_2_program_is_refused_as_a_gated_register_block(tmp_path):
                       lambda m: "%s, %d, %d)" % (m.group(1), int(m.group(2)) // 2,
                                                  int(m.group(2)) // 2), t, count=1),
      "unexpected_shape:code_container:code_"),
+    # the pre-17b template: the forwarding assignments last, after the votes
+    (lambda t: re.sub(r"(\n[ \t]*ig_tm_md\.ucast_egress_port = ig_intr_md\.ingress_port;\n"
+                      r"[ \t]*ig_tm_md\.bypass_egress = 1w1;\n)((?:.|\n)*?)(\n    \}\n\}\n\nPipeline)",
+                      r"\2\1\3", t, count=1), "unexpected_shape:egress_assignment"),
+    # a second copy of one of them after the votes
+    (lambda t: re.sub(r"(\t\t\tvote_ddos\.apply\(\);\n)", r"\1\t\t\tig_tm_md.bypass_egress = 1w1;\n",
+                      t, count=1), "unexpected_shape:egress_assignment"),
 ])
 def test_a_program_of_another_shape_is_refused_with_its_reason(tmp_path, edit, reason):
     (_, text), = _texts(tmp_path, JOINT_ENCODING, 1, min_features=3)
@@ -434,7 +443,9 @@ def test_the_register_schedule_matches_p4c_on_the_probe_compiles():
     REGISTER schedule is tested: the texts predate later generator changes (the vote
     export, key pruning, full-width code fields), so they are not what the
     generator writes today -- check_program refuses the three joint ones
-    (unexpected_shape:code_width, pre-4.3 live-width declarations) -- and the
+    (unexpected_shape:code_width, pre-4.3 live-width declarations) and, since
+    Task 17b, the three per-tree ones (unexpected_shape:egress_assignment, the
+    forwarding assignments last) -- and the
     schedule reads only their range tables, tree keys and register call sites.
     Model vs p4c (73/77 registers in p4c's stage): k<=8 35/35, k>=9 38/42; the four
     misses are pinned below."""

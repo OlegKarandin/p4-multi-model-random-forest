@@ -314,6 +314,12 @@ _VOTE_TABLE = re.compile(r"^vote_(\w+)$")
 _PACKED = "code_pk_"
 _ORIENTATION_ACTION = "flow_orientation_action"
 _PROLOGUE_CALL = "calc_flow_hash"
+# The template's two forwarding assignments, the apply block's first steps (Task 17b):
+# the vote actions write ig_tm_md too (decision 1f), so p4c orders these AFTER the votes
+# when they come last and sometimes spends a stage on them, which the model does not price
+# (7 k=1 under-prices in the Task 17 compile experiment).
+_EGRESS_ASSIGNMENTS = ("ig_tm_md.ucast_egress_port = ig_intr_md.ingress_port",
+                       "ig_tm_md.bypass_egress = 1w1")
 
 
 def _pins(program):
@@ -395,10 +401,18 @@ def _check_apply(program):
   call-site order for the range tables' features; the prologue (calc_flow_hash)
   before the first register, the orientation register first; then range tables,
   trees, and one exact-match vote table per task after every tree, all at one
-  nesting depth."""
+  nesting depth. The forwarding assignments to ig_tm_md come first, before
+  anything else and only there (a trailing copy is a stage the model does not
+  price)."""
   steps = program.apply_steps
   if not steps:
     raise ProgramShapeRefused("unexpected_shape:no_ingress_apply")
+  head = tuple((kind, " ".join(name.split()), depth)
+               for kind, name, depth, _ in steps[:len(_EGRESS_ASSIGNMENTS)])
+  if (head != tuple(("other", text, 0) for text in _EGRESS_ASSIGNMENTS)
+      or any(step[0] == "other" and step[1].startswith("ig_tm_md.")
+             for step in steps[len(_EGRESS_ASSIGNMENTS):])):
+    raise ProgramShapeRefused("unexpected_shape:egress_assignment")
   executes = [step for step in steps if step[0] == "execute"]
   applies = [step for step in steps if step[0] == "apply"]
   if not executes:

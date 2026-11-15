@@ -82,6 +82,11 @@ control SwitchIngress(
 /* TABLES */
 
     apply {
+        // First, not last: the vote actions write ig_tm_md (qid, ingress_cos), so p4c
+        // orders a trailing assignment to ig_tm_md after the votes, in a stage of its own.
+        ig_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
+        ig_tm_md.bypass_egress = 1w1;
+
         if (hdr.tcp.isValid()) {
 
 /* FEATURE_UPDATE_APPLY */
@@ -91,9 +96,6 @@ control SwitchIngress(
 /* CLASSIFICATION */
 
         }
-
-        ig_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
-        ig_tm_md.bypass_egress = 1w1;
     }
 }
 

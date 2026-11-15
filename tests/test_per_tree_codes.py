@@ -195,21 +195,25 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # range action parameters as wide, tree keys the live-bit slices): every text is exactly its old
 # text with that rewrite, and every entries record its old one with each tree key field renamed
 # to its bf_rt slice names, values/masks unchanged (impl/scripts/t7_fixture_compare.py).
+# Re-frozen 2026-11-15 (Task 17b) for the template move: the two forwarding assignments to
+# ig_tm_md now open the ingress apply block instead of closing it (p4c ordered them after the
+# votes, which write ig_tm_md too, and sometimes spent a stage on them); every new text with
+# that move undone has its old sha (impl/scripts/t17b_refreeze.py).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "b056da9326fcf1e3939e3165132b2bde7a7256a55c7f5f28f44710ffdee25241",
-    ("disjoint", 0): "32d33a56f02b2e4953a1cba48477f727baeaa9023c8fccd33d33017ff9321991",
-    ("per_task", 0): "096c1bbe26e5c61146127bec6201f5630f8b2f777b3904d0792625eaa01ae17d",
-    ("joint", 1): "fdff4ad571f08a1f01e39aa1497fe11fae8cd7cf90084ed83a040715c83aa93e",
-    ("disjoint", 1): "20fb68aa0a49eff733c22169ebc7327acc58d82aa16f8603b7b0932403c53450",
-    ("per_task", 1): "7133c8d6ffefbfdee7b560e277b16fa78388ee2826aad1d967e9bcad242c7815",
-    ("joint", 2): "5cfc79d8127096fc006c03867276d8438e13fb212b87ca306b6d669175b3a3d1",
-    ("disjoint", 2): "c1b9c0a48e2b3c5a226041dbe5e67eb41edc429d7b35a01f888b811438851f3b",
-    ("per_task", 2): "f31b92035c122bfaa645f6934a89b739e39a1a3221e5378011e07af380285cae",
-    ("joint", 3): "5ac751671ac0caeef76d1f94bd3723bebec49a48fdc6b4998f4e777af87571c6",
-    ("disjoint", 3): "f5a5174d7ba2df06027027a00078ac12f8a88d600889b88732ddb66ed4a0e735",
-    ("per_task", 3): "6716e59770f666639e6b9f9eb08d00f6b2cb94b64db9f553616bb29ae449d81c",
-    ("disjoint", "three"): "6c72db7756a4df011798d7e2c23314e87534c675c0b15ba4f22c7c0465c0ed41",
-    ("per_task", "three"): "323e982f9f7071366a35b2a3a420027a90df0526d1dd9a81ba6823cea7c2eddc",
+    ("joint", 0): "2201b1adcf6a97cb4bf5154097723ea3ae6b8e5cf65ba70427453720593e7d0f",
+    ("disjoint", 0): "03faaae97879eb3c95cf2f865586e7c646986f1178246d45b835c71b8ad39c43",
+    ("per_task", 0): "92386acc486978fad58dbec46a983c2c51ff20ebb800911c40e7b9bc95981368",
+    ("joint", 1): "ee6df7004ab410e17bd305cb45fc3d27ae4387688f282afa327fcfe1f8fab871",
+    ("disjoint", 1): "ce5b8be106222bc27f457fa86652cec1c91b676bd0135379a943f589540097a2",
+    ("per_task", 1): "9003756030c605c4ebf18f3e3be8f6973406996cc9bee8048ddfc8443974dd83",
+    ("joint", 2): "52932b035cf61cb9e2ab6fd8ef97051a93969c6c1827bffdb3226a2a9df7f8b2",
+    ("disjoint", 2): "92cdd49543dece167d087efc93462e2fc05624a7ea43b937debeaa8bdc12965c",
+    ("per_task", 2): "aedafe5b6f438f3c808412a5c4f9183192ecf7d63db949e3f51fdbe47d2cc50b",
+    ("joint", 3): "c9409aa5d3992873d8d24b7015da8286503fb1c4c97eedb12f9d4ebb70ce2fc8",
+    ("disjoint", 3): "e26a447d7e5bee425463daa4dd1723cb0011272f32d55bd778f74e8ff3347131",
+    ("per_task", 3): "195a554ecc4f87bd125a25b380c6a13047b16a603220222f63339c3231aaad2f",
+    ("disjoint", "three"): "fab28c5d0c5c16eb47eb7b19e24ad93a597875153eed179cbe5810eb86dcbb01",
+    ("per_task", "three"): "8e83cf7d5f9c4185e9ac622cdea0791f888ee431d8ef8f5816c57b7a67e8ee76",
 }
 
 
