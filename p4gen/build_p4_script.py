@@ -2425,9 +2425,27 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
 # (p4/tofino_spike/tna_m1_flows_iat_spike.p4). Do not reword/"clean up"
 # these -- they are the compiler-validated ground truth.
 _REGISTER_ACTION_BODIES = {
+  # A chain's last-arrival register (V1o, Task 34; user decision 2026-11-15).
+  #   WHAT: a 32-bit register holding the 32-bit clock now_pseudo_us (calc_timestamp:
+  #     global_tstamp[41:10], 1.024 us ticks); the gap is clamped at 65535 INSIDE the
+  #     RegisterAction, which returns bit<32> rv; the call site casts it to the 16-bit
+  #     scratch field (_execute_lines).
+  #   WHY: with a 16-bit clock and register the gap wrapped mod 65536 ticks (67.1 ms), so
+  #     any gap over 67 ms read as a random small IAT. Emulated on 200 DEV designs
+  #     (val_select, Task 29): agreement with software app 92.8% / 81.3% (k<=8 / k>=9)
+  #     today; the clamp and the unit rounding together 99.98% / 99.97%.
+  #   EVIDENCE: Task 29 (impl/probe_timestamp.md): V1o compiled 3/3 at no stage or block
+  #     cost (prog.bfa `grt.u lo, phv_lo, -lo, -65535` / `alu_a cmplo, hi, 65535` / `sub
+  #     !cmplo, hi, phv_lo, lo`), PHV +1..+3; the brief's V1 (rv bit<16>, cast inside the
+  #     RegisterAction) is a p4c internal error 3/3. The live tofino-model check (Task 33b,
+  #     impl/probe_first_packet.md) read a 100 ms gap as 65535, not wrapped.
   "iat_delta": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\trv = meta.now_pseudo_us - value;\n"
+      "\t\t\tif (meta.now_pseudo_us - value > 65535) {{\n"
+      "\t\t\t\trv = 65535;\n"
+      "\t\t\t}} else {{\n"
+      "\t\t\t\trv = (meta.now_pseudo_us - value);\n"
+      "\t\t\t}}\n"
       "\t\t\tvalue = meta.now_pseudo_us;\n"
       "\t\t}}\n"
   ),
@@ -2520,10 +2538,16 @@ _REGISTER_ACTION_BODIES = {
 # probe_7_1.md): p4c accepts every template; each costs one more SALU
 # instruction (the meta.fwd compare) and no stage.
 _DIRECTION_READ_BODIES = {
+  # V1o's clamp (see _REGISTER_ACTION_BODIES["iat_delta"]) inside the owner test: two
+  # compare units, Tofino-1's limit (Task 29: compiled 3/3).
   "iat_delta": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.fwd == {owner}) {{\n"
-      "\t\t\t\trv = meta.now_pseudo_us - value;\n"
+      "\t\t\t\tif (meta.now_pseudo_us - value > 65535) {{\n"
+      "\t\t\t\t\trv = 65535;\n"
+      "\t\t\t\t}} else {{\n"
+      "\t\t\t\t\trv = (meta.now_pseudo_us - value);\n"
+      "\t\t\t\t}}\n"
       "\t\t\t\tvalue = meta.now_pseudo_us;\n"
       "\t\t\t}} else {{\n"
       "\t\t\t\trv = 0;\n"
@@ -2582,6 +2606,16 @@ _DIRECTION_READ_BODIES = {
 
 # gated_by -> the meta.fwd value of the owner direction.
 _DIRECTION_OWNER = {"fwd": 1, "bwd": 0}
+
+# What a body kind's `.execute()` call site wraps around the call
+# (_execute_lines): `<target> = <prefix><name>_action.execute(meta.flow_hash)<suffix>;`.
+#   iat_delta, prefix `(bit<16>) `: V1o (Task 34). The RegisterAction returns the
+#     clamped gap as bit<32> (its register's width) and the 16-bit scratch field takes
+#     its low half, which the clamp keeps <= 65535. The cast must sit HERE: inside the
+#     RegisterAction (rv bit<16>) p4c fails with an internal compiler error 3/3 ("input
+#     now_pseudo_us[15:0] ... cannot be found on the hash input"; Task 29, V1).
+_CALL_SITE_PREFIX = {"iat_delta": "(bit<16>) "}
+_CALL_SITE_SUFFIX = {}
 
 # Register-action body kinds that require an extra hardware-primitive
 # declaration (e.g. a MathUnit<> instance) emitted immediately before their
@@ -2995,15 +3029,20 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       "\t}\n"
   )
 
-  # The 16-bit pseudo-microsecond clock: bits 25..10 of the 48-bit nanosecond
-  # timestamp (units of 1.024 us), written as the slice it is (review Part C
-  # item 4; it was `(bit<16>)(global_tstamp >> 10)`, the same bits, which
-  # prog.bfa already compiled as two bit moves).
+  # The 32-bit pseudo-microsecond clock (V1o, Task 34): bits 41..10 of the
+  # 48-bit nanosecond timestamp (units of 1.024 us; it wraps every 73 min), the
+  # slice Task 29's V1o compiled (impl/probe_timestamp.md). It was 16 bits
+  # ([25:10], wrapping every 67.1 ms), which made every gap past 67 ms read
+  # modulo 65536 ticks; the last-arrival registers now hold all 32 bits and
+  # clamp the gap at 65535 (_REGISTER_ACTION_BODIES["iat_delta"]). A 32-bit
+  # @pa_container_size pin on it is refused by p4c (Task 29 V1p, 3/3: the
+  # shifted slice must split where its source bits split), so it keeps only
+  # the @pa_solitary pin (generate_p4_program).
   if needs_timestamp:
     register_actions_code += (
         "\n"
         "\taction calc_timestamp() {\n"
-        "\t\tmeta.now_pseudo_us = ig_prsr_md.global_tstamp[25:10];\n"
+        "\t\tmeta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];\n"
         "\t}\n"
     )
 
@@ -3079,8 +3118,10 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
         already_executed_registers.add(name)
         target = ("meta." + iat_field_name(name) if reg["role"] == "dependency"
                   else "meta." + feature + "_val")
-        lines.append("{indent}{target} = {name}_action.execute(meta.flow_hash);".format(
-            indent=indent, target=target, name=name))
+        lines.append("{indent}{target} = {prefix}{name}_action.execute(meta.flow_hash){suffix};".format(
+            indent=indent, target=target, name=name,
+            prefix=_CALL_SITE_PREFIX.get(reg["body"], ""),
+            suffix=_CALL_SITE_SUFFIX.get(reg["body"], "")))
     return lines
 
   ungated_features = [f for f in matched_features if catalog[f].get("gated_by") is None]

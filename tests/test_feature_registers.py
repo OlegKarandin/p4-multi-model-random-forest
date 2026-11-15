@@ -210,7 +210,7 @@ def test_flow_iat_max_catalog_entry():
   entry = FEATURE_REGISTER_CATALOG["flow_iat_max"]
   assert entry["gated_by"] is None
   assert entry["registers"] == [
-      {"name": "flow_last_arrival_time", "role": "dependency", "width": 16, "body": "iat_delta"},
+      {"name": "flow_last_arrival_time", "role": "dependency", "width": 32, "body": "iat_delta"},
       {"name": "flow_iat_max", "role": "value", "width": 16, "body": "running_max_iat"},
   ]
 
@@ -219,7 +219,7 @@ def test_fwd_iat_max_catalog_entry():
   entry = FEATURE_REGISTER_CATALOG["fwd_iat_max"]
   assert entry["gated_by"] == "fwd"
   assert entry["registers"] == [
-      {"name": "fwd_last_arrival_time", "role": "dependency", "width": 16, "body": "iat_delta"},
+      {"name": "fwd_last_arrival_time", "role": "dependency", "width": 32, "body": "iat_delta"},
       {"name": "fwd_iat_max", "role": "value", "width": 16, "body": "running_max_iat"},
   ]
 
@@ -236,7 +236,7 @@ def test_flow_iat_mean_catalog_entry():
   entry = FEATURE_REGISTER_CATALOG["flow_iat_mean"]
   assert entry["gated_by"] is None
   assert entry["registers"] == [
-      {"name": "flow_last_arrival_time", "role": "dependency", "width": 16, "body": "iat_delta"},
+      {"name": "flow_last_arrival_time", "role": "dependency", "width": 32, "body": "iat_delta"},
       {"name": "flow_iat_mean", "role": "value", "width": 16, "body": "mathunit_ewma"},
   ]
 
@@ -387,11 +387,12 @@ def test_fwd_owned_call_sites_follow_the_ungated_ones(m1_generated):
   assert "if (meta.fwd" not in apply_code
 
   # flow_iat_max is ungated ("gated_by": None).
-  flow_dep_idx = apply_code.index("\t\t\tmeta.flow_current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);")
+  # (V1o: a dependency's bit<32> result is cast to its 16-bit scratch field at the call site)
+  flow_dep_idx = apply_code.index("\t\t\tmeta.flow_current_iat = (bit<16>) flow_last_arrival_time_action.execute(meta.flow_hash);")
   flow_val_idx = apply_code.index("\t\t\tmeta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);")
 
   # fwd_iat_max and fwd_packet_length_max are "gated_by": "fwd".
-  fwd_dep_idx = apply_code.index("\t\t\tmeta.fwd_current_iat = fwd_last_arrival_time_action.execute(meta.flow_hash);")
+  fwd_dep_idx = apply_code.index("\t\t\tmeta.fwd_current_iat = (bit<16>) fwd_last_arrival_time_action.execute(meta.flow_hash);")
   fwd_val_idx = apply_code.index("\t\t\tmeta.fwd_iat_max_val = fwd_iat_max_action.execute(meta.flow_hash);")
   fwd_pktlen_idx = apply_code.index("\t\t\tmeta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);")
   assert max(flow_dep_idx, flow_val_idx) < min(fwd_dep_idx, fwd_val_idx, fwd_pktlen_idx)
@@ -758,12 +759,15 @@ def test_the_whole_catalog_needs_twenty_one_distinct_registers():
 
 def test_register_width_bits_happy_path():
   """register_width_bits returns the correct width for a known register name."""
-  # flow_last_arrival_time is a known register with width 16
-  assert fr.register_width_bits("flow_last_arrival_time") == 16
-  # flow_iat_max is also a known register with width 16
+  # flow_last_arrival_time holds the 32-bit arrival clock (V1o, Task 34)
+  assert fr.register_width_bits("flow_last_arrival_time") == 32
+  # flow_iat_max is a value register, width 16
   assert fr.register_width_bits("flow_iat_max") == 16
-  # All registers in the catalog have width 16
+  # Every value register has width 16, every last-arrival register 32
   assert fr.register_width_bits("fwd_packet_length_max") == 16
+  for entry in fr.FEATURE_REGISTER_CATALOG.values():
+    for reg in entry["registers"]:
+      assert reg["width"] == (32 if reg["body"] == "iat_delta" else 16), reg
 
 
 def test_register_width_bits_miss_path():
@@ -844,24 +848,23 @@ def test_every_gated_body_kind_has_a_direction_read_template():
 def _without_direction_test(lines):
   """A direction-read body's update statements, with its direction test taken
   out: `if (meta.fwd == D) {...}` unwrapped, `meta.fwd == D && ` dropped, and
-  the read-direction `else` branch removed."""
-  out, skip = [], 0
+  the read-direction `else` branch removed. Brace depth is tracked, so an `if`
+  nested inside the direction test (V1o's clamp) keeps its own `else`."""
+  out, depth, fwd_depth, in_else = [], 0, None, False
   for line in lines:
-    if re.fullmatch(r"if \(meta\.fwd == [01]\) \{", line):
-      skip += 1
+    if fwd_depth is None and re.fullmatch(r"if \(meta\.fwd == [01]\) \{", line):
+      fwd_depth, depth = depth, depth + 1
       continue
-    if skip and line == "} else {":
-      out.append("ELSE")
+    new_depth = depth + line.count("{") - line.count("}")
+    if fwd_depth is not None and line == "} else {" and depth - 1 == fwd_depth:
+      in_else, depth = True, new_depth
       continue
-    out.append(re.sub(r"meta\.fwd == [01] && ", "", line))
-  if "ELSE" in out:  # drop from the else marker to its closing brace
-    start = out.index("ELSE")
-    out = out[:start] + out[start + 3:]
-  elif skip:
-    # the unwrapped if's closing brace: the first "}" after the last statement
-    # that belonged inside it is the one directly before `rv = value;`
-    closing = len(out) - 1 - out[::-1].index("}", 1)
-    out = out[:closing] + out[closing + 1:]
+    if fwd_depth is not None and line == "}" and new_depth == fwd_depth:
+      fwd_depth, in_else, depth = None, False, new_depth
+      continue
+    depth = new_depth
+    if not in_else:
+      out.append(re.sub(r"meta\.fwd == [01] && ", "", line))
   return out
 
 
@@ -912,7 +915,8 @@ def test_no_two_dependency_registers_write_the_same_field():
   """Each chain's dependency register writes its own scratch field, so no
   write-after-read edge joins two chains (controller ruling 2026-11-14)."""
   _, actions, apply_code, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
-  written = re.findall(r"meta\.(\w+) = (\w+)_action\.execute\(", apply_code)
+  # (a dependency's call site casts its bit<32> result: V1o)
+  written = re.findall(r"meta\.(\w+) = (?:\(bit<\d+>\) )?(\w+)_action\.execute\(", apply_code)
   dependency = {reg["name"] for entry in FEATURE_REGISTER_CATALOG.values()
                 for reg in entry["registers"] if reg["role"] == "dependency"}
   fields = [field for field, register in written if register in dependency]

@@ -2599,5 +2599,24 @@ def test_the_resources_hold_only_what_the_program_uses():
   util = (pathlib.Path(bps.PATH) / "p4_util.p4").read_text()
   assert "BypassEgress" not in util and "TofinoEgressParser" not in util
   _, actions, _, _ = bps.generate_P4_registers_and_apply({"flow_iat_max": None})
-  assert "meta.now_pseudo_us = ig_prsr_md.global_tstamp[25:10];" in actions
+  # V1o (Task 34): the 32-bit clock, bits 41..10 of the nanosecond timestamp
+  assert "meta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];" in actions
   assert ">> 10" not in actions
+  assert "    bit<32> now_pseudo_us;" in template
+
+
+def test_the_last_arrival_registers_hold_the_32_bit_clock_and_clamp_the_gap():
+  """V1o (Task 34; Task 29 probe, live-checked in Task 33b): 32-bit last-arrival
+  registers, the gap clamped at 65535 inside the RegisterAction (rv bit<32>), the
+  16-bit cast at the call site."""
+  registers, actions, apply_code, _ = bps.generate_P4_registers_and_apply(
+      {"flow_iat_max": None, "fwd_iat_max": None, "bwd_iat_max": None})
+  for chain in ("flow", "fwd", "bwd"):
+    assert re.search(r"Register<bit<32>, bit<12>>\(MAX_NUM_FLOWS[^)]*\) %s_last_arrival_time_reg;"
+                     % chain, registers)
+    assert ("RegisterAction<bit<32>, bit<12>, bit<32>>(%s_last_arrival_time_reg) "
+            "%s_last_arrival_time_action" % (chain, chain)) in actions
+    assert ("meta.%s_current_iat = (bit<16>) %s_last_arrival_time_action.execute(meta.flow_hash);"
+            % (chain, chain)) in apply_code
+  assert actions.count("if (meta.now_pseudo_us - value > 65535) {") == 3
+  assert actions.count("rv = 65535;") == 3

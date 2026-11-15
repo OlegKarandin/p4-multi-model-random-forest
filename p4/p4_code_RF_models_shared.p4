@@ -25,7 +25,7 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 struct metadata_t {
     bit<12> flow_hash;
     bit<1>  fwd;
-    bit<16> now_pseudo_us;
+    bit<32> now_pseudo_us;
 
 	bit<16> flow_current_iat;
 	bit<2> class_tree_app_0;
@@ -95,7 +95,7 @@ control SwitchIngress(
 	@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")
 	Hash<bit<12>>(HashAlgorithm_t.CRC32) flow_hash_calc;
 	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
-	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) flow_last_arrival_time_reg;
+	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_last_arrival_time_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) flow_iat_max_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_packet_length_max_reg;
 
@@ -111,7 +111,7 @@ control SwitchIngress(
 	}
 
 	action calc_timestamp() {
-		meta.now_pseudo_us = ig_prsr_md.global_tstamp[25:10];
+		meta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];
 	}
 
 	RegisterAction<bit<32>, bit<12>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
@@ -123,9 +123,13 @@ control SwitchIngress(
 		}
 	};
 
-	RegisterAction<bit<16>, bit<12>, bit<16>>(flow_last_arrival_time_reg) flow_last_arrival_time_action = {
-		void apply(inout bit<16> value, out bit<16> rv) {
-			rv = meta.now_pseudo_us - value;
+	RegisterAction<bit<32>, bit<12>, bit<32>>(flow_last_arrival_time_reg) flow_last_arrival_time_action = {
+		void apply(inout bit<32> value, out bit<32> rv) {
+			if (meta.now_pseudo_us - value > 65535) {
+				rv = 65535;
+			} else {
+				rv = (meta.now_pseudo_us - value);
+			}
 			value = meta.now_pseudo_us;
 		}
 	};
@@ -283,7 +287,7 @@ control SwitchIngress(
 
 			meta.fwd = flow_orientation_action.execute(meta.flow_hash);
 
-			meta.flow_current_iat = flow_last_arrival_time_action.execute(meta.flow_hash);
+			meta.flow_current_iat = (bit<16>) flow_last_arrival_time_action.execute(meta.flow_hash);
 			meta.flow_iat_max_val = flow_iat_max_action.execute(meta.flow_hash);
 
 			meta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);

@@ -13,7 +13,7 @@ const bit<32> MAX_NUM_FLOWS = <MAX_NUM_FLOWS>;
 struct metadata_t {
     bit<<FLOW_INDEX_BITS>> flow_hash;
     bit<1>  fwd;
-    bit<16> now_pseudo_us;
+    bit<32> now_pseudo_us;
 
 /* METADATA */
 }

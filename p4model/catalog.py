@@ -50,9 +50,13 @@ FEATURE_REGISTER_CATALOG maps a lowercase feature name to:
                 #   tables, assigned to `meta.<feature>_val` (matching the
                 #   spike's `metadata_t` field naming, e.g.
                 #   `meta.flow_iat_max_val`).
-            "width": <int>,          # register bit width (16 for all M1
-                                      # registers, matching the spike and
-                                      # the original v1model bit<16>).
+            "width": <int>,          # register bit width: 16 for every value
+                                      # register (the spike's and the original
+                                      # v1model's bit<16>); 32 for the
+                                      # last-arrival ("iat_delta") registers
+                                      # since Task 34 (V1o: they hold the
+                                      # 32-bit arrival clock, see
+                                      # build_p4_script._REGISTER_ACTION_BODIES).
             "body": <str>,           # symbolic RegisterAction body kind;
                                       # see build_p4_script.py's
                                       # _REGISTER_ACTION_BODIES for the
@@ -168,7 +172,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "flow_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
@@ -185,7 +189,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "fwd_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
@@ -221,7 +225,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "flow_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
@@ -250,7 +254,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "flow_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
@@ -268,7 +272,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "fwd_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
@@ -286,7 +290,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "fwd_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
@@ -311,7 +315,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "bwd_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
@@ -328,7 +332,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "bwd_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
@@ -345,7 +349,7 @@ FEATURE_REGISTER_CATALOG = {
             {
                 "name": "bwd_last_arrival_time",
                 "role": "dependency",
-                "width": 16,
+                "width": 32,
                 "body": "iat_delta",
             },
             {
