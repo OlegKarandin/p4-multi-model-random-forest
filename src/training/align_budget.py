@@ -190,7 +190,10 @@ def port_floor(nbytes, nibbles):
     of any key of `nbytes` crossbar bytes of which `nibbles` carry <= 4 live
     bits, or None when no block count up to the stage's 12 groups admits it
     (then the key is priced, never bounded). Task 30; used only to skip probes
-    that provably buy nothing, never as a price.
+    that provably buy nothing, never as a price. A finite floor does not mean the
+    key fits: it knows neither lanes nor the 12-blocks-per-word refusal
+    (tables.word_blocks), so a key it bounds can still be refused when priced,
+    which raises CrossbarKeyTooWide as the plain scan would.
 
     Why it is a bound. An allocation xbar finds is priced by
     xbar.blocks_per_row = max(G, 2 * whole + half + 1), G groups touched, and

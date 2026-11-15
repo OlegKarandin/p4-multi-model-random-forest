@@ -163,7 +163,10 @@ def trial_rows(all_trials, table):
     never recorded it (it failed before the objective set it). This replaced the
     per-tree arm's boolean `no_split_tree` column (now the magnitude of that
     constraint, 1 for a tree with no split); a trials CSV written before has
-    neither these columns nor, on the other arms, any refusal column."""
+    neither these columns nor, on the other arms, any refusal column. The key
+    refusal's column is `key_too_wide` since Task 32 (2026-11-15) and
+    `key_bytes_over` in older trials CSVs: an analysis reading both eras maps the
+    names through p4model.refusals.canonical."""
     by_number = {row['number']: row for row in table}
     rows = []
     for trial in sorted(all_trials, key=lambda t: t.number):

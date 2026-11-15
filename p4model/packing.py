@@ -210,7 +210,9 @@ def _stage_shards(block_count, byte_width):
   licensed because it corrects rounding rather than relaxing a measured
   limit."""
   if byte_width > TERNARY_CROSSBAR_STAGE_BYTES:
-    # Live bits are not known here; 8 per byte is an upper bound.
+    # Live bits are not known here; 8 per byte is an upper bound, so the
+    # magnitude (bits over 524) is one too. Reached only by a caller that skipped
+    # the pricing paths' own checks (they refuse such a key first).
     raise CrossbarKeyTooWide(
         "table key of %d crossbar bytes is wider than a stage's %d crossbar byte "
         "slots" % (byte_width, TERNARY_CROSSBAR_STAGE_BYTES), 8 * byte_width)

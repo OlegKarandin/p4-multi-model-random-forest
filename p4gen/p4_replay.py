@@ -821,7 +821,12 @@ def check_trees(program):
     lanes.table_blocks does, so a
     design with both a key and a PHV problem is refused for its key on both
     paths. The PHV count is phv.check (R5); a packed key with no allocation is
-    refused by the pricing (_packed_price), after the PHV count as in training."""
+    refused by the pricing (_packed_price), after the PHV count as in training.
+    One ordering difference, packed programs only: training checks each tree's
+    bits and then its crossbar fit before the next tree, this checks every
+    tree's bits first; the constraint name is the same either way (key_too_wide),
+    only the magnitude could differ, when one tree fails the fit and a later one
+    the bits (Task 32 review minor 2; never seen in DEV)."""
     trees = [name for name in program.tables if _TREE_TASK.match(name)]
     for name in trees:
         if not program.tables[name]:

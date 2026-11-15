@@ -56,6 +56,11 @@ def baseline(text):
             continue
         rows = math.ceil(program.sizes[name] / TCAM_ROWS)
         if name.startswith('get_classification_tree'):
+            # Live code bits, except for a packed per-tree program, whose
+            # code_pk_ fields carry their DECLARED container bits here (each tree
+            # keys only its own slices of them; Task 32 review minor 7): the
+            # baseline over-counts those keys. Pre-existing; Table II's
+            # recompute should know.
             key_bits = sum(program.bits[key] for key in keys)
             tree_blocks += rows * math.ceil(key_bits / TCAM_BITS)
             tree_tasks.append(_TREE_TASK.match(name).group(1))

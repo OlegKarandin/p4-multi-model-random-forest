@@ -543,7 +543,9 @@ def _check_flow_hash(program):
   raw header fields, both FLOW_HASH_SYMMETRIC_PAIRS on it, no `&` mask and no `^`
   XOR of the inputs. An older generator's hash (XOR inputs, a 32-bit CRC masked
   `& 0xFFF`) costs p4c 3 stages, so its text is refused, never priced 2 stages
-  low."""
+  low. The pairs are read from every @symmetric annotation in the text, not only
+  the one on the Hash calc_flow_hash calls: conservative (an extra pair anywhere
+  refuses), exact for generated text, whose only @symmetric lines are the hash's."""
   from p4model.program import FLOW_HASH_SYMMETRIC_PAIRS, FLOW_INDEX_BITS
   if not program.flow_hash:
     return             # no calc_flow_hash action at all: refused by _check_apply (prologue)
