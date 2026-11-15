@@ -31,6 +31,39 @@ FEATURE_VALUE_BIT_WIDTH = 16
 # copy, so this is the one place it is set.
 FLOW_HASH_LEVEL = 1
 
+# The number of per-flow register slots, and the one constant the flow index
+# is derived from (review Part C item 6): the template's `MAX_NUM_FLOWS` P4
+# constant, the width of the Hash<> output and of meta.flow_hash, and every
+# Register's index type are all substituted from these two values, so the
+# program cannot disagree with itself. A power of two, so a FLOW_INDEX_BITS-bit
+# hash output addresses every slot exactly once. (Moved here from
+# p4gen.build_p4_script, which re-exports both, so that
+# p4gen.program_checks can check a program's hash against them.)
+MAX_NUM_FLOWS = 4096
+FLOW_INDEX_BITS = MAX_NUM_FLOWS.bit_length() - 1
+if MAX_NUM_FLOWS != 1 << FLOW_INDEX_BITS:
+  raise AssertionError("MAX_NUM_FLOWS must be a power of two, got %d" % MAX_NUM_FLOWS)
+
+# The two @symmetric pairs on the flow hash (review A1b): the generator emits
+# one `@symmetric("<a>", "<b>")` per pair on its Hash instance, and
+# program_checks.check_program refuses a program whose hash carries other pairs
+# (an older generator's XOR form has none).
+FLOW_HASH_SYMMETRIC_PAIRS = (("hdr.ipv4.src_addr", "hdr.ipv4.dst_addr"),
+                             ("hdr.tcp.src_port", "hdr.tcp.dst_port"))
+
+
+def bfrt_key_name(expression):
+  '''bf_rt's short name of a P4 key expression, the name its add_with_<action>
+  kwargs use: bfrtcli._build_names' replaceables, then the last dotted
+  component. A slice keeps its bounds: meta.code_x[63:0] -> code_x_63_0_. The
+  generator writes it as the @name of every sliced key (review B1), and
+  program_checks.check_program requires exactly that name. (Moved here from
+  p4gen.build_p4_script, which re-exports it.)'''
+  for old, new in (('$', ''), (' & ', '_'), ('-', '_'), (':', '_'), ('[', '_'),
+                   (']', '_'), ('__', '_')):
+    expression = expression.replace(old, new)
+  return expression[expression.rfind('.') + 1:]
+
 # The vote_app/vote_ddos tables read every tree's class and so always sit one
 # stage past the last classification table. Measured: exactly 1 in all 19
 # compiles, with no exceptions and no scaling. stage_depth is the quantity

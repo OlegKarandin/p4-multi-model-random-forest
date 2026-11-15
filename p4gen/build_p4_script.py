@@ -32,18 +32,13 @@ from p4model.program import (VOTE_EXPORT, VOTE_EXPORT_BITS, APP_TASK, DDOS_TASK,
                                  PER_TASK_ENCODING, PER_TREE_ENCODING, PLACEMENT_PRIORITY,
                                  TaskSpec, per_task_field,
                                  placement_priorities, range_table_priority, task_names)
+# The flow-slot count, the flow index width, the hash's @symmetric pairs and the
+# bf_rt key-name rule live in p4model.program (one statement each, which
+# program_checks reads too); re-exported here, where the generator uses them.
+from p4model.program import (FLOW_HASH_SYMMETRIC_PAIRS, FLOW_INDEX_BITS,  # noqa: F401
+                                 MAX_NUM_FLOWS, bfrt_key_name)
 
 INFINITE = (2**16)-1
-# The number of per-flow register slots, and the one constant the flow index
-# is derived from (review Part C item 6): the template's `MAX_NUM_FLOWS` P4
-# constant, the width of the Hash<> output and of meta.flow_hash, and every
-# Register's index type are all substituted from these two values, so the
-# program cannot disagree with itself. A power of two, so a FLOW_INDEX_BITS-bit
-# hash output addresses every slot exactly once.
-MAX_NUM_FLOWS = 4096
-FLOW_INDEX_BITS = MAX_NUM_FLOWS.bit_length() - 1
-if MAX_NUM_FLOWS != 1 << FLOW_INDEX_BITS:
-  raise AssertionError("MAX_NUM_FLOWS must be a power of two, got %d" % MAX_NUM_FLOWS)
 
 # The P4 templates ship inside this package (p4gen/resources/), so they are found
 # from this module's own location, not from the current directory.
@@ -879,16 +874,6 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
 
 
 # MAX_KEY_SLICE_BITS (64) lives in p4model.target: p4c asserts on a wider ternary key slice.
-
-
-def bfrt_key_name(expression):
-  '''bf_rt's short name of a P4 key expression, the name its add_with_<action>
-  kwargs use: bfrtcli._build_names' replaceables, then the last dotted
-  component. A slice keeps its bounds: meta.code_x[63:0] -> code_x_63_0_.'''
-  for old, new in (('$', ''), (' & ', '_'), ('-', '_'), (':', '_'), ('[', '_'),
-                   (']', '_'), ('__', '_')):
-    expression = expression.replace(old, new)
-  return expression[expression.rfind('.') + 1:]
 
 
 def code_key_slices(bits):
@@ -2971,9 +2956,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   #     (asm_hash_output.cpp).
   # With both, the hash runs in stage 0 and the first RegisterAction in stage
   # 1 (program.FLOW_HASH_LEVEL).
-  registers_code = (
-      '\t@symmetric("hdr.ipv4.src_addr", "hdr.ipv4.dst_addr")\n'
-      '\t@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")\n'
+  registers_code = "".join(
+      '\t@symmetric("%s", "%s")\n' % pair for pair in FLOW_HASH_SYMMETRIC_PAIRS) + (
       "\tHash<bit<{index}>>(HashAlgorithm_t.CRC32) flow_hash_calc;\n"
       "\tRegister<bit<32>, bit<{index}>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;\n"
   ).format(index=FLOW_INDEX_BITS)

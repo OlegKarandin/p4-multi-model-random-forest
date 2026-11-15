@@ -56,8 +56,11 @@ class Program:
     line), declared (metadata field -> its DECLARED bits; `bits` holds a code
     field's live, keyed bits instead), exact_keys (table -> its exact-match key
     fields, the vote tables'), stage_pins / gated_register_blocks (the text has
-    @stage lines / RegisterActions executed in `if (meta.fwd ...)` blocks) and
-    apply_steps (program_checks.apply_steps)."""
+    @stage lines / RegisterActions executed in `if (meta.fwd ...)` blocks),
+    apply_steps (program_checks.apply_steps), flow_hash (program_checks.
+    flow_hash_shape: the hash's output bits, @symmetric pairs, operators in
+    calc_flow_hash) and key_names ((table, field, hi, lo) -> the @name of that
+    sliced key line, None when it has none)."""
     tables: dict
     widths: dict
     bits: dict
@@ -76,6 +79,8 @@ class Program:
     stage_pins: bool = False
     gated_register_blocks: bool = False
     apply_steps: tuple = ()
+    flow_hash: tuple = ()
+    key_names: dict = field(default_factory=dict)
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -88,7 +93,8 @@ _PACKED_FIELD = 'code_pk_'
 
 def _parse_keys(text):
     """(table name -> [match key field names], field -> byte width,
-    field -> BIT width, (table, field) -> [(hi, lo)] key slices) for one
+    field -> BIT width, (table, field) -> [(hi, lo)] key slices,
+    (table, field, hi, lo) -> that slice's @name or None) for one
     generated program.
 
     The widths come from the metadata declarations (`bit<N> code_<f>;` /
@@ -118,7 +124,7 @@ def _parse_keys(text):
     # slices of it, so its slices are no one key's width; they are kept per
     # (table, field) instead (tree_key_bytes) and its declared bits stay the
     # field's container bits.
-    tables, current, slices = {}, None, {}
+    tables, current, slices, names = {}, None, {}, {}
     for line in text.splitlines():
         opened = re.match(r"\s*table\s+(\w+)\s*\{", line)
         if opened:
@@ -127,13 +133,14 @@ def _parse_keys(text):
             continue
         # A sliced key carries @name("<bf_rt name>") since review B1.
         key = re.match(r"\s*meta\.(\w+)(?:\[(\d+):(\d+)\])?\s*:\s*(ternary|range)"
-                       r"\s*(?:@name\(\s*\"[^\"]*\"\s*\))?\s*;", line)
+                       r"\s*(?:@name\(\s*\"([^\"]*)\"\s*\))?\s*;", line)
         if key and current:
             if key.group(1) not in tables[current]:
                 tables[current].append(key.group(1))
             if key.group(2) is not None:
                 hi, lo = int(key.group(2)), int(key.group(3))
                 slices.setdefault((current, key.group(1)), []).append((hi, lo))
+                names[(current, key.group(1), hi, lo)] = key.group(5)
     live = {}
     for (table, name), runs in slices.items():
         if name.startswith(_PACKED_FIELD):
@@ -146,7 +153,7 @@ def _parse_keys(text):
     for name, (width, _) in live.items():
         bits[name] = width
         widths[name] = math.ceil(width / 8)
-    return tables, widths, bits, slices
+    return tables, widths, bits, slices, names
 
 
 def _live_width(table, name, runs):
@@ -304,7 +311,7 @@ def parse_program_text(text):
     (replay_plans, program_checks.check_program), so an archived program is
     replayed at the commit that generated it, never silently priced as if
     current. Raises ValueError only for a key it cannot read (_parse_keys)."""
-    tables, widths, bits, slices = _parse_keys(text)
+    tables, widths, bits, slices, names = _parse_keys(text)
     return Program(tables, widths, bits, _parse_sizes(text),
                    _parse_priorities(text),
                    containers={name: tuple(int(size) for size in sizes.split(','))
@@ -322,7 +329,9 @@ def parse_program_text(text):
                    exact_keys=_parse_exact_keys(text),
                    stage_pins=carries_stage_pins(text),
                    gated_register_blocks=carries_gated_register_blocks(text),
-                   apply_steps=program_checks.apply_steps(text))
+                   apply_steps=program_checks.apply_steps(text),
+                   flow_hash=program_checks.flow_hash_shape(text),
+                   key_names=names)
 
 
 def parse_program(p4_path):

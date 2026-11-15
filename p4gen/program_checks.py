@@ -286,6 +286,32 @@ def apply_steps(text):
   return ()
 
 
+_HASH_DECL = re.compile(r"\bHash<\s*bit<\s*(\d+)\s*>\s*>\s*\([^)]*\)\s*(\w+)\s*;")
+_SYMMETRIC = re.compile(r'@symmetric\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)')
+_FLOW_HASH_ACTION = re.compile(r"\baction\s+calc_flow_hash\s*\(\s*\)\s*\{")
+
+
+def flow_hash_shape(text):
+  """(output bits, @symmetric pairs, operators) of the program's flow hash: the bit
+  width of the Hash instance calc_flow_hash calls (None when there is none), the
+  sorted (a, b) pairs of every @symmetric annotation in the text, and the
+  operators `&` / `^` found in calc_flow_hash's body (the pre-A1 generator XORed
+  the inputs and masked the 32-bit result `& 0xFFF`). Read by
+  p4_replay.parse_program_text into Program.flow_hash; check_program judges it."""
+  text = _strip_comments(text)
+  bodies = [text[m.end():_matching(text, m.end() - 1)]
+            for m in _FLOW_HASH_ACTION.finditer(text)]
+  body = bodies[0] if bodies else ""
+  called = re.search(r"\b(\w+)\.get\s*\(", body)
+  bits = None
+  for match in _HASH_DECL.finditer(text):
+    if called and match.group(2) == called.group(1):
+      bits = int(match.group(1))
+  pairs = tuple(sorted(tuple(pair) for pair in _SYMMETRIC.findall(text)))
+  operators = "".join(sorted(set(re.findall(r"[&^]", body))))
+  return bits, pairs, operators
+
+
 def _flatten(nodes, depth, under_fwd, steps):
   for node in nodes:
     if node[0] == "if":
@@ -500,6 +526,34 @@ def _check_apply(program):
       raise ProgramShapeRefused("unexpected_shape:vote_key:vote_" + task)
 
 
+def _check_flow_hash(program):
+  """Review A1 (2026-11-15, Task 31 review Important 1): the replay prices the
+  prologue at program.FLOW_HASH_LEVEL = 1 stage, which holds only for the
+  generator's hash -- Hash<bit<FLOW_INDEX_BITS>> called by calc_flow_hash on the
+  raw header fields, both FLOW_HASH_SYMMETRIC_PAIRS on it, no `&` mask and no `^`
+  XOR of the inputs. An older generator's hash (XOR inputs, a 32-bit CRC masked
+  `& 0xFFF`) costs p4c 3 stages, so its text is refused, never priced 2 stages
+  low."""
+  from p4model.program import FLOW_HASH_SYMMETRIC_PAIRS, FLOW_INDEX_BITS
+  bits, pairs, operators = tuple(program.flow_hash) or (None, (), "")
+  if (bits != FLOW_INDEX_BITS or operators
+      or tuple(pairs) != tuple(sorted(FLOW_HASH_SYMMETRIC_PAIRS))):
+    raise ProgramShapeRefused("unexpected_shape:flow_hash")
+
+
+def _check_key_names(program):
+  """Review B1 / Task 31 review minor 8: every sliced key `meta.<f>[hi:lo]` carries
+  @name("<bf_rt name>"), the name the control plane's entry writer uses
+  (program.bfrt_key_name). A pre-B1 text prices the same but its entries would
+  not match the driver's names, so it is refused as an older generator's."""
+  from p4model.program import bfrt_key_name
+  for (table, field), runs in sorted(program.key_slices.items()):
+    for hi, lo in runs:
+      expression = "meta.%s[%d:%d]" % (field, hi, lo)
+      if program.key_names.get((table, field, hi, lo)) != bfrt_key_name(expression):
+        raise ProgramShapeRefused("unexpected_shape:key_name:%s:%s" % (table, expression))
+
+
 def check_program(program):
   """Refuse a parsed program (p4_replay.Program) that breaks an assumption the replay
   prices by (decision 8.2; inventory_model Sec 6, A1, A5, A7, A8, A10-A14, A17, and
@@ -517,7 +571,9 @@ def check_program(program):
     unexpected_shape:<what>      a declared width, priority, key or apply order other
                                  than the generator's, or (pin:<pin>:<field>) a PHV pin
                                  the generator does not write (the pins dropped at
-                                 gate G3 among them)
+                                 gate G3 among them); flow_hash: a flow hash other
+                                 than the generator's (review A1); key_name:<table>:
+                                 <slice>: a sliced key without its bf_rt @name (B1)
 
   A program the generator writes passes; an archived program of an older generator
   is refused, never priced as if it were current."""
@@ -526,6 +582,8 @@ def check_program(program):
   if program.gated_register_blocks or any(
       kind == "execute" and under_fwd for kind, _, _, under_fwd in program.apply_steps):
     raise ProgramShapeRefused("gated_register_block")
+  _check_flow_hash(program)
+  _check_key_names(program)
   _check_pins(program, _pins(program))
   _check_priorities(program)
   _check_apply(program)

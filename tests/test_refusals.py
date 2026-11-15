@@ -200,6 +200,19 @@ def test_a_pre_task_2_program_is_refused_as_a_gated_register_block(tmp_path):
     # a second copy of one of them after the votes
     (lambda t: re.sub(r"(\t\t\tvote_ddos\.apply\(\);\n)", r"\1\t\t\tig_tm_md.bypass_egress = 1w1;\n",
                       t, count=1), "unexpected_shape:egress_assignment"),
+    # the pre-A1 flow hash, one part at a time (Task 31 review Important 1)
+    (lambda t: t.replace("Hash<bit<12>>(HashAlgorithm_t.CRC32)", "Hash<bit<32>>(HashAlgorithm_t.CRC32)", 1),
+     "unexpected_shape:flow_hash"),
+    (lambda t: re.sub(r'\t@symmetric\("hdr\.tcp\.src_port", "hdr\.tcp\.dst_port"\)\n', "", t, count=1),
+     "unexpected_shape:flow_hash"),
+    (lambda t: t.replace("\t\t\thdr.ipv4.src_addr,\n\t\t\thdr.ipv4.dst_addr,\n",
+                         "\t\t\thdr.ipv4.src_addr ^ hdr.ipv4.dst_addr,\n", 1), "unexpected_shape:flow_hash"),
+    (lambda t: re.sub(r"(\t\t\thdr\.tcp\.dst_port\n\t\t\}\))", r"\1 & 0xFFF", t, count=1),
+     "unexpected_shape:flow_hash"),
+    # a sliced key without its bf_rt @name (pre-B1), or with another one
+    (lambda t: re.sub(r' @name\("[^"]*"\);', ";", t, count=1), "unexpected_shape:key_name:"),
+    (lambda t: re.sub(r' @name\("([^"]*)"\);', r' @name("x\1");', t, count=1),
+     "unexpected_shape:key_name:"),
 ])
 def test_a_program_of_another_shape_is_refused_with_its_reason(tmp_path, edit, reason):
     (_, text), = _texts(tmp_path, JOINT_ENCODING, 1, min_features=3)
@@ -208,6 +221,27 @@ def test_a_program_of_another_shape_is_refused_with_its_reason(tmp_path, edit, r
     with pytest.raises(ProgramShapeRefused) as refused:
         check_program(parse_program_text(changed))
     assert refused.value.reason.startswith(reason), refused.value.reason
+
+
+PRE_A1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "pre_a1")
+
+
+@pytest.mark.parametrize("row_id", ["joint-off_M075_s19_k07", "joint-task_M075_s13_k04"])
+def test_the_pre_a1_fixture_texts_are_refused_for_their_flow_hash(row_id):
+    """Task 31 review Important 1: two texts of the generator before A1
+    (tests/fixtures/p4c_base_17b at 7429a09^, copied to tests/fixtures/pre_a1) that
+    the replay used to accept and price 2 stages low (model 8, p4c 10): XOR inputs,
+    Hash<bit<32>>, `& 0xFFF`. They are refused now; the current texts of the same
+    designs pass."""
+    with open(os.path.join(PRE_A1, row_id + ".p4"), encoding="utf-8") as handle:
+        old = parse_program_text(handle.read())
+    assert old.flow_hash == (32, (), "&^")
+    with pytest.raises(ProgramShapeRefused, match="^unexpected_shape:flow_hash$"):
+        check_program(old)
+    assert model_breakdown(old)["refusal_reason"] == "unexpected_shape:flow_hash"
+    current = os.path.join(os.path.dirname(PRE_A1), "p4c_base_17b", row_id + ".p4")
+    with open(current, encoding="utf-8") as handle:
+        check_program(parse_program_text(handle.read()))
 
 
 @pytest.mark.parametrize("treeless", ["app", "ddos"])
