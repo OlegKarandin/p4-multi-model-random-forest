@@ -555,11 +555,11 @@ def test_arm_identity_flows_through_config_row_id_jobs_and_the_loader():
   assert "joint-tree" not in claims.JOINT_ARM_SLUGS      # outside the pre-registered family
 
 
-def test_the_primary_preset_is_unchanged():
+def test_the_primary_preset_is_independent_and_joint_off():
   from src.main import select_arms
   from src.training.config import arm_encoding
   assert [cfg.arm_slug(arm_encoding(arm)) for arm, cfg in select_arms("primary")] == [
-      "independent", "joint-off", "joint"]
+      "independent", "joint-off"]
 
 
 def test_row_artifacts_of_the_arm_replay_to_the_trainings_numbers(tmp_path):
@@ -830,7 +830,10 @@ def _all_infeasible_elimination(tmp_path, arm, max_blocks):
   return rows
 
 
-def test_a_per_tree_search_with_no_feasible_trial_still_counts_its_stumps(tmp_path):
+def test_a_per_tree_search_with_no_feasible_trial_still_counts_its_stumps(tmp_path, monkeypatch):
+  # Stumps need big leaves on 400 rows: restore a high leaf floor for this premise.
+  import src.training.train_model as tm
+  monkeypatch.setattr(tm, "MIN_SAMPLES_LEAF_MIN", 30)
   import csv
   rows = _all_infeasible_elimination(tmp_path, "joint-tree", 200)
   assert [row["infeasible"] != "" for row in rows] == [True]    # nothing feasible
