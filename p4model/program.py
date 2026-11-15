@@ -64,8 +64,8 @@ def bfrt_key_name(expression):
     expression = expression.replace(old, new)
   return expression[expression.rfind('.') + 1:]
 
-# The vote_app/vote_ddos tables read every tree's class and so always sit one
-# stage past the last classification table. Measured: exactly 1 in all 19
+# A vote_<task> table reads every tree of its task's class and so sits one
+# stage past that task's last classification table. Measured: exactly 1 in all 19
 # compiles, with no exceptions and no scaling. stage_depth is the quantity
 # checked against TOFINO_PIPELINE_STAGES, so leaving this out understated the
 # depth of every design by one whole stage. Per task, one stage after ITS last

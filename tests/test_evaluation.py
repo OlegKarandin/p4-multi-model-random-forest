@@ -5,6 +5,7 @@ import pathlib
 
 from p4gen import evaluation as ev
 from p4gen import build_p4_script as bps
+from p4model import program as p4program  # FLOW_HASH_LEVEL, read through the module
 from p4model import target
 from p4model.errors import RangeEntriesDoNotFit
 from p4model.ranges import range_entry_count
@@ -1023,7 +1024,7 @@ def test_feature_readiness_level_counts_hash_gating_and_chain_depth():
     # 1 since the symmetric 12-bit hash, review A1). These four levels are
     # M2's, and H+2/H+2/H+2/H+3 is where the compiler put M2's four range
     # tables -- see the section comment above.
-    H = ev.FLOW_HASH_LEVEL
+    H = p4program.FLOW_HASH_LEVEL
     # ungated, 2-deep chain (last_arrival_time -> max): H + 0 + 2
     assert ev.feature_readiness_level("flow_iat_max") == H + 2
     # ungated, 2-deep chain (shared last_arrival_time -> mean): H + 0 + 2
@@ -1052,15 +1053,15 @@ def test_feature_readiness_level_bwd_gated_costs_same_as_fwd_gated():
     }
     # hash + 1 gate + 1-deep chain: H + 1 + 1
     assert (ev.feature_readiness_level("bwd_synthetic_feature", catalog=synthetic_catalog)
-            == ev.FLOW_HASH_LEVEL + 2)
+            == p4program.FLOW_HASH_LEVEL + 2)
 
 
 def test_feature_readiness_level_unknown_feature_is_ready_after_the_hash():
     # A feature with no catalog entry gets no registers emitted at all, so
     # nothing gates its table beyond the flow hash itself (FLOW_HASH_LEVEL
     # stages: 1 since the symmetric 12-bit hash, review A1; 3 before).
-    assert ev.FLOW_HASH_LEVEL == 1
-    assert ev.feature_readiness_level("Not_A_Catalog_Feature") == ev.FLOW_HASH_LEVEL
+    assert p4program.FLOW_HASH_LEVEL == 1
+    assert ev.feature_readiness_level("Not_A_Catalog_Feature") == p4program.FLOW_HASH_LEVEL
 
 
 def test_readiness_levels_follow_feature_intervals_order():
@@ -1072,7 +1073,7 @@ def test_readiness_levels_follow_feature_intervals_order():
         "Not_A_Catalog_Feature": [(0, 5)],
     }
 
-    H = ev.FLOW_HASH_LEVEL
+    H = p4program.FLOW_HASH_LEVEL
     assert ev.readiness_levels_for(feature_intervals) == [H + 3, H + 2, H]
 
 
@@ -1082,7 +1083,7 @@ def test_feature_readiness_level_resolves_dotted_dataset_names():
     every real feature name missed the catalog and fell back to
     FLOW_HASH_LEVEL -- which left the register-dependency model in
     crossbar_stages_needed inert while `stages` was still being reported."""
-    H = ev.FLOW_HASH_LEVEL
+    H = p4program.FLOW_HASH_LEVEL
     assert ev.feature_readiness_level("Flow.IAT.Max") == H + 2
     assert ev.feature_readiness_level("Flow.IAT.Mean") == H + 2
     assert ev.feature_readiness_level("Fwd.Packet.Length.Max") == H + 2
@@ -1097,8 +1098,8 @@ def test_feature_readiness_level_unknown_dotted_feature_still_falls_back():
     fallback -- bwd_packet_length_min is bwd-gated with one value register
     (no dependency register: packet-length bodies read hdr.ipv4.total_len
     directly), and packet_length_mean is ungated with one value register."""
-    assert ev.feature_readiness_level("Bwd.Packet.Length.Min") == ev.FLOW_HASH_LEVEL + 1 + 1
-    assert ev.feature_readiness_level("Packet.Length.Mean") == ev.FLOW_HASH_LEVEL + 0 + 1
+    assert ev.feature_readiness_level("Bwd.Packet.Length.Min") == p4program.FLOW_HASH_LEVEL + 1 + 1
+    assert ev.feature_readiness_level("Packet.Length.Mean") == p4program.FLOW_HASH_LEVEL + 0 + 1
 
 
 def test_readiness_levels_for_real_dataset_feature_names():
@@ -1118,7 +1119,7 @@ def test_readiness_levels_for_real_dataset_feature_names():
         "Flow.IAT.Max": [(0, 20), (21, 65535)],
         "Bwd.IAT.Min": [(0, 30), (31, 65535)],
     }
-    H = ev.FLOW_HASH_LEVEL
+    H = p4program.FLOW_HASH_LEVEL
     assert ev.readiness_levels_for(feature_intervals) == [H + 3, H + 2, H + 3]
 
 
@@ -1184,7 +1185,7 @@ def test_range_and_ternary_pools_reproduce_the_measured_m2_stage_count():
     # (under its 3-stage hash prologue: range tables at 5/5/5/6,
     # classification at 7, reviews/p4_tofino_reference.md Sec 4.6's measured
     # table), here moved by the prologue's change (review A1: 3 -> 1 stage).
-    H = ev.FLOW_HASH_LEVEL
+    H = p4program.FLOW_HASH_LEVEL
     assert range_plan.indices == frozenset({H + 2, H + 3})
     assert ternary_plan.indices == frozenset({H + 4})
     assert not (range_plan.indices & ternary_plan.indices)
@@ -1244,7 +1245,7 @@ def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
     # same program, that p4_compile.parse_compile_logs measured (under the old
     # 3-stage hash prologue; 2 less since review A1, and 1 less again since
     # review A2: one tree per task, so no vote stage).
-    assert usage.stage_depth == ev.FLOW_HASH_LEVEL + 5
+    assert usage.stage_depth == p4program.FLOW_HASH_LEVEL + 5
 
 
 def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth():
@@ -1259,7 +1260,7 @@ def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth
     assert usage.stages == 2
     # FLOW_HASH_LEVEL hash stages + 1 range + 1 classification; no vote stage:
     # one tree per task (review A2).
-    assert usage.stage_depth == ev.FLOW_HASH_LEVEL + 2
+    assert usage.stage_depth == p4program.FLOW_HASH_LEVEL + 2
 
 
 @pytest.mark.parametrize("encoding", ["joint", "disjoint"])
@@ -1388,7 +1389,7 @@ def test_register_depth_and_count_over_the_selected_features():
     usage = ev.multi_model_memory_evaluation(
         _app_forest(), _ddos_forest(), ['flow_iat_max'], ['fwd_iat_max'], 'disjoint')
     # fwd_iat_max: FLOW_HASH_LEVEL + gated(1) + 2 registers
-    assert usage.register_depth == ev.FLOW_HASH_LEVEL + 3
+    assert usage.register_depth == p4program.FLOW_HASH_LEVEL + 3
     assert usage.register_count == 4          # 2 chains x (dependency + value)
 
 
@@ -1533,8 +1534,8 @@ def test_feature_readiness_level_lands_on_the_stage_the_compiler_uses():
     #   independent_low_sd6  table_1_bwd_packet_length_max   -> real stage 5
     #   independent_high_sd6 table_6_app_packet_length_mean  -> real stage 4
     # i.e. FLOW_HASH_LEVEL + 2 and + 1.
-    assert ev.feature_readiness_level("bwd_packet_length_max") == ev.FLOW_HASH_LEVEL + 2
-    assert ev.feature_readiness_level("packet_length_mean") == ev.FLOW_HASH_LEVEL + 1
+    assert ev.feature_readiness_level("bwd_packet_length_max") == p4program.FLOW_HASH_LEVEL + 2
+    assert ev.feature_readiness_level("packet_length_mean") == p4program.FLOW_HASH_LEVEL + 1
 
 
 # ---------------------------------------------------------------------------
@@ -1578,9 +1579,9 @@ def test_register_schedule_serialises_registers_past_the_alu_cap():
     placed = ev.register_stage_schedule(list(catalog), catalog=catalog)
 
     by_stage = collections.Counter(placed.values())
-    assert by_stage[ev.FLOW_HASH_LEVEL] == ev.METER_ALUS_PER_STAGE
-    assert by_stage[ev.FLOW_HASH_LEVEL + 1] == 3
-    assert max(placed.values()) == ev.FLOW_HASH_LEVEL + 1
+    assert by_stage[p4program.FLOW_HASH_LEVEL] == ev.METER_ALUS_PER_STAGE
+    assert by_stage[p4program.FLOW_HASH_LEVEL + 1] == 3
+    assert max(placed.values()) == p4program.FLOW_HASH_LEVEL + 1
 
 
 def test_register_schedule_never_delays_the_orientation_register():
@@ -1603,9 +1604,9 @@ def test_register_schedule_never_delays_the_orientation_register():
     ], "gated_by": "fwd"}
 
     placed = ev.register_stage_schedule(list(catalog), catalog=catalog)
-    assert placed[ev.ORIENTATION_REGISTER] == ev.FLOW_HASH_LEVEL
-    assert placed["gated_dep"] == ev.FLOW_HASH_LEVEL + 1
-    assert placed["gated_val"] == ev.FLOW_HASH_LEVEL + 2
+    assert placed[ev.ORIENTATION_REGISTER] == p4program.FLOW_HASH_LEVEL
+    assert placed["gated_dep"] == p4program.FLOW_HASH_LEVEL + 1
+    assert placed["gated_val"] == p4program.FLOW_HASH_LEVEL + 2
 
 
 def test_register_schedule_keeps_a_chain_sequential_even_with_alus_free():
@@ -1638,7 +1639,7 @@ def test_readiness_levels_push_past_the_chain_depth_at_campaign_feature_counts()
 
     placed = ev.register_stage_schedule(features)
     assert len(placed) == 20
-    H = ev.FLOW_HASH_LEVEL
+    H = p4program.FLOW_HASH_LEVEL
     assert collections.Counter(placed.values()) == {H: 4, H + 1: 4, H + 2: 4, H + 3: 4, H + 4: 4}
 
     levels = ev.readiness_levels_for(feature_intervals)
@@ -1707,7 +1708,7 @@ def test_register_schedule_has_no_block_order():
     # now it waits only for the orientation register (stage H).
     placed = ev.register_stage_schedule(list(_CHAIN_CATALOG), catalog=_CHAIN_CATALOG)
 
-    H = ev.FLOW_HASH_LEVEL
+    H = p4program.FLOW_HASH_LEVEL
     assert [placed["fwd_a"], placed["fwd_b"], placed["fwd_c"]] == [H + 1, H + 2, H + 3]
     assert placed["bwd_a"] == H + 1
 
@@ -1719,7 +1720,7 @@ def test_a_two_register_chain_spans_two_stages():
     ], "gated_by": "fwd"}}
 
     placed = ev.register_stage_schedule(list(catalog), catalog=catalog)
-    assert [placed["fwd_a"], placed["fwd_b"]] == [ev.FLOW_HASH_LEVEL + 1, ev.FLOW_HASH_LEVEL + 2]
+    assert [placed["fwd_a"], placed["fwd_b"]] == [p4program.FLOW_HASH_LEVEL + 1, p4program.FLOW_HASH_LEVEL + 2]
 
 
 def test_stage_depth_counts_the_vote_epilogue_stage():
@@ -2168,3 +2169,25 @@ def test_a_shared_stage_over_its_limits_is_a_placement_failure(monkeypatch):
     monkeypatch.setattr(usage_module, "stage_load_fits", lambda loads: False)
     with pytest.raises(PlacementFailed, match="share stage 8"):
         usage_module.assemble_usage(pool)
+
+
+def test_pipeline_depth_one_tree_rule_on_mixed_and_tied_last_stages():
+    # Task 31 review minor 7: a task with a vote table ends one stage after its
+    # last tree, a one-tree task (no vote table, review A2) with its tree; the
+    # depth is the max over tasks and the range pool.
+    from p4model.usage import pipeline_depth
+    from p4model.program import VOTE_EPILOGUE_STAGES
+    assert VOTE_EPILOGUE_STAGES == 1
+    tasks = ['app', 'app', 'app', 'ddos']
+    # the voting task's last tree one stage before the one-tree task's tree: tie at 7
+    assert pipeline_depth(3, [4, 5, 5, 6], tasks, {'app'}) == 7
+    # the one-tree task's tree later still: it alone decides, no epilogue
+    assert pipeline_depth(3, [4, 5, 5, 7], tasks, {'app'}) == 8
+    # both tasks' last trees in one stage and app votes: no saving
+    assert pipeline_depth(3, [6, 6, 6, 6], tasks, {'app'}) == 8
+    # every task with a tree in the last tree stage has one tree: the saving
+    assert pipeline_depth(3, [5, 6], ['app', 'ddos'], set()) == 7
+    # the range pool later than every tree
+    assert pipeline_depth(9, [5, 6], ['app', 'ddos'], set()) == 9
+    # no trees at all (unreachable in a generated design): the range depth
+    assert pipeline_depth(4, [], [], set()) == 4

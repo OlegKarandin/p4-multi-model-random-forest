@@ -233,7 +233,12 @@ def pipeline_depth(range_depth, tree_stages, tree_tasks, voting_tasks):
   tree_tasks   : the tree's task, positionally aligned
   voting_tasks : the tasks that have a vote table (training: more than one
                  tree, as the generator emits; the replay: a vote_<task> table
-                 in the program text)"""
+                 in the program text)
+
+  With no trees at all it returns range_depth (no epilogue): unreachable in a
+  generated design (a stump is refused NoSplitTree and every task the
+  generator writes has a tree), noted because the formula before A2 added the
+  epilogue unconditionally."""
   if len(tree_stages) != len(tree_tasks):
     raise ValueError("pipeline_depth: %d tree stages for %d tree task labels"
                      % (len(tree_stages), len(tree_tasks)))
@@ -377,14 +382,12 @@ def assemble_usage(pool):
 
   check_shared_stages(range_plan, ternary_plan)
 
-  # F5/F6: stage_depth is ternary_plan.depth -- the classification pool is
-  # placed LAST in the sense that matters: every tree starts after its own
-  # task's range tables, so its depth is the overall pipeline depth. Verified
-  # against the M2 fixture: ternary_plan.indices == {5} there, so depth == 6,
-  # exactly the brief's own worked example. max() with range_plan.depth is a
-  # defensive widening for the degenerate case of zero ternary tables (where
-  # crossbar_stages_needed's dependency-aware branch would otherwise report
-  # depth 0), not something the real M2-shaped models ever hit.
+  # F5/F6: stage_depth is pipeline_depth below -- the range pool's depth or, per
+  # task, its last tree's stage + 1, whichever is later (the classification pool
+  # is placed LAST in the sense that matters: every tree starts after its own
+  # task's range tables). The max() with range_plan.depth is a defensive
+  # widening for the degenerate case of zero ternary tables, not something the
+  # real models hit.
   # ...plus VOTE_EPILOGUE_STAGES for each task with a vote table: the vote reads
   # every tree's class, so it occupies one further stage past its task's last
   # tree, and stage_depth is the quantity TOFINO_PIPELINE_STAGES is checked

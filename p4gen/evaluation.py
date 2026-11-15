@@ -65,7 +65,6 @@ from p4model.program import (
     PER_TASK_ENCODING,
     PER_TREE_ENCODING,
     SHARED_TASK,
-    FLOW_HASH_LEVEL,
     ORIENTATION_REGISTER,
     VOTE_EPILOGUE_STAGES,
     per_task_field,
@@ -762,13 +761,15 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
                   pipeline depth), defensively widened to
                   max(range_plan.depth, ternary_plan.depth) so an
                   (unrealistic) model with no ternary tables at all still
-                  reports a sane depth, plus VOTE_EPILOGUE_STAGES for the
-                  vote tables' own trailing stage. M2 example: 9 -- which is
-                  what the real compiler needs for M2 as well. It read 6
-                  before the 2026-09-05 calibration corrected FLOW_HASH_LEVEL
-                  and added the epilogue; anything comparing stage_depth
-                  against pre-2026-09-05 archived campaign numbers is
-                  comparing two different definitions.
+                  reports a sane depth, plus VOTE_EPILOGUE_STAGES after the
+                  last tree of each task that has a vote table (more than one
+                  tree, review A2; usage.pipeline_depth). M2 example: 6 since
+                  review A1 (FLOW_HASH_LEVEL 1; 9 at the 3-stage prologue).
+                  The definition changed on 2026-09-05 (calibrated
+                  FLOW_HASH_LEVEL, the epilogue added) and again on 2026-11-15
+                  (A1, A2); anything comparing stage_depth against archived
+                  campaign numbers across those dates compares different
+                  definitions.
     register_depth : max readiness level (feature_readiness_level) over the
                   selected feature(s) -- how many stages elapse before the
                   LAST register a classification table depends on has run.

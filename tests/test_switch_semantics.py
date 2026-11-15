@@ -54,7 +54,7 @@ def test_vote_winner_is_invariant_to_tree_order():
 def test_the_generated_vote_table_uses_exactly_vote_winner():
     """The switch's rule and this module's rule must be one rule. Parse the
     generated const entries back out and compare every one."""
-    for num_trees, num_classes in ((3, 3), (5, 3), (7, 3), (1, 2), (3, 2)):
+    for num_trees, num_classes in ((3, 3), (5, 3), (7, 3), (2, 2), (3, 2)):
         table, _ = generate_voting_code(num_trees, num_classes, 'app')
 
         entries = {}

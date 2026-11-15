@@ -10,8 +10,8 @@ count) in tests/fixtures/p4c_base_17b.json. Source: results/encoding_evidence_20
 flow hash (review A1, Task 31; model8/impl/scripts/exp31.py fixture, Codespace /workspaces/dr_t31_out/fixA1): every
 text is its old text with that edit (t31_text_diff.py, 12/12), p4c stage depth 2 lower on 12/12, blocks unchanged.
 And again for review A2 (a one-tree task has no vote table; Codespace /workspaces/dr_t31_out/fixA2): p4c stage depth
-1 lower again on the 5 programs whose LAST tree belongs to a one-tree task (3 with one tree per task, 2 with app 1 /
-ddos 3-5 trees), unchanged on the other 7, blocks unchanged; the model's depth exact on 12/12. Recompiled once more
+1 lower again on the 5 programs in which every task with a tree in the last tree stage has one tree
+(usage.pipeline_depth; 3 with one tree per task, 2 with app 1 / ddos 3-5 trees), unchanged on the other 7, blocks unchanged; the model's depth exact on 12/12. Recompiled once more
 with the @name keys (B1) and the clean-ups (Task 31's 160-design run, /workspaces/dr_t31_out/final, a0cbb9f): every
 p4c number of the 12 identical to the A2 compiles. The texts were regenerated once more with
 @pa_solitary(flow_hash) (2026-11-15, Task 32 addendum F3; impl/scripts/t32_fixture_texts.py: each text is its old

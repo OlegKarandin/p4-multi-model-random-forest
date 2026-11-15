@@ -927,17 +927,14 @@ def test_generate_voting_code_table_size_is_the_exact_entry_count():
   assert "size = 243;" in table_decl_large
 
 
-def test_generate_voting_code_size_respects_a_one_bit_key_space():
-  # The real M1/M2 DDoS config: 1 tree, 2 classes. The key is a single
-  # bit<1> field, so the table can hold at most 2 entries -- and emits
-  # exactly 2. Declaring 32 is unreachable by construction and the real
-  # Tofino compiler rejects it outright:
-  #   "warning: Shrinking table SwitchIngress.vote_ddos: with 1 match bits,
-  #    can only have 2 entries"
-  table_decl, _ = bps.generate_voting_code(1, 2, "ddos")
-
-  assert "size = 2;" in table_decl
-  assert "size = 32;" not in table_decl
+def test_generate_voting_code_refuses_a_one_tree_task():
+  # Review A2: a one-tree task has no vote table (its tree writes the export
+  # field), and the model prices none, so the generator refuses to write one
+  # (Task 31 review minor 5). The smallest vote table is 2 trees x 2 classes.
+  with pytest.raises(ValueError, match="no vote table"):
+    bps.generate_voting_code(1, 2, "ddos")
+  table_decl, _ = bps.generate_voting_code(2, 2, "ddos")
+  assert "size = 4;" in table_decl
 
 
 def test_generate_voting_code_voting_decisions_match_vote_winner_for_all_combos():

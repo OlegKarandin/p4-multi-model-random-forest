@@ -1647,17 +1647,21 @@ def generate_voting_code(num_trees, num_classes, task):
   mechanism change -- on tied key tuples the winner can differ from the old
   statistics.mode() table.
   """
+  # Since review A2 (2026-11-15) a one-tree task has no vote table (its tree
+  # action writes the export field) and the model prices a vote stage only for
+  # a task with more than one tree (usage.pipeline_depth), so a one-tree vote
+  # table is refused here rather than emitted unpriced (Task 31 review minor 5).
+  if num_trees < 2:
+    raise ValueError("generate_voting_code: a task with %d tree(s) has no vote table "
+                     "(review A2); its tree writes the export field itself" % num_trees)
   bit_per_classes = math.ceil(math.log2(num_classes)) or 1
   export_field, export_bits = vote_export(task, bit_per_classes)
   # The table emits exactly num_classes ** num_trees const entries (see the
   # product() loop below), so that IS its size -- the real logical entry
-  # count, per reviews/p4_tofino_reference.md Sec 4.4. A `max(32, ...)` floor
-  # used to be applied as a conservative guard, but it is not merely
-  # redundant: for the real 1-tree/2-class DDoS config the key is a single
-  # bit<1> field, so 2 entries is the entire key space and the real Tofino
-  # compiler rejects anything larger --
-  #   "warning: Shrinking table SwitchIngress.vote_ddos: with 1 match bits,
-  #    can only have 2 entries"
+  # count, per reviews/p4_tofino_reference.md Sec 4.4. (A `max(32, ...)` floor
+  # used to be applied; p4c shrinks a table to its key space with a warning,
+  # e.g. "Shrinking table SwitchIngress.vote_ddos: with 1 match bits, can only
+  # have 2 entries" for the one-tree vote table the generator no longer emits.)
   size = num_classes ** num_trees
 
   key_lines = "\n".join(
