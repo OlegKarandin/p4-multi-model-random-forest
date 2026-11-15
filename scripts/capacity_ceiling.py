@@ -127,8 +127,9 @@ from p4gen.build_p4_script import (
     get_feature_intervals, get_joint_feature_intervals)
 from p4model.target import MAX_KEY_BYTES
 from p4gen.evaluation import (
-    CrossbarKeyTooWide, TOFINO_PIPELINE_STAGES,
+    TOFINO_PIPELINE_STAGES,
     multi_model_memory_evaluation)
+from p4model.refusals import REFUSAL_ERRORS
 from src.training.dataset import read_app_dataset, read_DDOS_dataset
 from src.training.splits import make_task_splits
 from src.training.train_model import (
@@ -210,8 +211,8 @@ def codeword_length_of(feature_intervals):
 
 def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
     """A `ResourceUsage` for one encoding, or `None` when the codeword limit
-    -- or, separately (F3), the per-stage crossbar byte-width limit -- makes
-    the pair uncompilable. Returns None rather than propagating, so an
+    -- or, separately (F3), the per-stage crossbar byte-width limit, or any
+    other model refusal (REFUSAL_ERRORS) -- makes the pair uncompilable. Returns None rather than propagating, so an
     infeasible cell still contributes its codeword length to the table.
 
     stage_depth is from `multi_model_memory_evaluation`'s returned ResourceUsage.stage_depth,
@@ -231,10 +232,12 @@ def measure(clf_app, clf_ddos, feature_names, encoding, codeword_length):
     try:
         return multi_model_memory_evaluation(
             clf_app, clf_ddos, feature_names, feature_names, encoding)
-    except CrossbarKeyTooWide:
-        # Not a codeword-length problem -- many narrow features can trip this
-        # well under codeword_length's limit -- so there is nothing to
-        # cross-check codeword_length against here.
+    except REFUSAL_ERRORS:
+        # Any model refusal (p4model.refusals.REFUSAL_ERRORS: key bytes, PHV,
+        # bus, range rows, no-split tree, placement). Not a codeword-length
+        # problem -- many narrow features can trip the key limit well under
+        # codeword_length's -- so there is nothing to cross-check
+        # codeword_length against here.
         return None
 
 

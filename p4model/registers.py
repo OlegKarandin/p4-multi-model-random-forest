@@ -19,7 +19,8 @@ registers. The gated-block apparatus it replaced -- the block order, the
 cursor floor between blocks and the "interior" stages no table could use
 (inventory S6-S8, reviews/p4_tofino_reference.md Mechanism B) -- is gone with
 the blocks; a program that still carries them is refused by the replay
-(p4_replay.parse_program_text).
+(program_checks.check_program, from p4_replay.model_breakdown;
+p4_replay.replay_plans raises for one as well).
 
 Every per-flow register is indexed by meta.flow_hash, so `FLOW_HASH_LEVEL`
 (defined in program.py) is the earliest stage any RegisterAction can run --

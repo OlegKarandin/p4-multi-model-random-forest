@@ -1101,7 +1101,8 @@ def test_readiness_levels_for_real_dataset_feature_names():
     Since decisions 1a / 7.1 option B (2026-11-14) there are no gated blocks,
     so Bwd.IAT.Min and the symmetric Fwd.IAT.Max get the same level (chain
     depth 6 each): one register schedule, no block order. (p4c also orders
-    the dependency registers' writes of meta.current_iat, which the schedule
+    the dependency registers' writes of their meta.<chain>_current_iat
+    scratch fields, which the schedule
     does not model -- register_stage_schedule's docstring.)"""
     feature_intervals = {
         "Fwd.IAT.Max": [(0, 10), (11, 65535)],
@@ -1591,7 +1592,7 @@ def test_register_schedule_never_delays_the_orientation_register():
 def test_register_schedule_keeps_a_chain_sequential_even_with_alus_free():
     # The ALU cap is an extra constraint, never a relaxation: a dependency
     # register still has to run a whole stage before the value register that
-    # consumes its meta.current_iat, however idle the stage's other ALUs are.
+    # consumes its meta.<chain>_current_iat, however idle the stage's other ALUs are.
     catalog = {
         "chained": {"registers": [
             {"name": "dep", "role": "dependency", "width": 16, "body": "iat"},

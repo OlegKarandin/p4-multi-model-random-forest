@@ -663,17 +663,24 @@ def test_archived_best_params_refit_to_a_byte_identical_forest():
 
 
 @pytest.mark.parametrize('leaf', [5, 15, 25, 35, 45, 55, 65, 105, 195])
-def test_no_reachable_multiplier_pair_is_inert(leaf):
+def test_only_the_lowest_multiplier_is_inert(leaf):
     """min_samples_split <= 2*min_samples_leaf cannot bind: a node needs
     min_samples_split samples AND both children need min_samples_leaf. That
     inert region covered ~400 of the old grid's 800 combinations. Expressing
-    split as a multiplier removes it by construction rather than clamping,
-    which would preserve the many-to-one mapping that wastes the TPE budget."""
+    split as a multiplier shrinks it to ONE value by construction rather than
+    clamping, which would preserve the many-to-one mapping that wastes the TPE
+    budget: since decision 9.1 the lowest multiplier, 2, sits on the boundary
+    (split == 2*leaf, inert), and every higher one binds (split > 2*leaf)."""
     import src.training.train_model as tm
 
+    assert tm.MIN_SAMPLES_SPLIT_MULT_MIN == 2
     for mult in range(tm.MIN_SAMPLES_SPLIT_MULT_MIN,
                       tm.MIN_SAMPLES_SPLIT_MULT_MAX + 1):
-        assert tm.min_samples_split_from_mult(leaf, mult) >= 2 * leaf
+        split = tm.min_samples_split_from_mult(leaf, mult)
+        if mult == 2:
+            assert split == 2 * leaf
+        else:
+            assert split > 2 * leaf
 
 
 def test_multiplier_bounds_are_two_to_sixty_six():

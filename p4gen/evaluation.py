@@ -104,7 +104,6 @@ from p4model.registers import (
     readiness_levels_for,
     register_stage_schedule,
 )
-from p4model.names import normalise_feature_name
 from p4model.catalog import (
     FEATURE_REGISTER_CATALOG,
     register_names_for,
@@ -336,7 +335,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   key slices are its own key's, and "tree_reads" holds, per tree, the range
   table positions it reads (usage.tree_readiness_levels' rule E). A tree with
   no split raises p4model.errors.NoSplitTree in every encoding (R6), before
-  any other refusal. 'per_tree' adds "ternary_key_bytes", one packed.key_bytes
+  any refusal but RangeEntriesDoNotFit (range_matching_resource_usage runs
+  first). 'per_tree' adds "ternary_key_bytes", one packed.key_bytes
   tuple per tree (ternary_fields and ternary_key_bits are None there), and
   also raises ActionDataTooWide and PhvContainersExhausted (packed.layout_for).
 

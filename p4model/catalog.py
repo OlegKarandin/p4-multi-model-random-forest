@@ -358,7 +358,8 @@ FEATURE_REGISTER_CATALOG = {
     },
 
     # Packet-length features have no dependency register at all -- their
-    # value bodies read hdr.ipv4.total_len directly, not meta.current_iat
+    # value bodies read hdr.ipv4.total_len directly, not a dependency
+    # register's meta.<chain>_current_iat scratch field
     # (see running_max_packet_length/running_min_packet_length/
     # mathunit_ewma_packet_length in build_p4_script.py's
     # _REGISTER_ACTION_BODIES).
