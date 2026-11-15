@@ -9,54 +9,61 @@
 
 const bit<32> MAX_NUM_FLOWS = 4096;
 
-@pa_container_size("ingress", "ig_md.bwd_iat_mean_val", 16)
+@pa_container_size("ingress", "ig_md.bwd_iat_total_val", 16)
 @pa_container_size("ingress", "ig_md.fwd_iat_min_val", 16)
 @pa_container_size("ingress", "ig_md.min_packet_length_val", 16)
-@pa_container_size("ingress", "ig_md.packet_length_mean_val", 16)
+@pa_container_size("ingress", "ig_md.packet_length_total_val", 16)
 @pa_container_size("ingress", "ig_md.bwd_iat_min_val", 16)
-@pa_container_size("ingress", "ig_md.fwd_iat_mean_val", 16)
-@pa_no_overlay("ingress", "ig_md.code_bwd_iat_mean")
-@pa_container_size("ingress", "ig_md.code_bwd_iat_mean", 32)
+@pa_container_size("ingress", "ig_md.fwd_iat_total_val", 16)
+@pa_no_overlay("ingress", "ig_md.code_bwd_iat_total")
+@pa_container_size("ingress", "ig_md.code_bwd_iat_total", 32)
 @pa_no_overlay("ingress", "ig_md.code_app_fwd_iat_min")
 @pa_container_size("ingress", "ig_md.code_app_fwd_iat_min", 8, 32)
 @pa_no_overlay("ingress", "ig_md.code_min_packet_length")
 @pa_container_size("ingress", "ig_md.code_min_packet_length", 8)
-@pa_no_overlay("ingress", "ig_md.code_app_packet_length_mean")
-@pa_container_size("ingress", "ig_md.code_app_packet_length_mean", 32, 32)
+@pa_no_overlay("ingress", "ig_md.code_app_packet_length_total")
+@pa_container_size("ingress", "ig_md.code_app_packet_length_total", 32, 32)
 @pa_no_overlay("ingress", "ig_md.code_bwd_iat_min")
 @pa_container_size("ingress", "ig_md.code_bwd_iat_min", 8)
-@pa_no_overlay("ingress", "ig_md.code_fwd_iat_mean")
-@pa_container_size("ingress", "ig_md.code_fwd_iat_mean", 8)
 @pa_no_overlay("ingress", "ig_md.code_ddos_fwd_iat_min")
 @pa_container_size("ingress", "ig_md.code_ddos_fwd_iat_min", 16)
-@pa_no_overlay("ingress", "ig_md.code_ddos_packet_length_mean")
-@pa_container_size("ingress", "ig_md.code_ddos_packet_length_mean", 8)
-@pa_container_size("ingress", "ig_md.bwd_current_iat", 16)
+@pa_no_overlay("ingress", "ig_md.code_fwd_iat_total")
+@pa_container_size("ingress", "ig_md.code_fwd_iat_total", 8)
+@pa_no_overlay("ingress", "ig_md.code_ddos_packet_length_total")
+@pa_container_size("ingress", "ig_md.code_ddos_packet_length_total", 8)
 @pa_container_size("ingress", "ig_md.fwd_current_iat", 16)
+@pa_container_size("ingress", "ig_md.bwd_current_iat", 16)
 @pa_solitary("ingress", "ig_md.now_pseudo_us")
+@pa_solitary("ingress", "ig_md.now_coarse")
 @pa_solitary("ingress", "ig_md.flow_hash")
 struct metadata_t {
     bit<12> flow_hash;
     bit<1>  fwd;
     bit<32> now_pseudo_us;
 
-	bit<16> bwd_current_iat;
+	bit<32> now_coarse;
 	bit<16> fwd_current_iat;
-	bit<16> bwd_iat_mean_val;
+	bit<16> bwd_current_iat;
+	bit<16> bwd_iat_total_val;
 	bit<16> fwd_iat_min_val;
 	bit<16> min_packet_length_val;
-	bit<16> packet_length_mean_val;
+	bit<16> packet_length_total_val;
 	bit<16> bwd_iat_min_val;
-	bit<16> fwd_iat_mean_val;
-	bit<32> code_bwd_iat_mean;
+	bit<16> fwd_iat_total_val;
+	bit<32> code_bwd_iat_total;
 	bit<40> code_app_fwd_iat_min;
 	bit<8> code_min_packet_length;
-	bit<64> code_app_packet_length_mean;
+	bit<64> code_app_packet_length_total;
 	bit<8> code_bwd_iat_min;
-	bit<8> code_fwd_iat_mean;
 	bit<16> code_ddos_fwd_iat_min;
-	bit<8> code_ddos_packet_length_mean;
+	bit<8> code_fwd_iat_total;
+	bit<8> code_ddos_packet_length_total;
 
+}
+
+struct dur_pair_t {
+    bit<32> first;
+    bit<32> dur;
 }
 
 parser SwitchIngressParser(
@@ -116,14 +123,14 @@ control SwitchIngress(
 	@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")
 	Hash<bit<12>>(HashAlgorithm_t.CRC32) flow_hash_calc;
 	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
-	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) bwd_last_arrival_time_reg;
-	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) bwd_iat_mean_reg;
+	Register<dur_pair_t, bit<12>>(MAX_NUM_FLOWS, {32w0xFFFFFFFF, 32w0}) bwd_iat_total_reg;
 	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) fwd_last_arrival_time_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) fwd_iat_min_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) min_packet_length_reg;
-	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) packet_length_mean_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) packet_length_total_reg;
+	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) bwd_last_arrival_time_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) bwd_iat_min_reg;
-	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_iat_mean_reg;
+	Register<dur_pair_t, bit<12>>(MAX_NUM_FLOWS, {32w0xFFFFFFFF, 32w0}) fwd_iat_total_reg;
 
 
 	action calc_flow_hash() {
@@ -138,6 +145,7 @@ control SwitchIngress(
 
 	action calc_timestamp() {
 		meta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];
+		meta.now_coarse = ig_intr_md.ingress_mac_tstamp[47:16];
 	}
 
 	RegisterAction<bit<32>, bit<12>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
@@ -151,29 +159,17 @@ control SwitchIngress(
 		}
 	};
 
-	RegisterAction<bit<32>, bit<12>, bit<32>>(bwd_last_arrival_time_reg) bwd_last_arrival_time_action = {
-		void apply(inout bit<32> value, out bit<32> rv) {
+	RegisterAction<dur_pair_t, bit<12>, bit<32>>(bwd_iat_total_reg) bwd_iat_total_action = {
+		void apply(inout dur_pair_t value, out bit<32> rv) {
 			if (meta.fwd == 0) {
-				if (meta.now_pseudo_us - value > 65535) {
-					rv = 65535;
+				if (meta.now_coarse - value.first > 65535) {
+					value.dur = 65535;
 				} else {
-					rv = meta.now_pseudo_us |-| value;
+					value.dur = meta.now_coarse |-| value.first;
 				}
-				value = meta.now_pseudo_us - 1;
-			} else {
-				rv = 0;
+				value.first = min(value.first, meta.now_coarse);
 			}
-		}
-	};
-
-	MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) bwd_iat_mean_halve_unit;
-
-	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_iat_mean_reg) bwd_iat_mean_action = {
-		void apply(inout bit<16> value, out bit<16> rv) {
-			if (meta.bwd_current_iat != 0) {
-				value = bwd_iat_mean_halve_unit.execute(value + meta.bwd_current_iat);
-			}
-			rv = value;
+			rv = value.dur;
 		}
 	};
 
@@ -210,12 +206,25 @@ control SwitchIngress(
 		}
 	};
 
-	MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) packet_length_mean_halve_unit;
-
-	RegisterAction<bit<16>, bit<12>, bit<16>>(packet_length_mean_reg) packet_length_mean_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(packet_length_total_reg) packet_length_total_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
-			value = packet_length_mean_halve_unit.execute(value + (bit<16>)hdr.ipv4.total_len);
+			value = value |+| hdr.ipv4.total_len;
 			rv = value;
+		}
+	};
+
+	RegisterAction<bit<32>, bit<12>, bit<32>>(bwd_last_arrival_time_reg) bwd_last_arrival_time_action = {
+		void apply(inout bit<32> value, out bit<32> rv) {
+			if (meta.fwd == 0) {
+				if (meta.now_pseudo_us - value > 65535) {
+					rv = 65535;
+				} else {
+					rv = meta.now_pseudo_us |-| value;
+				}
+				value = meta.now_pseudo_us - 1;
+			} else {
+				rv = 0;
+			}
 		}
 	};
 
@@ -228,14 +237,17 @@ control SwitchIngress(
 		}
 	};
 
-	MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) fwd_iat_mean_halve_unit;
-
-	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_iat_mean_reg) fwd_iat_mean_action = {
-		void apply(inout bit<16> value, out bit<16> rv) {
-			if (meta.fwd_current_iat != 0) {
-				value = fwd_iat_mean_halve_unit.execute(value + meta.fwd_current_iat);
+	RegisterAction<dur_pair_t, bit<12>, bit<32>>(fwd_iat_total_reg) fwd_iat_total_action = {
+		void apply(inout dur_pair_t value, out bit<32> rv) {
+			if (meta.fwd == 1) {
+				if (meta.now_coarse - value.first > 65535) {
+					value.dur = 65535;
+				} else {
+					value.dur = meta.now_coarse |-| value.first;
+				}
+				value.first = min(value.first, meta.now_coarse);
 			}
-			rv = value;
+			rv = value.dur;
 		}
 	};
 
@@ -249,8 +261,8 @@ control SwitchIngress(
 	}
 
     
-    action set_code_bwd_iat_mean (bit<32> code) {
-        meta.code_bwd_iat_mean = code;
+    action set_code_bwd_iat_total (bit<32> code) {
+        meta.code_bwd_iat_total = code;
     }
     
     action set_code_app_fwd_iat_min (bit<40> code) {
@@ -261,24 +273,24 @@ control SwitchIngress(
         meta.code_min_packet_length = code;
     }
     
-    action set_code_app_packet_length_mean (bit<64> code) {
-        meta.code_app_packet_length_mean = code;
+    action set_code_app_packet_length_total (bit<64> code) {
+        meta.code_app_packet_length_total = code;
     }
     
     action set_code_bwd_iat_min (bit<8> code) {
         meta.code_bwd_iat_min = code;
     }
     
-    action set_code_fwd_iat_mean (bit<8> code) {
-        meta.code_fwd_iat_mean = code;
-    }
-    
     action set_code_ddos_fwd_iat_min (bit<16> code) {
         meta.code_ddos_fwd_iat_min = code;
     }
     
-    action set_code_ddos_packet_length_mean (bit<8> code) {
-        meta.code_ddos_packet_length_mean = code;
+    action set_code_fwd_iat_total (bit<8> code) {
+        meta.code_fwd_iat_total = code;
+    }
+    
+    action set_code_ddos_packet_length_total (bit<8> code) {
+        meta.code_ddos_packet_length_total = code;
     }
 
 
@@ -286,10 +298,10 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_0 {
         key = {
-            meta.code_bwd_iat_mean[29:0] : ternary @name("code_bwd_iat_mean_29_0_");
+            meta.code_bwd_iat_total[29:0] : ternary @name("code_bwd_iat_total_29_0_");
             meta.code_app_fwd_iat_min[32:0] : ternary @name("code_app_fwd_iat_min_32_0_");
             meta.code_min_packet_length[0:0] : ternary @name("code_min_packet_length_0_0_");
-            meta.code_app_packet_length_mean[60:0] : ternary @name("code_app_packet_length_mean_60_0_");
+            meta.code_app_packet_length_total[60:0] : ternary @name("code_app_packet_length_total_60_0_");
         }
         actions = {
             classify_flow_codeword_app_0;        
@@ -301,9 +313,9 @@ control SwitchIngress(
     table get_classification_tree_ddos_0 {
         key = {
             meta.code_bwd_iat_min[4:0] : ternary @name("code_bwd_iat_min_4_0_");
-            meta.code_fwd_iat_mean[1:0] : ternary @name("code_fwd_iat_mean_1_0_");
             meta.code_ddos_fwd_iat_min[9:0] : ternary @name("code_ddos_fwd_iat_min_9_0_");
-            meta.code_ddos_packet_length_mean[5:0] : ternary @name("code_ddos_packet_length_mean_5_0_");
+            meta.code_fwd_iat_total[1:0] : ternary @name("code_fwd_iat_total_1_0_");
+            meta.code_ddos_packet_length_total[5:0] : ternary @name("code_ddos_packet_length_total_5_0_");
         }
         actions = {
             classify_flow_codeword_ddos_0;        
@@ -312,12 +324,12 @@ control SwitchIngress(
     }
     
     @placement_priority(3)
-    table table_0_bwd_iat_mean {
+    table table_0_bwd_iat_total {
         key = {
-            meta.bwd_iat_mean_val: range;
+            meta.bwd_iat_total_val: range;
         }
         actions = {
-            set_code_bwd_iat_mean;        
+            set_code_bwd_iat_total;        
         }
         size = 31;
     }   
@@ -345,12 +357,12 @@ control SwitchIngress(
     }   
     
     @placement_priority(3)
-    table table_3_app_packet_length_mean {
+    table table_3_app_packet_length_total {
         key = {
-            meta.packet_length_mean_val: range;
+            meta.packet_length_total_val: range;
         }
         actions = {
-            set_code_app_packet_length_mean;        
+            set_code_app_packet_length_total;        
         }
         size = 62;
     }   
@@ -367,18 +379,7 @@ control SwitchIngress(
     }   
     
     @placement_priority(3)
-    table table_5_fwd_iat_mean {
-        key = {
-            meta.fwd_iat_mean_val: range;
-        }
-        actions = {
-            set_code_fwd_iat_mean;        
-        }
-        size = 3;
-    }   
-    
-    @placement_priority(3)
-    table table_6_ddos_fwd_iat_min {
+    table table_5_ddos_fwd_iat_min {
         key = {
             meta.fwd_iat_min_val: range;
         }
@@ -389,12 +390,23 @@ control SwitchIngress(
     }   
     
     @placement_priority(3)
-    table table_7_ddos_packet_length_mean {
+    table table_6_fwd_iat_total {
         key = {
-            meta.packet_length_mean_val: range;
+            meta.fwd_iat_total_val: range;
         }
         actions = {
-            set_code_ddos_packet_length_mean;        
+            set_code_fwd_iat_total;        
+        }
+        size = 3;
+    }   
+    
+    @placement_priority(3)
+    table table_7_ddos_packet_length_total {
+        key = {
+            meta.packet_length_total_val: range;
+        }
+        actions = {
+            set_code_ddos_packet_length_total;        
         }
         size = 7;
     }   
@@ -415,25 +427,25 @@ control SwitchIngress(
 			meta.fwd = flow_orientation_action.execute(meta.flow_hash);
 
 			meta.min_packet_length_val = min_packet_length_action.execute(meta.flow_hash);
-			meta.packet_length_mean_val = packet_length_mean_action.execute(meta.flow_hash);
+			meta.packet_length_total_val = packet_length_total_action.execute(meta.flow_hash);
 
 			meta.fwd_current_iat = (bit<16>) fwd_last_arrival_time_action.execute(meta.flow_hash);
 			meta.fwd_iat_min_val = fwd_iat_min_action.execute(meta.flow_hash) + 1;
-			meta.fwd_iat_mean_val = fwd_iat_mean_action.execute(meta.flow_hash);
+			meta.fwd_iat_total_val = (bit<16>) fwd_iat_total_action.execute(meta.flow_hash);
 
+			meta.bwd_iat_total_val = (bit<16>) bwd_iat_total_action.execute(meta.flow_hash);
 			meta.bwd_current_iat = (bit<16>) bwd_last_arrival_time_action.execute(meta.flow_hash);
-			meta.bwd_iat_mean_val = bwd_iat_mean_action.execute(meta.flow_hash);
 			meta.bwd_iat_min_val = bwd_iat_min_action.execute(meta.flow_hash) + 1;
 
 
-			table_0_bwd_iat_mean.apply();
+			table_0_bwd_iat_total.apply();
 			table_1_app_fwd_iat_min.apply();
 			table_2_min_packet_length.apply();
-			table_3_app_packet_length_mean.apply();
+			table_3_app_packet_length_total.apply();
 			table_4_bwd_iat_min.apply();
-			table_5_fwd_iat_mean.apply();
-			table_6_ddos_fwd_iat_min.apply();
-			table_7_ddos_packet_length_mean.apply();
+			table_5_ddos_fwd_iat_min.apply();
+			table_6_fwd_iat_total.apply();
+			table_7_ddos_packet_length_total.apply();
 
 			get_classification_tree_app_0.apply();
 

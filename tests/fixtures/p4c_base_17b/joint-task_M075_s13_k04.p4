@@ -16,25 +16,25 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 @pa_solitary("ingress", "ig_md.class_tree_ddos_1")
 @pa_solitary("ingress", "ig_md.class_tree_ddos_2")
 @pa_container_size("ingress", "ig_md.bwd_packet_length_max_val", 16)
-@pa_container_size("ingress", "ig_md.bwd_packet_length_mean_val", 16)
+@pa_container_size("ingress", "ig_md.bwd_packet_length_total_val", 16)
 @pa_container_size("ingress", "ig_md.fwd_packet_length_max_val", 16)
-@pa_container_size("ingress", "ig_md.fwd_packet_length_mean_val", 16)
+@pa_container_size("ingress", "ig_md.fwd_packet_length_total_val", 16)
 @pa_no_overlay("ingress", "ig_md.code_tk_app_bwd_packet_length_max")
 @pa_container_size("ingress", "ig_md.code_tk_app_bwd_packet_length_max", 8, 32, 32, 32, 32)
 @pa_no_overlay("ingress", "ig_md.code_tk_ddos_bwd_packet_length_max")
 @pa_container_size("ingress", "ig_md.code_tk_ddos_bwd_packet_length_max", 16)
-@pa_no_overlay("ingress", "ig_md.code_tk_app_bwd_packet_length_mean")
-@pa_container_size("ingress", "ig_md.code_tk_app_bwd_packet_length_mean", 8, 32, 32, 32)
-@pa_no_overlay("ingress", "ig_md.code_tk_ddos_bwd_packet_length_mean")
-@pa_container_size("ingress", "ig_md.code_tk_ddos_bwd_packet_length_mean", 32)
+@pa_no_overlay("ingress", "ig_md.code_tk_app_bwd_packet_length_total")
+@pa_container_size("ingress", "ig_md.code_tk_app_bwd_packet_length_total", 8, 32, 32, 32)
+@pa_no_overlay("ingress", "ig_md.code_tk_ddos_bwd_packet_length_total")
+@pa_container_size("ingress", "ig_md.code_tk_ddos_bwd_packet_length_total", 32)
 @pa_no_overlay("ingress", "ig_md.code_tk_app_fwd_packet_length_max")
 @pa_container_size("ingress", "ig_md.code_tk_app_fwd_packet_length_max", 32, 32, 32, 32, 32)
 @pa_no_overlay("ingress", "ig_md.code_tk_ddos_fwd_packet_length_max")
 @pa_container_size("ingress", "ig_md.code_tk_ddos_fwd_packet_length_max", 32)
-@pa_no_overlay("ingress", "ig_md.code_tk_app_fwd_packet_length_mean")
-@pa_container_size("ingress", "ig_md.code_tk_app_fwd_packet_length_mean", 8, 32, 32, 32)
-@pa_no_overlay("ingress", "ig_md.code_tk_ddos_fwd_packet_length_mean")
-@pa_container_size("ingress", "ig_md.code_tk_ddos_fwd_packet_length_mean", 32)
+@pa_no_overlay("ingress", "ig_md.code_tk_app_fwd_packet_length_total")
+@pa_container_size("ingress", "ig_md.code_tk_app_fwd_packet_length_total", 8, 32, 32, 32)
+@pa_no_overlay("ingress", "ig_md.code_tk_ddos_fwd_packet_length_total")
+@pa_container_size("ingress", "ig_md.code_tk_ddos_fwd_packet_length_total", 32)
 @pa_solitary("ingress", "ig_md.flow_hash")
 struct metadata_t {
     bit<12> flow_hash;
@@ -48,17 +48,17 @@ struct metadata_t {
 	bit<1> class_tree_ddos_1;
 	bit<1> class_tree_ddos_2;
 	bit<16> bwd_packet_length_max_val;
-	bit<16> bwd_packet_length_mean_val;
+	bit<16> bwd_packet_length_total_val;
 	bit<16> fwd_packet_length_max_val;
-	bit<16> fwd_packet_length_mean_val;
+	bit<16> fwd_packet_length_total_val;
 	bit<136> code_tk_app_bwd_packet_length_max;
 	bit<16> code_tk_ddos_bwd_packet_length_max;
-	bit<104> code_tk_app_bwd_packet_length_mean;
-	bit<32> code_tk_ddos_bwd_packet_length_mean;
+	bit<104> code_tk_app_bwd_packet_length_total;
+	bit<32> code_tk_ddos_bwd_packet_length_total;
 	bit<160> code_tk_app_fwd_packet_length_max;
 	bit<32> code_tk_ddos_fwd_packet_length_max;
-	bit<104> code_tk_app_fwd_packet_length_mean;
-	bit<32> code_tk_ddos_fwd_packet_length_mean;
+	bit<104> code_tk_app_fwd_packet_length_total;
+	bit<32> code_tk_ddos_fwd_packet_length_total;
 
 }
 
@@ -120,9 +120,9 @@ control SwitchIngress(
 	Hash<bit<12>>(HashAlgorithm_t.CRC32) flow_hash_calc;
 	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) bwd_packet_length_max_reg;
-	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) bwd_packet_length_mean_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) bwd_packet_length_total_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_packet_length_max_reg;
-	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_packet_length_mean_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_packet_length_total_reg;
 
 
 	action calc_flow_hash() {
@@ -155,12 +155,10 @@ control SwitchIngress(
 		}
 	};
 
-	MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) bwd_packet_length_mean_halve_unit;
-
-	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_packet_length_mean_reg) bwd_packet_length_mean_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_packet_length_total_reg) bwd_packet_length_total_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 0) {
-				value = bwd_packet_length_mean_halve_unit.execute(value + (bit<16>)hdr.ipv4.total_len);
+				value = value |+| hdr.ipv4.total_len;
 			}
 			rv = value;
 		}
@@ -175,12 +173,10 @@ control SwitchIngress(
 		}
 	};
 
-	MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) fwd_packet_length_mean_halve_unit;
-
-	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_packet_length_mean_reg) fwd_packet_length_mean_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_packet_length_total_reg) fwd_packet_length_total_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 1) {
-				value = fwd_packet_length_mean_halve_unit.execute(value + (bit<16>)hdr.ipv4.total_len);
+				value = value |+| hdr.ipv4.total_len;
 			}
 			rv = value;
 		}
@@ -217,9 +213,9 @@ control SwitchIngress(
         meta.code_tk_ddos_bwd_packet_length_max = code_ddos;
     }
     
-    action set_code_bwd_packet_length_mean (bit<104> code_app, bit<32> code_ddos) {
-        meta.code_tk_app_bwd_packet_length_mean = code_app;
-        meta.code_tk_ddos_bwd_packet_length_mean = code_ddos;
+    action set_code_bwd_packet_length_total (bit<104> code_app, bit<32> code_ddos) {
+        meta.code_tk_app_bwd_packet_length_total = code_app;
+        meta.code_tk_ddos_bwd_packet_length_total = code_ddos;
     }
     
     action set_code_fwd_packet_length_max (bit<160> code_app, bit<32> code_ddos) {
@@ -227,9 +223,9 @@ control SwitchIngress(
         meta.code_tk_ddos_fwd_packet_length_max = code_ddos;
     }
     
-    action set_code_fwd_packet_length_mean (bit<104> code_app, bit<32> code_ddos) {
-        meta.code_tk_app_fwd_packet_length_mean = code_app;
-        meta.code_tk_ddos_fwd_packet_length_mean = code_ddos;
+    action set_code_fwd_packet_length_total (bit<104> code_app, bit<32> code_ddos) {
+        meta.code_tk_app_fwd_packet_length_total = code_app;
+        meta.code_tk_ddos_fwd_packet_length_total = code_ddos;
     }
 
 
@@ -240,13 +236,13 @@ control SwitchIngress(
             meta.code_tk_app_bwd_packet_length_max[63:0] : ternary @name("code_tk_app_bwd_packet_length_max_63_0_");
             meta.code_tk_app_bwd_packet_length_max[127:64] : ternary @name("code_tk_app_bwd_packet_length_max_127_64_");
             meta.code_tk_app_bwd_packet_length_max[129:128] : ternary @name("code_tk_app_bwd_packet_length_max_129_128_");
-            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary @name("code_tk_app_bwd_packet_length_mean_63_0_");
-            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary @name("code_tk_app_bwd_packet_length_mean_99_64_");
+            meta.code_tk_app_bwd_packet_length_total[63:0] : ternary @name("code_tk_app_bwd_packet_length_total_63_0_");
+            meta.code_tk_app_bwd_packet_length_total[99:64] : ternary @name("code_tk_app_bwd_packet_length_total_99_64_");
             meta.code_tk_app_fwd_packet_length_max[63:0] : ternary @name("code_tk_app_fwd_packet_length_max_63_0_");
             meta.code_tk_app_fwd_packet_length_max[127:64] : ternary @name("code_tk_app_fwd_packet_length_max_127_64_");
             meta.code_tk_app_fwd_packet_length_max[148:128] : ternary @name("code_tk_app_fwd_packet_length_max_148_128_");
-            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary @name("code_tk_app_fwd_packet_length_mean_63_0_");
-            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary @name("code_tk_app_fwd_packet_length_mean_102_64_");
+            meta.code_tk_app_fwd_packet_length_total[63:0] : ternary @name("code_tk_app_fwd_packet_length_total_63_0_");
+            meta.code_tk_app_fwd_packet_length_total[102:64] : ternary @name("code_tk_app_fwd_packet_length_total_102_64_");
         }
         actions = {
             classify_flow_codeword_app_0;        
@@ -260,13 +256,13 @@ control SwitchIngress(
             meta.code_tk_app_bwd_packet_length_max[63:0] : ternary @name("code_tk_app_bwd_packet_length_max_63_0_");
             meta.code_tk_app_bwd_packet_length_max[127:64] : ternary @name("code_tk_app_bwd_packet_length_max_127_64_");
             meta.code_tk_app_bwd_packet_length_max[129:128] : ternary @name("code_tk_app_bwd_packet_length_max_129_128_");
-            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary @name("code_tk_app_bwd_packet_length_mean_63_0_");
-            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary @name("code_tk_app_bwd_packet_length_mean_99_64_");
+            meta.code_tk_app_bwd_packet_length_total[63:0] : ternary @name("code_tk_app_bwd_packet_length_total_63_0_");
+            meta.code_tk_app_bwd_packet_length_total[99:64] : ternary @name("code_tk_app_bwd_packet_length_total_99_64_");
             meta.code_tk_app_fwd_packet_length_max[63:0] : ternary @name("code_tk_app_fwd_packet_length_max_63_0_");
             meta.code_tk_app_fwd_packet_length_max[127:64] : ternary @name("code_tk_app_fwd_packet_length_max_127_64_");
             meta.code_tk_app_fwd_packet_length_max[148:128] : ternary @name("code_tk_app_fwd_packet_length_max_148_128_");
-            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary @name("code_tk_app_fwd_packet_length_mean_63_0_");
-            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary @name("code_tk_app_fwd_packet_length_mean_102_64_");
+            meta.code_tk_app_fwd_packet_length_total[63:0] : ternary @name("code_tk_app_fwd_packet_length_total_63_0_");
+            meta.code_tk_app_fwd_packet_length_total[102:64] : ternary @name("code_tk_app_fwd_packet_length_total_102_64_");
         }
         actions = {
             classify_flow_codeword_app_1;        
@@ -280,13 +276,13 @@ control SwitchIngress(
             meta.code_tk_app_bwd_packet_length_max[63:0] : ternary @name("code_tk_app_bwd_packet_length_max_63_0_");
             meta.code_tk_app_bwd_packet_length_max[127:64] : ternary @name("code_tk_app_bwd_packet_length_max_127_64_");
             meta.code_tk_app_bwd_packet_length_max[129:128] : ternary @name("code_tk_app_bwd_packet_length_max_129_128_");
-            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary @name("code_tk_app_bwd_packet_length_mean_63_0_");
-            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary @name("code_tk_app_bwd_packet_length_mean_99_64_");
+            meta.code_tk_app_bwd_packet_length_total[63:0] : ternary @name("code_tk_app_bwd_packet_length_total_63_0_");
+            meta.code_tk_app_bwd_packet_length_total[99:64] : ternary @name("code_tk_app_bwd_packet_length_total_99_64_");
             meta.code_tk_app_fwd_packet_length_max[63:0] : ternary @name("code_tk_app_fwd_packet_length_max_63_0_");
             meta.code_tk_app_fwd_packet_length_max[127:64] : ternary @name("code_tk_app_fwd_packet_length_max_127_64_");
             meta.code_tk_app_fwd_packet_length_max[148:128] : ternary @name("code_tk_app_fwd_packet_length_max_148_128_");
-            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary @name("code_tk_app_fwd_packet_length_mean_63_0_");
-            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary @name("code_tk_app_fwd_packet_length_mean_102_64_");
+            meta.code_tk_app_fwd_packet_length_total[63:0] : ternary @name("code_tk_app_fwd_packet_length_total_63_0_");
+            meta.code_tk_app_fwd_packet_length_total[102:64] : ternary @name("code_tk_app_fwd_packet_length_total_102_64_");
         }
         actions = {
             classify_flow_codeword_app_2;        
@@ -298,9 +294,9 @@ control SwitchIngress(
     table get_classification_tree_ddos_0 {
         key = {
             meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_12_0_");
-            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_22_0_");
+            meta.code_tk_ddos_bwd_packet_length_total[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_total_22_0_");
             meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_21_0_");
-            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_24_0_");
+            meta.code_tk_ddos_fwd_packet_length_total[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_total_24_0_");
         }
         actions = {
             classify_flow_codeword_ddos_0;        
@@ -312,9 +308,9 @@ control SwitchIngress(
     table get_classification_tree_ddos_1 {
         key = {
             meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_12_0_");
-            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_22_0_");
+            meta.code_tk_ddos_bwd_packet_length_total[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_total_22_0_");
             meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_21_0_");
-            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_24_0_");
+            meta.code_tk_ddos_fwd_packet_length_total[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_total_24_0_");
         }
         actions = {
             classify_flow_codeword_ddos_1;        
@@ -326,9 +322,9 @@ control SwitchIngress(
     table get_classification_tree_ddos_2 {
         key = {
             meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_12_0_");
-            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_22_0_");
+            meta.code_tk_ddos_bwd_packet_length_total[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_total_22_0_");
             meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_21_0_");
-            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_24_0_");
+            meta.code_tk_ddos_fwd_packet_length_total[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_total_24_0_");
         }
         actions = {
             classify_flow_codeword_ddos_2;        
@@ -348,12 +344,12 @@ control SwitchIngress(
     }   
     
     @placement_priority(3)
-    table table_1_bwd_packet_length_mean {
+    table table_1_bwd_packet_length_total {
         key = {
-            meta.bwd_packet_length_mean_val: range;
+            meta.bwd_packet_length_total_val: range;
         }
         actions = {
-            set_code_bwd_packet_length_mean;        
+            set_code_bwd_packet_length_total;        
         }
         size = 121;
     }   
@@ -370,12 +366,12 @@ control SwitchIngress(
     }   
     
     @placement_priority(3)
-    table table_3_fwd_packet_length_mean {
+    table table_3_fwd_packet_length_total {
         key = {
-            meta.fwd_packet_length_mean_val: range;
+            meta.fwd_packet_length_total_val: range;
         }
         actions = {
-            set_code_fwd_packet_length_mean;        
+            set_code_fwd_packet_length_total;        
         }
         size = 117;
     }   
@@ -465,16 +461,16 @@ control SwitchIngress(
 
 
 			meta.fwd_packet_length_max_val = fwd_packet_length_max_action.execute(meta.flow_hash);
-			meta.fwd_packet_length_mean_val = fwd_packet_length_mean_action.execute(meta.flow_hash);
+			meta.fwd_packet_length_total_val = fwd_packet_length_total_action.execute(meta.flow_hash);
 
 			meta.bwd_packet_length_max_val = bwd_packet_length_max_action.execute(meta.flow_hash);
-			meta.bwd_packet_length_mean_val = bwd_packet_length_mean_action.execute(meta.flow_hash);
+			meta.bwd_packet_length_total_val = bwd_packet_length_total_action.execute(meta.flow_hash);
 
 
 			table_0_bwd_packet_length_max.apply();
-			table_1_bwd_packet_length_mean.apply();
+			table_1_bwd_packet_length_total.apply();
 			table_2_fwd_packet_length_max.apply();
-			table_3_fwd_packet_length_mean.apply();
+			table_3_fwd_packet_length_total.apply();
 
 			get_classification_tree_app_0.apply();
 			get_classification_tree_app_1.apply();

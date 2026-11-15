@@ -23,6 +23,13 @@ and recompiled on the Codespace (impl/t34, generator fe925f3, 12 compiles, every
 p4c table's blocks and stage and every stage depth identical to the a0cbb9f compiles (12/12), so only text_md5 /
 generator_commit changed in the json; p4c PHV +0..+6 containers over Task 31 (the 32-bit clock, the flow_hash pin,
 one container per Min read constant).
+Regenerated for Task 38 (P3h: the Means replaced by coarse-clock durations and saturating length Totals): each
+text is the Task 38 generator's program for the design's forest, its Means under their replacements' names
+(src.training.dataset.replace_means), and the same forest with the old names given the new catalog entries is
+Task 37's P3h probe edit of the previous text, as lines (impl/scripts/t38_compile.py, 12/12). Recompiled on the
+Codespace (impl/t38, 12 compiles, 0 errors with a binary each): stage depth and blocks equal the Task 34 compiles
+on 11/12; joint-tree_M015_s02_k06 is 7 -> 6 stages (its bwd chain's two registers became one). Every compiled
+duration / Total body equals Task 37's probed bfa; the model's register stage equals p4c's on 136/136 registers.
 The old calibration archive
 (compiler_calibration_pragmas_2026_09_29) can no longer score the model: every program in it is refused by shape
 (test_model_archive).
@@ -50,16 +57,9 @@ with open(_FIXTURE + ".json", encoding="utf-8") as _handle:
 
 # row -> {"stage_depth"/"blocks": (model, p4c), table: {"stage"/"blocks": (model, p4c)}}
 KNOWN_MISSES = {
-    # Since review A2 (Task 31): a register-ALU tie the model breaks the other way. At stage 2 four of five ready
-    # registers fit; p4c (table_placement_1.log) keeps fwd_packet_length_max_reg over bwd_last_arrival_time_reg
-    # "for reason: fewer total dependencies in dominance frontier" -- their downward dependence tails now tie,
-    # because the app task's tree (the end of both chains) no longer feeds a vote table -- while the model's
-    # schedule (longer register tail first) runs bwd_last_arrival_time first. Both fwd_packet_length_max range
-    # tables then land a stage earlier in p4c than in the model; stage depth and blocks exact.
-    "independent_M050_s13_k07": {
-        "table_11_ddos_fwd_packet_length_max": {"stage": (4, 3)},
-        "table_4_app_fwd_packet_length_max": {"stage": (4, 3)},
-    },
+    # (independent_M050_s13_k07's pinned register-ALU tie, model stage 4 vs p4c 3 for both fwd_packet_length_max
+    # range tables since review A2, is gone with Task 38: the bwd_last_arrival_time register in that tie is no
+    # longer emitted, its chain's Mean being a duration now.)
     "joint-tree_M075_s02_k07": {
         "blocks": (33, 34),
         "get_classification_tree_app_1": {"blocks": (7, 8)},

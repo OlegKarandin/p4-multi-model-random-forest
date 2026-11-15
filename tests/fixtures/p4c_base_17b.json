@@ -1,7 +1,7 @@
 {
  "independent_M015_s06_k04": {
   "encoding": "disjoint",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 4,
   "stage_depth": 6,
   "tables": {
@@ -13,9 +13,9 @@
     1,
     5
    ],
-   "table_0_bwd_iat_mean": [
+   "table_0_bwd_iat_total": [
     1,
-    4
+    3
    ],
    "table_1_app_fwd_iat_min": [
     1,
@@ -25,7 +25,7 @@
     1,
     2
    ],
-   "table_3_app_packet_length_mean": [
+   "table_3_app_packet_length_total": [
     1,
     2
    ],
@@ -33,24 +33,24 @@
     1,
     4
    ],
-   "table_5_fwd_iat_mean": [
+   "table_5_ddos_fwd_iat_min": [
     1,
     4
    ],
-   "table_6_ddos_fwd_iat_min": [
+   "table_6_fwd_iat_total": [
     1,
-    4
+    3
    ],
-   "table_7_ddos_packet_length_mean": [
+   "table_7_ddos_packet_length_total": [
     1,
     2
    ]
   },
-  "text_md5": "a3aa2454bcbf8927dc8dd29ecea83baa"
+  "text_md5": "e42b48e5e7e0a73c60219159c04c0077"
  },
  "independent_M035_s11_k13": {
   "encoding": "disjoint",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 13,
   "stage_depth": 8,
   "tables": {
@@ -70,11 +70,11 @@
     1,
     6
    ],
-   "table_11_app_fwd_packet_length_mean": [
+   "table_11_app_fwd_packet_length_total": [
     1,
     4
    ],
-   "table_12_app_packet_length_mean": [
+   "table_12_app_packet_length_total": [
     1,
     2
    ],
@@ -82,11 +82,11 @@
     1,
     4
    ],
-   "table_14_ddos_bwd_iat_mean": [
+   "table_14_ddos_bwd_iat_min": [
     1,
     4
    ],
-   "table_15_ddos_bwd_iat_min": [
+   "table_15_ddos_bwd_iat_total": [
     1,
     4
    ],
@@ -94,11 +94,11 @@
     1,
     3
    ],
-   "table_17_ddos_bwd_packet_length_mean": [
+   "table_17_ddos_bwd_packet_length_total": [
     1,
     3
    ],
-   "table_18_flow_iat_mean": [
+   "table_18_flow_duration": [
     1,
     6
    ],
@@ -106,7 +106,7 @@
     1,
     5
    ],
-   "table_1_app_bwd_iat_mean": [
+   "table_1_app_bwd_iat_min": [
     1,
     4
    ],
@@ -114,15 +114,15 @@
     1,
     5
    ],
-   "table_21_ddos_fwd_iat_mean": [
+   "table_21_ddos_fwd_iat_min": [
     1,
     5
    ],
-   "table_22_ddos_fwd_iat_min": [
+   "table_22_ddos_fwd_iat_total": [
     1,
     5
    ],
-   "table_23_ddos_fwd_packet_length_mean": [
+   "table_23_ddos_fwd_packet_length_total": [
     1,
     4
    ],
@@ -130,11 +130,11 @@
     1,
     2
    ],
-   "table_25_ddos_packet_length_mean": [
+   "table_25_ddos_packet_length_total": [
     1,
     2
    ],
-   "table_2_app_bwd_iat_min": [
+   "table_2_app_bwd_iat_total": [
     1,
     4
    ],
@@ -142,13 +142,13 @@
     1,
     3
    ],
-   "table_4_app_bwd_packet_length_mean": [
-    1,
-    3
-   ],
-   "table_5_bwd_packet_length_min": [
+   "table_4_bwd_packet_length_min": [
     1,
     6
+   ],
+   "table_5_app_bwd_packet_length_total": [
+    1,
+    3
    ],
    "table_6_app_flow_iat_min": [
     1,
@@ -158,20 +158,20 @@
     1,
     5
    ],
-   "table_8_app_fwd_iat_mean": [
+   "table_8_app_fwd_iat_min": [
     1,
     5
    ],
-   "table_9_app_fwd_iat_min": [
+   "table_9_app_fwd_iat_total": [
     1,
     5
    ]
   },
-  "text_md5": "bbc55baf1c12c19a291444efe29845d4"
+  "text_md5": "dae5b69ac65a585a446d6565702c1ff8"
  },
  "independent_M050_s13_k07": {
   "encoding": "disjoint",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 7,
   "stage_depth": 7,
   "tables": {
@@ -191,11 +191,11 @@
     5,
     5
    ],
-   "table_0_bwd_iat_mean": [
+   "table_0_bwd_iat_total": [
     1,
     5
    ],
-   "table_10_fwd_iat_min": [
+   "table_10_fwd_iat_total": [
     1,
     4
    ],
@@ -203,19 +203,19 @@
     1,
     3
    ],
-   "table_12_ddos_fwd_packet_length_mean": [
+   "table_12_ddos_fwd_packet_length_total": [
     1,
     3
    ],
-   "table_13_ddos_packet_length_mean": [
+   "table_13_ddos_packet_length_total": [
     1,
     2
    ],
    "table_1_bwd_packet_length_max": [
     1,
-    5
+    4
    ],
-   "table_2_app_bwd_packet_length_mean": [
+   "table_2_app_bwd_packet_length_total": [
     1,
     3
    ],
@@ -227,15 +227,15 @@
     1,
     3
    ],
-   "table_5_app_fwd_packet_length_mean": [
+   "table_5_app_fwd_packet_length_total": [
     1,
     3
    ],
-   "table_6_app_packet_length_mean": [
+   "table_6_app_packet_length_total": [
     1,
     2
    ],
-   "table_7_ddos_bwd_packet_length_mean": [
+   "table_7_ddos_bwd_packet_length_total": [
     1,
     3
    ],
@@ -243,7 +243,7 @@
     1,
     4
    ],
-   "table_9_fwd_iat_mean": [
+   "table_9_fwd_iat_min": [
     1,
     4
    ],
@@ -252,11 +252,11 @@
     6
    ]
   },
-  "text_md5": "c04c577a1a8200a13c62138e899ca64b"
+  "text_md5": "c2fdf8e82f53913585d96911544a145b"
  },
  "joint-off_M025_s02_k01": {
   "encoding": "joint",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 1,
   "stage_depth": 6,
   "tables": {
@@ -276,7 +276,7 @@
     2,
     4
    ],
-   "table_0_bwd_packet_length_mean": [
+   "table_0_bwd_packet_length_total": [
     1,
     3
    ],
@@ -285,11 +285,11 @@
     5
    ]
   },
-  "text_md5": "da7f692edd8ebcf7fe121d1e6b6e17b4"
+  "text_md5": "4a89bb6cbd10a26d0dcd643d86155fac"
  },
  "joint-off_M025_s06_k17": {
   "encoding": "joint",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 17,
   "stage_depth": 8,
   "tables": {
@@ -305,7 +305,7 @@
     1,
     6
    ],
-   "table_10_fwd_iat_min": [
+   "table_10_fwd_iat_total": [
     1,
     5
    ],
@@ -313,27 +313,27 @@
     1,
     5
    ],
-   "table_12_fwd_packet_length_mean": [
-    1,
-    4
-   ],
-   "table_13_fwd_packet_length_min": [
+   "table_12_fwd_packet_length_min": [
     1,
     6
    ],
-   "table_14_min_packet_length": [
-    1,
-    2
-   ],
-   "table_15_packet_length_mean": [
-    1,
-    2
-   ],
-   "table_1_bwd_iat_mean": [
+   "table_13_fwd_packet_length_total": [
     1,
     4
    ],
-   "table_2_bwd_iat_min": [
+   "table_14_min_packet_length": [
+    1,
+    6
+   ],
+   "table_15_packet_length_total": [
+    1,
+    2
+   ],
+   "table_1_bwd_iat_min": [
+    1,
+    4
+   ],
+   "table_2_bwd_iat_total": [
     1,
     4
    ],
@@ -341,19 +341,19 @@
     1,
     4
    ],
-   "table_4_bwd_packet_length_mean": [
+   "table_4_bwd_packet_length_min": [
     1,
     3
    ],
-   "table_5_bwd_packet_length_min": [
+   "table_5_bwd_packet_length_total": [
     1,
     3
    ],
-   "table_6_flow_iat_max": [
+   "table_6_flow_duration": [
     1,
-    6
+    2
    ],
-   "table_7_flow_iat_mean": [
+   "table_7_flow_iat_max": [
     1,
     6
    ],
@@ -361,16 +361,16 @@
     1,
     5
    ],
-   "table_9_fwd_iat_mean": [
+   "table_9_fwd_iat_min": [
     1,
     5
    ]
   },
-  "text_md5": "bcd8a9fa9864295410360cbe85326fbf"
+  "text_md5": "b2268dfa24a2b3318a53b2e1cef68504"
  },
  "joint-off_M075_s19_k07": {
   "encoding": "joint",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 7,
   "stage_depth": 8,
   "tables": {
@@ -410,27 +410,27 @@
     1,
     3
    ],
-   "table_1_bwd_packet_length_mean": [
-    1,
-    3
-   ],
-   "table_2_bwd_packet_length_min": [
+   "table_1_bwd_packet_length_min": [
     1,
     4
+   ],
+   "table_2_bwd_packet_length_total": [
+    1,
+    3
    ],
    "table_3_fwd_packet_length_max": [
     1,
     3
    ],
-   "table_4_fwd_packet_length_mean": [
-    1,
-    3
-   ],
-   "table_5_fwd_packet_length_min": [
+   "table_4_fwd_packet_length_min": [
     1,
     4
    ],
-   "table_6_packet_length_mean": [
+   "table_5_fwd_packet_length_total": [
+    1,
+    3
+   ],
+   "table_6_packet_length_total": [
     1,
     2
    ],
@@ -443,11 +443,11 @@
     6
    ]
   },
-  "text_md5": "2af76f0d50f8abab5dfc11ab490bdeb6"
+  "text_md5": "2282d17093490c80dac622fb8b11ed78"
  },
  "joint-task_M035_s24_k07": {
   "encoding": "per_task",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 7,
   "stage_depth": 8,
   "tables": {
@@ -475,31 +475,31 @@
     4,
     5
    ],
-   "table_0_bwd_iat_mean": [
+   "table_0_bwd_iat_total": [
     1,
-    4
+    3
    ],
    "table_1_bwd_packet_length_max": [
     1,
     3
    ],
-   "table_2_bwd_packet_length_mean": [
-    1,
-    3
-   ],
-   "table_3_bwd_packet_length_min": [
+   "table_2_bwd_packet_length_min": [
     1,
     4
+   ],
+   "table_3_bwd_packet_length_total": [
+    1,
+    3
    ],
    "table_4_fwd_packet_length_max": [
     1,
     4
    ],
-   "table_5_fwd_packet_length_mean": [
+   "table_5_fwd_packet_length_total": [
     1,
     3
    ],
-   "table_6_packet_length_mean": [
+   "table_6_packet_length_total": [
     1,
     2
    ],
@@ -512,11 +512,11 @@
     6
    ]
   },
-  "text_md5": "1be55dd264c83beeac86475af62d754e"
+  "text_md5": "bbf9c12060d0292978b58968a9c4b3fe"
  },
  "joint-task_M055_s20_k16": {
   "encoding": "per_task",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 16,
   "stage_depth": 9,
   "tables": {
@@ -546,13 +546,13 @@
    ],
    "table_0_bwd_iat_max": [
     1,
-    6
+    5
    ],
-   "table_10_fwd_iat_mean": [
+   "table_10_fwd_iat_min": [
     1,
     4
    ],
-   "table_11_fwd_iat_min": [
+   "table_11_fwd_iat_total": [
     1,
     4
    ],
@@ -560,45 +560,45 @@
     1,
     4
    ],
-   "table_13_fwd_packet_length_mean": [
+   "table_13_fwd_packet_length_total": [
     1,
     3
    ],
    "table_14_min_packet_length": [
     1,
-    2
-   ],
-   "table_15_packet_length_mean": [
-    1,
-    2
-   ],
-   "table_1_bwd_iat_mean": [
-    1,
     6
    ],
-   "table_2_bwd_iat_min": [
+   "table_15_packet_length_total": [
+    1,
+    2
+   ],
+   "table_1_bwd_iat_min": [
     1,
     4
+   ],
+   "table_2_bwd_iat_total": [
+    1,
+    6
    ],
    "table_3_bwd_packet_length_max": [
     1,
     5
    ],
-   "table_4_bwd_packet_length_mean": [
+   "table_4_bwd_packet_length_min": [
+    1,
+    5
+   ],
+   "table_5_bwd_packet_length_total": [
     1,
     3
    ],
-   "table_5_bwd_packet_length_min": [
+   "table_6_flow_duration": [
     1,
-    5
+    2
    ],
-   "table_6_flow_iat_max": [
+   "table_7_flow_iat_max": [
     1,
     6
-   ],
-   "table_7_flow_iat_mean": [
-    1,
-    5
    ],
    "table_8_flow_iat_min": [
     1,
@@ -613,11 +613,11 @@
     8
    ]
   },
-  "text_md5": "d1c8e898889f3bb0c37cffd303d88947"
+  "text_md5": "a2709253058e4020d3ca37ab9bc61fea"
  },
  "joint-task_M075_s13_k04": {
   "encoding": "per_task",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 4,
   "stage_depth": 8,
   "tables": {
@@ -649,7 +649,7 @@
     1,
     3
    ],
-   "table_1_bwd_packet_length_mean": [
+   "table_1_bwd_packet_length_total": [
     1,
     3
    ],
@@ -657,7 +657,7 @@
     1,
     3
    ],
-   "table_3_fwd_packet_length_mean": [
+   "table_3_fwd_packet_length_total": [
     1,
     3
    ],
@@ -670,43 +670,43 @@
     5
    ]
   },
-  "text_md5": "9c8780ecc489e7dd968c60a1af9e48d3"
+  "text_md5": "e8804a3face91842c90877fc0571c73c"
  },
  "joint-tree_M015_s02_k06": {
   "encoding": "per_tree",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 6,
-  "stage_depth": 7,
+  "stage_depth": 6,
   "tables": {
    "get_classification_tree_app_0": [
     2,
-    5
+    4
    ],
    "get_classification_tree_ddos_0": [
     2,
-    5
+    4
    ],
    "get_classification_tree_ddos_1": [
     1,
-    5
+    4
    ],
    "get_classification_tree_ddos_2": [
     2,
-    5
-   ],
-   "table_0_bwd_iat_mean": [
-    1,
     4
+   ],
+   "table_0_bwd_iat_total": [
+    1,
+    3
    ],
    "table_1_bwd_packet_length_max": [
     1,
     3
    ],
-   "table_2_bwd_packet_length_mean": [
+   "table_2_bwd_packet_length_min": [
     1,
     3
    ],
-   "table_3_bwd_packet_length_min": [
+   "table_3_bwd_packet_length_total": [
     1,
     3
    ],
@@ -714,20 +714,20 @@
     1,
     2
    ],
-   "table_5_packet_length_mean": [
+   "table_5_packet_length_total": [
     1,
     2
    ],
    "vote_ddos": [
     0,
-    6
+    5
    ]
   },
-  "text_md5": "963768bb97f6a77424db6dff96ca44a9"
+  "text_md5": "5fc539f5200e904a7c6bf01fa5cefc4b"
  },
  "joint-tree_M055_s00_k13": {
   "encoding": "per_tree",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 13,
   "stage_depth": 9,
   "tables": {
@@ -759,41 +759,41 @@
     1,
     5
    ],
-   "table_10_fwd_packet_length_min": [
+   "table_10_fwd_packet_length_total": [
     1,
-    5
+    4
    ],
    "table_11_min_packet_length": [
     1,
-    2
+    5
    ],
-   "table_12_packet_length_mean": [
+   "table_12_packet_length_total": [
     1,
     2
    ],
-   "table_1_bwd_iat_mean": [
+   "table_1_bwd_iat_min": [
     1,
     4
    ],
-   "table_2_bwd_iat_min": [
+   "table_2_bwd_iat_total": [
     1,
-    4
+    3
    ],
    "table_3_bwd_packet_length_max": [
     1,
     3
    ],
-   "table_4_bwd_packet_length_mean": [
+   "table_4_bwd_packet_length_min": [
+    1,
+    5
+   ],
+   "table_5_bwd_packet_length_total": [
     1,
     3
    ],
-   "table_5_bwd_packet_length_min": [
+   "table_6_flow_duration": [
     1,
-    5
-   ],
-   "table_6_flow_iat_mean": [
-    1,
-    5
+    2
    ],
    "table_7_flow_iat_min": [
     1,
@@ -803,9 +803,9 @@
     1,
     4
    ],
-   "table_9_fwd_packet_length_mean": [
+   "table_9_fwd_packet_length_min": [
     1,
-    3
+    5
    ],
    "vote_app": [
     0,
@@ -816,11 +816,11 @@
     7
    ]
   },
-  "text_md5": "d428fc0d480998829fd3d617d72a5b70"
+  "text_md5": "39d73718c26fb02c5f60f91f91c831f2"
  },
  "joint-tree_M075_s02_k07": {
   "encoding": "per_tree",
-  "generator_commit": "fe925f3d03f80cc6672af2449fa6559416cb96ce",
+  "generator_commit": "ba38cf301100d3be3c5fd6b3cfadc9c94f55f41d",
   "k": 7,
   "stage_depth": 8,
   "tables": {
@@ -864,7 +864,7 @@
     1,
     3
    ],
-   "table_2_bwd_packet_length_mean": [
+   "table_2_bwd_packet_length_total": [
     1,
     3
    ],
@@ -876,11 +876,11 @@
     1,
     4
    ],
-   "table_5_fwd_packet_length_mean": [
+   "table_5_fwd_packet_length_total": [
     1,
     3
    ],
-   "table_6_packet_length_mean": [
+   "table_6_packet_length_total": [
     1,
     2
    ],
@@ -893,6 +893,6 @@
     6
    ]
   },
-  "text_md5": "f6363293be836998bd3200f8bf0f2005"
+  "text_md5": "ae31a35e2ae58c7a874edfb3cd04ac4f"
  }
 }

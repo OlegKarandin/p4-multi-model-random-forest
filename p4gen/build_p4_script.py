@@ -2566,8 +2566,9 @@ _REGISTER_ACTION_BODIES = {
   #     round(d / 65.536 us), at most one tick from the switch's floor difference), so
   #     the control plane installs every threshold unchanged. The coarse clock
   #     reaches 4.3 s before the clamp, where the 1.024 us IAT clock clamps at 67 ms
-  #     (mean_options_accuracy.md: P3c, app +1.6 / +0.4 points over the software
-  #     Means at k<=8 / k>=9, before the Task 38 re-measure).
+  #     (mean_options_accuracy.md, Task 38 re-measure with this definition, software
+  #     accuracy on 5 DEV splits: app +1.4 / +0.2 points, ddos +0.1 / +0.4 over the
+  #     software Means at k<=8 / k>=9).
   #   EVIDENCE: Task 37 (results/encoding_evidence_2026_11/model8/impl/probe_p3c.md,
   #     variant P3h): p4c compiled exactly this body at the unedited program's stage
   #     depth and blocks (independent_M050_s13_k07 7 / 36, joint-off_M025_s06_k17
