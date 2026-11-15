@@ -494,7 +494,9 @@ def test_three_task_entries_classify_exactly_as_each_tree(tmp_path):
 # --- the 66-byte stage check --------------------------------------------------
 
 def _load(index, fields, blocks=(1,), tables=1):
-    return StageLoad(index=index, blocks=tuple(blocks), fields=frozenset(fields), tables=tables)
+    fields = tuple(fields)
+    return StageLoad(index=index, blocks=tuple(blocks), fields=frozenset(fields), tables=tables,
+                     field_order=tuple(sorted(set(fields), key=repr)))
 
 
 def test_the_stage_limit_is_66_while_the_single_key_limit_stays_64():

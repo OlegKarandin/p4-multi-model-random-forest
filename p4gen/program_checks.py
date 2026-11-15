@@ -35,6 +35,7 @@ with a named reason (ProgramShapeRefused); p4_replay.model_breakdown calls it fi
 """
 import re
 
+from p4model import lanes
 from p4model.errors import ProgramShapeRefused
 
 _META = re.compile(r"\bmeta\.(\w+)")
@@ -328,8 +329,10 @@ def _require(pins, pin, field):
 
 def _check_pins(program, pins):
   """A1, A7-A10 and the code-field pins of decisions 4.1 / 4.3: every pin the
-  generator emits is present, and every pinned code field is declared at its
-  containers' full width."""
+  generator emits is present, every pinned code field is declared at its
+  containers' full width, and (joint / disjoint / per-task, not the packed
+  code_pk_ fields) its split is lanes.container_sizes of its live width, the
+  layout training prices the key with."""
   _require(pins, "pa_no_overlay", "fwd")
   for field in program.class_fields:
     _require(pins, "pa_solitary", field)
@@ -350,6 +353,9 @@ def _check_pins(program, pins):
       sizes = _require(pins, "pa_container_size", field)
       if sum(sizes) != bits:
         raise ProgramShapeRefused("unexpected_shape:code_width:%s" % field)
+      if not field.startswith(_PACKED) and (
+          list(sizes) != lanes.container_sizes(program.bits.get(field, bits))):
+        raise ProgramShapeRefused("unexpected_shape:code_container:%s" % field)
 
 
 def _check_priorities(program):

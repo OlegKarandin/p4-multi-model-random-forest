@@ -182,7 +182,8 @@ def _parse_priorities(text):
     generator emits one on every classification tree table, N - i for task i
     of N -- program.placement_priorities -- and, on a program generated since
     2026-11, N + 1 on every range table -- program.range_table_priority -- which
-    the replay does not need: the model places the range pool first either way)."""
+    the pricing does not need, the model placing the range pool first either way;
+    program_checks.check_program reads it to check the program's shape)."""
     return {name: int(priority)
             for priority, name in _PLACEMENT_PRIORITY.findall(text)}
 
@@ -788,9 +789,12 @@ def check_trees(program):
     bus ActionDataTooWide (packed.check_bus_bytes, R4); a tree key over
     target.MAX_KEY_BYTES crossbar bytes CrossbarKeyTooWide (tables.check_key_bytes,
     R2) -- for a packed program after the PHV count, as packed.layout_for refuses a
-    container before any key is priced, otherwise before it. The PHV count itself
-    (phv.check, R5) and the keys with no crossbar allocation (R3) are checked by
-    model_breakdown and the pricing."""
+    container before any key is priced, otherwise before it, each tree's key byte
+    check followed by its crossbar allocation (_field_price: CrossbarKeyTooWide
+    where none exists, R3) as training's per-tree lanes.table_blocks does, so a
+    design with both a key and a PHV problem is refused for its key on both
+    paths. The PHV count is phv.check (R5); a packed key with no allocation is
+    refused by the pricing (_packed_price), after the PHV count as in training."""
     trees = [name for name in program.tables if _TREE_TASK.match(name)]
     for name in trees:
         if not program.tables[name]:
@@ -802,8 +806,11 @@ def check_trees(program):
                                    sum(program.containers[name]) // 8)
         phv.check(phv.containers_used(program))
     for name in trees:
-        check_key_bytes(len(tree_key_bytes(program, name)) if packed_program
-                        else sum(program.widths[key] for key in program.tables[name]))
+        if packed_program:
+            check_key_bytes(len(tree_key_bytes(program, name)))
+        else:
+            check_key_bytes(sum(program.widths[key] for key in program.tables[name]))
+            _field_price(program, name)
     if not packed_program:
         phv.check(phv.containers_used(program))
 

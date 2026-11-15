@@ -260,6 +260,14 @@ def test_pinned_24_remainder_fields_fill_the_low_container_first(w, expected):
   assert lanes.layout(w) == expected
 
 
+@pytest.mark.parametrize('w,expected', [
+    (19, [32]), (7, [8]), (33, [8, 32]), (46, [16, 32]), (56, [32, 32]), (0, []),
+])
+def test_container_sizes_plain_values(w, expected):
+  """The plain pin rule's values, low container first (interim review T6)."""
+  assert lanes.container_sizes(w) == expected
+
+
 def test_fill_low_fix_leaves_every_pin_unchanged():
   """Per FIELD, the pins (container sizes, low slice first) do not move, for
   every width 0..329."""

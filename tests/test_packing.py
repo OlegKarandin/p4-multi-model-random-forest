@@ -439,10 +439,10 @@ def test_a_saturated_key_in_an_uncrowded_shared_stage_pays_nothing():
 def _seed(index, blocks, byte_widths, tables=None):
     from p4model.packing import StageLoad
 
-    return StageLoad(index=index, blocks=tuple(blocks),
-                     fields=frozenset((("val", index, i), w)
-                                      for i, w in enumerate(byte_widths)),
-                     tables=len(blocks) if tables is None else tables)
+    fields = tuple((("val", index, i), w) for i, w in enumerate(byte_widths))
+    return StageLoad(index=index, blocks=tuple(blocks), fields=frozenset(fields),
+                     tables=len(blocks) if tables is None else tables,
+                     field_order=fields)
 
 
 def test_a_seed_counts_against_the_eight_table_cap():
@@ -698,7 +698,7 @@ def test_a_single_key_pool_is_never_charged_above_its_stand_alone_prices(dist):
         else:
             seed = StageLoad(index=levels[0] - 1, blocks=(1, 1),
                              fields=frozenset({(("val", 0), 2), (("val", 1), 2)}),
-                             tables=2)
+                             tables=2, field_order=((("val", 0), 2), (("val", 1), 2)))
             plan = crossbar_stages_needed(specs, readiness_levels=levels,
                                           seed_stages=[seed], **kwargs)
         assert all(charged <= declared for charged, (declared, _)
@@ -738,7 +738,7 @@ def test_a_second_key_or_a_reachable_seed_switches_the_simulation_on():
     assert two.blocks == 22
     wide = frozenset({(("code", "wide"), 60)})
     seed = StageLoad(index=0, blocks=(1,), fields=frozenset({(("val", 0), 2)}),
-                     tables=1)
+                     tables=1, field_order=((("val", 0), 2),))
     seeded = crossbar_stages_needed(
         [(11, 60)], readiness_levels=[0], key_fields=[wide],
         key_field_bits=[(480,)], seed_stages=[seed])
@@ -780,7 +780,7 @@ def test_range_pool_records_the_placement_order_of_a_stages_fields():
 
 def test_seeded_range_keys_enter_the_stage_crossbar_in_placement_order(monkeypatch):
     # S22: the seed's order, not repr order, reaches the crossbar simulation; a
-    # hand-built seed without an order falls back to sorted.
+    # seed with fields but no order is refused, never sorted.
     from p4model import packing
     from p4model.packing import StageLoad, crossbar_stages_needed
 
@@ -800,8 +800,8 @@ def test_seeded_range_keys_enter_the_stage_crossbar_in_placement_order(monkeypat
     crossbar_stages_needed([(1, 5)], seed_stages=[ordered], **spec)
     assert seen[-1] == (z, a)
     plain = StageLoad(index=0, blocks=(1, 1), fields=frozenset({z, a}), tables=2)
-    crossbar_stages_needed([(1, 5)], seed_stages=[plain], **spec)
-    assert seen[-1] == tuple(sorted((z, a), key=repr))
+    with pytest.raises(ValueError, match="field_order"):
+        crossbar_stages_needed([(1, 5)], seed_stages=[plain], **spec)
 
 
 def test_a_classification_pool_that_never_places_is_a_placement_failure():

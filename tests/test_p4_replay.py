@@ -8,6 +8,7 @@ import re
 import pytest
 
 from p4gen import p4_replay as rp
+from p4model import refusals
 
 _C1 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "fixtures", "c1_replay_designs.json")
@@ -320,7 +321,7 @@ def test_training_equals_replay_pruned(tmp_path, encoding):
         try:
             usage = multi_model_memory_evaluation(app, ddos, names_app, names_ddos, encoding)
         except RuntimeError as exc:
-            trained = type(exc)
+            trained, refused = type(exc), exc
         else:
             trained = None
         try:
@@ -334,8 +335,9 @@ def test_training_equals_replay_pruned(tmp_path, encoding):
             continue
         replay = rp.model_breakdown(rp.parse_program(written))
         if trained is not None:
-            # training-only refusals (codeword length, crossbar width) are not
-            # generator refusals; the replay prices the program regardless
+            # a refusal the generator does not apply (key bytes, PHV, placement):
+            # the replay of the program names the same constraint
+            assert replay["refusal"] == refusals.of(refused)[0], (path, replay["refusal"])
             continue
         assert (replay["stage_depth"], replay["blocks"]) == (usage.stage_depth, usage.blocks), path
         compared += 1

@@ -7,13 +7,14 @@ import json
 import os
 import re
 
+import numpy as np
 import pytest
 
 from p4gen import build_p4_script as bps
 from p4gen.p4_replay import (model_breakdown, parse_program_text, price_program,
                              tree_range_reads)
 from p4gen.program_checks import check_program
-from p4model import errors, lanes, phv, refusals, target
+from p4model import errors, lanes, packed, phv, refusals, target
 from p4model.errors import ProgramShapeRefused
 from p4model.program import ENCODINGS, JOINT_ENCODING, PER_TREE_ENCODING
 from p4model.registers import register_stage_schedule
@@ -163,6 +164,11 @@ def test_a_pre_task_2_program_is_refused_as_a_gated_register_block(tmp_path):
      "unexpected_shape:val_width:"),
     (lambda t: re.sub(r"@placement_priority\(3\)", "@placement_priority(7)", t, count=1),
      "unexpected_shape:range_priority:table_"),       # range tables not one priority
+    # a code field's split, same total, not lanes.container_sizes of its live width
+    (lambda t: re.sub(r'(@pa_container_size\("ingress", "ig_md\.code_\w+"), (16|32)\)',
+                      lambda m: "%s, %d, %d)" % (m.group(1), int(m.group(2)) // 2,
+                                                 int(m.group(2)) // 2), t, count=1),
+     "unexpected_shape:code_container:code_"),
 ])
 def test_a_program_of_another_shape_is_refused_with_its_reason(tmp_path, edit, reason):
     (_, text), = _texts(tmp_path, JOINT_ENCODING, 1, min_features=3)
@@ -286,6 +292,15 @@ def _fresh_key_prices():
     lanes._table_blocks.cache_clear()
 
 
+def _flat_forest(n_features, n_classes):
+    """A forest whose trees are stumps (a constant input leaves nothing to split)."""
+    from sklearn.ensemble import RandomForestClassifier
+    X = np.zeros((60, n_features), dtype=int)
+    y = np.arange(60) % n_classes
+    return bps.dt_thresholds_float_to_int(RandomForestClassifier(
+        n_estimators=2, max_depth=3, random_state=0).fit(X, y))
+
+
 @pytest.mark.parametrize("encoding", ENCODINGS)
 def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, encoding,
                                                         _fresh_key_prices):
@@ -294,8 +309,11 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
     generator itself refuses to write it, the generator -- names the same constraint.
     Limits are moved to make refusals: the key limit to 1 byte, the 16-bit PHV budget
     to 6 containers (not per-tree: its layout refuses at generation), the budget M
-    to 12 blocks."""
-    regimes = ["key", "budget"] + ([] if encoding == PER_TREE_ENCODING else ["phv"])
+    to 12 blocks, the action data bus to 1 byte (per-tree only: the program is written
+    under the real bus, then training and the replay meet the moved one); and an app
+    forest of stumps (no_split_tree, refused by the generator too)."""
+    regimes = (["key", "budget", "no_split"]
+               + (["bus"] if encoding == PER_TREE_ENCODING else ["phv"]))
     seen = collections.Counter()
     for seed in range(300):
         if sum(seen.values()) >= 20 and len({r for r, _ in seen}) == len(regimes):
@@ -303,6 +321,14 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
         regime = regimes[seed % len(regimes)]
         max_blocks = 12 if regime == "budget" else float("inf")
         app, ddos, names = _rng_design(seed)
+        if regime == "no_split":
+            app = _flat_forest(len(names), 3)
+        text = replayed = None
+        if regime == "bus":
+            try:
+                text = _design_text(tmp_path, app, ddos, names, encoding)
+            except refusals.REFUSAL_ERRORS:
+                continue
         with monkeypatch.context() as patch:
             if regime == "key":
                 patch.setattr(target, "MAX_KEY_BYTES", 1)
@@ -310,15 +336,18 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
                 tight = dict(PHV_INGRESS_CONTAINERS)
                 tight[16] = 6
                 patch.setattr(phv, "PHV_INGRESS_CONTAINERS", tight)
+            elif regime == "bus":
+                patch.setattr(packed, "ACTION_DATA_BUS_BYTES", 1)
             lanes._table_blocks.cache_clear()
             _, trained, _ = design_refusal(app, ddos, names, names, encoding, max_blocks)
             if trained is None:
                 continue
-            try:
-                text = _design_text(tmp_path, app, ddos, names, encoding)
-            except refusals.REFUSAL_ERRORS as exc:
-                replayed = exc.constraint
-            else:
+            if text is None:
+                try:
+                    text = _design_text(tmp_path, app, ddos, names, encoding)
+                except refusals.REFUSAL_ERRORS as exc:
+                    replayed = exc.constraint
+            if replayed is None:
                 replayed = model_breakdown(parse_program_text(text),
                                            max_blocks=max_blocks)["refusal"]
         lanes._table_blocks.cache_clear()
@@ -326,6 +355,48 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
         seen[(regime, trained)] += 1
     assert sum(seen.values()) >= 20, seen
     assert {regime for regime, _ in seen} == set(regimes), seen
+    assert ("no_split", "no_split_tree") in seen, seen
+    if encoding == PER_TREE_ENCODING:
+        assert ("bus", "bus_bytes_over") in seen, seen
+
+
+@pytest.mark.parametrize("encoding", [e for e in ENCODINGS if e != PER_TREE_ENCODING])
+def test_a_key_with_no_allocation_is_refused_before_the_phv_count_on_both_paths(
+        tmp_path, monkeypatch, encoding, _fresh_key_prices):
+    """Interim review minor 1: a design with BOTH a key the crossbar cannot allocate
+    (within MAX_KEY_BYTES) and a PHV shortage is refused key_bytes_over by training
+    (per tree, lanes.table_blocks) and by the replay (check_trees runs the allocation
+    before the PHV count). The program is written first, under the real limits."""
+    from p4model import packing, xbar
+    for seed in range(40):
+        app, ddos, names = _rng_design(seed)
+        try:
+            text = _design_text(tmp_path, app, ddos, names, encoding)
+        except refusals.REFUSAL_ERRORS:
+            continue
+        break
+    tight = dict(PHV_INGRESS_CONTAINERS)
+    tight[16] = 0
+    tight[8] = 0
+    monkeypatch.setattr(phv, "PHV_INGRESS_CONTAINERS", tight)
+    monkeypatch.setattr(xbar, "alone_blocks", lambda key: None)
+    lanes._table_blocks.cache_clear()
+    packing._alone_blocks.cache_clear()
+    try:
+        _, trained, _ = design_refusal(app, ddos, names, names, encoding, float("inf"))
+        replayed = model_breakdown(parse_program_text(text))["refusal"]
+    finally:
+        packing._alone_blocks.cache_clear()
+    assert trained == replayed == "key_bytes_over", (trained, replayed)
+    monkeypatch.setattr(xbar, "alone_blocks", lambda key: 3)
+    lanes._table_blocks.cache_clear()
+    packing._alone_blocks.cache_clear()
+    try:
+        _, trained, _ = design_refusal(app, ddos, names, names, encoding, float("inf"))
+        replayed = model_breakdown(parse_program_text(text))["refusal"]
+    finally:
+        packing._alone_blocks.cache_clear()
+    assert trained == replayed == "phv_containers_short", (trained, replayed)
 
 
 def test_a_refused_replay_is_neither_feasible_nor_priced():

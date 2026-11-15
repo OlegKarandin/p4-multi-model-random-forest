@@ -62,8 +62,9 @@ class StageLoad:
            field first appears with the first table keying it). The range pool
            fills it; the classification pool seeded with those loads allocates
            the range keys on its crossbar in this order (decision 7.4, S22),
-           as p4c allocated them. Empty for a hand-built load, whose fields
-           then go in sorted order."""
+           as p4c allocated them. A load with fields but no order cannot seed
+           a classification pool (_crossbar_stage_test raises ValueError):
+           the order decides the allocation, so it is never guessed."""
   index: int
   blocks: tuple
   fields: frozenset
@@ -480,8 +481,12 @@ def _crossbar_stage_test(units, seed, mode='packed'):
     return None
   alone = (len(units) == 1 and seed.tables == 0 and not seed.blocks
            and not seed.fields)
+  if seed.fields and not seed.field_order:
+    raise ValueError(
+        "a seed StageLoad with fields must carry field_order (the range pool's "
+        "placement order, which decides the crossbar allocation)")
   per_row = _crossbar_stage(
-      seed.field_order or tuple(sorted(seed.fields, key=repr)),
+      seed.field_order,
       tuple((unit.table_idx, unit.bits, unit.rows) for unit in units), mode)
   if per_row is None:
     return None

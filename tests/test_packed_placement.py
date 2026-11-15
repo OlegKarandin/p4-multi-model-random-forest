@@ -21,8 +21,9 @@ def _plan(byte_counts, rows=None, seeds=(), levels=None, priorities=None):
 
 
 def _range_seed(tables):          # `tables` range tables in stage 5, a 2-byte value key = 4 byte slots each (6f)
-  return StageLoad(index=5, blocks=(1,) * tables, fields=frozenset((("r", i), 4) for i in range(tables)),
-                   tables=tables)
+  fields = tuple((("r", i), 4) for i in range(tables))
+  return StageLoad(index=5, blocks=(1,) * tables, fields=frozenset(fields), tables=tables,
+                   field_order=fields)
 
 
 def test_keys_filling_12_groups_share_a_stage_at_their_own_price():
