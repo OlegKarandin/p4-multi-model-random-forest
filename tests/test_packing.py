@@ -67,11 +67,9 @@ def test_the_packer_charges_sd5s_stage_twelve_blocks_as_p4c_does():
     # (xbar.py, 2026-11-13), gives the key 3 and the stage 12.
     from p4model.lanes import table_blocks
     from p4model.packing import crossbar_stages_needed
-    from p4model.tables import codeword_to_blocks
 
     app = frozenset({(("code", "app_flm"), 7), (("code", "app_plm"), 7)})
     ddos = frozenset({(("code", "ddos_bplm"), 4), (("code", "ddos_plm"), 7)})
-    assert codeword_to_blocks((27, 52)) == 3
     assert table_blocks((27, 52)) == 3
     assert table_blocks((54, 56)) == 3
     plan = crossbar_stages_needed(
@@ -91,10 +89,8 @@ def test_a_stage_of_one_shared_key_is_charged_exactly_its_declared_blocks():
     # key happened to be small: one key may use the whole crossbar.
     from p4model.lanes import table_blocks
     from p4model.packing import crossbar_stages_needed
-    from p4model.tables import codeword_to_blocks
 
     key = frozenset({(("code", "f"), 60)})
-    assert codeword_to_blocks((480,)) == 11
     assert table_blocks((480,)) == 11
     plan = crossbar_stages_needed(
         [(11, 60)] * 3, key_fields=[key] * 3,

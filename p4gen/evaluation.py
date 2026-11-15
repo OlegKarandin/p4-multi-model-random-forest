@@ -83,7 +83,6 @@ from p4model.ranges import (
 from p4model.tables import (
     check_key_bytes,
     codeword_bits_to_blocks,
-    codeword_to_blocks,
     entries_across_trees_to_blocks,
     exact_match_resource_usage,
     per_task_key_fields,

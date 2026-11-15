@@ -92,24 +92,23 @@ def test_build_twin_writes_artifacts_and_never_costs_blocks(tmp_path):
         assert 0.0 <= twin[key] <= 1.0
 
 
-def test_build_twin_aligns_with_the_default_ladder_price(tmp_path, monkeypatch):
-    """G2 is undecided: twins keep the default price ('ladder'), so the
-    'port'/'ladder_pruned' options leave every twin byte-identical to before
-    (the aligned forests themselves are pinned by
-    test_threshold_alignment.test_ladder_price_is_byte_identical_to_before_the_option)."""
+def test_build_twin_aligns_with_the_crossbar_port(tmp_path, monkeypatch):
+    """G2 (Task 32): twins align with the port, the only alignment price, so
+    build_twin passes no price (the aligned forests themselves are pinned by
+    test_threshold_alignment.test_port_alignment_is_byte_identical_to_its_pin)."""
     import inspect
     from src.training.threshold_alignment import align_with_policy
-    assert inspect.signature(align_with_policy).parameters['price'].default == 'ladder'
+    assert 'price' not in inspect.signature(align_with_policy).parameters
     seen = []
 
     def spy(*args, **kw):
-        seen.append(kw.get('price', 'ladder'))
+        seen.append(sorted(kw))
         return align_with_policy(*args, **kw)
     monkeypatch.setattr(align_twins, 'align_with_policy', spy)
     ctx, source = _source(tmp_path)
     forests = ra.load_forests(os.path.join(str(tmp_path), 'forests', source['row_id'] + '.joblib'))
     align_twins.build_twin(ctx, source, forests, _synthetic_data())
-    assert seen == ['ladder']
+    assert seen == [['align_stats']]
 
 
 def test_build_twin_with_no_accepted_move_is_identical_and_marked(tmp_path, monkeypatch):

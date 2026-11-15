@@ -147,118 +147,6 @@
      ]
     },
     {
-     "feature_idx": 0,
-     "range1": [
-      0,
-      16559
-     ],
-     "range2": [
-      0,
-      15571
-     ],
-     "round": 1,
-     "target": [
-      0,
-      15571
-     ]
-    },
-    {
-     "feature_idx": 0,
-     "range1": [
-      15572,
-      26336
-     ],
-     "range2": [
-      15572,
-      26424
-     ],
-     "round": 1,
-     "target": [
-      15572,
-      26424
-     ]
-    },
-    {
-     "feature_idx": 0,
-     "range1": [
-      26425,
-      33744
-     ],
-     "range2": [
-      26425,
-      27321
-     ],
-     "round": 1,
-     "target": [
-      26425,
-      27321
-     ]
-    },
-    {
-     "feature_idx": 0,
-     "range1": [
-      27322,
-      41694
-     ],
-     "range2": [
-      33255,
-      38129
-     ],
-     "round": 1,
-     "target": [
-      33255,
-      38129
-     ]
-    },
-    {
-     "feature_idx": 0,
-     "range1": [
-      38130,
-      43169
-     ],
-     "range2": [
-      38130,
-      45058
-     ],
-     "round": 1,
-     "target": [
-      38130,
-      43169
-     ]
-    },
-    {
-     "feature_idx": 0,
-     "range1": [
-      43170,
-      50610
-     ],
-     "range2": [
-      43170,
-      48048
-     ],
-     "round": 1,
-     "target": [
-      43170,
-      48048
-     ]
-    },
-    {
-     "feature_idx": 0,
-     "range1": [
-      48049,
-      52649
-     ],
-     "range2": [
-      48049,
-      60939
-     ],
-     "round": 1,
-     "target": [
-      48049,
-      60939
-     ]
-    },
-    {
      "feature_idx": 1,
      "range1": [
       0,
@@ -383,22 +271,22 @@
      "round": 1,
      "target": [
       17245,
-      21985
+      25152
      ]
     },
     {
      "feature_idx": 2,
      "range1": [
-      21986,
+      25153,
       36261
      ],
      "range2": [
-      21986,
+      25153,
       33384
      ],
      "round": 1,
      "target": [
-      21986,
+      25153,
       33384
      ]
     },
@@ -465,6 +353,118 @@
       48262,
       48924
      ]
+    },
+    {
+     "feature_idx": 0,
+     "range1": [
+      0,
+      16559
+     ],
+     "range2": [
+      0,
+      15571
+     ],
+     "round": 1,
+     "target": [
+      0,
+      15571
+     ]
+    },
+    {
+     "feature_idx": 0,
+     "range1": [
+      15572,
+      26336
+     ],
+     "range2": [
+      15572,
+      26424
+     ],
+     "round": 1,
+     "target": [
+      15572,
+      26424
+     ]
+    },
+    {
+     "feature_idx": 0,
+     "range1": [
+      26425,
+      33744
+     ],
+     "range2": [
+      26425,
+      27321
+     ],
+     "round": 1,
+     "target": [
+      26425,
+      27321
+     ]
+    },
+    {
+     "feature_idx": 0,
+     "range1": [
+      27322,
+      41694
+     ],
+     "range2": [
+      33255,
+      38129
+     ],
+     "round": 1,
+     "target": [
+      33255,
+      38129
+     ]
+    },
+    {
+     "feature_idx": 0,
+     "range1": [
+      38130,
+      43169
+     ],
+     "range2": [
+      38130,
+      45058
+     ],
+     "round": 1,
+     "target": [
+      38130,
+      43169
+     ]
+    },
+    {
+     "feature_idx": 0,
+     "range1": [
+      43170,
+      50610
+     ],
+     "range2": [
+      43170,
+      48048
+     ],
+     "round": 1,
+     "target": [
+      43170,
+      48048
+     ]
+    },
+    {
+     "feature_idx": 0,
+     "range1": [
+      48049,
+      52649
+     ],
+     "range2": [
+      48049,
+      60939
+     ],
+     "round": 1,
+     "target": [
+      48049,
+      60939
+     ]
     }
    ],
    "config": {
@@ -473,8 +473,7 @@
    "stats": {
     "accepted": 29,
     "accuracy_spent": 0.0,
-    "attempted": 38,
-    "bits_to_reach": 7,
+    "attempted": 39,
     "codeword_after": 58,
     "codeword_before": 87,
     "factor_after": 2,
@@ -484,9 +483,9 @@
     "intervals_before": 91,
     "key_bytes_after": 9,
     "key_bytes_before": 13,
-    "total_blocks_after": 32,
-    "total_blocks_before": 46,
-    "total_blocks_floor": 32
+    "total_blocks_after": 30,
+    "total_blocks_before": 39,
+    "total_blocks_floor": 30
    },
    "thresholds": [
     [
@@ -511,7 +510,7 @@
      -2,
      -2,
      -2,
-     21985,
+     25152,
      -2,
      65407,
      47461,
@@ -667,7 +666,7 @@
      -2,
      17518,
      -2,
-     21985,
+     25152,
      -2,
      53934,
      -2,

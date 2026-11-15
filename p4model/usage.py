@@ -360,8 +360,8 @@ def assemble_usage(pool):
   # by index) -- and every table is charged its crossbar allocation on what the
   # earlier tables in its stage left (a later table of the SAME key too; it can
   # cost a block less than alone). This runs once per call, i.e. once per trial; it is
-  # never inside threshold alignment's loop, which prices keys with
-  # the ladder codeword_to_blocks alone. A range table keys one meta.<feature>_val field
+  # never inside threshold alignment's loop, which prices each tree key alone
+  # (align_budget.port_price, the same crossbar port). A range table keys one meta.<feature>_val field
   # of FEATURE_VALUE_BIT_WIDTH bits -- 4 crossbar byte slots (tables.range_key_fields_for)
   # -- so the range pool needs none of this.
   ternary_plan = crossbar_stages_needed(

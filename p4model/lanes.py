@@ -157,9 +157,10 @@ def table_blocks(field_bit_widths):
   allocation agrees with the port (the lane count was below p4c on 49 of
   them), model7/out/truth_alone.jsonl. The history below is the lane count's.
 
-  Replaces the byte-count ladder `tables.codeword_to_blocks` as the price
-  every table is CHARGED (packing, p4_replay, ternary_matching_resource_usage).
-  The ladder is kept for threshold alignment (align_budget).
+  Replaced the byte-count ladder `tables.codeword_to_blocks` as the price
+  every table is CHARGED (packing, p4_replay, ternary_matching_resource_usage)
+  in 2026-10; threshold alignment prices with it too since Task 32
+  (align_budget.port_price), and the ladder is deleted.
 
   Evidence (reviews/campaign_2026_10_lane_findings.md Sec 3-5): on
   campaign_2026_10 the lane price is below the ladder on 133 tables and p4c
@@ -334,7 +335,7 @@ def standalone(byte_list):
   `2w + t + 1 <= g`, legally hold every byte. `None` if no `g <= 12` does.
 
   Agrees with p4c on 57/57 probe keys (from the real PHV layout) and with
-  `tables.codeword_to_blocks` on 74/74 real design keys (laid out by
-  `layout`)."""
+  the (since deleted) byte-count ladder `tables.codeword_to_blocks` on 74/74
+  real design keys (laid out by `layout`)."""
   W, H, B = _counts(byte_list)
   return _standalone(W, H, B, _nibble_types(byte_list))

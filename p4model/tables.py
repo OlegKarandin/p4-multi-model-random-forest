@@ -1,8 +1,8 @@
 """What one table costs: rows, blocks, and the crossbar key fields it claims.
 
 The two accounting rules that matter, both measured rather than derived: blocks
-charge crossbar BYTES per key FIELD (codeword_to_blocks), not raw codeword
-bits; and a range table's blocks come from the DECLARED interval count via
+charge crossbar BYTES per key FIELD (the ternary crossbar port, lanes.table_blocks),
+not raw codeword bits; and a range table's blocks come from the DECLARED interval count via
 compiler_range_rows, never from the expanded physical row count that
 range_entry_count gives -- those answer different questions, and
 range_deployment_overflow exists to keep them apart."""
@@ -16,7 +16,6 @@ from p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_c
 from p4model.target import (
     ACTION_RAM_WORD_BYTES,
     CODEWORD_KEY_OVERHEAD_BITS,
-    CROSSBAR_PRIVATE_BYTES_PER_GROUP,
     RANGE_KEY_SLOTS_PER_BYTE,
     TCAM_BLOCK_KEY_LENGTH,
     TCAM_USABLE_ROWS_PER_BLOCK,
@@ -168,9 +167,8 @@ def codeword_fields_to_bytes(feature_intervals):
   Note: ternary_matching_resource_usage no longer applies a "+4" bit
   overhead anywhere -- that band-domain rule (RM-3 Design A) was retired
   along with codeword_bits_to_blocks's role in per-table pricing. The
-  mandatory version field is priced inside codeword_to_blocks's crossbar-byte
-  ledger instead (see tables.crossbar_capacity), which has nothing to add
-  here."""
+  mandatory version field is priced by the crossbar port itself
+  (lanes.table_blocks, xbar.blocks_per_row), which has nothing to add here."""
   return codeword_fields_to_bytes_from_bits(
       [max(len(intervals) - 1, 0) for intervals in feature_intervals.values()])
 
@@ -189,11 +187,11 @@ def codeword_fields_to_bytes_from_bits(field_bit_widths):
 def codeword_bits_to_blocks(codeword_length):
   """How many TCAM_BLOCK_KEY_LENGTH-wide key blocks a codeword_length-bit key
   would span under the retired band model (raw bits, version overhead
-  included) -- NOT what alignment optimises against any more;
-  codeword_to_blocks prices per-feature crossbar bytes instead (see its own
-  docstring). This function survives for two reasons only: it is the
-  empty-key floor (codeword_to_blocks and lanes.table_blocks special-case the
-  empty key to codeword_bits_to_blocks(0), since a version field still needs a
+  included) -- NOT what any price uses any more; the crossbar port
+  (lanes.table_blocks) prices a key's fields instead. This function survives
+  for two reasons only: it is the empty-key floor (lanes.table_blocks
+  special-cases the empty key to codeword_bits_to_blocks(0), since a version
+  field still needs a
   physical block even when the key claims none, and this is the only place
   target.TCAM_BLOCK_KEY_LENGTH is read); and src/reporting/replay_scoring.py
   still derives its (unread) band_factor_before/after columns from it.
@@ -207,7 +205,7 @@ def codeword_bits_to_blocks(codeword_length):
 
 def ternary_key_field_bits(feature_intervals):
   """The bit width of every `meta.code_<feature>` field in one classification
-  table's key, which is what codeword_to_blocks prices.
+  table's key, which is what lanes.table_blocks prices.
 
   Each field is declared `bit<len(intervals) - 1>` (build_p4_script.py:773-776).
   Widths are returned SORTED because the price depends only on the multiset
@@ -232,107 +230,6 @@ def range_action_bytes_for(feature_intervals):
   return [container_bytes(len(intervals) - 1) for intervals in feature_intervals.values()]
 
 
-def crossbar_capacity(g):
-  """The whole-byte crossbar slots `g` TCAM blocks supply: `5g + (g - 1) // 2`.
-
-  Sec 13.1's model of a TCAM block, read from p4c's own assembly (`prog.bfa`,
-  2026-09-20 rewrite design Sec 2): a block is one crossbar group (5 private
-  bytes) plus, every other block, one shared nibble -- so g blocks own 5g
-  private bytes and `(g - 1) // 2` extra whole bytes from those shared
-  nibbles pairing up two at a time. This is the SIMPLER, corrected mechanism
-  that replaced the retired `crossbar_groups_needed`/`_full_midbytes` pairing
-  (a consecutive group RUN starting at an offset, with midbytes owned
-  exclusively by group pairs) -- that premise was read out of the assembly as
-  false: a block may pair with ANY of a stage's midbytes, not a fixed
-  partner, and groups need not be consecutive. Sec 13.1 keeps only the
-  resulting COUNT, not the retired geometry.
-
-  Ten calibration keys pin the ladder this function drives across its first
-  ten steps exactly: B = 10, 16, 21, 27, 32, 38, 43, 49, 54, 60 crossbar
-  bytes need g = 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 blocks respectively -- each B
-  is exactly `crossbar_capacity(g)` for its g, i.e. the largest key that g
-  blocks still hold (test_the_ladders_fixed_points_match_crossbar_capacity).
-
-  g = 0 deliberately returns -1, not 0: the empty-key case of
-  `codeword_to_blocks` depends on the g = 0 candidate failing outright (a B = 0
-  key still needs a physical block for --version--, so "0 blocks satisfy B = 0"
-  must never look true here)."""
-  return CROSSBAR_PRIVATE_BYTES_PER_GROUP * g + (g - 1) // 2
-
-
-def tail_is_isolatable(field_bits):
-  """Whether p4c can split ONE nibble-clean field's leftover 1-4 bits off as
-  a standalone free-nibble entry (Sec 2.3), rather than parking a whole extra
-  byte on a shared midbyte to hold it.
-
-  Only meaningful for a field whose last crossbar byte is a nibble
-  (`1 <= field_bits % 8 <= 4`) -- callers filter to that set before asking.
-
-  THE MECHANISM (model_audit_2026-09-27.md Appendix A; p4c
-  `tofino/input_xbar.cpp`, `align_flags` l.461, `allocate_mid_bytes`
-  l.1039-1090, `free_mid_bytes` l.879, the `allocTable` loop l.1361-1390 --
-  midbytes are allocated BEFORE groups). Every crossbar slot has a lane
-  (`slot number mod 4`); byte k of a 32-bit container may only sit in a
-  lane-k slot, a 16-bit container's bytes only at matching parity, an 8-bit
-  container's anywhere (Appendix A.3). A group supplies one slot of each
-  lane plus one extra in the lane it starts on, so g groups cover 2 lanes at
-  full capacity and the rest at g-1 -- an 11-byte key (3 W-container bytes
-  each in 3 lanes, 2 in the 4th, Appendix A.5) fits 2 blocks only if its
-  3-4-bit tail takes the spare midbyte nibble AND the other 10 bytes still
-  fit those two groups' lanes; the tail helps only when removing it relieves
-  an over-full lane (Appendix A.4). Two probes at IDENTICAL lane counts
-  (w027 = 27+56 bits, w019 = 19+64 bits, both (3,3,3,2)) diverge purely on
-  which lane loses its tail: w019's removal leaves (3,3,2,2), which two
-  groups cover exactly -> isolatable, 2 blocks; w027's leaves (3,3,3,1),
-  needing 3 extras where only 2 exist -> p4c falls back to parking a whole
-  byte on a midbyte, filling both its nibbles and leaving none for the
-  mandatory 2-bit --version-- field -> a version-only block -> 3, not
-  isolatable (Appendix A.6).
-
-  This function is a WIDTH-ONLY PROXY for that lane rule: it infers the
-  tail's lane from `field_bits mod 32` alone, assuming the field starts at a
-  container boundary (27 -> byte 3, not isolatable; 19 -> byte 2, single
-  container, isolatable) rather than walking the real PHV layout. A lane
-  checker built from the compile's actual layout agrees with this proxy on
-  every real key measured (74/74) and is exact (57/57) where the proxy is
-  conservative (48/57, always erring toward NOT isolatable, never the other
-  way) on synthetic multi-field probe families the proxy was not built to
-  cover. The unknown this function approximates is the PHV layout, not
-  whether the outcome is predictable -- it is lane arithmetic, not (as an
-  older draft of the P4 reference's Sec 4.1.1 "residual" claimed) the
-  allocator's unpredictable greedy choice.
-
-  Measured over 24 compiles (`scripts/tcam_phv_slice_sweep.py`; the CSV has
-  24 rows, matching that script's own docstring -- 34 was a stale count
-  quoted elsewhere and is not this probe's real size) against the direct
-  observable `byte_group_holds_whole_byte`: 12 pays / 12 free / 0
-  disagreements with the width table below.
-
-    tail  = field_bits mod 32 (32 when the remainder is 0)
-    index = ceil(tail / 8) - 1        # which container byte holds the tail
-
-  | index (tail range)      | field fits ONE 32-bit container | spans 2+ |
-  |--------------------------|----------------------------------|----------|
-  | 0  (1-8 bits)            | isolatable                       | isolatable |
-  | 1  (9-16 bits)           | isolatable                       | isolatable |
-  | 2  (17-24 bits)          | isolatable                       | NOT        |
-  | 3  (25-32 bits)          | NOT                               | NOT        |
-
-  `scripts/tcam_field_count_sweep.py` separately confirmed this table is NOT
-  extendable to predict which byte the allocator picks among several
-  candidates once a key has 3+ fields (44 compiles, no feature tried
-  separates the pays/free outcomes there) -- this function answers only the
-  single-field isolatability question the table above states, never a
-  multi-field placement choice."""
-  tail = field_bits % 32 or 32
-  index = math.ceil(tail / 8) - 1
-  if index in (0, 1):
-    return True
-  if index == 2:
-    return field_bits <= 32          # single 32-bit container
-  return False                        # index == 3
-
-
 def check_key_bytes(table_bytes):
   """CrossbarKeyTooWide when one table's key exceeds target.MAX_KEY_BYTES (the one
   key limit, decision 6a; read through the module so a test can move it)."""
@@ -341,81 +238,6 @@ def check_key_bytes(table_bytes):
         "table key is %d crossbar bytes; no stage supplies more than %d, so the "
         "compiler rejects this table rather than splitting it across stages"
         % (table_bytes, target.MAX_KEY_BYTES), table_bytes)
-
-
-def codeword_to_blocks(field_bit_widths):
-  """TCAM blocks ONE table word of this key spans, version field included --
-  THE LADDER: a byte-count estimate (Sec 2.2/13.1's ledger: the smallest g
-  with crossbar_capacity(g) >= B, plus the Sec 2.3 isolation credit, capped at
-  one nibble-clean field per Sec 6.1 amendment 2). Used by threshold alignment
-  (align_budget). The production per-table price is lanes.table_blocks
-  (2026-10-04). Pure arithmetic: it does NOT apply target.MAX_KEY_BYTES, because
-  threshold alignment prices pooled keys with it and its property tests probe keys
-  past the limit; the refusals (check_key_bytes) sit in the pricing paths that
-  production takes. crossbar_capacity(12) = 65 is the ladder's own top step.
-
-  (This replaces the retired offset-taking `codeword_to_blocks` of
-  2026-09-14: reading p4c's own assembly (2026-09-20 rewrite design Sec 2)
-  showed the run-from-`start_group`/paired-midbyte premise that function and
-  `crossbar_groups_needed`/`version_block_penalty` were built on is false --
-  a block may pair with ANY of a stage's midbytes, groups need not be
-  consecutive, and groups are shared between tables. There is no
-  `start_group` parameter any more because the corrected mechanism has
-  nothing for one to modify: a key's OWN price no longer depends on where it
-  starts. The real, measured effect the old offset term was chasing --
-  `(179, 204)` costing 9 blocks alone and 10 when a different key shares its
-  stage -- has not vanished; it belongs to STAGE PLACEMENT, not to this
-  per-table price, and is handled by `p4model/packing.py`'s stage
-  simulation: since 2026-11-13 the ternary crossbar port
-  (packing._crossbar_stage, xbar.py) allocates each later table on what the
-  earlier ones left. The stage-sharing margin of Sec 13.2 is gone.)
-
-  `B = sum(ceil(w / 8) for w in field_bit_widths)` crossbar bytes. `g` blocks
-  supply `5g` private byte slots and (from `crossbar_capacity`) roughly one
-  shared nibble per block pair. A whole overflow byte -- one that does not
-  fit the private slots -- needs TWO nibbles; a nibble-clean overflow byte
-  (Sec 2.3, `tail_is_isolatable`) needs only one; the mandatory 2-bit
-  `--version--` field needs one more. So, with `overflow(g) = max(0, B - 5g)`
-  and `S_usable` counting nibble-clean, isolatable fields:
-
-    blocks = min g : 2*overflow(g) - min(overflow(g), S_usable, 1) + 1 <= g
-
-  One amendment on top of the bare ledger, compiler behaviour rather than
-  block structure -- the nibble-clean credit is capped at ONE
-  (`min(overflow, S_usable, 1)`, not `min(overflow, S_usable)`) because p4c's
-  allocator (`IXBar::allocate_mid_bytes`/`free_mid_bytes`) guarantees at most
-  one nibble-only midbyte per table by construction (Sec 12.4) -- a second
-  credit is untested by any corpus point and would under-predict 3.7% of
-  random keys at B in {17, 28, 39, 50, 61}.
-
-  p4c's own sizing loop (`IXBar::calculate_sizes`, input_xbar.cpp:507-511)
-  separately never plans more than `ceil(g / 2)` midbytes for `g` groups
-  (`overflow(g) <= ceil(g / 2)`), which the crossbar's bare structure would
-  not by itself imply (a block can pair with any of a stage's 6 midbytes, so
-  structure alone would allow up to 6 overflow bytes per stage). That clause
-  is NOT in the formula above because it never binds: with `credit <= 1` the
-  ledger clause already forces `overflow <= floor(g / 2) <= ceil(g / 2)`, so
-  the sizing-loop limit is implied rather than a second, independent test --
-  confirmed by brute force over 200 000 random keys, 0 differences with the
-  clause present or absent.
-
-  The empty-key case is a real early return, not something the ladder
-  happens to produce -- see crossbar_capacity's docstring for why `g = 0`
-  cannot answer `B = 0` within the ladder's own domain."""
-  key_bytes = codeword_fields_to_bytes_from_bits(field_bit_widths)
-  if key_bytes == 0:
-    return codeword_bits_to_blocks(0)
-
-  s_usable = sum(1 for bits in field_bit_widths
-                 if 1 <= bits % 8 <= 4 and tail_is_isolatable(bits))
-
-  g = 1
-  while True:
-    overflow = max(0, key_bytes - CROSSBAR_PRIVATE_BYTES_PER_GROUP * g)
-    credit = min(overflow, s_usable, 1)
-    if 2 * overflow - credit + 1 <= g:
-      return g
-    g += 1
 
 
 def tree_entries_to_blocks(entries):
@@ -437,9 +259,8 @@ def entries_across_trees_to_blocks(entry_counts):
   (crossbar_stages_needed's key_fields). Confusing the two is a mistake this
   project has already made once in the other direction.
 
-  This is the multiplier src/training/align_budget.py needs to weigh a range
-  step (worth 1 block) against a key-width step (worth this, 8-80 blocks across
-  the golden fixture).
+  src/training/align_budget.tree_keys sums it per tree key, to weigh a range
+  step (worth 1 block) against a key-width step (worth this).
   """
   return sum(tree_entries_to_blocks(count) for count in entry_counts)
 

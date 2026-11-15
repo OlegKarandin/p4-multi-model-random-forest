@@ -193,7 +193,7 @@ def test_alignment_reports_its_acceptance_rate_and_interval_counts():
             'attempted', 'accepted', 'intervals_before', 'intervals_after',
             'codeword_before', 'codeword_after',
             'key_bytes_before', 'key_bytes_after',
-            'bits_to_reach', 'accuracy_spent',
+            'accuracy_spent',
             'factor_before', 'factor_after', 'factor_floor',
             'total_blocks_before', 'total_blocks_after', 'total_blocks_floor'}
         assert stats['accepted'] <= stats['attempted']

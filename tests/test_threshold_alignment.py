@@ -860,14 +860,20 @@ def _golden_alignment_pair(n=300):
 #      (0,17518)&(14537,17534), vetoed before as a lone first interval, is now
 #      accepted as a partial move (model 2's 17534 -> 17518, model 1's lower
 #      EDGE untouched).
+#
+# Regenerated 2026-11-15 by Task 32 (G2: alignment prices with the crossbar
+# port only, the union-key ladder deleted) -- a real feature-ORDER change, so
+# this gate legitimately moves: attempted 35->36, accepted 28, intervals_after
+# 63 unchanged; two thresholds differ (t1 tree 1 node 6 and t2 tree 4 node 8:
+# 21985 -> 25152). The new values equal the old code's price='port' run.
 _ALIGNMENT_GOLDEN_C1C2 = {
     0.0: {
-        'stats': {'attempted': 35, 'accepted': 28,
+        'stats': {'attempted': 36, 'accepted': 28,
                   'intervals_before': 91, 'intervals_after': 63},
         't1': [
             [50135, 37970, -2, 64068, 30850, -2, -2, -2, 29400, -2, 33860, -2,
              -2],
-            [25153, 17906, 42582, -2, -2, -2, 21985, -2, 65407, 47461, -2, -2,
+            [25153, 17906, 42582, -2, -2, -2, 25152, -2, 65407, 47461, -2, -2,
              -2],
             [9867, -2, 38129, 64574, 22960, -2, -2, -2, 22949, -2, 41841, -2,
              -2],
@@ -888,7 +894,7 @@ _ALIGNMENT_GOLDEN_C1C2 = {
              -2],
             [61422, 43169, 26424, 15571, -2, -2, -2, 11493, -2, 57942, -2, -2,
              53373, -2, -2],
-            [27321, 53909, 49629, -2, -2, -2, 17518, -2, 21985, -2, 53934, -2,
+            [27321, 53909, 49629, -2, -2, -2, 17518, -2, 25152, -2, 53934, -2,
              60939, -2, -2],
             [54408, 42582, 33254, -2, -2, 62045, -2, -2, 17244, -2, 37970, -2,
              48048, -2, -2],
@@ -1451,7 +1457,6 @@ def test_c3_only_appends_to_the_moves_a_single_round_already_made(delta_rel, mon
         'codeword_before', 'codeword_after',
         'accuracy_spent',
         'key_bytes_before', 'key_bytes_after',
-        'bits_to_reach',
         'factor_before', 'factor_after', 'factor_floor',
         'total_blocks_before', 'total_blocks_after', 'total_blocks_floor'}
     assert stats_c3['intervals_before'] == stats_r1['intervals_before']
@@ -1502,7 +1507,6 @@ def test_align_stats_records_the_codeword_length_it_optimises():
         'codeword_before', 'codeword_after',
         'accuracy_spent',
         'key_bytes_before', 'key_bytes_after',
-        'bits_to_reach',
         'factor_before', 'factor_after', 'factor_floor',
         'total_blocks_before', 'total_blocks_after', 'total_blocks_floor'}
 
@@ -1873,13 +1877,12 @@ def test_pooled_key_bytes_equals_the_evaluators_codeword_fields_to_bytes():
 
 def test_the_block_factor_equals_the_evaluators_block_factor():
     """E1-blocks (design §5.2) -- the anchor that stops the cost model drifting
-    again. Alignment's factor must equal what the generator's own merged
-    intervals price, before AND after a run. If the generator's key layout or
-    the block rule changes, this fails loudly rather than alignment silently
-    going stale, which is exactly how the superseded band model survived for
-    years."""
-    from p4gen.build_p4_script import get_joint_feature_intervals
-    from p4gen.evaluation import codeword_to_blocks, ternary_key_field_bits
+    again. Alignment's per-tree prices must equal what production charges the
+    generator's own trees (_pool_inputs' joint ternary_table_specs, one
+    512-row word per tree here), before AND after a run, and factor_* is their
+    max. If the generator's key layout or the block rule changes, this fails
+    loudly rather than alignment silently going stale."""
+    from p4gen import evaluation as ev
 
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair()
     names = ['f0', 'f1', 'f2', 'f3']
@@ -1887,40 +1890,25 @@ def test_the_block_factor_equals_the_evaluators_block_factor():
                    ta.align_rf_thresholds(rf1, rf2, X1, y1, X2, y2,
                                           delta_rel=0.05)):
         m1, m2 = models
-        joint = get_joint_feature_intervals(m1, names, m2, names)
         widths = ab._pooled_widths(ta.extract_feature_intervals(m1),
                                    ta.extract_feature_intervals(m2))
-        assert ab._factor(widths) == codeword_to_blocks(
-            ternary_key_field_bits(joint))
+        ours = [ab.port_price(widths[f] for f in
+                              {int(x) for x in e.tree_.feature[e.tree_.children_left != -1]})
+                for rf in (m1, m2) for e in rf.estimators_]
+        pool = ev._pool_inputs(m1, m2, names, names, 'joint')
+        assert ours == [blocks for blocks, _ in pool['ternary_table_specs']]
+        assert ab.tree_factor(widths, ab.tree_keys(m1, m2)) == max(ours)
 
 
-def test_the_block_factor_matches_p4model_on_random_width_vectors():
-    """The property half of E1-blocks. The fixture above pins four features on
-    one pair; codeword_to_blocks' multiset-dependent isolation credit (which
-    replaced version_block_penalty, deleted 2026-09-21) fires only on
-    particular width mixes, which one pair will rarely produce. 1-15 fields of 1-60 bits is the design's own probe
-    range (§1.3). Guards against anyone reimplementing _factor's arithmetic
-    locally instead of delegating."""
-    from p4model.tables import codeword_to_blocks
-    failures = []
-    for seed in range(50):
-        rng = np.random.default_rng(seed)
-        widths = {i: int(w) for i, w in
-                  enumerate(rng.integers(1, 61, size=int(rng.integers(1, 16))))}
-        if ab._factor(widths) != codeword_to_blocks(tuple(sorted(widths.values()))):
-            failures.append((seed, widths))
-    assert not failures, "%d of 50 seeds fail, first (seed, widths): %r" % (
-        len(failures), failures[:5])
-
-
-def test_shedding_a_bit_never_raises_the_block_factor():
+def test_shedding_a_bit_never_raises_the_port_price():
     """Invariant 7 (design §5.7). Alignment's only move sheds bits from one
     feature, so a non-monotone objective would create a perverse incentive: a
-    run could be punished for a free saving, and the rollback would then be
-    reasoning about a cost that moved the wrong way. Verified by the design
-    over 200 000 random shapes; pinned here over a smaller sample so a future
-    change to codeword_to_blocks that breaks monotonicity fails in this
-    suite rather than in a campaign."""
+    run could be punished for a free saving. The crossbar port is a greedy
+    allocator, not a formula, so this is MEASURED, not proved (0 of 1,855
+    priceable random keys raised by a one-bit shed, Task 32); pinned here over
+    a smaller sample so a change to the port or the layout that breaks it fails
+    in this suite rather than in a campaign."""
+    from p4model.errors import CrossbarKeyTooWide
     failures = []
     for seed in range(200):
         rng = np.random.default_rng(1000 + seed)
@@ -1929,9 +1917,12 @@ def test_shedding_a_bit_never_raises_the_block_factor():
         victim = int(rng.integers(0, len(widths)))
         if widths[victim] <= 1:
             continue                    # nothing to shed; not a counterexample
-        before = ab._factor(widths)
+        try:
+            before = ab.port_price(widths.values())
+        except CrossbarKeyTooWide:
+            continue                    # refused: no price to compare
         widths[victim] -= 1
-        if ab._factor(widths) > before:
+        if ab.port_price(widths.values()) > before:
             failures.append((seed, victim, widths))
     assert not failures, "%d of 200 seeds fail, first (seed, victim, widths after): %r" % (
         len(failures), failures[:5])
@@ -1992,25 +1983,25 @@ def test_feature_order_puts_the_feature_that_buys_the_most_blocks_first():
     distance is blind to both the width-multiset price and range steps.
 
     Feature 0 is one bit from completing a crossbar byte (width 9 -> 8 drops
-    the key from 2 bytes to 1, so the ternary factor steps and the saving is
-    worth the MULTIPLIER). Feature 1 is one interval from a free range block
-    (207 intervals -> 206, the measured per-block capacity), worth exactly 1
-    block however many trees there are.
+    the tree key (9, 206) from 28 bytes to 27, port price 6 -> 5 blocks per
+    word, so the saving is worth the key's ROWS). Feature 1 is one interval
+    from a free range block (207 intervals -> 206, the measured per-block
+    capacity), worth exactly 1 block however many trees there are (206 -> 205
+    bits leaves the port price at 6).
 
-    Both cost one bit, so the multiplier alone decides -- which is precisely
-    what no byte-domain rule can see. Verified numerically before this plan was
-    written: at multiplier 1 the keys are (-1, 1, -20, 0) and (-1, 1, -414, 1),
-    so the larger combined count breaks the tie toward feature 1; at multiplier
-    8 they are (-8, 1, -20, 0) and (-1, 1, -414, 1).
+    Both cost one bit, so the rows alone decide -- which is precisely what no
+    byte-domain rule can see. At 1 row the keys are (-1, 1, -20, 0) and
+    (-1, 1, -414, 1), so the larger combined count breaks the tie toward
+    feature 1; at 8 rows they are (-8, 1, -20, 0) and (-1, 1, -414, 1).
     """
     iv1 = {0: [(0, 1)] * 10, 1: [(0, 1)] * 207}
     iv2 = dict(iv1)
     widths = {0: 9, 1: 206}
     floors = {0: 0, 1: 0}
 
-    assert ta.feature_order(iv1, iv2, multiplier=1,
+    assert ta.feature_order(iv1, iv2, keys=((frozenset({0, 1}), 1),),
                             widths=widths, floors=floors)[0] == 1
-    assert ta.feature_order(iv1, iv2, multiplier=8,
+    assert ta.feature_order(iv1, iv2, keys=((frozenset({0, 1}), 8),),
                             widths=widths, floors=floors)[0] == 0
 
 
@@ -2019,16 +2010,17 @@ def test_feature_order_is_a_total_order():
     a deterministic function of (models, data, params), so the trailing feature
     index must break every tie."""
     same = {0: [(0, 1)] * 5, 1: [(0, 1)] * 5, 2: [(0, 1)] * 5}
-    order = ta.feature_order(same, dict(same), multiplier=4)
+    keys = ((frozenset(same), 4),)
+    order = ta.feature_order(same, dict(same), keys=keys)
     assert order == [0, 1, 2]
-    assert order == ta.feature_order(same, dict(same), multiplier=4)
+    assert order == ta.feature_order(same, dict(same), keys=keys)
 
 
 def test_feature_order_ranks_only_the_features_it_is_given():
     """The loop takes [0] from a FRESH call per feature, against the CURRENT
     widths -- audit §8.2 item 9. `features` is what is left to visit."""
     iv = {0: [(0, 1)] * 5, 1: [(0, 1)] * 9, 2: [(0, 1)] * 5}
-    assert set(ta.feature_order(iv, dict(iv), multiplier=4,
+    assert set(ta.feature_order(iv, dict(iv), keys=((frozenset(iv), 4),),
                                 features={1, 2})) == {1, 2}
 
 
@@ -2040,7 +2032,7 @@ def test_feature_order_keeps_the_combined_count_key_when_nothing_buys_a_block():
     iv2 = {0: [(0, 1)] * 3, 1: [(0, 1)] * 5}
     floors = {0: 2, 1: 4}          # no room anywhere
     widths = {0: 2, 1: 4}
-    assert ta.feature_order(iv1, iv2, multiplier=4,
+    assert ta.feature_order(iv1, iv2, keys=((frozenset(iv1), 4),),
                             widths=widths, floors=floors) == [1, 0]
 
 
@@ -2672,48 +2664,56 @@ def test_the_candidate_log_is_off_by_default():
     assert signature.parameters['candidate_log'].default is None
 
 
-# Captured 2026-11-14 at 5b39f5b (before the price option existed): sha256 of
-# every tree's threshold array of both aligned forests, then the sorted-key
-# JSON of align_stats, from align_with_policy on _golden_alignment_pair(n).
-_LADDER_BEFORE_PRICE_OPTION = {
-    300: '4dabdd99b4cc62ecd537c13a272ac57295ff5753e4aa5be4ddd2ccf31d404417',
-    500: '89f6ce3779a095d22c31a52540cef57cab9b4e609e78a914302b899997d024e7',
+# sha256 of every tree's threshold array of both aligned forests, then the
+# sorted-key JSON of align_stats, from align_with_policy on
+# _golden_alignment_pair(n). Re-captured 2026-11-15 by Task 32 (G2: the port is
+# the only price). The old pins (_LADDER_BEFORE_PRICE_OPTION, the ladder, captured
+# 2026-11-14 at 5b39f5b) were 300: 4dabdd99b4cc62ec..., 500: 89f6ce3779a095d2...;
+# the thresholds and every other stat of these runs equal the pre-Task-32 code's
+# price='port' run, whose stats also carried bits_to_reach (now deleted).
+_PORT_ALIGNMENT_SHA = {
+    300: '18f6189e75735b54d7c555c7761adb765a11f22f5bd0cdb41dfe6a963e5be102',
+    500: 'c2d0c265c98c34c08022cc62a182f296eb7330a4270e9950817e4962891ac115',
 }
 
 
-@pytest.mark.parametrize('n', sorted(_LADDER_BEFORE_PRICE_OPTION))
-@pytest.mark.parametrize('kwargs', [{}, {'price': 'ladder'}])
-def test_ladder_price_is_byte_identical_to_before_the_option(n, kwargs):
+@pytest.mark.parametrize('n', sorted(_PORT_ALIGNMENT_SHA))
+def test_port_alignment_is_byte_identical_to_its_pin(n):
     import hashlib
     import json
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair(n=n)
     stats = {}
-    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats, **kwargs)
+    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats)
     h = hashlib.sha256()
     for rf in (a, b):
         for est in rf.estimators_:
             h.update(np.asarray(est.tree_.threshold).tobytes())
     h.update(json.dumps(stats, sort_keys=True, default=str).encode())
-    assert h.hexdigest() == _LADDER_BEFORE_PRICE_OPTION[n]
+    assert h.hexdigest() == _PORT_ALIGNMENT_SHA[n]
 
 
-def test_port_price_runs_and_reports_port_totals():
+def test_the_price_is_no_longer_a_parameter():
+    """G2 (Task 32): alignment prices with the crossbar port only."""
+    import inspect
+    for fn in (ta.align_with_policy, ta.align_rf_thresholds, ta.feature_order):
+        assert 'price' not in inspect.signature(fn).parameters, fn.__name__
+
+
+def test_alignment_reports_port_totals():
     rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair(n=300)
     stats = {}
-    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats, price='port')
+    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats)
     widths = ab._pooled_widths(ta.extract_feature_intervals(a), ta.extract_feature_intervals(b))
-    assert stats['total_blocks_after'] == ab.total_blocks(
-        widths, ab.tree_keys(a, b), price='port')
-    assert stats['factor_after'] == ab._factor(widths, price='port',
-                                               keys=ab.tree_keys(a, b))
+    assert stats['total_blocks_after'] == ab.total_blocks(widths, ab.tree_keys(a, b))
+    assert stats['factor_after'] == ab.tree_factor(widths, ab.tree_keys(a, b))
 
 
-def test_port_price_survives_a_union_key_past_the_crossbar(monkeypatch):
-    """Interim review I1: a joint pair whose UNION key is past the stage's 64
-    crossbar bytes while every tree's own key fits. Alignment with
-    price='port' completes, and its per-tree port prices equal production's
-    (_pool_inputs' joint ternary_table_specs, PHV check off: 18 wide code
-    fields exhaust the 8-bit containers, a refusal of its own)."""
+def test_alignment_survives_a_union_key_past_the_crossbar(monkeypatch):
+    """Interim review I1: a joint pair whose UNION key is past what a key may
+    be while every tree's own key fits. Alignment completes, and its per-tree
+    port prices equal production's (_pool_inputs' joint ternary_table_specs,
+    PHV check off: 18 wide code fields exhaust the 8-bit containers, a refusal
+    of its own)."""
     from sklearn.ensemble import RandomForestClassifier
     from p4gen import evaluation as ev
     from p4model import phv
@@ -2735,12 +2735,12 @@ def test_port_price_survives_a_union_key_past_the_crossbar(monkeypatch):
     widths = ab._pooled_widths(ta.extract_feature_intervals(rf1),
                                ta.extract_feature_intervals(rf2))
     assert ab.pooled_key_bytes(ta.extract_feature_intervals(rf1),
-                               ta.extract_feature_intervals(rf2)) > 64
+                               ta.extract_feature_intervals(rf2)) > 66
     with pytest.raises(CrossbarKeyTooWide):
         ab.port_price(widths.values())
 
     stats = {}
-    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats, price='port')
+    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats)
 
     def own_features(estimator):
         tree = estimator.tree_
@@ -2753,59 +2753,7 @@ def test_port_price_survives_a_union_key_past_the_crossbar(monkeypatch):
     pool = ev._pool_inputs(a, b, names, names, 'joint')
     assert ours == [blocks for blocks, _ in pool['ternary_table_specs']]
     assert stats['factor_after'] == max(ours)
-    assert stats['total_blocks_after'] == ab.total_blocks(after, ab.tree_keys(a, b), price='port')
-    assert stats['bits_to_reach'] is not None
-
-
-def test_ladder_pruned_price_runs_and_reports_pruned_totals():
-    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair(n=300)
-    stats = {}
-    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats,
-                                price='ladder_pruned')
-    widths = ab._pooled_widths(ta.extract_feature_intervals(a), ta.extract_feature_intervals(b))
-    keys = ab.tree_keys(a, b)
-    assert stats['total_blocks_after'] == ab.total_blocks(widths, keys, price='ladder_pruned')
-    assert stats['factor_after'] == ab._factor(widths, price='ladder_pruned', keys=keys)
-    # The pruned ladder never charges a tree more than the union ladder does.
-    assert stats['total_blocks_after'] <= ab.total_blocks(
-        widths, ab.tree_multiplier(a, b), price='ladder')
-
-
-def test_ladder_pruned_price_survives_a_union_key_past_the_crossbar():
-    """Interim review I1's case under the pruned ladder: the union key is past
-    MAX_KEY_BYTES, every tree's own key fits, alignment completes and its
-    totals are the per-tree ladder prices."""
-    from sklearn.ensemble import RandomForestClassifier
-    from p4model.catalog import FEATURE_REGISTER_CATALOG
-    from p4model.errors import CrossbarKeyTooWide
-
-    names = list(FEATURE_REGISTER_CATALOG)
-    n = 300
-
-    def forest(seed, y):
-        rng = np.random.default_rng(seed)
-        X = np.clip(rng.integers(0, 60000, size=(n, len(names))), 0, INFINITE).astype(float)
-        return dt_thresholds_float_to_int(RandomForestClassifier(
-            n_estimators=50, max_depth=3, max_features=1,
-            random_state=seed).fit(X, y)), X, y
-
-    rf1, X1, y1 = forest(11, np.array([c % 3 for c in range(n)]))
-    rf2, X2, y2 = forest(12, np.where(np.arange(n) % 2 == 0, -1, 1))
-    widths = ab._pooled_widths(ta.extract_feature_intervals(rf1),
-                               ta.extract_feature_intervals(rf2))
-    with pytest.raises(CrossbarKeyTooWide):
-        ab.pruned_ladder_price(widths.values())
-
-    stats = {}
-    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats,
-                                price='ladder_pruned')
-    after = ab._pooled_widths(ta.extract_feature_intervals(a), ta.extract_feature_intervals(b))
-    ours = [ab.pruned_ladder_price(after[f] for f in
-                                   {int(x) for x in e.tree_.feature[e.tree_.children_left != -1]})
-            for rf in (a, b) for e in rf.estimators_]
-    assert stats['factor_after'] == max(ours)
-    assert stats['total_blocks_after'] == ab.total_blocks(after, ab.tree_keys(a, b),
-                                                          price='ladder_pruned')
+    assert stats['total_blocks_after'] == ab.total_blocks(after, ab.tree_keys(a, b))
 
 
 # --- Task 30: the run's TreeKeyPricer changes no result --------------------
@@ -2829,13 +2777,13 @@ def _wide_pair(seed1=11, seed2=12, n=300, trees=50):
     return rf1, X1, y1, rf2, X2, y2
 
 
-def _aligned_fingerprint(pair, price):
+def _aligned_fingerprint(pair):
     import hashlib
     import json
     rf1, X1, y1, rf2, X2, y2 = pair
     stats = {}
     a, b = ta.align_with_policy(copy.deepcopy(rf1), copy.deepcopy(rf2), X1, y1, X2, y2,
-                                align_stats=stats, price=price)
+                                align_stats=stats)
     h = hashlib.sha256()
     for rf in (a, b):
         for est in rf.estimators_:
@@ -2843,9 +2791,8 @@ def _aligned_fingerprint(pair, price):
     return h.hexdigest(), json.dumps(stats, sort_keys=True, default=str)
 
 
-@pytest.mark.parametrize('price', ['port', 'ladder_pruned'])
 @pytest.mark.parametrize('pair', ['golden', 'wide', 'wide_b'])
-def test_tree_key_pricer_alignment_equals_the_uncached_scan(price, pair, monkeypatch):
+def test_tree_key_pricer_alignment_equals_the_uncached_scan(pair, monkeypatch):
     """align_with_policy with the run's TreeKeyPricer (Task 30) ends with the
     thresholds and align_stats of the same run through the plain two-total scan
     (blocks_bought_by before Task 30), on three pairs."""
@@ -2855,14 +2802,14 @@ def test_tree_key_pricer_alignment_equals_the_uncached_scan(price, pair, monkeyp
              'wide_b': lambda: _wide_pair(21, 22, trees=30)}
     data = pairs[pair]()
     lanes._table_blocks.cache_clear()
-    fast = _aligned_fingerprint(data, price)
+    fast = _aligned_fingerprint(data)
     plain_calls = []
 
-    def plain(widths, floors, feature, multiplier, price='ladder', pricer=None):
+    def plain(widths, floors, feature, keys, pricer=None):
         plain_calls.append(feature)
-        return _plain_bought_by(widths, floors, feature, multiplier, price)
+        return _plain_bought_by(widths, floors, feature, keys)
 
     monkeypatch.setattr(ta, 'blocks_bought_by', plain)
     lanes._table_blocks.cache_clear()
-    assert _aligned_fingerprint(data, price) == fast
+    assert _aligned_fingerprint(data) == fast
     assert plain_calls, 'the plain scan was not used'

@@ -96,9 +96,8 @@ def _parse_keys(text):
     crossbar allocates -- see evaluation.codeword_fields_to_bytes. The raw bit
     widths come back too because a field that is not a whole number of bytes
     hands the crossbar a part-used byte, which is what decides whether a
-    midbyte nibble survives for the version field
-    (tables.tail_is_isolatable, consumed by the ladder tables.codeword_to_blocks; the production price
-    is lanes.table_blocks)."""
+    midbyte nibble survives for the version field (the crossbar port,
+    lanes.table_blocks)."""
     widths, bits = {}, {}
     for pattern in (r"bit<(\d+)>\s+(code_\w+)\s*;", r"bit<(\d+)>\s+(\w+_val)\s*;"):
         for match in re.finditer(pattern, text):

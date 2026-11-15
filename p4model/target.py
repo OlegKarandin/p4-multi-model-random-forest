@@ -23,18 +23,17 @@ TCAM_BLOCK_KEY_LENGTH = 44
 # = 44). The ternary input crossbar is 12 groups x 5 private bytes + 6 midbytes =
 # 66 bytes total. The split matters because the mandatory 2-bit --version-- field
 # may live ONLY in a midbyte nibble: a key that leaves no nibble free costs an
-# extra TCAM block to hold two bits. See tables.crossbar_capacity /
-# tables.codeword_to_blocks and reviews/github_issue_tcam_version_bit_packing.md
-# Sec 1.2-1.3.
+# extra TCAM block to hold two bits. The ported crossbar (xbar.py,
+# xbar.blocks_per_row) prices this; reviews/github_issue_tcam_version_bit_packing.md
+# Sec 1.2-1.3. (The byte-count "ladder" that restated it, tables.crossbar_capacity /
+# codeword_to_blocks, was deleted 2026-11-15, Task 32.)
 #
 # A note this comment used to carry and that is now RETRACTED (2026-09-21): that
 # a midbyte is owned exclusively by its "pair partner" groups 2i / 2i+1, laid out
 # private-x5 | midbyte | private-x5. p4c's own assembly says otherwise -- a block
 # may pair with ANY of a stage's 6 midbytes, and a key's groups need not even be
-# consecutive (measured runs {0,1,3,4}, {0,3}). Only the resulting COUNT survives,
-# as tables.crossbar_capacity; the geometry, and with it the whole start_group /
-# version_block_penalty apparatus it justified, is gone. reviews/
-# p4_tofino_reference.md Sec 4.1.1 and Appendix B "Mechanism G".
+# consecutive (measured runs {0,1,3,4}, {0,3}). reviews/p4_tofino_reference.md
+# Sec 4.1.1 and Appendix B "Mechanism G".
 CROSSBAR_PRIVATE_BYTES_PER_GROUP = 5
 # The stage's crossbar group count. No group-BUDGET term exists in this model:
 # the near-cap effect a budget would price (spec F5) is handled by the ternary
@@ -134,9 +133,9 @@ MAX_RANGE_KEY_BITS = 19   # §4.2: a 20-bit range key does not compile at all
 # always parks in a whole midbyte NIBBLE, never fewer bits
 # (model_audit_2026-09-27.md Appendix A.2; tofino/input_xbar.cpp). 4 is that
 # nibble, not a fitted or undocumented number. `codeword_bits_to_blocks`
-# carries this constant only for the empty-key floor -- everywhere else
-# `crossbar_capacity`'s own `floor((g-1)/2)` term already withholds one
-# half-byte for the version field, so this constant is not re-added there.
+# carries this constant only for the empty-key floor -- everywhere else the
+# crossbar port (xbar.blocks_per_row's `+ 1`) already reserves the version
+# nibble, so this constant is not re-added there.
 CODEWORD_KEY_OVERHEAD_BITS = 4
 
 # A Tofino stage has four stateful ("meter") ALUs, and every RegisterAction

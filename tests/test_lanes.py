@@ -6,8 +6,7 @@ stage_sim_fast.py, was deleted 2026-11-13: xbar.py prices shared stages).
 Every number pinned here was OBSERVED in a real p4c compile, not derived:
 
   * w019 / w027 -- results/tcam_phv_slice_sweep.csv (field widths (19, 64) and
-    (27, 56), real_blocks 2 and 3); the tables.tail_is_isolatable docstring
-    walks through why they differ.
+    (27, 56), real_blocks 2 and 3).
   * REAL_DESIGN_KEYS -- every distinct classification-tree key (field bit
     widths) in the real design compiles results/compiler_calibration_v6,
     results/compiler_calibration_extra, results/tcam_margin_screen and the
@@ -22,7 +21,6 @@ key_bytes (since deleted) and standalone on 1679 keys -- 0 differences, 99 read 
 import pytest
 
 from p4model import lanes
-from p4model.tables import codeword_to_blocks
 
 
 REAL_DESIGN_KEYS = (
@@ -102,11 +100,93 @@ REAL_DESIGN_KEYS = (
     (477,),
 )
 
+# p4c's charge for every real design key ALONE in its stage -- what the
+# byte-count ladder (tables.codeword_to_blocks, deleted 2026-11-15 by Task 32)
+# priced each of them, which the tests below once compared against; recorded
+# here as the literal it was. (27, 52) is 3 (LANE_BELOW_P4C_REAL_KEYS); the two
+# PLAIN_ABOVE_RELAXED_COMPILES keys are p4c's charges under the old relaxed pin.
+REAL_KEY_P4C_BLOCKS = {
+    (1, 1, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 4): 3,
+    (1, 1, 1, 1, 1, 2, 5, 6, 6, 6, 6, 7, 8, 8, 9, 10, 10): 4,
+    (1, 1, 1, 1, 2, 2, 2, 2, 2, 3): 2,
+    (1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 4, 5, 5, 7, 8): 3,
+    (1, 1, 1, 1, 2, 2, 3, 3, 6, 6, 9): 3,
+    (1, 1, 1, 2, 2, 2, 2, 2, 4, 4, 4, 5): 3,
+    (1, 1, 1, 2, 2, 3, 3): 2,
+    (1, 1, 1, 2, 3, 3, 3, 3, 4, 8): 2,
+    (1, 1, 2, 2, 2, 3, 3, 3, 5, 6): 2,
+    (1, 1, 2, 2, 2, 3, 4, 4, 4, 5, 5, 6, 7, 7): 3,
+    (1, 2, 2, 2, 4, 5, 5, 6, 8, 8, 11, 12, 13, 17): 4,
+    (1, 2, 2, 6, 7, 8, 9, 10, 13, 13, 14, 14, 15, 15, 18, 22): 6,
+    (1, 2, 3, 4, 5, 6, 7, 7, 7, 8, 9, 10, 14): 3,
+    (1, 2, 6, 6, 8, 8, 9, 9, 10, 10): 3,
+    (1, 3, 3, 4, 4, 6, 7, 8, 8, 8, 10, 11, 11): 3,
+    (1, 3, 5, 16, 16, 17, 19, 21, 22, 26, 27, 29, 32): 7,
+    (1, 3, 7, 9, 11, 12, 14, 16, 17, 19, 19, 22, 25): 6,
+    (1, 5, 5, 6, 13, 14, 15, 22, 22, 28, 30, 33, 34, 38): 8,
+    (1, 5, 9, 14, 15, 16, 17, 18, 18, 19, 19, 21, 22): 6,
+    (1, 6, 15, 19, 22, 23, 25, 27, 30, 32): 6,
+    (1, 10, 10, 11, 14, 15, 18, 22, 23, 25, 25, 28, 30): 7,
+    (2, 2, 2, 4, 4, 5, 5, 5, 7, 7, 8, 9, 10, 12): 4,
+    (2, 3, 4, 5, 6, 7, 7, 7, 8, 13, 15, 20, 24, 24, 28, 28): 6,
+    (2, 3, 5, 6, 8, 9, 11, 12, 12, 19, 19, 22, 23, 28, 30): 6,
+    (2, 5, 7, 7, 9, 10, 10, 12, 21, 22, 22, 23, 25): 6,
+    (2, 5, 7, 8, 9, 10, 10, 11, 11, 19, 20, 20, 22, 24, 27): 6,
+    (2, 5, 9, 10, 12, 14, 17, 20, 23, 23, 24, 26, 26, 32): 7,
+    (2, 17, 20, 20, 24, 31): 4,
+    (3, 4, 4, 9, 9, 10, 10, 13, 16, 17, 18, 18): 5,
+    (3, 4, 5, 5, 6, 6, 9, 11, 12, 14, 16, 17): 4,
+    (4, 8, 9, 13, 24, 25, 27, 30, 32, 46): 6,
+    (4, 8, 10, 12, 19, 20, 23, 23, 30, 39): 5,
+    (4, 17, 19, 29, 31, 33, 37, 44): 6,
+    (5, 12, 12, 12, 12, 13, 15, 16, 17, 22): 4,
+    (6, 6, 19, 23, 28, 37, 37, 40, 49, 58): 8,
+    (7, 17, 31, 33, 34, 36, 39, 46): 7,
+    (8, 9, 13, 17, 17): 2,
+    (9, 36, 48, 51, 53, 53, 56): 8,
+    (15, 23): 1,
+    (17, 18, 23, 24, 28, 29, 30, 30): 6,
+    (18, 18, 18, 19, 19, 21, 24, 27): 5,
+    (19, 20, 21, 21, 23, 23, 28): 4,
+    (23, 33, 36, 38): 4,
+    (26, 30, 31, 32, 32): 4,
+    (26, 57, 60, 65, 74): 8,
+    (27, 28, 29, 32): 3,
+    (27, 52): 3,
+    (29,): 1,
+    (33, 42, 48, 49, 54, 66): 8,
+    (35, 85, 99, 101): 8,
+    (37, 46, 61): 4,
+    (37, 49): 3,
+    (39, 45): 3,
+    (41, 42, 42, 52): 5,
+    (46,): 2,
+    (46, 46, 48, 64): 5,
+    (47, 56, 66, 69, 72): 8,
+    (52, 62, 63, 65): 6,
+    (54, 56): 3,
+    (60, 73, 76, 86, 88): 10,
+    (62, 67, 76, 86, 86): 9,
+    (64, 69): 4,
+    (70, 104, 111): 7,
+    (79, 138): 6,
+    (88, 90, 108, 120): 10,
+    (93, 156): 6,
+    (98, 106, 126): 8,
+    (140, 144): 7,
+    (146,): 4,
+    (179, 204): 9,
+    (188,): 5,
+    (188, 214): 10,
+    (321,): 8,
+    (477,): 11,
+}
+
+
 # Real design keys where the lane price is BELOW what p4c charged -- the
 # accepted "greedy crossbar miss" class (reviews/campaign_2026_10_lane_findings.md
 # Sec 5): p4c parks a whole byte on the midbyte and leaves no nibble for the
-# version bits. (key widths) -> (lane price, p4c observed). The ladder priced
-# (27, 52) right by luck.
+# version bits. (key widths) -> (lane price, p4c observed).
 LANE_BELOW_P4C_REAL_KEYS = {
     (27, 52): (2, 3),   # independent_low_sd5's ddos trees
 }
@@ -149,33 +229,34 @@ def test_real_design_key_set_is_the_audited_74():
 
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
-def test_lane_standalone_is_never_below_the_headline_ladder(widths):
-  """The lane model never prices a real key cheaper than the ladder, except
-  the listed greedy-miss keys, where p4c itself charged the ladder's price."""
+def test_lane_standalone_is_never_below_p4c_on_real_keys(widths):
+  """The lane model never prices a real key cheaper than p4c charged it,
+  except the listed greedy-miss keys."""
   price = _price(widths)
   assert price is not None
   if widths in LANE_BELOW_P4C_REAL_KEYS:
     lane, observed = LANE_BELOW_P4C_REAL_KEYS[widths]
-    assert price == lane < observed == codeword_to_blocks(widths)
+    assert price == lane < observed == REAL_KEY_P4C_BLOCKS[widths]
     return
-  assert price >= codeword_to_blocks(widths)
+  assert price >= REAL_KEY_P4C_BLOCKS[widths]
   if widths in PLAIN_ABOVE_RELAXED_COMPILES:
-    assert (price, codeword_to_blocks(widths)) == PLAIN_ABOVE_RELAXED_COMPILES[widths]
+    assert (price, REAL_KEY_P4C_BLOCKS[widths]) == PLAIN_ABOVE_RELAXED_COMPILES[widths]
 
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
-def test_lane_standalone_equals_production_on_real_keys(widths):
-  """On every real design key but the listed greedy misses the lane price and
-  the ladder agree."""
+def test_lane_standalone_equals_p4c_on_real_keys(widths):
+  """On every real design key but the listed greedy misses the lane price is
+  p4c's charge."""
   if widths in LANE_BELOW_P4C_REAL_KEYS or widths in PLAIN_ABOVE_RELAXED_COMPILES:
     pytest.skip('listed miss, asserted above')
-  assert _price(widths) == codeword_to_blocks(widths)
+  assert _price(widths) == REAL_KEY_P4C_BLOCKS[widths]
 
 
 # Synthetic probe keys (results/tcam_table_scoreboard.csv) where the lane price
-# is BELOW codeword_to_blocks -- and equal to what p4c actually charged. These
-# are production over-predictions, not lane under-predictions; they are why the
-# "never below" guarantee above is stated over real design keys only.
+# was BELOW the then-production ladder (tables.codeword_to_blocks, deleted
+# 2026-11-15; its price is the `production` column) -- and equal to what p4c
+# actually charged. They are why the "never below" guarantee above is stated
+# over real design keys only.
 LANE_BEATS_PRODUCTION_PROBES = (
     # (source, id, widths, p4c observed blocks = lane price, production)
     ('tcam_ledger_divergence_sweep', 'div04_n3_g5', (47, 51, 71), 4, 5),
@@ -194,7 +275,6 @@ LANE_BEATS_PRODUCTION_PROBES = (
                          LANE_BEATS_PRODUCTION_PROBES,
                          ids=[p[1] for p in LANE_BEATS_PRODUCTION_PROBES])
 def test_lane_below_production_only_where_p4c_agrees(source, ident, widths, observed, production):
-  assert codeword_to_blocks(widths) == production
   assert _price(widths) == observed < production
 
 
@@ -307,20 +387,18 @@ def test_table_blocks_is_the_crossbar_ports_price_of_the_pinned_layout(widths):
 
 @pytest.mark.parametrize('widths', REAL_DESIGN_KEYS)
 def test_table_blocks_equals_p4c_on_real_keys(widths):
-  # The ladder is p4c's charge on every real design key; on the one key where
-  # the lane count was below p4c (LANE_BELOW_P4C_REAL_KEYS, the greedy miss)
-  # the port gives p4c's number.
-  if widths in LANE_BELOW_P4C_REAL_KEYS:
-    assert lanes.table_blocks(widths) == LANE_BELOW_P4C_REAL_KEYS[widths][1]
-  elif widths in PLAIN_ABOVE_RELAXED_COMPILES:
+  # The port gives p4c's charge on every real design key, the greedy miss
+  # (LANE_BELOW_P4C_REAL_KEYS) included; the two keys compiled under the old
+  # relaxed pin get the plain pin's price.
+  if widths in PLAIN_ABOVE_RELAXED_COMPILES:
     assert lanes.table_blocks(widths) == PLAIN_ABOVE_RELAXED_COMPILES[widths][0]
   else:
-    assert lanes.table_blocks(widths) == codeword_to_blocks(widths)
+    assert lanes.table_blocks(widths) == REAL_KEY_P4C_BLOCKS[widths]
 
 
 def test_table_blocks_pins_the_two_known_ladder_disagreements_off_the_compiled_set():
-  # Lane-higher: three 49-56-bit fields (spec Sec I.2, review decision 6).
-  assert codeword_to_blocks((54, 55, 56)) == 4
+  # Lane-higher: three 49-56-bit fields (spec Sec I.2, review decision 6; the
+  # deleted ladder said 4).
   assert lanes.table_blocks((54, 55, 56)) == 5
   # Lane-lower: the dsp41 probe key.
   assert lanes.table_blocks((84, 84)) == 4
@@ -331,7 +409,7 @@ def test_table_blocks_ignores_field_order():
   assert lanes.table_blocks((52, 27)) == lanes.table_blocks((27, 52)) == 3
 
 
-def test_table_blocks_of_the_empty_key_is_the_ladders_floor():
+def test_table_blocks_of_the_empty_key_is_the_band_floor():
   assert lanes.table_blocks(()) == codeword_bits_to_blocks(0)
   assert lanes.table_blocks((0, 0)) == codeword_bits_to_blocks(0)
 
@@ -369,8 +447,9 @@ def test_table_blocks_can_rise_when_one_field_loses_a_bit():
   5-bit field is a whole byte, a 4-bit one a single nibble, and with the
   nibble p4c's midbyte choice leaves this key one block dearer, under every
   container-numbering tie (2026-11-13). The lane count (monotone, the B3
-  measurement) said 4 for both. Threshold alignment prices with the ladder
-  codeword_to_blocks, which stays monotone."""
+  measurement) said 4 for both. Threshold alignment prices with this port too
+  (Task 32): a shed that RAISES a key's price is simply not a block-buying
+  shed for feature_order, and acceptance never reads the price."""
   from p4model import xbar
   assert lanes.table_blocks((5, 19, 24, 53, 62)) == 4
   assert lanes.table_blocks((4, 19, 24, 53, 62)) == 5
@@ -379,8 +458,6 @@ def test_table_blocks_can_rise_when_one_field_loses_a_bit():
       key = xbar.field_key(lanes.key_fields(widths), {})
       crossbar = xbar.StageXbar(tie=tie)
       assert crossbar.allocate(key) and xbar.blocks_per_row(key) == price
-  assert (codeword_to_blocks((4, 19, 24, 53, 62))
-          <= codeword_to_blocks((5, 19, 24, 53, 62)))
 
 
 # ---- lane cap: only 3 of the 12 groups start on any one lane (2026-11-11) ----

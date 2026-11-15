@@ -1,20 +1,16 @@
 from p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
 from src.training.align_budget import (TreeKeyPricer,
-                                       _factor,
                                        _own_floor_widths,
                                        _pooled_widths,
-                                       bits_to_reach,
                                        blocks_bought_by,
                                        pooled_interval_count,
-                                       pooled_key_bytes, prices_tree_keys,
-                                       total_blocks, tree_keys,
-                                       tree_multiplier)
+                                       pooled_key_bytes,
+                                       total_blocks, tree_factor, tree_keys)
 from src.training.align_targets import (LOWER_EDGE, boundary_moves,
                                         boundary_moves_to, boundary_pairs,
                                         candidate_targets,
                                         hypothetical_ranges, lower_boundary,
                                         neighbour_writes)
-from p4model.tables import crossbar_capacity
 from src.training.errors import AlignmentInvariantError
 from src.training.incremental_metrics import IncrementalMetrics
 from src.training.trial_selection import rel_deg
@@ -100,8 +96,8 @@ def _legacy_combined_order(intervals1, intervals2):
                                    + len(intervals2.get(f, []))), f))
 
 
-def feature_order(intervals1, intervals2, *, multiplier, widths=None,
-                  floors=None, features=None, price='ladder', pricer=None):
+def feature_order(intervals1, intervals2, *, keys, widths=None,
+                  floors=None, features=None, pricer=None):
     """The order features are offered to the alignment loop, cheapest first.
 
     Ranked by the BLOCKS a shed on that feature would actually buy and what it
@@ -110,10 +106,10 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
         key = (-blocks_bought, bits_spent, -combined, feature)
 
     This is one edit fixing two audit gaps, and they are inseparable. Gap 2:
-    the old key was `bits_to_next_byte`, a byte-domain proxy blind both to
-    the block price's dependence on the width MULTISET (codeword_to_blocks'
-    isolation credit, so no per-feature scalar can see it) and to range
-    steps. Gap 1: range blocks are
+    the old key was a per-feature bits-to-next-byte distance, a byte-domain
+    proxy blind both to the block price's dependence on the width MULTISET (a
+    key's crossbar price reads all its fields together, so no per-feature
+    scalar can see it) and to range steps. Gap 1: range blocks are
     not alignment-invariant, so a feature four intervals from a free range
     block outranks a feature one bit from a byte boundary that buys nothing.
     A ranking by achieved cost is meaningless on stale widths, so the staleness
@@ -155,20 +151,18 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
     deterministic -- which train_model.py's refit assertion depends on
     (invariant 5).
 
-    multiplier : what one step of the block factor is worth, in blocks
-        (align_budget.tree_multiplier). Required: without it a range step and a
+    keys : align_budget.tree_keys(...) -- every distinct tree key and the
+        512-row words its trees hold, which is what one step of a key's port
+        price is worth in blocks. Required: without it a range step and a
         ternary step are incomparable, which is the whole defect.
     widths, floors : optional precomputed _pooled_widths / _own_floor_widths.
         align_rf_thresholds passes the BUDGET's live widths, not its entry
         copy.
     features : which features to rank. Defaults to the common set.
-    price : 'ladder' (default), 'port' (decision 9.4) or 'ladder_pruned'
-        (G2 option 3); with either of the last two, `multiplier` is
-        align_budget.tree_keys(...).
-    pricer : under 'port' / 'ladder_pruned', the run's align_budget.TreeKeyPricer
-        for `multiplier` (align_rf_thresholds keeps one across calls, so a call
-        re-prices only keys whose widths changed); None builds one for this
-        call. Same ranking either way (Task 30).
+    pricer : the run's align_budget.TreeKeyPricer for `keys`
+        (align_rf_thresholds keeps one across calls, so a call re-prices only
+        keys whose widths changed); None builds one for this call. Same
+        ranking either way (Task 30).
     """
     if widths is None:
         widths = _pooled_widths(intervals1, intervals2)
@@ -176,11 +170,11 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
         floors = _own_floor_widths(intervals1, intervals2)
     if features is None:
         features = set(intervals1) & set(intervals2)
-    if pricer is None and prices_tree_keys(price):
-        pricer = TreeKeyPricer(multiplier, price)
+    if pricer is None:
+        pricer = TreeKeyPricer(keys)
 
     def key(feature):
-        bought, spent = blocks_bought_by(widths, floors, feature, multiplier, price,
+        bought, spent = blocks_bought_by(widths, floors, feature, keys,
                                          pricer=pricer)
         combined = len(intervals1[feature]) + len(intervals2[feature])
         return (-bought, spent, -combined, feature)
@@ -328,9 +322,14 @@ def _rank_targets(range1, range2, ranges1, ranges2, idx1, idx2, feature_idx,
 
 def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                         delta_rel=0.0, align_stats=None,
-                        candidate_log=None, price='ladder'):
+                        candidate_log=None):
     """
     Aligns feature ranges by adjusting boundary thresholds of pure overlapping regions.
+
+    Blocks are priced as production prices a joint design: each tree's OWN
+    key at its pooled widths by the ternary crossbar port, plus range blocks
+    (align_budget.total_blocks; G2, the only price since Task 32). Only the
+    feature ORDER reads the price -- acceptance is accuracy-only.
 
     Parameters:
     -----------
@@ -339,13 +338,6 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     delta_rel : float or None
         Permitted relative-error degradation. None accepts every move and
         skips the accuracy evaluation entirely (the "inf" anchor).
-    price : 'ladder' (default, tables.codeword_to_blocks of the union key)
-        or 'port' (decision 9.4: lanes.table_blocks of each tree's own key,
-        align_budget.tree_keys / port_price) or 'ladder_pruned' (G2 option 3:
-        the ladder of each tree's own key, align_budget.pruned_ladder_price).
-        Only the feature ORDER reads
-        the price -- acceptance is accuracy-only -- so the three can differ only
-        through which feature spends the shared accuracy slack first.
 
     Returns:
     --------
@@ -460,43 +452,21 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # floor -- the best any alignment of this pair could reach, since a common
     # feature's pooled width can never drop below max(own1, own2).
     #
-    # audit §8.2 item 7. `factor_*` is the per-TABLE block factor -- the ternary
-    # key's own width in blocks. `total_blocks_*` is what ResourceUsage.blocks
-    # charges: that factor times the tree multiplier, plus every feature's range
-    # table. Two names because they are two quantities; archived CSVs carry the
-    # factor under the old `blocks_*` name and must never be read as totals.
-    per_tree = prices_tree_keys(price)
-    multiplier = tree_keys(rf1, rf2) if per_tree else tree_multiplier(rf1, rf2)
-    # Under 'port' and 'ladder_pruned' the factors are per-TREE prices
-    # (align_budget.tree_factor: the dearest tree key), never the union key's,
-    # which can exceed the stage's MAX_KEY_BYTES crossbar bytes while every
-    # tree key fits (interim review I1).
-    keys = multiplier if per_tree else None
-    stats['factor_before'] = _factor(pooled_widths, price, keys)
-    stats['factor_floor'] = _factor(own_floor_widths, price, keys)
-    stats['total_blocks_before'] = total_blocks(pooled_widths, multiplier, price)
-    stats['total_blocks_floor'] = total_blocks(own_floor_widths, multiplier, price)
-
-    # §4.6. bits_to_reach survives, aimed at the next cheaper BLOCK factor
-    # instead of the retired stage step. A factor of f - 1 holds a key of at
-    # most tables.crossbar_capacity(f - 1) = 5(f-1) + floor((f-2)/2) bytes --
-    # the current ladder, 10 bytes at f - 1 = 2 -- so that is the byte target.
-    # (It used to be (11 * (f - 1)) // 2, i.e. 5.5 bytes per block, which is
-    # 11 at f - 1 = 2 and so optimistic.) This is the HEADLINE ladder:
-    # codeword_to_blocks' isolation credit can let a key one byte past it
-    # still price at f - 1 (measured: never more than one byte), so the
-    # number is a lower bound up to that one byte, and the cheapest bits are
-    # not necessarily the least damaging ones. Reported, never enforced -- no
-    # run is skipped on it.
-    # A ladder (byte-domain) bound under every price: crossbar_capacity is
-    # the ladder's, so it is fed the ladder factor of the union key, never a
-    # per-tree factor (interim review I1). Under 'ladder' that is factor_before.
-    ladder_before = (stats['factor_before'] if price == 'ladder'
-                     else _factor(pooled_widths))
-    block_target = crossbar_capacity(ladder_before - 1)
-    stats['bits_to_reach'] = (
-        bits_to_reach(pooled_widths, own_floor_widths, block_target)
-        if ladder_before > 1 else None)
+    # audit §8.2 item 7. `factor_*` is the per-TABLE block factor: the
+    # DEAREST tree key's port price per 512-row word (align_budget.tree_factor;
+    # per-tree since Task 32, the union key's ladder price before -- never the
+    # union key now, which can be past a stage's crossbar while every tree key
+    # fits, interim review I1). `total_blocks_*` is what production charges the
+    # same trees standing alone: every tree key's rows x its port price, plus
+    # every feature's range table. Two names because they are two quantities;
+    # archived CSVs carry the factor under the old `blocks_*` name and must
+    # never be read as totals. (bits_to_reach, a lower bound built on the
+    # ladder, went with it in Task 32.)
+    keys = tree_keys(rf1, rf2)
+    stats['factor_before'] = tree_factor(pooled_widths, keys)
+    stats['factor_floor'] = tree_factor(own_floor_widths, keys)
+    stats['total_blocks_before'] = total_blocks(pooled_widths, keys)
+    stats['total_blocks_floor'] = total_blocks(own_floor_widths, keys)
 
     # The width dict alignment actually works on, decremented per accepted move
     # so feature_order sees the CURRENT cost.
@@ -517,18 +487,18 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # `remaining` and the total order inside feature_order keep this
     # deterministic, which the refit assertion depends on.
     remaining = set(intervals1) & set(intervals2)
-    # Task 30: one TreeKeyPricer for the whole run under a tree-key price, so
-    # each feature_order call re-prices only the tree keys whose widths the
-    # previous feature's accepted moves changed. Same ranking as without it.
-    pricer = TreeKeyPricer(multiplier, price) if per_tree else None
+    # Task 30: one TreeKeyPricer for the whole run, so each feature_order call
+    # re-prices only the tree keys whose widths the previous feature's
+    # accepted moves changed. Same ranking as without it.
+    pricer = TreeKeyPricer(keys)
 
     while remaining:
         feature_idx = feature_order(intervals1, intervals2,
-                                    multiplier=multiplier,
+                                    keys=keys,
                                     widths=live_widths,
                                     floors=own_floor_widths,
                                     features=remaining,
-                                    price=price, pricer=pricer)[0]
+                                    pricer=pricer)[0]
         remaining.discard(feature_idx)
 
         current_ranges1 = intervals1[feature_idx]
@@ -759,8 +729,8 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     stats['codeword_after'] = stats['intervals_after'] - n_features
     stats['key_bytes_after'] = pooled_key_bytes(intervals1_after, intervals2_after)
     widths_after = _pooled_widths(intervals1_after, intervals2_after)
-    stats['factor_after'] = _factor(widths_after, price, keys)
-    stats['total_blocks_after'] = total_blocks(widths_after, multiplier, price)
+    stats['factor_after'] = tree_factor(widths_after, keys)
+    stats['total_blocks_after'] = total_blocks(widths_after, keys)
 
     # §2.4: what this run gave away, in the same units accept_alignment uses,
     # priced as a MAX across the four metrics rather than a sum or a mean --
@@ -1283,7 +1253,7 @@ def update_threshold_index(threshold_index, feature_idx, old_threshold, new_thre
 
 def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
                       delta_rel=0.0,
-                      align_stats=None, candidate_log=None, price='ladder'):
+                      align_stats=None, candidate_log=None):
     """align_rf_thresholds, with `align_stats` cleared first.
 
     Kept under its own name because train_model.py and
@@ -1304,4 +1274,4 @@ def align_with_policy(rf1, rf2, X_val1, y_val1, X_val2, y_val2, *,
     return align_rf_thresholds(
         rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         delta_rel=delta_rel,
-        align_stats=stats, candidate_log=candidate_log, price=price)
+        align_stats=stats, candidate_log=candidate_log)
