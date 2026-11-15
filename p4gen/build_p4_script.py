@@ -3130,15 +3130,33 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # ordering -- not measured, flagged not fixed, consistent with this project's
   # treatment of every other resource-oracle approximation (e.g. the IAT ns->us
   # rescale).
+  # Orientation fix (Task 33b, adopted 2026-11-15 as a pure bug fix). The body was
+  # `if (value == 0) { value = src; } rv = (value == src) ? 1 : 0;`, whose P4
+  # meaning is rv = (old == 0 || old == src). p4c compiled the compare against the
+  # OLD memory word (prog.bfa flow_orientation_action: `equ hi, lo, -phv_lo` /
+  # `output cmphi, alu_hi`), so rv = (old == src): every flow's FIRST packet was
+  # labelled bwd and the initiator's second packet started the fwd chain -- every
+  # Fwd/Bwd feature (counts, lengths, IATs) was one packet off on the switch, in
+  # every encoding (tofino-model log: ig_md.fwd = 0 on each flow's first packet,
+  # runs 1 and 2). The fix states the rule with both compares before the write: 2
+  # compare units, Tofino-1's limit (bfa `equ lo, lo` / `equ hi, lo, -phv_lo` /
+  # `alu_a (cmplo | cmphi), lo, phv_lo` / `output (cmplo | cmphi), alu_hi`). p4c: 0
+  # errors, every table in the stage of the unfixed compile; live (tofino-model):
+  # the labels follow the CICFlowMeter rule 10/10 and every chain's first packet
+  # gives IAT 0 (impl/probe_first_packet.md, "Live check (Task 33b)"). A compare
+  # that reads `value` after the body wrote it is refused by program_checks
+  # (salu_compare_after_write).
   register_actions_code += (
       "\n"
       "\tRegisterAction<bit<32>, bit<" + str(FLOW_INDEX_BITS) + ">, bit<1>>(flow_forward_srcaddr_reg) "
       "flow_orientation_action = {\n"
       "\t\tvoid apply(inout bit<32> value, out bit<1> rv) {\n"
-      "\t\t\tif (value == 0) {\n"
+      "\t\t\tif (value == 0 || value == hdr.ipv4.src_addr) {\n"
       "\t\t\t\tvalue = hdr.ipv4.src_addr;\n"
+      "\t\t\t\trv = 1w1;\n"
+      "\t\t\t} else {\n"
+      "\t\t\t\trv = 1w0;\n"
       "\t\t\t}\n"
-      "\t\t\trv = (value == hdr.ipv4.src_addr) ? 1w1 : 1w0;\n"
       "\t\t}\n"
       "\t};\n"
   )

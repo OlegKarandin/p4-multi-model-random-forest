@@ -2680,6 +2680,29 @@ _C1F_BWD_MAX = (
     "\t};\n")
 
 
+_ORIENTATION_FIXED = (
+    "\tRegisterAction<bit<32>, bit<12>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {\n"
+    "\t\tvoid apply(inout bit<32> value, out bit<1> rv) {\n"
+    "\t\t\tif (value == 0 || value == hdr.ipv4.src_addr) {\n"
+    "\t\t\t\tvalue = hdr.ipv4.src_addr;\n"
+    "\t\t\t\trv = 1w1;\n"
+    "\t\t\t} else {\n"
+    "\t\t\t\trv = 1w0;\n"
+    "\t\t\t}\n"
+    "\t\t}\n"
+    "\t};\n")
+
+
+def test_a_flows_first_packet_is_forward():
+  """Task 33b: the orientation body compares the OLD word only, before writing it (the
+  live-checked text of impl/probe_first_packet/live_prog_orient); the old body's
+  `rv = (value == src)` after `value = src` compiled to a compare of the old word, so
+  a flow's first packet was labelled bwd."""
+  _, actions, _, _ = bps.generate_P4_registers_and_apply({"flow_iat_max": None})
+  assert _ORIENTATION_FIXED in actions
+  assert "?" not in actions
+
+
 def test_the_first_packet_of_a_chain_gives_no_iat():
   """C1f (Task 34): last-arrival registers start at 0xFFFFFFFF and store now - 1, the
   gap is saturating (first packet 0); Min skips 0, stores min - 1 and is read + 1; Mean
