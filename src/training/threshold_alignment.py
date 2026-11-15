@@ -1,5 +1,6 @@
 from p4gen.build_p4_script import INFINITE, get_feature_intervals_from_thresholds
-from src.training.align_budget import (_factor,
+from src.training.align_budget import (TreeKeyPricer,
+                                       _factor,
                                        _own_floor_widths,
                                        _pooled_widths,
                                        bits_to_reach,
@@ -100,7 +101,7 @@ def _legacy_combined_order(intervals1, intervals2):
 
 
 def feature_order(intervals1, intervals2, *, multiplier, widths=None,
-                  floors=None, features=None, price='ladder'):
+                  floors=None, features=None, price='ladder', pricer=None):
     """The order features are offered to the alignment loop, cheapest first.
 
     Ranked by the BLOCKS a shed on that feature would actually buy and what it
@@ -164,6 +165,10 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
     price : 'ladder' (default), 'port' (decision 9.4) or 'ladder_pruned'
         (G2 option 3); with either of the last two, `multiplier` is
         align_budget.tree_keys(...).
+    pricer : under 'port' / 'ladder_pruned', the run's align_budget.TreeKeyPricer
+        for `multiplier` (align_rf_thresholds keeps one across calls, so a call
+        re-prices only keys whose widths changed); None builds one for this
+        call. Same ranking either way (Task 30).
     """
     if widths is None:
         widths = _pooled_widths(intervals1, intervals2)
@@ -171,9 +176,12 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
         floors = _own_floor_widths(intervals1, intervals2)
     if features is None:
         features = set(intervals1) & set(intervals2)
+    if pricer is None and prices_tree_keys(price):
+        pricer = TreeKeyPricer(multiplier, price)
 
     def key(feature):
-        bought, spent = blocks_bought_by(widths, floors, feature, multiplier, price)
+        bought, spent = blocks_bought_by(widths, floors, feature, multiplier, price,
+                                         pricer=pricer)
         combined = len(intervals1[feature]) + len(intervals2[feature])
         return (-bought, spent, -combined, feature)
 
@@ -509,6 +517,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # `remaining` and the total order inside feature_order keep this
     # deterministic, which the refit assertion depends on.
     remaining = set(intervals1) & set(intervals2)
+    # Task 30: one TreeKeyPricer for the whole run under a tree-key price, so
+    # each feature_order call re-prices only the tree keys whose widths the
+    # previous feature's accepted moves changed. Same ranking as without it.
+    pricer = TreeKeyPricer(multiplier, price) if per_tree else None
 
     while remaining:
         feature_idx = feature_order(intervals1, intervals2,
@@ -516,7 +528,7 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
                                     widths=live_widths,
                                     floors=own_floor_widths,
                                     features=remaining,
-                                    price=price)[0]
+                                    price=price, pricer=pricer)[0]
         remaining.discard(feature_idx)
 
         current_ranges1 = intervals1[feature_idx]

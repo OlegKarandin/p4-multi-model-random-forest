@@ -367,3 +367,121 @@ def test_pruned_ladder_prices_a_stump_at_the_floor_and_needs_keys():
         ab.key_price((3,), 'ladder')
     assert ab.prices_tree_keys('ladder_pruned') and ab.prices_tree_keys('port')
     assert not ab.prices_tree_keys('ladder')
+
+
+# --- Task 30: TreeKeyPricer -- the plain scan's answers, fewer key prices ---
+
+def _plain_bought_by(widths, floors, feature, keys, price):
+    """blocks_bought_by as it was before Task 30: two total_blocks per probe."""
+    room = widths[feature] - floors[feature]
+    if room <= 0:
+        return 0, 0
+    before = ab.total_blocks(widths, keys, price)
+    probe = dict(widths)
+    for shed in range(1, room + 1):
+        probe[feature] = widths[feature] - shed
+        bought = before - ab.total_blocks(probe, keys, price)
+        if bought > 0:
+            return bought, shed
+    return 0, 0
+
+
+def _outcome(fn, *args):
+    """fn's result, or its exception's type and message."""
+    try:
+        return fn(*args)
+    except Exception as exc:  # the exception is part of the answer
+        return type(exc).__name__, str(exc)
+
+
+def _random_case(rng, n_features, n_keys, max_width):
+    widths = {f: rng.randint(0, max_width) for f in range(n_features)}
+    # A few widths near the range table's 206-interval step, so range terms move too.
+    for f in rng.sample(range(n_features), 2):
+        widths[f] = rng.choice((rng.randint(0, max_width), rng.randint(200, 212)))
+    floors = {f: rng.randint(0, w) for f, w in widths.items()}
+    keys = tuple((frozenset(rng.sample(range(n_features), rng.randint(1, n_features))),
+                  rng.randint(1, 3)) for _ in range(n_keys))
+    return widths, floors, keys
+
+
+@pytest.mark.parametrize('price', ['port', 'ladder_pruned'])
+def test_tree_key_pricer_scans_exactly_as_the_plain_scan_across_steps(price):
+    """One pricer kept across alignment-like steps (every feature scanned, then
+    one feature's width drops) gives blocks_bought_by's plain answer every
+    time, exceptions (an over-limit key) included."""
+    import random
+    rng = random.Random(30)
+    raised = 0
+    for case in range(25):
+        widths, floors, keys = _random_case(rng, rng.randint(2, 9), rng.randint(1, 7),
+                                            rng.choice((12, 40, 70)))
+        pricer = ab.TreeKeyPricer(keys, price)
+        for step in range(6):
+            for f in sorted(widths):
+                want = _outcome(_plain_bought_by, widths, floors, f, keys, price)
+                got = _outcome(ab.blocks_bought_by, widths, floors, f, keys, price, pricer)
+                assert got == want, (case, step, f)
+                raised += isinstance(want[0], str)
+            f = rng.choice(sorted(widths))
+            widths[f] = max(floors[f], widths[f] - rng.randint(1, 12))
+    assert raised > 0, 'no over-limit key: the exception path is untested'
+
+
+def test_tree_key_pricer_reprices_only_the_trees_keying_a_changed_width(monkeypatch):
+    """A step that changes one feature's width re-prices the trees that key it
+    and no other; an unchanged second call prices nothing."""
+    keys = ((frozenset({0, 1}), 1), (frozenset({2, 3}), 2), (frozenset({1}), 1))
+    pricer = ab.TreeKeyPricer(keys, 'port')
+    calls = []
+    real = ab.key_price
+    monkeypatch.setattr(ab, 'key_price', lambda w, p: calls.append(tuple(w)) or real(w, p))
+    widths = {0: 30, 1: 9, 2: 17, 3: 3}
+    first = list(pricer.prices(widths))
+    assert len(calls) == 3
+    assert first == [real((widths[f] for f in sorted(fs)), 'port') for fs, _ in keys]
+    del calls[:]
+    assert list(pricer.prices(dict(widths))) == first and calls == []
+    widths[2] = 16                       # W container -> H container: tree 1 only
+    second = list(pricer.prices(widths))
+    assert calls == [(ab.port_width(3), 16)]
+    assert second[0] == first[0] and second[2] == first[2]
+    assert second[1] == real((3, 16), 'port')
+
+
+def test_tree_key_pricer_prices_each_distinct_key_once():
+    """Two trees with the same canonical key, and a width change that keeps
+    every port_width, cost one port price, not three."""
+    keys = ((frozenset({0, 1}), 1), (frozenset({2, 3}), 1))
+    pricer = ab.TreeKeyPricer(keys, 'port')
+    pricer.prices({0: 20, 1: 5, 2: 20, 3: 5})
+    assert pricer.priced == 1
+    assert ab.port_width(19) == ab.port_width(20)
+    pricer.prices({0: 19, 1: 5, 2: 20, 3: 5})
+    assert pricer.priced == 1
+
+
+def test_port_floor_is_a_lower_bound_on_the_port():
+    """port_floor never exceeds the uncached port (lanes._table_blocks), and
+    _field_byte_counts counts the bytes xbar.field_key builds."""
+    import random
+    from p4model import lanes, xbar
+    rng = random.Random(31)
+    tight = 0
+    for _ in range(400):
+        key = tuple(sorted(rng.randint(1, rng.choice((8, 20, 40, 70)))
+                           for _ in range(rng.randint(1, 12))))
+        counts = [ab._field_byte_counts(w) for w in key]
+        n, nib = sum(c for c, _ in counts), sum(c for _, c in counts)
+        built = xbar.field_key(lanes.key_fields(key), {})
+        assert n == len(built) and nib == sum(b.only_one_nibble() for b in built)
+        try:
+            price = lanes._table_blocks.__wrapped__(key)
+        except Exception:
+            continue
+        floor = ab.port_floor(n, nib)
+        assert floor is not None and floor <= price, key
+        tight += floor == price
+    assert tight > 100
+    assert ab.port_floor(0, 0) == 0 and ab.port_floor(5, 0) == 1 and ab.port_floor(6, 0) == 2
+    assert ab.port_floor(66 + 60, 0) is None

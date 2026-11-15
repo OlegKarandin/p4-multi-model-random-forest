@@ -2806,3 +2806,63 @@ def test_ladder_pruned_price_survives_a_union_key_past_the_crossbar():
     assert stats['factor_after'] == max(ours)
     assert stats['total_blocks_after'] == ab.total_blocks(after, ab.tree_keys(a, b),
                                                           price='ladder_pruned')
+
+
+# --- Task 30: the run's TreeKeyPricer changes no result --------------------
+
+def _wide_pair(seed1=11, seed2=12, n=300, trees=50):
+    """Two 18-feature forests of one-feature-per-split trees: many distinct tree
+    keys, wide pooled widths (the case the pricer is for)."""
+    from sklearn.ensemble import RandomForestClassifier
+    from p4model.catalog import FEATURE_REGISTER_CATALOG
+    names = list(FEATURE_REGISTER_CATALOG)
+
+    def forest(seed, y):
+        rng = np.random.default_rng(seed)
+        X = np.clip(rng.integers(0, 60000, size=(n, len(names))), 0, INFINITE).astype(float)
+        return dt_thresholds_float_to_int(RandomForestClassifier(
+            n_estimators=trees, max_depth=3, max_features=1,
+            random_state=seed).fit(X, y)), X, y
+
+    rf1, X1, y1 = forest(seed1, np.array([c % 3 for c in range(n)]))
+    rf2, X2, y2 = forest(seed2, np.where(np.arange(n) % 2 == 0, -1, 1))
+    return rf1, X1, y1, rf2, X2, y2
+
+
+def _aligned_fingerprint(pair, price):
+    import hashlib
+    import json
+    rf1, X1, y1, rf2, X2, y2 = pair
+    stats = {}
+    a, b = ta.align_with_policy(copy.deepcopy(rf1), copy.deepcopy(rf2), X1, y1, X2, y2,
+                                align_stats=stats, price=price)
+    h = hashlib.sha256()
+    for rf in (a, b):
+        for est in rf.estimators_:
+            h.update(np.asarray(est.tree_.threshold).tobytes())
+    return h.hexdigest(), json.dumps(stats, sort_keys=True, default=str)
+
+
+@pytest.mark.parametrize('price', ['port', 'ladder_pruned'])
+@pytest.mark.parametrize('pair', ['golden', 'wide', 'wide_b'])
+def test_tree_key_pricer_alignment_equals_the_uncached_scan(price, pair, monkeypatch):
+    """align_with_policy with the run's TreeKeyPricer (Task 30) ends with the
+    thresholds and align_stats of the same run through the plain two-total scan
+    (blocks_bought_by before Task 30), on three pairs."""
+    from p4model import lanes
+    from tests.test_align_budget import _plain_bought_by
+    pairs = {'golden': _golden_alignment_pair, 'wide': _wide_pair,
+             'wide_b': lambda: _wide_pair(21, 22, trees=30)}
+    data = pairs[pair]()
+    lanes._table_blocks.cache_clear()
+    fast = _aligned_fingerprint(data, price)
+    plain_calls = []
+
+    def plain(widths, floors, feature, multiplier, price='ladder', pricer=None):
+        plain_calls.append(feature)
+        return _plain_bought_by(widths, floors, feature, multiplier, price)
+
+    monkeypatch.setattr(ta, 'blocks_bought_by', plain)
+    lanes._table_blocks.cache_clear()
+    assert _aligned_fingerprint(data, price) == fast
+    assert plain_calls, 'the plain scan was not used'

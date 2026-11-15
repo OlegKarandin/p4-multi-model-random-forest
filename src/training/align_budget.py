@@ -61,12 +61,22 @@ pinned by tests/test_resource_model_golden.py).
 
 Imports from p4gen only, so both threshold_alignment and the replay harness
 can use it without importing the mutation loop.
+
+SPEED (Task 30, 2026-11-15). Under the tree-key prices ('port',
+'ladder_pruned') feature_order's shed scans go through TreeKeyPricer, which
+keeps every tree key's price at the live widths and re-prices only the keys
+whose keyed widths changed, prices a probe as the difference on the keys that
+hold the probed feature, and skips probes whose price inputs cannot have
+changed. Same answers, exceptions included (tests/test_align_budget.py pins it
+against the plain total_blocks scan); the crossbar port itself is untouched.
 """
+import functools
+
 from p4gen.build_p4_script import INFINITE
 from p4gen.evaluation import (codeword_fields_to_bytes_from_bits,
                                   codeword_to_blocks,
                                   entries_across_trees_to_blocks)
-from p4model.lanes import table_blocks
+from p4model.lanes import layout, table_blocks
 from p4model.ranges import compiler_range_rows
 from p4model.tables import check_key_bytes
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
@@ -286,6 +296,204 @@ def range_blocks(interval_count):
              // TERNARY_MATCHING_ENTRIES_PER_BLOCK)
 
 
+_range_blocks_cached = functools.lru_cache(maxsize=4096)(range_blocks)
+
+
+@functools.lru_cache(maxsize=None)
+def _field_byte_counts(width):
+    """(crossbar bytes, one-nibble bytes) of one `width`-bit code field in the
+    pinned layout the port prices (lanes.layout; xbar.field_key's bytes: every
+    started byte of every slice, one-nibble when it carries <= 4 live bits)."""
+    n = nibbles = 0
+    for _, used in layout(width):
+        n += -(-used // 8)
+        if used - 8 * ((used - 1) // 8) <= 4:
+            nibbles += 1
+    return n, nibbles
+
+
+@functools.lru_cache(maxsize=None)
+def port_floor(nbytes, nibbles):
+    """A LOWER BOUND on the crossbar port's per-word blocks (xbar.alone_blocks)
+    of any key of `nbytes` crossbar bytes of which `nibbles` carry <= 4 live
+    bits, or None when no block count up to the stage's 12 groups admits it
+    (then the key is priced, never bounded). Task 30; used only to skip probes
+    that provably buy nothing, never as a price.
+
+    Why it is a bound. An allocation xbar finds is priced by
+    xbar.blocks_per_row = max(G, 2 * whole + half + 1), G groups touched, and
+    `whole` / `half` midbytes holding a whole / one-nibble byte. Each group
+    has 5 byte slots and each midbyte takes one byte (xbar's _free_mid places
+    one byte per midbyte), there are 6 midbytes, and a half midbyte holds a
+    one-nibble byte, so nbytes <= 5G + whole + half, half <= nibbles,
+    whole + half <= 6. With b = that allocation's blocks, b >= G and
+    b >= 2 * whole + half + 1, so (b, whole, half) satisfies the constraints
+    below and the smallest b that does is <= the port's price. The bound drops
+    every lane (container alignment) constraint, which can only lower it."""
+    if nbytes <= 0:
+        return 0
+    for b in range(1, 13):
+        best = 0
+        for whole in range(0, min(6, (b - 1) // 2) + 1):
+            half = max(0, min(nibbles, b - 1 - 2 * whole, 6 - whole))
+            best = max(best, whole + half)
+        if 5 * b + best >= nbytes:
+            return b
+    return None
+
+
+class TreeKeyPricer:
+    """Per-tree key prices for ONE alignment run under a tree-key price
+    ('port' or 'ladder_pruned'), kept across alignment steps (Task 30).
+
+    `keys` is tree_keys(...) (((features, rows), ...)). The pricer holds every
+    key's price at the widths it last saw and, on the next call, re-prices
+    only the keys holding a feature whose width changed. A key's price is a
+    function of its CANONICAL widths -- port_width of each field under the
+    port (exact: see port_width), the raw widths under the pruned ladder --
+    so every distinct canonical key is priced once per run (memo) and through
+    the same key_price as total_blocks, whose own caches (lanes.table_blocks)
+    stay in force.
+
+    bought_by is blocks_bought_by's scan, computed as a difference instead of
+    two totals: a probe changes one feature f's width, so
+    total(widths) - total(probe) = range term of f + sum over the keys holding
+    f of rows * (price now - price at the probe) -- an integer identity, every
+    other term cancels. A probe whose canonical width and range blocks equal
+    the previous probe's (or, for the first, the current width's) has the same
+    total, so it cannot be the first block-buying shed and is skipped.
+
+    Exceptions are those of the plain scan: the current prices are taken over
+    every key in `keys` order on first use (total_blocks' order, so the same
+    key raises first), a later call re-prices only keys whose widths changed
+    (an unchanged key priced once already, at these very widths), and a probe
+    prices the keys holding f in `keys` order, the order total_blocks would."""
+
+    def __init__(self, keys, price, floors=True):
+        if not prices_tree_keys(price):
+            raise ValueError('TreeKeyPricer prices tree keys; price must be one of {}, got {!r}'
+                             .format(TREE_KEY_PRICES, price))
+        self.price = price
+        self.features = [tuple(sorted(features)) for features, _ in keys]
+        self.rows = [rows for _, rows in keys]
+        self.by_feature = {}
+        for i, features in enumerate(self.features):
+            for f in features:
+                self.by_feature.setdefault(f, []).append(i)
+        self._canon = port_width if price == 'port' else int
+        # The port_floor bound is a bound on the crossbar port only.
+        self._floors = price == 'port' and floors
+        self._memo = {}
+        self._seen = None            # the widths the current prices are for
+        self._classes = [None] * len(self.features)
+        self._prices = [None] * len(self.features)
+        self._counts = [None] * len(self.features)
+        self.priced = 0              # key_price calls made (memo misses), for tests
+
+    def _key(self, canon_widths):
+        """The price of one key from its canonical widths (any order)."""
+        key = tuple(sorted(c for c in canon_widths if c > 0))
+        price = self._memo.get(key)
+        if price is None:
+            price = key_price(key, self.price)
+            self.priced += 1
+            self._memo[key] = price
+        return price
+
+    def prices(self, widths):
+        """Every key's price at `widths`, re-pricing only keys whose keyed
+        widths changed since the last call."""
+        if self._seen is None:
+            stale = range(len(self.features))
+        else:
+            seen = self._seen
+            hit = set()
+            for f, idx in self.by_feature.items():
+                if widths[f] != seen[f]:
+                    hit.update(idx)
+            stale = sorted(hit)
+        canon = self._canon
+        for i in stale:
+            classes = {f: canon(int(widths[f])) for f in self.features[i]}
+            self._prices[i] = self._key(classes.values())
+            self._classes[i] = classes
+            if self._floors:
+                counts = [_field_byte_counts(c) for c in classes.values()]
+                self._counts[i] = (sum(n for n, _ in counts), sum(b for _, b in counts))
+        self._seen = {f: widths[f] for f in self.by_feature}
+        return self._prices
+
+    def bought_by(self, widths, floors, feature):
+        """blocks_bought_by under this pricer's price (same contract)."""
+        room = widths[feature] - floors[feature]
+        if room <= 0:
+            return 0, 0
+        now = self.prices(widths)
+        canon = self._canon
+        width = widths[feature]
+        holders = self.by_feature.get(feature, ())
+        range_now = _range_blocks_cached(width + 1)
+        last = (canon(int(width)), range_now)
+        for shed in range(1, room + 1):
+            probe = width - shed
+            cls, rng = canon(int(probe)), _range_blocks_cached(probe + 1)
+            if (cls, rng) == last:
+                continue
+            last = (cls, rng)
+            bought = (self._bounded(now, holders, feature, cls, range_now - rng) if self._floors
+                      else self._exact(now, holders, feature, cls, range_now - rng))
+            if bought is not None and bought > 0:
+                return bought, shed
+        return 0, 0
+
+    def _at_probe(self, i, feature, cls):
+        classes = self._classes[i]
+        return self._key([cls if f == feature else c for f, c in classes.items()])
+
+    def _exact(self, now, holders, feature, cls, range_gain):
+        """A probe's blocks bought, every holder priced (keys order)."""
+        bought = range_gain
+        for i in holders:
+            bought += self.rows[i] * (now[i] - self._at_probe(i, feature, cls))
+        return bought
+
+    def _bounded(self, now, holders, feature, cls, range_gain):
+        """A probe's blocks bought, or None when it provably buys nothing.
+
+        port_floor bounds each holder's price at the probe from below, so
+        `bound` = range_gain + sum rows * (now - floor) is >= the real bought.
+        The holders whose floor is below their current price (the only ones
+        that can add a block) are priced one at a time, keys order, each exact
+        price replacing its floor in `bound`; as soon as `bound` <= 0 the probe
+        cannot buy, and is left. Only if it still can are the other holders
+        (now - price <= now - floor <= 0) priced, for the exact total. A holder
+        with no floor (port_floor None) sends the probe to _exact."""
+        add_n, add_nib = _field_byte_counts(cls)
+        floor = []
+        for i in holders:
+            n, nib = self._counts[i]
+            old_n, old_nib = _field_byte_counts(self._classes[i][feature])
+            f = port_floor(n - old_n + add_n, nib - old_nib + add_nib)
+            if f is None:
+                return self._exact(now, holders, feature, cls, range_gain)
+            floor.append(f)
+        bound = range_gain + sum(self.rows[i] * (now[i] - f) for i, f in zip(holders, floor))
+        if bound <= 0:
+            return None
+        exact = range_gain
+        for i, f in zip(holders, floor):
+            if now[i] > f:
+                price = self._at_probe(i, feature, cls)
+                bound -= self.rows[i] * (price - f)
+                exact += self.rows[i] * (now[i] - price)
+                if bound <= 0:
+                    return None
+        for i, f in zip(holders, floor):
+            if now[i] <= f:
+                exact += self.rows[i] * (now[i] - self._at_probe(i, feature, cls))
+        return exact
+
+
 def tree_multiplier(*forests):
     """How many blocks ONE step of the per-table block factor is worth.
 
@@ -376,7 +584,7 @@ def total_blocks(widths, multiplier, price='ladder'):
     return ranges + _factor(widths) * multiplier
 
 
-def blocks_bought_by(widths, floors, feature, multiplier, price='ladder'):
+def blocks_bought_by(widths, floors, feature, multiplier, price='ladder', pricer=None):
     """(blocks_bought, bits_spent) for the CHEAPEST block-buying shed on one
     feature, or (0, 0) when no shed within that feature's own room buys
     anything.
@@ -411,10 +619,18 @@ def blocks_bought_by(widths, floors, feature, multiplier, price='ladder'):
     2026-09-15 -- see the note at the end of this module.) Under the anchor
     the order can decide who spends the run's shared accuracy slack, which
     is feature_order's D1 caveat, not a lost block.
+
+    Under a tree-key price the scan is TreeKeyPricer.bought_by (Task 30: the
+    same answer from the keys that hold `feature` only); `pricer` is the
+    alignment run's TreeKeyPricer for `multiplier`, or None for a fresh one.
     """
     room = widths[feature] - floors[feature]
     if room <= 0:
         return 0, 0
+    if prices_tree_keys(price):
+        if pricer is None:
+            pricer = TreeKeyPricer(multiplier, price)
+        return pricer.bought_by(widths, floors, feature)
     before = total_blocks(widths, multiplier, price)
     probe = dict(widths)
     for shed in range(1, room + 1):
