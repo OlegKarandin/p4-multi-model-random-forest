@@ -92,6 +92,26 @@ def test_build_twin_writes_artifacts_and_never_costs_blocks(tmp_path):
         assert 0.0 <= twin[key] <= 1.0
 
 
+def test_build_twin_aligns_with_the_default_ladder_price(tmp_path, monkeypatch):
+    """G2 is undecided: twins keep the default price ('ladder'), so the
+    'port'/'ladder_pruned' options leave every twin byte-identical to before
+    (the aligned forests themselves are pinned by
+    test_threshold_alignment.test_ladder_price_is_byte_identical_to_before_the_option)."""
+    import inspect
+    from src.training.threshold_alignment import align_with_policy
+    assert inspect.signature(align_with_policy).parameters['price'].default == 'ladder'
+    seen = []
+
+    def spy(*args, **kw):
+        seen.append(kw.get('price', 'ladder'))
+        return align_with_policy(*args, **kw)
+    monkeypatch.setattr(align_twins, 'align_with_policy', spy)
+    ctx, source = _source(tmp_path)
+    forests = ra.load_forests(os.path.join(str(tmp_path), 'forests', source['row_id'] + '.joblib'))
+    align_twins.build_twin(ctx, source, forests, _synthetic_data())
+    assert seen == ['ladder']
+
+
 def test_build_twin_with_no_accepted_move_is_identical_and_marked(tmp_path, monkeypatch):
     def unchanged(a, d, *args, align_stats=None, **kw):
         align_stats.update(attempted=0, accepted=0, intervals_before=7, intervals_after=7)

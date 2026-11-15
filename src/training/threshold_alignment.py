@@ -5,8 +5,9 @@ from src.training.align_budget import (_factor,
                                        bits_to_reach,
                                        blocks_bought_by,
                                        pooled_interval_count,
-                                       pooled_key_bytes, total_blocks,
-                                       tree_keys, tree_multiplier)
+                                       pooled_key_bytes, prices_tree_keys,
+                                       total_blocks, tree_keys,
+                                       tree_multiplier)
 from src.training.align_targets import (LOWER_EDGE, boundary_moves,
                                         boundary_moves_to, boundary_pairs,
                                         candidate_targets,
@@ -160,8 +161,9 @@ def feature_order(intervals1, intervals2, *, multiplier, widths=None,
         align_rf_thresholds passes the BUDGET's live widths, not its entry
         copy.
     features : which features to rank. Defaults to the common set.
-    price : 'ladder' (default) or 'port' (decision 9.4); with 'port',
-        `multiplier` is align_budget.tree_keys(...).
+    price : 'ladder' (default), 'port' (decision 9.4) or 'ladder_pruned'
+        (G2 option 3); with either of the last two, `multiplier` is
+        align_budget.tree_keys(...).
     """
     if widths is None:
         widths = _pooled_widths(intervals1, intervals2)
@@ -331,8 +333,10 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
         skips the accuracy evaluation entirely (the "inf" anchor).
     price : 'ladder' (default, tables.codeword_to_blocks of the union key)
         or 'port' (decision 9.4: lanes.table_blocks of each tree's own key,
-        align_budget.tree_keys / port_price). Only the feature ORDER reads
-        the price -- acceptance is accuracy-only -- so the two can differ only
+        align_budget.tree_keys / port_price) or 'ladder_pruned' (G2 option 3:
+        the ladder of each tree's own key, align_budget.pruned_ladder_price).
+        Only the feature ORDER reads
+        the price -- acceptance is accuracy-only -- so the three can differ only
         through which feature spends the shared accuracy slack first.
 
     Returns:
@@ -453,12 +457,13 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # charges: that factor times the tree multiplier, plus every feature's range
     # table. Two names because they are two quantities; archived CSVs carry the
     # factor under the old `blocks_*` name and must never be read as totals.
-    multiplier = (tree_keys(rf1, rf2) if price == 'port'
-                  else tree_multiplier(rf1, rf2))
-    # Under 'port' the factors are per-TREE prices (align_budget.port_factor:
-    # the dearest tree key), never the union key's, which can exceed the
-    # stage's 64 crossbar bytes while every tree key fits (interim review I1).
-    keys = multiplier if price == 'port' else None
+    per_tree = prices_tree_keys(price)
+    multiplier = tree_keys(rf1, rf2) if per_tree else tree_multiplier(rf1, rf2)
+    # Under 'port' and 'ladder_pruned' the factors are per-TREE prices
+    # (align_budget.tree_factor: the dearest tree key), never the union key's,
+    # which can exceed the stage's MAX_KEY_BYTES crossbar bytes while every
+    # tree key fits (interim review I1).
+    keys = multiplier if per_tree else None
     stats['factor_before'] = _factor(pooled_widths, price, keys)
     stats['factor_floor'] = _factor(own_floor_widths, price, keys)
     stats['total_blocks_before'] = total_blocks(pooled_widths, multiplier, price)
@@ -475,9 +480,9 @@ def align_rf_thresholds(rf1, rf2, X_val1, y_val1, X_val2, y_val2,
     # number is a lower bound up to that one byte, and the cheapest bits are
     # not necessarily the least damaging ones. Reported, never enforced -- no
     # run is skipped on it.
-    # A ladder (byte-domain) bound under either price: crossbar_capacity is
+    # A ladder (byte-domain) bound under every price: crossbar_capacity is
     # the ladder's, so it is fed the ladder factor of the union key, never a
-    # port factor (interim review I1). Under 'ladder' that is factor_before.
+    # per-tree factor (interim review I1). Under 'ladder' that is factor_before.
     ladder_before = (stats['factor_before'] if price == 'ladder'
                      else _factor(pooled_widths))
     block_target = crossbar_capacity(ladder_before - 1)

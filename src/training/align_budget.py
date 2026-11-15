@@ -22,6 +22,9 @@ off by default): then every total prices each tree's OWN key with the port
 (tree_keys, port_price). G2 sample, 300 campaign_2026_11 joint-off DEV designs
 (model): x1.34 (k<=8) / x1.80 (k>=9) the alignment time, production-priced
 twin blocks equal on 297, summed blocks equal (model8/impl/g2_alignment.md).
+price='ladder_pruned' (G2 option 3, 2026-11-15, off by default) keeps the
+port path's per-tree structure but prices each tree key with the ladder
+(pruned_ladder_price); no port call.
 
 SUPERSEDED, 2026-09-14. This module used to claim range blocks were
 alignment-invariant, on the grounds that a range table holds 206 intervals per
@@ -65,17 +68,30 @@ from p4gen.evaluation import (codeword_fields_to_bytes_from_bits,
                                   entries_across_trees_to_blocks)
 from p4model.lanes import table_blocks
 from p4model.ranges import compiler_range_rows
+from p4model.tables import check_key_bytes
 from p4model.target import TERNARY_MATCHING_ENTRIES_PER_BLOCK
 
 # Decision 9.4 (2026-11-14): alignment may price keys with the crossbar port
 # (lanes.table_blocks, the production per-table price) instead of the ladder.
+# G2 option 3 (2026-11-15): 'ladder_pruned' has the port path's structure --
+# each tree's OWN key at its pooled widths, times its 512-row words, plus range
+# blocks -- but prices every key with the ladder (pruned_ladder_price).
 # 'ladder' stays the default, so nothing changes unless a caller asks.
-PRICES = ('ladder', 'port')
+PRICES = ('ladder', 'port', 'ladder_pruned')
+# The prices that charge each tree's own key (tree_keys), never the union key.
+TREE_KEY_PRICES = ('port', 'ladder_pruned')
 
 
 def _check_price(price):
     if price not in PRICES:
         raise ValueError('price must be one of {}, got {!r}'.format(PRICES, price))
+
+
+def prices_tree_keys(price):
+    """True when `price` charges each tree's own key (the multiplier is then
+    tree_keys(...)), False for the union-key ladder."""
+    _check_price(price)
+    return price in TREE_KEY_PRICES
 
 
 def port_width(width):
@@ -102,6 +118,30 @@ def port_width(width):
 def port_price(widths):
     """lanes.table_blocks of an iterable of field widths, via port_width."""
     return table_blocks(tuple(sorted(port_width(int(w)) for w in widths if w > 0)))
+
+
+def pruned_ladder_price(widths):
+    """The 'ladder_pruned' price of ONE tree key: tables.codeword_to_blocks
+    (the ladder) of an iterable of field widths, with the production key limit.
+
+    The ladder itself applies no key limit (it prices pooled keys past it, see
+    codeword_to_blocks), so this applies the same refusal the port path does,
+    tables.check_key_bytes (target.MAX_KEY_BYTES), before pricing: a tree key
+    over the limit raises CrossbarKeyTooWide exactly where port_price would.
+    The empty key (a stump) prices at the ladder's floor, as the port's does."""
+    key = tuple(sorted(int(w) for w in widths if w > 0))
+    check_key_bytes(codeword_fields_to_bytes_from_bits(key))
+    return codeword_to_blocks(key)
+
+
+def key_price(widths, price):
+    """One tree key's per-word block price under a tree-key price."""
+    if price == 'port':
+        return port_price(widths)
+    if price == 'ladder_pruned':
+        return pruned_ladder_price(widths)
+    raise ValueError('key_price prices tree keys; price must be one of {}, got {!r}'
+                     .format(TREE_KEY_PRICES, price))
 
 
 def pooled_interval_count(ranges1, ranges2):
@@ -204,26 +244,32 @@ def _factor(widths, price='ladder', keys=None):
     The dict's own key order is the generator's feature-emission order, and the
     crossbar allocator does not honour it.
 
-    price='port' (decision 9.4) never prices the union key: production keys
-    each joint tree with only its own split features, and a union key past
-    the stage's 64 crossbar bytes would raise CrossbarKeyTooWide although
-    every tree's own key fits (interim review I1). It needs `keys`
-    (tree_keys) and returns port_factor(widths, keys).
+    price='port' (decision 9.4) and price='ladder_pruned' (G2 option 3) never
+    price the union key: production keys each joint tree with only its own
+    split features, and a union key past the stage's MAX_KEY_BYTES crossbar
+    bytes would raise CrossbarKeyTooWide although every tree's own key fits
+    (interim review I1). They need `keys` (tree_keys) and return
+    tree_factor(widths, keys, price).
     """
-    _check_price(price)
-    if price == 'port':
+    if prices_tree_keys(price):
         if keys is None:
-            raise ValueError("price='port' prices tree keys: pass keys=tree_keys(...)")
-        return port_factor(widths, keys)
+            raise ValueError("price={!r} prices tree keys: pass keys=tree_keys(...)"
+                             .format(price))
+        return tree_factor(widths, keys, price)
     return codeword_to_blocks(tuple(sorted(widths.values())))
 
 
-def port_factor(widths, keys):
-    """The port path's per-table block factor: the dearest tree key's
-    port_price at these pooled widths, max over `keys` (tree_keys), or None
+def tree_factor(widths, keys, price):
+    """A tree-key price's per-table block factor: the dearest tree key's
+    key_price at these pooled widths, max over `keys` (tree_keys), or None
     when there is no tree key. Never prices the union key (see _factor)."""
-    prices = [port_price(widths[f] for f in features) for features, _ in keys]
+    prices = [key_price((widths[f] for f in features), price) for features, _ in keys]
     return max(prices) if prices else None
+
+
+def port_factor(widths, keys):
+    """tree_factor under the port (decision 9.4)."""
+    return tree_factor(widths, keys, 'port')
 
 
 def range_blocks(interval_count):
@@ -319,11 +365,13 @@ def total_blocks(widths, multiplier, price='ladder'):
     price='port' (decision 9.4): `multiplier` is then tree_keys(...) and the
     ternary term is sum over distinct tree keys of rows * port_price(that
     key's pooled widths) -- what production charges a joint tree.
+    price='ladder_pruned' (G2 option 3): the same sum with each key priced by
+    pruned_ladder_price (the ladder, plus the port path's key-limit refusal)
+    -- production's structure, the ladder's per-key rule.
     """
-    _check_price(price)
     ranges = sum(range_blocks(width + 1) for width in widths.values())
-    if price == 'port':
-        return ranges + sum(rows * port_price(widths[f] for f in features)
+    if prices_tree_keys(price):
+        return ranges + sum(rows * key_price((widths[f] for f in features), price)
                             for features, rows in multiplier)
     return ranges + _factor(widths) * multiplier
 

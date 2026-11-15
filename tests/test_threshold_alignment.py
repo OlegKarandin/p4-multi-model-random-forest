@@ -2755,3 +2755,54 @@ def test_port_price_survives_a_union_key_past_the_crossbar(monkeypatch):
     assert stats['factor_after'] == max(ours)
     assert stats['total_blocks_after'] == ab.total_blocks(after, ab.tree_keys(a, b), price='port')
     assert stats['bits_to_reach'] is not None
+
+
+def test_ladder_pruned_price_runs_and_reports_pruned_totals():
+    rf1, X1, y1, rf2, X2, y2 = _golden_alignment_pair(n=300)
+    stats = {}
+    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats,
+                                price='ladder_pruned')
+    widths = ab._pooled_widths(ta.extract_feature_intervals(a), ta.extract_feature_intervals(b))
+    keys = ab.tree_keys(a, b)
+    assert stats['total_blocks_after'] == ab.total_blocks(widths, keys, price='ladder_pruned')
+    assert stats['factor_after'] == ab._factor(widths, price='ladder_pruned', keys=keys)
+    # The pruned ladder never charges a tree more than the union ladder does.
+    assert stats['total_blocks_after'] <= ab.total_blocks(
+        widths, ab.tree_multiplier(a, b), price='ladder')
+
+
+def test_ladder_pruned_price_survives_a_union_key_past_the_crossbar():
+    """Interim review I1's case under the pruned ladder: the union key is past
+    MAX_KEY_BYTES, every tree's own key fits, alignment completes and its
+    totals are the per-tree ladder prices."""
+    from sklearn.ensemble import RandomForestClassifier
+    from p4model.catalog import FEATURE_REGISTER_CATALOG
+    from p4model.errors import CrossbarKeyTooWide
+
+    names = list(FEATURE_REGISTER_CATALOG)
+    n = 300
+
+    def forest(seed, y):
+        rng = np.random.default_rng(seed)
+        X = np.clip(rng.integers(0, 60000, size=(n, len(names))), 0, INFINITE).astype(float)
+        return dt_thresholds_float_to_int(RandomForestClassifier(
+            n_estimators=50, max_depth=3, max_features=1,
+            random_state=seed).fit(X, y)), X, y
+
+    rf1, X1, y1 = forest(11, np.array([c % 3 for c in range(n)]))
+    rf2, X2, y2 = forest(12, np.where(np.arange(n) % 2 == 0, -1, 1))
+    widths = ab._pooled_widths(ta.extract_feature_intervals(rf1),
+                               ta.extract_feature_intervals(rf2))
+    with pytest.raises(CrossbarKeyTooWide):
+        ab.pruned_ladder_price(widths.values())
+
+    stats = {}
+    a, b = ta.align_with_policy(rf1, rf2, X1, y1, X2, y2, align_stats=stats,
+                                price='ladder_pruned')
+    after = ab._pooled_widths(ta.extract_feature_intervals(a), ta.extract_feature_intervals(b))
+    ours = [ab.pruned_ladder_price(after[f] for f in
+                                   {int(x) for x in e.tree_.feature[e.tree_.children_left != -1]})
+            for rf in (a, b) for e in rf.estimators_]
+    assert stats['factor_after'] == max(ours)
+    assert stats['total_blocks_after'] == ab.total_blocks(after, ab.tree_keys(a, b),
+                                                          price='ladder_pruned')

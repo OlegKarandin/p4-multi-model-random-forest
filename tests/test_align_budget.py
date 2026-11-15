@@ -297,3 +297,73 @@ def test_port_total_prices_each_tree_key_on_its_own():
 def test_unknown_price_is_refused():
     with pytest.raises(ValueError):
         ab._factor({0: 3}, price='lane')
+
+
+# --- G2 option 3: price='ladder_pruned' (off by default) --------------------
+
+def test_pruned_ladder_differs_from_the_union_ladder_on_a_pruned_design():
+    """The union ladder charges every tree the union key (3, 9, 30) = 2
+    blocks; the pruned ladder charges the two trees keying only feature 0 the
+    ladder of (30,) = 1 block each."""
+    from p4gen.evaluation import codeword_to_blocks
+    widths = {0: 30, 1: 9, 2: 3}
+    keys = ((frozenset({0}), 2), (frozenset({0, 1, 2}), 1))
+    ranges = sum(ab.range_blocks(w + 1) for w in widths.values())
+    assert codeword_to_blocks((30,)) == 1 and codeword_to_blocks((3, 9, 30)) == 2
+    assert ab.total_blocks(widths, 3, price='ladder') == ranges + 3 * 2
+    assert ab.total_blocks(widths, keys, price='ladder_pruned') == ranges + 2 * 1 + 1 * 2
+    assert ab._factor(widths, price='ladder_pruned', keys=keys) == 2
+    assert ab._factor({0: 30}, price='ladder_pruned',
+                      keys=((frozenset({0}), 1),)) == 1
+
+
+@pytest.mark.parametrize('key', [(3, 11, 84), (27, 52), (3, 9, 30)])
+def test_pruned_ladder_equals_the_port_where_ladder_and_port_agree(key):
+    from p4gen.evaluation import codeword_to_blocks
+    from p4model.lanes import table_blocks
+    assert codeword_to_blocks(key) == table_blocks(key)
+    widths = {i: w for i, w in enumerate(key)}
+    keys = ((frozenset(widths), 3), (frozenset({0}), 1))
+    assert ab.pruned_ladder_price(reversed(key)) == ab.port_price(key)
+    assert (ab.total_blocks(widths, keys, price='ladder_pruned')
+            == ab.total_blocks(widths, keys, price='port'))
+
+
+def test_pruned_ladder_where_ladder_and_port_disagree_is_the_ladder():
+    from p4gen.evaluation import codeword_to_blocks
+    from p4model.lanes import table_blocks
+    key = (4, 19, 24, 53, 62)
+    assert codeword_to_blocks(key) == 4 and table_blocks(key) == 5
+    assert ab.pruned_ladder_price(key) == 4
+
+
+def test_pruned_ladder_refuses_an_over_limit_tree_key_like_the_port():
+    """Same refusal as the port path (tables.check_key_bytes,
+    target.MAX_KEY_BYTES = 65): 65 bytes prices, 66 raises; the union key is
+    never priced, so only an over-limit TREE key refuses."""
+    from p4model.errors import CrossbarKeyTooWide
+    from p4model.target import MAX_KEY_BYTES
+    assert MAX_KEY_BYTES == 65
+    assert ab.pruned_ladder_price([64] * 8 + [8]) >= 1          # 65 bytes
+    for price_of in (ab.pruned_ladder_price, ab.port_price):
+        with pytest.raises(CrossbarKeyTooWide):
+            price_of([64] * 8 + [9])                             # 66 bytes
+    widths = {f: 60 for f in range(9)}                           # union 72 bytes
+    fits = ((frozenset({0, 1}), 1), (frozenset({2, 3, 4}), 2))
+    assert ab.total_blocks(widths, fits, price='ladder_pruned') > 0
+    over = fits + ((frozenset(range(9)), 1),)
+    with pytest.raises(CrossbarKeyTooWide):
+        ab.total_blocks(widths, over, price='ladder_pruned')
+    with pytest.raises(CrossbarKeyTooWide):
+        ab._factor(widths, price='ladder_pruned', keys=over)
+
+
+def test_pruned_ladder_prices_a_stump_at_the_floor_and_needs_keys():
+    from p4model.lanes import table_blocks
+    assert ab.pruned_ladder_price(()) == table_blocks(()) == ab.port_price(())
+    with pytest.raises(ValueError):
+        ab._factor({0: 3}, price='ladder_pruned')
+    with pytest.raises(ValueError):
+        ab.key_price((3,), 'ladder')
+    assert ab.prices_tree_keys('ladder_pruned') and ab.prices_tree_keys('port')
+    assert not ab.prices_tree_keys('ladder')
