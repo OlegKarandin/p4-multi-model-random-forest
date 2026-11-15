@@ -58,7 +58,9 @@ def test_phv_count_joint(tmp_path):
   classes = re.findall(r"bit<\d+>\s+class_tree_\w+;", text)
   assert vals and code
   by_hand = {size: len(PHV_TEMPLATE_FIELDS[size]) for size in (8, 16, 32)}
-  by_hand[16] += len(vals) + len(scratch)
+  # C1f's Min read `+ 1`: one 16-bit container per constant (Task 33)
+  constants = re.findall(r"_action\.execute\(meta\.flow_hash\) \+ 1;", text)
+  by_hand[16] += len(vals) + len(scratch) + len(constants)
   by_hand[8] += len(classes)
   for bits, name in code:                              # each field sits in its pinned containers
     pin = re.search(r'@pa_container_size\("ingress", "ig_md\.code_%s", ([\d, ]+)\)' % name, text)
@@ -110,6 +112,21 @@ def test_phv_refusal_every_encoding(tmp_path, monkeypatch, encoding):
 def test_the_scratch_fields_are_counted_per_chain():
   program = parse_program_text(_text_with_scratch())
   assert program.scratch_fields == ("flow_current_iat", "fwd_current_iat")
+
+
+def test_each_min_read_constant_takes_a_16_bit_container():
+  """C1f (Task 34): `<f>_val = <f>_action.execute(...) + 1` -- p4c keeps the 1 in a
+  16-bit PHV container (Task 33: +1 container per Min feature), in training and in the
+  replay alike."""
+  assert phv.count(1, 0, 0, (), n_constants=2)[16] == phv.count(1, 0, 0, ())[16] + 2
+  features = {"flow_iat_min": None, "fwd_iat_min": None, "bwd_iat_max": None,
+              "flow_iat_max": None}
+  assert bps.call_site_constants(features) == ["flow_iat_min", "fwd_iat_min"]
+  assert bps.call_site_constants({"flow_iat_max": None, "min_packet_length": None}) == []
+  _, _, apply_code, _ = bps.generate_P4_registers_and_apply(features)
+  program = parse_program_text("struct metadata_t {\n\tbit<16> x_val;\n}\n" + apply_code)
+  assert program.call_constants == ("flow_iat_min_val", "fwd_iat_min_val")
+  assert parse_program_text(_text_with_scratch()).call_constants == ()
 
 
 def _text_with_scratch():

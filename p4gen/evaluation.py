@@ -9,6 +9,7 @@
 import sklearn.metrics as mt
 from p4gen.build_p4_script import (
     _reject_colliding_feature_names,
+    call_site_constants,
     code_field_container_sizes,
     iat_scratch_fields,
     plan_key_order,
@@ -510,7 +511,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
                         if len(intervals) >= 2})
     layout = packed.layout_for(packed.widths_of(own), list(feature_intervals),
                                [APP_TASK, DDOS_TASK],
-                               len(iat_scratch_fields(feature_intervals)))
+                               len(iat_scratch_fields(feature_intervals)),
+                               len(call_site_constants(feature_intervals)))
 
     position = {feature: index for index, feature in enumerate(feature_intervals)}
     ternary_entries, codeword_length = 0, 0
@@ -699,6 +701,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   raw_features = set(emitted_features)
   phv_fields = {"vals": len(raw_features),
                 "scratch": len(iat_scratch_fields(raw_features)),
+                # C1f's Min read `+ 1`: one 16-bit container per constant (Task 33)
+                "constants": len(call_site_constants(raw_features)),
                 # one class field per tree of a task with more than one tree (A2)
                 "trees": phv.class_fields([ternary_task.count(task) for task in set(ternary_task)]),
                 "code_containers": code_containers}

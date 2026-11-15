@@ -95,7 +95,7 @@ control SwitchIngress(
 	@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")
 	Hash<bit<12>>(HashAlgorithm_t.CRC32) flow_hash_calc;
 	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
-	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_last_arrival_time_reg;
+	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) flow_last_arrival_time_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) flow_iat_max_reg;
 	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_packet_length_max_reg;
 
@@ -128,9 +128,9 @@ control SwitchIngress(
 			if (meta.now_pseudo_us - value > 65535) {
 				rv = 65535;
 			} else {
-				rv = (meta.now_pseudo_us - value);
+				rv = meta.now_pseudo_us |-| value;
 			}
-			value = meta.now_pseudo_us;
+			value = meta.now_pseudo_us - 1;
 		}
 	};
 

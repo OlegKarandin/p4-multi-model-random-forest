@@ -2620,3 +2620,83 @@ def test_the_last_arrival_registers_hold_the_32_bit_clock_and_clamp_the_gap():
             % (chain, chain)) in apply_code
   assert actions.count("if (meta.now_pseudo_us - value > 65535) {") == 3
   assert actions.count("rv = 65535;") == 3
+
+
+# The register bodies of C1f + V1o exactly as Task 33 compiled them and Task 33b ran them
+# on tofino-model (results/encoding_evidence_2026_11/model8/impl/probe_first_packet/
+# live_prog_orient/prog.p4).
+_C1F_FLOW_DEPENDENCY = (
+    "\tRegisterAction<bit<32>, bit<12>, bit<32>>(flow_last_arrival_time_reg) flow_last_arrival_time_action = {\n"
+    "\t\tvoid apply(inout bit<32> value, out bit<32> rv) {\n"
+    "\t\t\tif (meta.now_pseudo_us - value > 65535) {\n"
+    "\t\t\t\trv = 65535;\n"
+    "\t\t\t} else {\n"
+    "\t\t\t\trv = meta.now_pseudo_us |-| value;\n"
+    "\t\t\t}\n"
+    "\t\t\tvalue = meta.now_pseudo_us - 1;\n"
+    "\t\t}\n"
+    "\t};\n")
+_C1F_BWD_DEPENDENCY = (
+    "\tRegisterAction<bit<32>, bit<12>, bit<32>>(bwd_last_arrival_time_reg) bwd_last_arrival_time_action = {\n"
+    "\t\tvoid apply(inout bit<32> value, out bit<32> rv) {\n"
+    "\t\t\tif (meta.fwd == 0) {\n"
+    "\t\t\t\tif (meta.now_pseudo_us - value > 65535) {\n"
+    "\t\t\t\t\trv = 65535;\n"
+    "\t\t\t\t} else {\n"
+    "\t\t\t\t\trv = meta.now_pseudo_us |-| value;\n"
+    "\t\t\t\t}\n"
+    "\t\t\t\tvalue = meta.now_pseudo_us - 1;\n"
+    "\t\t\t} else {\n"
+    "\t\t\t\trv = 0;\n"
+    "\t\t\t}\n"
+    "\t\t}\n"
+    "\t};\n")
+_C1F_FWD_MIN = (
+    "\tRegisterAction<bit<16>, bit<12>, bit<16>>(fwd_iat_min_reg) fwd_iat_min_action = {\n"
+    "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
+    "\t\t\tif (meta.fwd_current_iat != 0 && meta.fwd_current_iat <= value) {\n"
+    "\t\t\t\tvalue = meta.fwd_current_iat - 1;\n"
+    "\t\t\t}\n"
+    "\t\t\trv = value;\n"
+    "\t\t}\n"
+    "\t};\n")
+_C1F_BWD_MEAN = (
+    "\tRegisterAction<bit<16>, bit<12>, bit<16>>(bwd_iat_mean_reg) bwd_iat_mean_action = {\n"
+    "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
+    "\t\t\tif (meta.bwd_current_iat != 0) {\n"
+    "\t\t\t\tvalue = bwd_iat_mean_halve_unit.execute(value + meta.bwd_current_iat);\n"
+    "\t\t\t}\n"
+    "\t\t\trv = value;\n"
+    "\t\t}\n"
+    "\t};\n")
+_C1F_BWD_MAX = (
+    "\tRegisterAction<bit<16>, bit<12>, bit<16>>(bwd_iat_max_reg) bwd_iat_max_action = {\n"
+    "\t\tvoid apply(inout bit<16> value, out bit<16> rv) {\n"
+    "\t\t\tif (meta.fwd == 0 && meta.bwd_current_iat > value) {\n"
+    "\t\t\t\tvalue = meta.bwd_current_iat;\n"
+    "\t\t\t}\n"
+    "\t\t\trv = value;\n"
+    "\t\t}\n"
+    "\t};\n")
+
+
+def test_the_first_packet_of_a_chain_gives_no_iat():
+  """C1f (Task 34): last-arrival registers start at 0xFFFFFFFF and store now - 1, the
+  gap is saturating (first packet 0); Min skips 0, stores min - 1 and is read + 1; Mean
+  folds only a non-zero IAT; Max unchanged; the direction-owned Min / Mean carry no
+  meta.fwd test. The bodies are the compiled, live-checked probe texts verbatim."""
+  features = {"flow_iat_min": None, "fwd_iat_min": None, "bwd_iat_mean": None,
+              "bwd_iat_max": None, "flow_iat_mean": None}
+  registers, actions, apply_code, _ = bps.generate_P4_registers_and_apply(features)
+  for chain in ("flow", "fwd", "bwd"):
+    assert ("Register<bit<32>, bit<12>>(MAX_NUM_FLOWS, 32w0xFFFFFFFF) %s_last_arrival_time_reg;\n"
+            % chain) in registers
+  for name in ("flow_iat_min", "fwd_iat_min"):
+    assert "Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) %s_reg;\n" % name in registers
+    assert "meta.%s_val = %s_action.execute(meta.flow_hash) + 1;" % (name, name) in apply_code
+  for body in (_C1F_FLOW_DEPENDENCY, _C1F_BWD_DEPENDENCY, _C1F_FWD_MIN, _C1F_BWD_MEAN,
+               _C1F_BWD_MAX):
+    assert body in actions, body.splitlines()[0]
+  assert "if (meta.flow_current_iat != 0) {\n" in actions        # the ungated Mean guard
+  # no other call site carries a suffix
+  assert len(re.findall(r"\) \+ 1;", apply_code)) == 2

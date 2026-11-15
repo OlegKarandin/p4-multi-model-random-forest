@@ -49,7 +49,9 @@ class Program:
 
     scratch_fields / class_fields: the declared IAT scratch fields
     (`<chain>_current_iat`) and `class_tree_<task>_<i>` fields, which only the PHV
-    count reads (p4model.phv.from_program).
+    count reads (p4model.phv.from_program). call_constants: the fields assigned
+    `<register action>.execute(meta.flow_hash) + <constant>` (C1f's Min read, one
+    16-bit p4c container each), likewise only for the PHV count.
 
     The rest is what program_checks.check_program reads (decision 8.2):
     pragmas ((pin, field, sizes) per `@pa_<pin>("ingress", "ig_md.<field>", ...)`
@@ -73,6 +75,7 @@ class Program:
     action_writes: dict = field(default_factory=dict)
     scratch_fields: tuple = ()
     class_fields: tuple = ()
+    call_constants: tuple = ()
     pragmas: tuple = ()
     declared: dict = field(default_factory=dict)
     exact_keys: dict = field(default_factory=dict)
@@ -218,6 +221,11 @@ _CODE_CONTAINERS = re.compile(
 # fields a program declares: one PHV container each (p4model.phv).
 _SCRATCH_FIELD = re.compile(r'^\s*bit<\d+>\s+(\w+_current_iat)\s*;', re.M)
 _CLASS_FIELD = re.compile(r'^\s*bit<\d+>\s+(class_tree_\w+)\s*;', re.M)
+# A register call site that adds a constant (build_p4_script._CALL_SITE_SUFFIX, C1f's
+# Min read `+ 1`): p4c holds the constant in a 16-bit container of its own (p4model.phv).
+_CALL_CONSTANT = re.compile(
+    r'^\s*meta\.(\w+)\s*=\s*(?:\(bit<\d+>\)\s*)?\w+_action\.execute\(meta\.flow_hash\)'
+    r'\s*[-+]\s*\d+\s*;', re.M)
 
 # A table's @stage(n) line. Per-tree programs generated under spec 2026-11-11
 # Sec 4.3 (heldout runs up to heldout8, before the crossbar port of spec
@@ -324,6 +332,7 @@ def parse_program_text(text):
                    action_writes=action_writes(text),
                    scratch_fields=tuple(_SCRATCH_FIELD.findall(text)),
                    class_fields=tuple(_CLASS_FIELD.findall(text)),
+                   call_constants=tuple(_CALL_CONSTANT.findall(text)),
                    pragmas=_parse_pragmas(text),
                    declared=_parse_declared(text),
                    exact_keys=_parse_exact_keys(text),

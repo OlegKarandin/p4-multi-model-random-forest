@@ -868,6 +868,12 @@ def _without_direction_test(lines):
   return out
 
 
+# C1f (Task 34): an IAT Mean / Min body skips an IAT of 0, and a direction-owned
+# chain's dependency register returns 0 in the other direction, so these kinds need
+# no meta.fwd test: their direction-read body IS the literal body.
+_DIRECTION_FREE_KINDS = {"mathunit_ewma", "running_min_iat"}
+
+
 @pytest.mark.parametrize("body_kind", sorted(bps._REGISTER_ACTION_BODIES))
 def test_direction_read_template_updates_as_the_literal_body(body_kind):
   literal = _normalize(bps._REGISTER_ACTION_BODIES[body_kind].format(width=16, name="x",
@@ -876,6 +882,9 @@ def test_direction_read_template_updates_as_the_literal_body(body_kind):
     template = _normalize(bps._DIRECTION_READ_BODIES[body_kind].format(
         width=16, name="x", owner=owner, iat="x_iat"))
     assert template[0] == literal[0]  # the apply(...) signature
+    if body_kind in _DIRECTION_FREE_KINDS:
+      assert template == literal and not re.search(r"\bmeta\.fwd\b", "\n".join(template)), body_kind
+      continue
     assert sum("meta.fwd == %d" % owner in line for line in template) == 1
     assert "meta.fwd == %d" % (1 - owner) not in "\n".join(template)
     assert _without_direction_test(template) == literal, (body_kind, owner)
@@ -885,11 +894,12 @@ def test_direction_owned_bodies_test_their_own_direction():
   _, actions, _, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
   for name, (gate, body_kind) in _register_gates().items():
     body = _extract_action_body(actions, " " + name + "_action")
-    if gate is None:
+    if gate is None or body_kind in _DIRECTION_FREE_KINDS:
+      chain = name.split("_")[0] if body_kind in _DIRECTION_FREE_KINDS else "flow"
       assert _normalize(body)[1:-1] == _normalize(
           bps._REGISTER_ACTION_BODIES[body_kind].format(
-              width=16, name=name, iat="flow_current_iat"))[1:-1], name
-      assert "meta.fwd" not in body, name
+              width=16, name=name, iat=chain + "_current_iat"))[1:-1], name
+      assert not re.search(r"\bmeta\.fwd\b", body), name
     elif gate == "fwd":
       assert "meta.fwd == 1" in body and "meta.fwd == 0" not in body, name
     else:

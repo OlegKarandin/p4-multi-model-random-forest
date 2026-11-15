@@ -12,6 +12,11 @@ ONE counting function, `count`, fed by two thin adapters: `from_pool` (the pool
     build_p4_script.iat_field_name) -- this program's own fields, each pinned to
     one 16-bit container by the generator since gate G3 (2026-11-15:
     @pa_container_size(<chain>_current_iat, 16), which program_checks requires);
+  * one 16-bit container per call-site constant (`n_constants`: C1f's Min read
+    `<f>_val = <f>_action.execute(...) + 1`, build_p4_script.call_site_constants):
+    p4c keeps the constant 1 in a PHV container that a hidden stage-0 `$precompute`
+    table sets (Task 33, prog.bfa `add H3, <min salu>, H4`; +1 p4c container per
+    Min feature, 3 Min features +3);
   * one 8-bit container per `class_tree_<task>_<i>` field (a task with one tree
     has none since review A2: class_fields);
   * each code field's pinned containers: lanes.container_sizes for joint /
@@ -21,7 +26,9 @@ ONE counting function, `count`, fed by two thin adapters: `from_pool` (the pool
 The budgets are the ingress counts (target.PHV_INGRESS_CONTAINERS); the template
 counts were measured for decision 6c in Task 31 on the 160 Task 17b base designs
 compiled with the Task 31 generator (target.py has the evidence). Nothing is fitted
-here."""
+here. NOT counted yet: the 32-bit clock of V1o (Task 34; p4c splits now_pseudo_us
+over B + H + H, +1..+3 containers on Task 29's 3 designs, not one fixed shape), left
+to the template re-measure (target.PHV_TEMPLATE_FIELDS)."""
 from p4model import lanes
 from p4model.errors import PhvContainersExhausted
 from p4model.target import PHV_INGRESS_CONTAINERS, PHV_TEMPLATE_FIELDS
@@ -30,12 +37,13 @@ SIZES = (8, 16, 32)
 _CODE = 'code_'
 
 
-def count(n_vals, n_scratch, n_trees, code_containers):
-  """{8: n, 16: n, 32: n}: containers the program takes. n_vals value fields and
-  n_scratch IAT scratch fields (16 bits each), n_trees class fields (8 bits each),
-  and `code_containers`, one tuple of container sizes per code field."""
+def count(n_vals, n_scratch, n_trees, code_containers, n_constants=0):
+  """{8: n, 16: n, 32: n}: containers the program takes. n_vals value fields,
+  n_scratch IAT scratch fields and n_constants call-site constants (16 bits each),
+  n_trees class fields (8 bits each), and `code_containers`, one tuple of container
+  sizes per code field."""
   used = {size: len(PHV_TEMPLATE_FIELDS[size]) for size in SIZES}
-  used[16] += n_vals + n_scratch
+  used[16] += n_vals + n_scratch + n_constants
   used[8] += n_trees
   for containers in code_containers:
     for size in containers:
@@ -50,25 +58,28 @@ def class_fields(tree_counts):
   return sum(n for n in tree_counts if n > 1)
 
 
-def budgets(n_vals, n_scratch, n_trees):
+def budgets(n_vals, n_scratch, n_trees, n_constants=0):
   """Containers left for code fields, per size, once the program's own fields
   (everything but the code fields) are counted."""
-  own = count(n_vals, n_scratch, n_trees, ())
+  own = count(n_vals, n_scratch, n_trees, (), n_constants)
   return {size: PHV_INGRESS_CONTAINERS[size] - own[size] for size in SIZES}
 
 
 def from_pool(pool):
-  """`count` over the pool's "phv_fields" (evaluation._pool_inputs)."""
+  """`count` over the pool's "phv_fields" (evaluation._pool_inputs); a pool built
+  before C1f has no "constants" (0)."""
   fields = pool['phv_fields']
-  return count(fields['vals'], fields['scratch'], fields['trees'], fields['code_containers'])
+  return count(fields['vals'], fields['scratch'], fields['trees'], fields['code_containers'],
+               fields.get('constants', 0))
 
 
 def from_program(program):
   """`count` over a parsed generated program (p4_replay.Program): its value fields
-  and class fields by name in the declarations, its IAT scratch fields, and each
-  code field's pin (Program.containers for a packed field, Program.code_containers
-  for any other); a code field with no pin -- one no tree keys -- takes the
-  containers the width rule would pin it to."""
+  and class fields by name in the declarations, its IAT scratch fields, its
+  call-site constants (Program.call_constants), and each code field's pin
+  (Program.containers for a packed field, Program.code_containers for any other); a
+  code field with no pin -- one no tree keys -- takes the containers the width rule
+  would pin it to."""
   code = []
   for name, bits in program.bits.items():
     if not name.startswith(_CODE):
@@ -76,7 +87,8 @@ def from_program(program):
     pin = program.containers.get(name) or program.code_containers.get(name)
     code.append(tuple(pin) if pin else tuple(lanes.container_sizes(int(bits), lanes.layout)))
   vals = sum(1 for name in program.bits if name.endswith('_val') and not name.startswith(_CODE))
-  return count(vals, len(program.scratch_fields), len(program.class_fields), code)
+  return count(vals, len(program.scratch_fields), len(program.class_fields), code,
+               len(getattr(program, 'call_constants', ())))
 
 
 def containers_used(source):

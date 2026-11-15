@@ -1018,7 +1018,8 @@ def per_tree_layout(table_plan, tree_intervals, tasks):
   its action would have no field to write.'''
   layout = packed.layout_for(packed.widths_of(tree_intervals), list(table_plan),
                              [task.name for task in reversed(list(tasks))],
-                             len(iat_scratch_fields(list(table_plan))))
+                             len(iat_scratch_fields(list(table_plan))),
+                             len(call_site_constants(list(table_plan))))
   uncoded = [feature for feature in table_plan if feature not in layout.containers]
   if uncoded:
     raise ValueError("no tree has a code on {}: the tasks' intervals hold thresholds "
@@ -2439,14 +2440,34 @@ _REGISTER_ACTION_BODIES = {
   #     !cmplo, hi, phv_lo, lo`), PHV +1..+3; the brief's V1 (rv bit<16>, cast inside the
   #     RegisterAction) is a p4c internal error 3/3. The live tofino-model check (Task 33b,
   #     impl/probe_first_packet.md) read a 100 ms gap as 65535, not wrapped.
+  # First packet (C1f, Task 34; user decision 2026-11-15): "an IAT of 0 means no IAT".
+  #   WHAT: the register starts at 0xFFFFFFFF (_REGISTER_INITIAL_VALUES) and stores
+  #     now - 1; the gap is the SATURATING `now |-| value` inside the clamp. A chain's
+  #     first packet (of the flow, or of its direction) then gives 0, and a real gap of g
+  #     ticks gives min(g + 1, 65535); the control plane moves every IAT threshold up one
+  #     tick to match (iat_ticks).
+  #   WHY: with V1o alone the first packet measured its gap from time 0, so it read 65535
+  #     and every *IAT.Max feature became 65535 (emulated app k>=9 0.6954 vs software
+  #     0.7263). C1f equals CICFlowMeter's Max/Min/Mean semantics including "no IAT -> 0"
+  #     (Mean still an EWMA): emulated on 200 DEV designs = the ideal switch 200/200 (app
+  #     0.7327 / 0.7263, ddos 0.9602 / 0.9771 at k<=8 / k>=9).
+  #   EVIDENCE: Task 33 (impl/probe_first_packet.md): exactly this body compiled on
+  #     joint-off_M025_s06_k17 (all three chains) at 9 / 22 = V1o, every register in
+  #     its stage; prog.bfa `grt.u lo, phv_lo, -lo, -65535` / `alu_a cmplo, hi, 65535` /
+  #     `ssubu !cmplo, hi, phv_lo, lo` / `add lo, phv_lo, 4294967295` / `output alu_hi`.
+  #     The compare is exact (34-bit), not modulo 2^32 as the P4 text reads, which is why
+  #     the first packet gives 0: confirmed live on tofino-model (Task 33b: every chain's
+  #     first packet 0, later packets min(gap + 1, 65535), every non-Mean register exact
+  #     against an emulation of prog.bfa). A first-packet test by compare (C2, sentinel
+  #     65535 + `value == 0`) needs 3 compare units on a direction-owned chain: refused.
   "iat_delta": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.now_pseudo_us - value > 65535) {{\n"
       "\t\t\t\trv = 65535;\n"
       "\t\t\t}} else {{\n"
-      "\t\t\t\trv = (meta.now_pseudo_us - value);\n"
+      "\t\t\t\trv = meta.now_pseudo_us |-| value;\n"
       "\t\t\t}}\n"
-      "\t\t\tvalue = meta.now_pseudo_us;\n"
+      "\t\t\tvalue = meta.now_pseudo_us - 1;\n"
       "\t\t}}\n"
   ),
   "running_max_iat": (
@@ -2474,9 +2495,21 @@ _REGISTER_ACTION_BODIES = {
   # division of a sum, in a single register touch. References
   # `{name}_halve_unit`, a MathUnit<> instance that _EXTRA_ACTION_DECLARATIONS
   # (below) causes to be declared immediately before this RegisterAction.
+  #
+  # C1f (Task 34): the update is guarded by `meta.{iat} != 0`, so a chain's first
+  # packet (IAT 0 = no IAT, see "iat_delta") is not folded in. Only this guard
+  # changed: the Mean body itself is NOT fixed here (a separate decision). Known
+  # defect, pre-existing: p4c compiles `halve.execute(value + x)` as `value +
+  # math(x)` (Task 33b, prog.bfa `add cmplo, lo, lo, math_table(phv_lo)`), a running
+  # sum of halves mod 2^16, not this EWMA; program_checks accepts this one form for
+  # now (_PENDING_MEAN_FORM). Evidence for the guard: Task 33's C1f compile
+  # (`neq lo, phv_lo` / `add cmplo, ...`, 1 compare unit, no stage or block cost) and
+  # its live check (Task 33b: a chain's first packet leaves its Mean unchanged).
   "mathunit_ewma": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tvalue = {name}_halve_unit.execute(value + meta.{iat});\n"
+      "\t\t\tif (meta.{iat} != 0) {{\n"
+      "\t\t\t\tvalue = {name}_halve_unit.execute(value + meta.{iat});\n"
+      "\t\t\t}}\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
@@ -2506,10 +2539,24 @@ _REGISTER_ACTION_BODIES = {
   # p4/tofino_spike/tna_m3_min_registers_spike.p4 with the real p4c
   # (0 errors) -- design (b) (a first-packet `value == 0` branch) was not
   # needed. Bodies transcribed verbatim from that compile.
+  #
+  # running_min_iat, C1f (Task 34): skips an IAT of 0 (no IAT, see "iat_delta") and
+  # stores min - 1, so the register's 65535 start means "no IAT yet"; the call site
+  # reads it `+ 1` (_CALL_SITE_SUFFIX), which wraps 65535 to 0 in bit<16>:
+  # CICFlowMeter's Min for a chain without an IAT is 0. Without the read-out fix (C1s)
+  # the emulated ddos accuracy dropped up to 11 points on one design. The compare is
+  # `iat <= value`, never `iat - 1 < value`: p4c compiled the latter (Task 33's C1)
+  # to `lss.u hi, phv_lo, 65535, -lo`, folding -1 into +65535 in an exact 34-bit
+  # compare that is never true (program_checks refuses that form, salu_negative_
+  # constant). The +1 cannot be inside the RegisterAction (C1r: "Incompatible outputs
+  # in RegisterAction ... phv and alu_hi", refused 3/3). Evidence: Task 33's C1f
+  # compile (`neq lo, phv_lo` / `leq.u hi, phv_lo, -lo` / `add (cmplo & cmphi), lo,
+  # phv_lo, 65535`, 2 compare units; 9 / 22 = V1o) and the live check (Task 33b: flow
+  # Min register = min gap, exact).
   "running_min_iat": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tif (meta.{iat} < value) {{\n"
-      "\t\t\t\tvalue = meta.{iat};\n"
+      "\t\t\tif (meta.{iat} != 0 && meta.{iat} <= value) {{\n"
+      "\t\t\t\tvalue = meta.{iat} - 1;\n"
       "\t\t\t}}\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
@@ -2538,17 +2585,19 @@ _REGISTER_ACTION_BODIES = {
 # probe_7_1.md): p4c accepts every template; each costs one more SALU
 # instruction (the meta.fwd compare) and no stage.
 _DIRECTION_READ_BODIES = {
-  # V1o's clamp (see _REGISTER_ACTION_BODIES["iat_delta"]) inside the owner test: two
-  # compare units, Tofino-1's limit (Task 29: compiled 3/3).
+  # V1o's clamp and C1f's first-packet rule (see _REGISTER_ACTION_BODIES["iat_delta"])
+  # inside the owner test: two compare units, Tofino-1's limit (Task 29: compiled 3/3;
+  # Task 33: C1f compiled, `equ lo, phv_hi(0..7)` + the clamp predicated on cmplo).
+  # The read direction returns 0, which C1f's value registers read as "no IAT".
   "iat_delta": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.fwd == {owner}) {{\n"
       "\t\t\t\tif (meta.now_pseudo_us - value > 65535) {{\n"
       "\t\t\t\t\trv = 65535;\n"
       "\t\t\t\t}} else {{\n"
-      "\t\t\t\t\trv = (meta.now_pseudo_us - value);\n"
+      "\t\t\t\t\trv = meta.now_pseudo_us |-| value;\n"
       "\t\t\t\t}}\n"
-      "\t\t\t\tvalue = meta.now_pseudo_us;\n"
+      "\t\t\t\tvalue = meta.now_pseudo_us - 1;\n"
       "\t\t\t}} else {{\n"
       "\t\t\t\trv = 0;\n"
       "\t\t\t}}\n"
@@ -2570,14 +2619,13 @@ _DIRECTION_READ_BODIES = {
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
-  "mathunit_ewma": (
-      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tif (meta.fwd == {owner}) {{\n"
-      "\t\t\t\tvalue = {name}_halve_unit.execute(value + meta.{iat});\n"
-      "\t\t\t}}\n"
-      "\t\t\trv = value;\n"
-      "\t\t}}\n"
-  ),
+  # C1f (Task 34): a direction-owned IAT Mean or Min needs no meta.fwd test. Its
+  # chain's dependency register returns 0 in the other direction (iat_delta above),
+  # and the literal body skips an IAT of 0 already, so the literal body is the
+  # direction-read body. Same compare-unit count as before (Mean 1, Min 2); evidence:
+  # Task 33's C1f compile and live check (Task 33b: each direction's chain unmoved by
+  # the other direction's packets).
+  "mathunit_ewma": _REGISTER_ACTION_BODIES["mathunit_ewma"],
   "mathunit_ewma_packet_length": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.fwd == {owner}) {{\n"
@@ -2586,14 +2634,7 @@ _DIRECTION_READ_BODIES = {
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
-  "running_min_iat": (
-      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tif (meta.fwd == {owner} && meta.{iat} < value) {{\n"
-      "\t\t\t\tvalue = meta.{iat};\n"
-      "\t\t\t}}\n"
-      "\t\t\trv = value;\n"
-      "\t\t}}\n"
-  ),
+  "running_min_iat": _REGISTER_ACTION_BODIES["running_min_iat"],     # C1f, as mathunit_ewma
   "running_min_packet_length": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.fwd == {owner} && hdr.ipv4.total_len < value) {{\n"
@@ -2614,8 +2655,14 @@ _DIRECTION_OWNER = {"fwd": 1, "bwd": 0}
 #     its low half, which the clamp keeps <= 65535. The cast must sit HERE: inside the
 #     RegisterAction (rv bit<16>) p4c fails with an internal compiler error 3/3 ("input
 #     now_pseudo_us[15:0] ... cannot be found on the hash input"; Task 29, V1).
+#   running_min_iat, suffix ` + 1`: C1f (Task 34, see _REGISTER_ACTION_BODIES
+#     ["running_min_iat"]): the register holds min - 1 (65535 = no IAT yet), so the
+#     feature reads value + 1, 0 for a chain without an IAT. p4c keeps the constant 1 in
+#     a PHV container set by a hidden stage-0 `$precompute` table (Task 33, prog.bfa
+#     `add H3, <min salu>, H4`): one 16-bit container per Min feature, counted by
+#     p4model.phv (MIN_READ_CONSTANT).
 _CALL_SITE_PREFIX = {"iat_delta": "(bit<16>) "}
-_CALL_SITE_SUFFIX = {}
+_CALL_SITE_SUFFIX = {"running_min_iat": " + 1"}
 
 # Register-action body kinds that require an extra hardware-primitive
 # declaration (e.g. a MathUnit<> instance) emitted immediately before their
@@ -2631,10 +2678,21 @@ _EXTRA_ACTION_DECLARATIONS = {
 # so these start at INFINITE (65535 -- the same sentinel
 # get_feature_intervals_from_thresholds uses) via _register_declaration's
 # optional initial_value, using TNA's Register<T,I> two-argument constructor.
+# A last-arrival register (iat_delta) starts at all ones of its width
+# (32w0xFFFFFFFF for the 32-bit clock): C1f, see _REGISTER_ACTION_BODIES
+# ["iat_delta"] -- the saturating gap of a chain's first packet is then 0. Since C1f
+# a running_min_iat register's 65535 means "no IAT yet" (it stores min - 1).
 _REGISTER_INITIAL_VALUES = {
     "running_min_iat": INFINITE,
     "running_min_packet_length": INFINITE,
+    "iat_delta": lambda width: "%dw0x%X" % (width, (1 << width) - 1),
 }
+
+
+def _register_initial_value(body_kind, width):
+  """The Register's initial value for one body kind (None: TNA's default 0)."""
+  value = _REGISTER_INITIAL_VALUES.get(body_kind)
+  return value(width) if callable(value) else value
 
 
 # Decisions 1a / 7.1 option B follow-up (controller ruling 2026-11-14): each
@@ -2667,6 +2725,20 @@ def iat_scratch_fields(feature_intervals, catalog=None):
       if reg["role"] == "dependency" and iat_field_name(reg["name"]) not in fields:
         fields.append(iat_field_name(reg["name"]))
   return fields
+
+
+def call_site_constants(feature_intervals, catalog=None):
+  """The registers, first-seen order, whose `.execute()` call site adds a constant
+  (_CALL_SITE_SUFFIX: C1f's Min read `+ 1`) for these features. p4c keeps each such
+  constant in a 16-bit PHV container of its own (Task 33), which p4model.phv counts."""
+  if catalog is None:
+    catalog = FEATURE_REGISTER_CATALOG
+  names = []
+  for feature in (name.lower() for name in feature_intervals):
+    for reg in catalog.get(feature, {}).get("registers", ()):
+      if reg["body"] in _CALL_SITE_SUFFIX and reg["name"] not in names:
+        names.append(reg["name"])
+  return names
 
 
 def uses_timestamp(feature_intervals, catalog=None):
@@ -3012,7 +3084,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       "\tRegister<bit<32>, bit<{index}>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;\n"
   ).format(index=FLOW_INDEX_BITS)
   for name in register_order:
-    initial_value = _REGISTER_INITIAL_VALUES.get(register_info[name]["body"])
+    initial_value = _register_initial_value(register_info[name]["body"], register_info[name]["width"])
     registers_code += _register_declaration(name, register_info[name]["width"], initial_value=initial_value)
 
   # ---- /* REGISTER_ACTIONS */ ----
