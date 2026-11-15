@@ -22,15 +22,17 @@ the blocks; a program that still carries them is refused by the replay
 (program_checks.check_program, from p4_replay.model_breakdown;
 p4_replay.replay_plans raises for one as well).
 
-Every per-flow register is indexed by meta.flow_hash, so `FLOW_HASH_LEVEL`
-(defined in program.py) is the earliest stage any RegisterAction can run --
-three stages of metadata-init/hash-precompute/hash ahead of it, measured
-across the real compiles this project has calibrated against."""
+Every per-flow register is indexed by meta.flow_hash, so
+`program.FLOW_HASH_LEVEL` is the earliest stage any RegisterAction can run --
+one stage of hash ahead of it since the generator's hash rewrite (review A1;
+program.py has the evidence). Read through the module, not imported by value,
+so program.py is the one place it is set."""
 import collections
 
+from p4model import program
 from p4model.catalog import FEATURE_REGISTER_CATALOG
 from p4model.names import normalise_feature_name
-from p4model.program import FLOW_HASH_LEVEL, ORIENTATION_REGISTER
+from p4model.program import ORIENTATION_REGISTER
 from p4model.target import METER_ALUS_PER_STAGE
 
 
@@ -38,7 +40,7 @@ def feature_readiness_level(feature_name, catalog=None):
   """Earliest pipeline stage at which this feature's `_val` field -- and so
   its range-matching table -- can possibly be placed.
 
-    level = FLOW_HASH_LEVEL
+    level = program.FLOW_HASH_LEVEL
           + 1 if the feature is fwd- or bwd-owned (flow_orientation_action has
             to resolve meta.fwd before a register body that tests it can run,
             regardless of which direction it tests)
@@ -68,10 +70,10 @@ def feature_readiness_level(feature_name, catalog=None):
 
   entry = catalog.get(normalise_feature_name(feature_name))
   if entry is None:
-    return FLOW_HASH_LEVEL
+    return program.FLOW_HASH_LEVEL
 
   gate_cost = 1 if entry.get("gated_by") in ("fwd", "bwd") else 0
-  return FLOW_HASH_LEVEL + gate_cost + len(entry["registers"])
+  return program.FLOW_HASH_LEVEL + gate_cost + len(entry["registers"])
 
 
 def _register_chains(features, catalog):
@@ -201,7 +203,7 @@ def register_stage_schedule(features, catalog=None,
     # generate_P4_registers_and_apply would emit unreachable P4 for that, but
     # this function must not hang while a caller is merely pricing it.
     if parent is None or name in seen:
-      return FLOW_HASH_LEVEL
+      return program.FLOW_HASH_LEVEL
     return level_of(parent, seen + (name,)) + 1
 
   levels = {name: level_of(name) for name in predecessor}

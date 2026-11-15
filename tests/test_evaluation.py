@@ -826,8 +826,10 @@ _PRE_TASK_SINGLE_APP_TERNARY_SPECS = [(1, 4), (1, 4)]
 # (2026-09-05, calibrated against 19 real compiles). `stages` and `blocks` are
 # unchanged, which is the point of keeping this pin: the crossbar key-sharing
 # fix landed in the same change and must not have moved either of them on a
-# fixture whose tables all key on their own fields.
-_PRE_TASK_MULTI_JOINT = (2, 8, 6)                  # stages, blocks, stage_depth
+# fixture whose tables all key on their own fields. And 6 -> 4 when the hash
+# prologue went from 3 stages to 1 (review A1, 2026-11-15): stage_depth is
+# FLOW_HASH_LEVEL + 3 on both.
+_PRE_TASK_MULTI_JOINT = (2, 8, 4)                  # stages, blocks, stage_depth
 # disjoint's blocks went 11 -> 13 on 2026-09-06, when StagePlan.blocks began
 # reporting the charged total rather than the naive per-table sum, and back to
 # 11 on 2026-09-07, when the charge itself was replaced. The old rule charged
@@ -841,7 +843,7 @@ _PRE_TASK_MULTI_JOINT = (2, 8, 6)                  # stages, blocks, stage_depth
 # reported too. See tests/test_tcam_block_ledger.py for the rule's measurement set.
 # `stages` and `stage_depth` were unaffected throughout: the charge moves a
 # total, not a placement.
-_PRE_TASK_MULTI_DISJOINT = (2, 11, 6)
+_PRE_TASK_MULTI_DISJOINT = (2, 11, 4)
 
 
 def test_single_model_memory_evaluation_default_is_unchanged_by_discount_wiring():
@@ -1015,19 +1017,21 @@ def test_range_matching_resource_usage_default_width_is_the_project_16_bit():
 
 
 def test_feature_readiness_level_counts_hash_gating_and_chain_depth():
-    # FLOW_HASH_LEVEL is 3, not 1: p4c spends three real stages before any
-    # register can run (metadata init, hash $precompute, hash). These four
-    # levels are M2's, and 5/5/5/6 is now literally where the compiler put
-    # M2's four range tables -- see the section comment above.
-    # ungated, 2-deep chain (last_arrival_time -> max): 3 + 0 + 2
-    assert ev.feature_readiness_level("flow_iat_max") == 5
-    # ungated, 2-deep chain (shared last_arrival_time -> mean): 3 + 0 + 2
-    assert ev.feature_readiness_level("flow_iat_mean") == 5
-    # fwd-gated, 1-deep chain: 3 + 1 + 1
-    assert ev.feature_readiness_level("fwd_packet_length_max") == 5
-    # fwd-gated, 2-deep chain: 3 + 1 + 2 -- the deepest, and the one the real
+    # FLOW_HASH_LEVEL stages of hash before any register can run (3 when M2
+    # was measured: the XOR of the hash inputs, hash $precompute, `& 0xFFF`;
+    # 1 since the symmetric 12-bit hash, review A1). These four levels are
+    # M2's, and H+2/H+2/H+2/H+3 is where the compiler put M2's four range
+    # tables -- see the section comment above.
+    H = ev.FLOW_HASH_LEVEL
+    # ungated, 2-deep chain (last_arrival_time -> max): H + 0 + 2
+    assert ev.feature_readiness_level("flow_iat_max") == H + 2
+    # ungated, 2-deep chain (shared last_arrival_time -> mean): H + 0 + 2
+    assert ev.feature_readiness_level("flow_iat_mean") == H + 2
+    # fwd-gated, 1-deep chain: H + 1 + 1
+    assert ev.feature_readiness_level("fwd_packet_length_max") == H + 2
+    # fwd-gated, 2-deep chain: H + 1 + 2 -- the deepest, and the one the real
     # compiler pushed into a stage of its own
-    assert ev.feature_readiness_level("fwd_iat_max") == 6
+    assert ev.feature_readiness_level("fwd_iat_max") == H + 3
 
 
 def test_feature_readiness_level_bwd_gated_costs_same_as_fwd_gated():
@@ -1045,15 +1049,17 @@ def test_feature_readiness_level_bwd_gated_costs_same_as_fwd_gated():
             "gated_by": "bwd",
         },
     }
-    # hash + 1 gate + 1-deep chain: 3 + 1 + 1
-    assert ev.feature_readiness_level("bwd_synthetic_feature", catalog=synthetic_catalog) == 5
+    # hash + 1 gate + 1-deep chain: H + 1 + 1
+    assert (ev.feature_readiness_level("bwd_synthetic_feature", catalog=synthetic_catalog)
+            == ev.FLOW_HASH_LEVEL + 2)
 
 
 def test_feature_readiness_level_unknown_feature_is_ready_after_the_hash():
     # A feature with no catalog entry gets no registers emitted at all, so
-    # nothing gates its table beyond the flow hash itself -- which is three
-    # real stages (FLOW_HASH_LEVEL), not one.
-    assert ev.feature_readiness_level("Not_A_Catalog_Feature") == 3
+    # nothing gates its table beyond the flow hash itself (FLOW_HASH_LEVEL
+    # stages: 1 since the symmetric 12-bit hash, review A1; 3 before).
+    assert ev.FLOW_HASH_LEVEL == 1
+    assert ev.feature_readiness_level("Not_A_Catalog_Feature") == ev.FLOW_HASH_LEVEL
 
 
 def test_readiness_levels_follow_feature_intervals_order():
@@ -1065,7 +1071,8 @@ def test_readiness_levels_follow_feature_intervals_order():
         "Not_A_Catalog_Feature": [(0, 5)],
     }
 
-    assert ev.readiness_levels_for(feature_intervals) == [6, 5, 3]
+    H = ev.FLOW_HASH_LEVEL
+    assert ev.readiness_levels_for(feature_intervals) == [H + 3, H + 2, H]
 
 
 def test_feature_readiness_level_resolves_dotted_dataset_names():
@@ -1074,10 +1081,11 @@ def test_feature_readiness_level_resolves_dotted_dataset_names():
     every real feature name missed the catalog and fell back to
     FLOW_HASH_LEVEL -- which left the register-dependency model in
     crossbar_stages_needed inert while `stages` was still being reported."""
-    assert ev.feature_readiness_level("Flow.IAT.Max") == 5
-    assert ev.feature_readiness_level("Flow.IAT.Mean") == 5
-    assert ev.feature_readiness_level("Fwd.Packet.Length.Max") == 5
-    assert ev.feature_readiness_level("Fwd.IAT.Max") == 6
+    H = ev.FLOW_HASH_LEVEL
+    assert ev.feature_readiness_level("Flow.IAT.Max") == H + 2
+    assert ev.feature_readiness_level("Flow.IAT.Mean") == H + 2
+    assert ev.feature_readiness_level("Fwd.Packet.Length.Max") == H + 2
+    assert ev.feature_readiness_level("Fwd.IAT.Max") == H + 3
 
 
 def test_feature_readiness_level_unknown_dotted_feature_still_falls_back():
@@ -1109,7 +1117,8 @@ def test_readiness_levels_for_real_dataset_feature_names():
         "Flow.IAT.Max": [(0, 20), (21, 65535)],
         "Bwd.IAT.Min": [(0, 30), (31, 65535)],
     }
-    assert ev.readiness_levels_for(feature_intervals) == [6, 5, 6]
+    H = ev.FLOW_HASH_LEVEL
+    assert ev.readiness_levels_for(feature_intervals) == [H + 3, H + 2, H + 3]
 
 
 def test_crossbar_stages_needed_separates_tables_by_readiness_level():
@@ -1169,12 +1178,14 @@ def test_range_and_ternary_pools_reproduce_the_measured_m2_stage_count():
     ternary_plan = ev.crossbar_stages_needed([(2, 11)] * 4,
                                              readiness_levels=[ternary_level] * 4)
 
-    # With FLOW_HASH_LEVEL corrected to 3 these are no longer just internally
-    # consistent indices -- they are the stage numbers the compiler really
-    # used for M2: range tables at 5/5/5/6, classification at 7 (see
-    # reviews/p4_tofino_reference.md Sec 4.6's measured table).
-    assert range_plan.indices == frozenset({5, 6})
-    assert ternary_plan.indices == frozenset({7})
+    # With FLOW_HASH_LEVEL these are no longer just internally consistent
+    # indices -- they are the stage numbers the compiler really used for M2
+    # (under its 3-stage hash prologue: range tables at 5/5/5/6,
+    # classification at 7, reviews/p4_tofino_reference.md Sec 4.6's measured
+    # table), here moved by the prologue's change (review A1: 3 -> 1 stage).
+    H = ev.FLOW_HASH_LEVEL
+    assert range_plan.indices == frozenset({H + 2, H + 3})
+    assert ternary_plan.indices == frozenset({H + 4})
     assert not (range_plan.indices & ternary_plan.indices)
     assert range_plan.occupied == 2
     assert ternary_plan.occupied == 1
@@ -1229,8 +1240,9 @@ def test_multi_model_memory_evaluation_accounts_for_register_dependency_depth():
     # This IS the M2 fixture the brief's own worked example cites. It used to
     # report depth 6 against the real compiler's 9; with the readiness origin
     # and the vote epilogue corrected it reports 9 -- the same number, on the
-    # same program, that p4_compile.parse_compile_logs measured.
-    assert usage.stage_depth == 9
+    # same program, that p4_compile.parse_compile_logs measured (under the old
+    # 3-stage hash prologue; 2 less since review A1).
+    assert usage.stage_depth == ev.FLOW_HASH_LEVEL + 6
 
 
 def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth():
@@ -1243,8 +1255,8 @@ def test_multi_model_memory_evaluation_uncatalogued_features_have_no_extra_depth
         clf_app, clf_ddos, ["g0", "g1", "g2", "g3"], ["g0", "g1", "g2", "g3"], "joint")
 
     assert usage.stages == 2
-    # 3 hash stages + 1 range + 1 classification + 1 vote.
-    assert usage.stage_depth == 6
+    # FLOW_HASH_LEVEL hash stages + 1 range + 1 classification + 1 vote.
+    assert usage.stage_depth == ev.FLOW_HASH_LEVEL + 3
 
 
 @pytest.mark.parametrize("encoding", ["joint", "disjoint"])
@@ -1372,17 +1384,20 @@ def test_register_depth_and_count_over_the_selected_features():
     whether the registers FIT in those stages has never been measured here."""
     usage = ev.multi_model_memory_evaluation(
         _app_forest(), _ddos_forest(), ['flow_iat_max'], ['fwd_iat_max'], 'disjoint')
-    # fwd_iat_max: FLOW_HASH_LEVEL(3) + gated(1) + 2 registers
-    assert usage.register_depth == 6
+    # fwd_iat_max: FLOW_HASH_LEVEL + gated(1) + 2 registers
+    assert usage.register_depth == ev.FLOW_HASH_LEVEL + 3
     assert usage.register_count == 4          # 2 chains x (dependency + value)
 
 
 def test_max_num_flows_matches_the_p4_template_it_claims_to_mirror():
-    """build_p4_script.MAX_NUM_FLOWS is never read as a Python value today --
-    it only appears as literal text inside emitted P4, so pin it against the
-    authoritative source."""
+    """build_p4_script.MAX_NUM_FLOWS is the one source of the flow-slot count
+    (review Part C item 6): the template carries only markers, which the
+    generator fills from it and from FLOW_INDEX_BITS, its log2."""
     template = (pathlib.Path(bps.PATH) / 'p4_template.p4').read_text()
-    assert 'const bit<32> MAX_NUM_FLOWS = {};'.format(bps.MAX_NUM_FLOWS) in template
+    assert 'const bit<32> MAX_NUM_FLOWS = <MAX_NUM_FLOWS>;' in template
+    assert 'bit<<FLOW_INDEX_BITS>> flow_hash;' in template
+    assert '4096' not in template
+    assert bps.MAX_NUM_FLOWS == 1 << bps.FLOW_INDEX_BITS
 
 
 def test_resource_usage_does_not_report_register_sram_bits():
@@ -1507,15 +1522,16 @@ def test_crossbar_without_key_fields_charges_every_table_its_own_width():
 
 
 def test_feature_readiness_level_lands_on_the_stage_the_compiler_uses():
-    # FLOW_HASH_LEVEL has to cover THREE real stages, not one: p4c emits a
-    # metadata-init table (stage 0) and splits the hash into
-    # tbl_calc_flow_hash$precompute (stage 1) and tbl_calc_flow_hash (stage
-    # 2), so the first register in any chain can only run at stage 3.
-    # Measured against the committed placements:
+    # FLOW_HASH_LEVEL covers the hash prologue: THREE real stages under the
+    # old hash (the XOR of its inputs at stage 0, tbl_calc_flow_hash$precompute
+    # at 1 and the `& 0xFFF` tbl_calc_flow_hash at 2, so the first register
+    # ran at stage 3), ONE since the symmetric 12-bit hash (review A1).
+    # Measured against the committed placements of the old hash:
     #   independent_low_sd6  table_1_bwd_packet_length_max   -> real stage 5
     #   independent_high_sd6 table_6_app_packet_length_mean  -> real stage 4
-    assert ev.feature_readiness_level("bwd_packet_length_max") == 5
-    assert ev.feature_readiness_level("packet_length_mean") == 4
+    # i.e. FLOW_HASH_LEVEL + 2 and + 1.
+    assert ev.feature_readiness_level("bwd_packet_length_max") == ev.FLOW_HASH_LEVEL + 2
+    assert ev.feature_readiness_level("packet_length_mean") == ev.FLOW_HASH_LEVEL + 1
 
 
 # ---------------------------------------------------------------------------
@@ -1619,11 +1635,12 @@ def test_readiness_levels_push_past_the_chain_depth_at_campaign_feature_counts()
 
     placed = ev.register_stage_schedule(features)
     assert len(placed) == 20
-    assert collections.Counter(placed.values()) == {3: 4, 4: 4, 5: 4, 6: 4, 7: 4}
+    H = ev.FLOW_HASH_LEVEL
+    assert collections.Counter(placed.values()) == {H: 4, H + 1: 4, H + 2: 4, H + 3: 4, H + 4: 4}
 
     levels = ev.readiness_levels_for(feature_intervals)
-    assert max(levels) == 8
-    assert max(ev.feature_readiness_level(f) for f in features) == 6
+    assert max(levels) == H + 5
+    assert max(ev.feature_readiness_level(f) for f in features) == H + 3
 
 
 def test_readiness_levels_are_independent_of_feature_order():
@@ -1683,12 +1700,13 @@ _CHAIN_CATALOG = {
 
 
 def test_register_schedule_has_no_block_order():
-    # The gated program held bwd_a behind the whole fwd block (stage 6); now it
-    # waits only for the orientation register (stage 3).
+    # The gated program held bwd_a behind the whole fwd block (stage H + 3);
+    # now it waits only for the orientation register (stage H).
     placed = ev.register_stage_schedule(list(_CHAIN_CATALOG), catalog=_CHAIN_CATALOG)
 
-    assert [placed["fwd_a"], placed["fwd_b"], placed["fwd_c"]] == [4, 5, 6]
-    assert placed["bwd_a"] == 4
+    H = ev.FLOW_HASH_LEVEL
+    assert [placed["fwd_a"], placed["fwd_b"], placed["fwd_c"]] == [H + 1, H + 2, H + 3]
+    assert placed["bwd_a"] == H + 1
 
 
 def test_a_two_register_chain_spans_two_stages():
@@ -1698,7 +1716,7 @@ def test_a_two_register_chain_spans_two_stages():
     ], "gated_by": "fwd"}}
 
     placed = ev.register_stage_schedule(list(catalog), catalog=catalog)
-    assert [placed["fwd_a"], placed["fwd_b"]] == [4, 5]
+    assert [placed["fwd_a"], placed["fwd_b"]] == [ev.FLOW_HASH_LEVEL + 1, ev.FLOW_HASH_LEVEL + 2]
 
 
 def test_stage_depth_counts_the_vote_epilogue_stage():

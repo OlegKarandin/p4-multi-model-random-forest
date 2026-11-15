@@ -186,7 +186,7 @@ class _Switch:
         regs, actions, apply_code, _ = generate_P4_registers_and_apply(
             {f: None for f in features})
         self.initial = {name: int(init or 0) for init, name in re.findall(
-            r"Register<bit<16>, bit<32>>\(MAX_NUM_FLOWS(?:, (\d+))?\) (\w+)_reg;", regs)}
+            r"Register<bit<16>, bit<\d+>>\(MAX_NUM_FLOWS(?:, (\d+))?\) (\w+)_reg;", regs)}
         self.bodies = {}
         for name, body in re.findall(
                 r"\((\w+)_reg\) \w+_action = \{\n\t\tvoid apply\(inout bit<16> value, "

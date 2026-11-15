@@ -34,8 +34,16 @@ from p4model.program import (VOTE_EXPORT, VOTE_EXPORT_BITS, APP_TASK, DDOS_TASK,
                                  placement_priorities, range_table_priority, task_names)
 
 INFINITE = (2**16)-1
-MAX_NUM_FLOWS = 4096  # matches p4/p4_code_RF_models.p4:9 and
-                      # p4/tofino_spike/tna_m1_flows_iat_spike.p4
+# The number of per-flow register slots, and the one constant the flow index
+# is derived from (review Part C item 6): the template's `MAX_NUM_FLOWS` P4
+# constant, the width of the Hash<> output and of meta.flow_hash, and every
+# Register's index type are all substituted from these two values, so the
+# program cannot disagree with itself. A power of two, so a FLOW_INDEX_BITS-bit
+# hash output addresses every slot exactly once.
+MAX_NUM_FLOWS = 4096
+FLOW_INDEX_BITS = MAX_NUM_FLOWS.bit_length() - 1
+if MAX_NUM_FLOWS != 1 << FLOW_INDEX_BITS:
+  raise AssertionError("MAX_NUM_FLOWS must be a power of two, got %d" % MAX_NUM_FLOWS)
 
 # The P4 templates ship inside this package (p4gen/resources/), so they are found
 # from this module's own location, not from the current directory.
@@ -2141,6 +2149,22 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # what p4model.phv already assumes (one 16-bit container per scratch field).
   for field in scratch_fields:
     phv_pragmas += '@pa_container_size("ingress", "ig_md.' + field + '", 16)\n'
+  # SPACE pin, ADDED with the symmetric 12-bit hash (review A1b, 2026-11-15) on
+  # the timestamp, whenever the program computes one (calc_timestamp): no other
+  # field may share now_pseudo_us's containers. Without it p4c packed
+  # now_pseudo_us[15:14] into the 8-bit container of ig_tm_md.bypass_egress,
+  # which the forwarding assignment writes in stage 0, so calc_timestamp waited
+  # a stage ("action dependency ... due to PHV allocation advances stage to 1")
+  # in exactly the 22 of 38 Task 28 compiles where that byte was shared. Under
+  # the old 3-stage hash prologue that never mattered; with the hash in stage 0
+  # the last-arrival registers then ran a stage after the model's schedule (6
+  # range tables in 3 of 15 programs one stage late, p4c). With the pin p4c
+  # puts the timestamp in stage 0 on 3/3 of those programs, every table where
+  # the model says, stage depth and blocks unchanged, PHV +0..+1 containers.
+  # (@pa_container_size(now_pseudo_us, 16) instead does not compile: the
+  # shifted timestamp must split where its source bits split.)
+  if uses_timestamp(raw_feature_intervals):
+    phv_pragmas += '@pa_solitary("ingress", "ig_md.now_pseudo_us")\n'
 
   # F2: a feature with no FEATURE_REGISTER_CATALOG entry is silently skipped
   # by generate_P4_registers_and_apply above, but everything else in this
@@ -2321,6 +2345,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
     # The marker's OWN line is consumed, so a feature-less program keeps the
     # template's original spacing exactly (and a program with features gets
     # its pragmas immediately above `struct metadata_t`, no stray blank line).
+    switch_template = switch_template.replace('<MAX_NUM_FLOWS>', str(MAX_NUM_FLOWS))
+    switch_template = switch_template.replace('<FLOW_INDEX_BITS>', str(FLOW_INDEX_BITS))
     switch_template = switch_template.replace('/* PHV_PRAGMAS */\n', phv_pragmas)
     switch_template = switch_template.replace('/* METADATA */', metadata_code)
     switch_template = switch_template.replace('/* REGISTERS */', registers_code)
@@ -2572,12 +2598,24 @@ def iat_scratch_fields(feature_intervals, catalog=None):
   return fields
 
 
+def uses_timestamp(feature_intervals, catalog=None):
+  """Whether generate_P4_registers_and_apply emits calc_timestamp for these
+  features (it writes meta.now_pseudo_us): some selected feature has an
+  iat_delta register."""
+  if catalog is None:
+    catalog = FEATURE_REGISTER_CATALOG
+  return any(reg["body"] == "iat_delta"
+             for feature in (name.lower() for name in feature_intervals)
+             for reg in catalog.get(feature, {}).get("registers", ()))
+
+
 def _register_declaration(name, width, initial_value=None):
+  # Indexed by meta.flow_hash, FLOW_INDEX_BITS wide (A1a).
   if initial_value is None:
-    return "\tRegister<bit<{width}>, bit<32>>(MAX_NUM_FLOWS) {name}_reg;\n".format(
-        width=width, name=name)
-  return "\tRegister<bit<{width}>, bit<32>>(MAX_NUM_FLOWS, {init}) {name}_reg;\n".format(
-      width=width, name=name, init=initial_value)
+    return "\tRegister<bit<{width}>, bit<{index}>>(MAX_NUM_FLOWS) {name}_reg;\n".format(
+        width=width, index=FLOW_INDEX_BITS, name=name)
+  return "\tRegister<bit<{width}>, bit<{index}>>(MAX_NUM_FLOWS, {init}) {name}_reg;\n".format(
+      width=width, index=FLOW_INDEX_BITS, name=name, init=initial_value)
 
 
 def _register_action_declaration(name, width, body_kind, owner=None, iat=None):
@@ -2594,10 +2632,10 @@ def _register_action_declaration(name, width, body_kind, owner=None, iat=None):
                      "feature lists no dependency register before it".format(name, body_kind))
   body = template.format(width=width, name=name, owner=owner, iat=iat)
   return (
-      "\tRegisterAction<bit<{width}>, bit<32>, bit<{width}>>({name}_reg) {name}_action = {{\n"
+      "\tRegisterAction<bit<{width}>, bit<{index}>, bit<{width}>>({name}_reg) {name}_action = {{\n"
       "{body}"
       "\t}};\n"
-  ).format(width=width, name=name, body=body)
+  ).format(width=width, index=FLOW_INDEX_BITS, name=name, body=body)
 
 
 def generate_P4_registers_and_apply(feature_intervals, catalog=None):
@@ -2648,8 +2686,9 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   detect what did NOT resolve:
     (registers_code, register_actions_code, feature_update_apply_code, resolved)
 
-    - registers_code: `Register<bit<W>, bit<32>>(MAX_NUM_FLOWS) <name>_reg;`
-      declarations (TNA syntax), plus the ONE `Hash<>` instance the
+    - registers_code: `Register<bit<W>, bit<FLOW_INDEX_BITS>>(MAX_NUM_FLOWS)
+      <name>_reg;` declarations (TNA syntax), plus the ONE `@symmetric`
+      `Hash<bit<FLOW_INDEX_BITS>>` instance the
       apply-block's hash action needs (`flow_hash_calc`) and the fixed
       `flow_forward_srcaddr_reg` register used for flow-direction
       bookkeeping (see below) -- both always emitted, unconditionally,
@@ -2672,15 +2711,16 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       p4/tofino_spike/tna_m2_real_with_symhash.p4, both 0 errors) is now a
       SINGLE `flow_orientation_action` RegisterAction on
       `flow_forward_srcaddr_reg`: since `calc_flow_hash` is symmetric
-      (XOR-based -- `src_addr ^ dst_addr`, `src_port ^ dst_port` -- so both
+      (`@symmetric` on src/dst address and src/dst port since review A1b; an
+      XOR of each pair before -- so both
       directions of a flow hash identically; no min/max comparison needed,
       since TNA's Gateway hardware can only compare a field against a
       compile-time constant, not two runtime fields against each other,
       confirmed as a real compile restriction this session), the register
       simply stores whichever packet's own srcAddr was seen FIRST for that
       flow index; a later packet is "fwd" iff its own srcAddr matches the
-      stored value. One touch per packet, not two. CAVEAT: XOR-based
-      symmetry has a different (likely worse) collision profile than true
+      stored value. One touch per packet, not two. CAVEAT: pair-symmetric
+      hashing has a different (likely worse) collision profile than true
       min/max canonical ordering -- not measured, flagged not fixed,
       consistent with this project's treatment of every other
       resource-oracle approximation (e.g. the IAT ns->us rescale).
@@ -2870,10 +2910,37 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
 
   # ---- /* REGISTERS */ ----
 
+  # The flow index (review A1, adopted 2026-11-15; p4c evidence: Task 28,
+  # results/encoding_evidence_2026_11/model8/impl/probe_generator_A1_A2.md).
+  #   * A1a, Hash<bit<FLOW_INDEX_BITS>>: the hash unit hands out the low 12
+  #     CRC bits itself, so there is no 32-bit result to mask with `& 0xFFF`.
+  #     The mask was an ALU instruction on a value that exists only after the
+  #     hash stage, so p4c gave it a stage of its own; a narrower output is
+  #     wiring. Same function (prog.bfa: identical crc_rev expression, bits
+  #     0..11 instead of 0..31 then AND 4095), one stage less on 8/8 p4c
+  #     compiles, blocks unchanged, 1-2 PHV containers fewer.
+  #   * A1b, @symmetric on (src_addr, dst_addr) and (src_port, dst_port), the
+  #     raw header fields as inputs: p4c gives both fields of a pair the same
+  #     hash-matrix columns (bf-p4c mau/ixbar_expr.cpp verifySymmetricHashPairs),
+  #     so a packet and its reverse hash to the same slot, which is all the
+  #     orientation register needs. It replaces the XOR of the two fields of
+  #     each pair, which p4c had to compute in a stage of its own before the
+  #     hash unit could read it. Two stages less than before on 15/15 p4c
+  #     compiles (with A1a), blocks unchanged, 2-5 PHV containers fewer. It is
+  #     a different CRC message (13 bytes, each pair at one position) than the
+  #     XOR form's 7 bytes, so a flow lands in a different slot than before;
+  #     both directions still meet in one slot (checked from prog.bfa and
+  #     numerically on 4 5-tuples). p4c's own note: a symmetric hash "is not
+  #     truly the CRC function they requested, but a variation on it"
+  #     (asm_hash_output.cpp).
+  # With both, the hash runs in stage 0 and the first RegisterAction in stage
+  # 1 (program.FLOW_HASH_LEVEL).
   registers_code = (
-      "\tHash<bit<32>>(HashAlgorithm_t.CRC32) flow_hash_calc;\n"
-      "\tRegister<bit<32>, bit<32>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;\n"
-  )
+      '\t@symmetric("hdr.ipv4.src_addr", "hdr.ipv4.dst_addr")\n'
+      '\t@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")\n'
+      "\tHash<bit<{index}>>(HashAlgorithm_t.CRC32) flow_hash_calc;\n"
+      "\tRegister<bit<32>, bit<{index}>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;\n"
+  ).format(index=FLOW_INDEX_BITS)
   for name in register_order:
     initial_value = _REGISTER_INITIAL_VALUES.get(register_info[name]["body"])
     registers_code += _register_declaration(name, register_info[name]["width"], initial_value=initial_value)
@@ -2883,10 +2950,12 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   register_actions_code = (
       "\taction calc_flow_hash() {\n"
       "\t\tmeta.flow_hash = flow_hash_calc.get({\n"
-      "\t\t\thdr.ipv4.src_addr ^ hdr.ipv4.dst_addr,\n"
+      "\t\t\thdr.ipv4.src_addr,\n"
+      "\t\t\thdr.ipv4.dst_addr,\n"
       "\t\t\thdr.ipv4.protocol,\n"
-      "\t\t\thdr.tcp.src_port ^ hdr.tcp.dst_port\n"
-      "\t\t}) & 0xFFF;\n"
+      "\t\t\thdr.tcp.src_port,\n"
+      "\t\t\thdr.tcp.dst_port\n"
+      "\t\t});\n"
       "\t}\n"
   )
 
@@ -2899,19 +2968,21 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     )
 
   # Symmetric-hash flow bookkeeping (Part G.6 in reviews/t11_tofino_port_and_env.md,
-  # wired in after validation against the real Tofino compiler this session:
-  # p4/tofino_spike/tna_m2_symmetric_hash_spike.p4, and the real M2 program with
-  # this swap, p4/tofino_spike/tna_m2_real_with_symhash.p4, both 0 errors). Since
-  # the hash is now symmetric (XOR-based, both directions of a flow hash
-  # identically), a single register stores the first-seen packet's own
-  # srcAddr; later packets are "fwd" iff their own srcAddr matches it.
-  # CAVEAT: XOR-based symmetry has a different (likely worse) collision
-  # profile than true min/max canonical ordering -- not measured, flagged
-  # not fixed, consistent with this project's treatment of every other
-  # resource-oracle approximation (e.g. the IAT ns->us rescale).
+  # first validated with the XOR form against the real Tofino compiler:
+  # p4/tofino_spike/tna_m2_symmetric_hash_spike.p4 and
+  # p4/tofino_spike/tna_m2_real_with_symhash.p4, both 0 errors; the hash is
+  # @symmetric since A1b, above). Both directions of a flow hash to one slot, so
+  # a single register stores the first-seen packet's own srcAddr; later packets
+  # are "fwd" iff their own srcAddr matches it.
+  # CAVEAT: a symmetric hash sees each pair only through src XOR dst, so its
+  # collision profile differs from (likely worse than) true min/max canonical
+  # ordering -- not measured, flagged not fixed, consistent with this project's
+  # treatment of every other resource-oracle approximation (e.g. the IAT ns->us
+  # rescale).
   register_actions_code += (
       "\n"
-      "\tRegisterAction<bit<32>, bit<32>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {\n"
+      "\tRegisterAction<bit<32>, bit<" + str(FLOW_INDEX_BITS) + ">, bit<1>>(flow_forward_srcaddr_reg) "
+      "flow_orientation_action = {\n"
       "\t\tvoid apply(inout bit<32> value, out bit<1> rv) {\n"
       "\t\t\tif (value == 0) {\n"
       "\t\t\t\tvalue = hdr.ipv4.src_addr;\n"

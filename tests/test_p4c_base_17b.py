@@ -6,7 +6,10 @@ the forwarding assignments first, and the G3 pin set -- no @pa_no_overlay on fwd
 on code_*, @pa_container_size 16 on every IAT scratch field), three per encoding and mixed k, committed with p4c's
 committed allocation (mau.resources.log per table: blocks summed over stages, stage; table_summary.log stage
 count) in tests/fixtures/p4c_base_17b.json. Source: results/encoding_evidence_2026_11/model8/impl/t23 (Codespace
-/workspaces/t23), built by model8/impl/scripts/t18_fixture.py. The old calibration archive
+/workspaces/t23), built by model8/impl/scripts/t18_fixture.py. Regenerated and recompiled for the symmetric 12-bit
+flow hash (review A1, Task 31; model8/impl/scripts/exp31.py fixture, Codespace /workspaces/dr_t31_out/fixA1): every
+text is its old text with that edit (t31_text_diff.py, 12/12), p4c stage depth 2 lower on 12/12, blocks unchanged.
+The old calibration archive
 (compiler_calibration_pragmas_2026_09_29) can no longer score the model: every program in it is refused by shape
 (test_model_archive).
 

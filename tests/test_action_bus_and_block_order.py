@@ -116,19 +116,20 @@ def test_schedule_single_block():
   for function in (registers.register_stage_schedule, registers.readiness_levels_for):
     assert "fwd_pinned" not in inspect.signature(function).parameters
   # fwd and bwd chains share stages: no bwd register waits for the fwd ones.
+  H = program.FLOW_HASH_LEVEL   # the first register stage (1 since review A1)
   assert register_stage_schedule(["fwd_iat_max", "bwd_iat_max"]) == {
-      ORIENTATION_REGISTER: 3, "fwd_last_arrival_time": 4, "bwd_last_arrival_time": 4,
-      "fwd_iat_max": 5, "bwd_iat_max": 5}
+      ORIENTATION_REGISTER: H, "fwd_last_arrival_time": H + 1, "bwd_last_arrival_time": H + 1,
+      "fwd_iat_max": H + 2, "bwd_iat_max": H + 2}
   # Four stateful ALUs per stage; ready registers ranked longer tail chain first, then
   # more dependent trees, then later in program order (S5).
   features = ["min_packet_length", "packet_length_mean", "max_packet_length", "flow_iat_max",
               "fwd_packet_length_max"]
   assert register_stage_schedule(features) == {
-      ORIENTATION_REGISTER: 3, "flow_last_arrival_time": 3, "max_packet_length": 3,
-      "packet_length_mean": 3, "min_packet_length": 4, "flow_iat_max": 4,
-      "fwd_packet_length_max": 4}
+      ORIENTATION_REGISTER: H, "flow_last_arrival_time": H, "max_packet_length": H,
+      "packet_length_mean": H, "min_packet_length": H + 1, "flow_iat_max": H + 1,
+      "fwd_packet_length_max": H + 1}
   favoured = register_stage_schedule(features, dependents={"min_packet_length": 5})
-  assert favoured["min_packet_length"] == 3 and favoured["packet_length_mean"] == 4
+  assert favoured["min_packet_length"] == H and favoured["packet_length_mean"] == H + 1
 
 
 def test_a_direction_owned_register_still_waits_for_the_orientation_register():
@@ -142,8 +143,9 @@ def test_a_direction_owned_register_still_waits_for_the_orientation_register():
   features = ["g", "u0", "u1", "u2", "u3"]
   placed = register_stage_schedule(features, catalog=catalog,
                                    dependents={"u%d" % i: 9 for i in range(4)})
-  assert placed[ORIENTATION_REGISTER] == 4
-  assert placed["g_val"] == 5
+  from p4model.program import FLOW_HASH_LEVEL
+  assert placed[ORIENTATION_REGISTER] == FLOW_HASH_LEVEL + 1
+  assert placed["g_val"] == FLOW_HASH_LEVEL + 2
   for features in (["fwd_iat_max", "bwd_packet_length_min", "flow_iat_min"],
                    ["bwd_iat_mean", "fwd_packet_length_mean", "packet_length_mean"]):
     placed = register_stage_schedule(features)
@@ -166,12 +168,16 @@ def test_ties_follow_call_site_order_not_feature_order():
   assert registers.register_call_order(features) == [
       "flow_forward_srcaddr", "fwd_packet_length_max", "fwd_packet_length_min",
       "fwd_packet_length_mean", "bwd_packet_length_max", "bwd_packet_length_min"]
+  # (stage 4 when the hash prologue was 3 stages; FLOW_HASH_LEVEL + 1 in general)
+  from p4model.program import FLOW_HASH_LEVEL
   placed = register_stage_schedule(features)
-  assert placed["fwd_packet_length_max"] == 5
-  assert all(placed[name] == 4 for name in features if name != "fwd_packet_length_max")
+  assert placed["fwd_packet_length_max"] == FLOW_HASH_LEVEL + 2
+  assert all(placed[name] == FLOW_HASH_LEVEL + 1 for name in features
+             if name != "fwd_packet_length_max")
   # An explicit call order (the replay's, read from the text) decides instead.
   reversed_calls = ["flow_forward_srcaddr"] + list(reversed(features))
-  assert register_stage_schedule(features, call_order=reversed_calls)["bwd_packet_length_min"] == 5
+  assert (register_stage_schedule(features, call_order=reversed_calls)["bwd_packet_length_min"]
+          == FLOW_HASH_LEVEL + 2)
 
 
 @pytest.mark.parametrize("encoding", [JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING,

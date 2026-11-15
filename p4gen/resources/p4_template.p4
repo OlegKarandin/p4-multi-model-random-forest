@@ -9,11 +9,11 @@
 #include "p4_headers.p4"
 #include "p4_util.p4"
 
-const bit<32> MAX_NUM_FLOWS = 4096;
+const bit<32> MAX_NUM_FLOWS = <MAX_NUM_FLOWS>;
 
 /* PHV_PRAGMAS */
 struct metadata_t {
-    bit<32> flow_hash;
+    bit<<FLOW_INDEX_BITS>> flow_hash;
     bit<1>  fwd;
     bit<16> now_pseudo_us;
 

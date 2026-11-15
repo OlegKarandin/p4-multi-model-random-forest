@@ -134,9 +134,12 @@ def test_each_pin_the_generator_emits_is_required(tmp_path, encoding):
         assert breakdown["stage_depth"] is None and breakdown["blocks"] is None
         seen[pin] += 1
     expected = {"pa_no_overlay", "pa_solitary", "pa_container_size", "placement_priority"}
-    # pa_solitary is on the class_tree_* fields only since gate G3 (3.5)
-    assert seen["pa_solitary"] == sum(1 for line in lines if "class_tree_" in line
+    # pa_solitary is on the class_tree_* fields only since gate G3 (3.5), plus
+    # now_pseudo_us in a program with a timestamp since review A1b
+    assert seen["pa_solitary"] == sum(1 for line in lines if ("class_tree_" in line
+                                                              or "now_pseudo_us" in line)
                                       and "@pa_solitary" in line)
+    assert ("calc_timestamp();" in text) == ('"ig_md.now_pseudo_us"' in text)
     assert set(seen) == expected, seen
 
 
@@ -455,7 +458,7 @@ _KNOWN_REGISTER_MISSES = {
 }
 
 
-def test_the_register_schedule_matches_p4c_on_the_probe_compiles():
+def test_the_register_schedule_matches_p4c_on_the_probe_compiles(monkeypatch):
     """Six programs compiled by p4c (results/encoding_evidence_2026_11/model8/impl/
     probe_7_1b, Task 2 of the model8 plan, option B: one unconditional register
     block), committed with p4c's per-register stages (mau.resources.log). Only the
@@ -467,7 +470,12 @@ def test_the_register_schedule_matches_p4c_on_the_probe_compiles():
     forwarding assignments last) -- and the
     schedule reads only their range tables, tree keys and register call sites.
     Model vs p4c (73/77 registers in p4c's stage): k<=8 35/35, k>=9 38/42; the four
-    misses are pinned below."""
+    misses are pinned below. The texts also predate the symmetric 12-bit hash
+    (review A1): their hash prologue is 3 stages, so the schedule is run with
+    program.FLOW_HASH_LEVEL = 3, the value of their generator (registers.py reads
+    the constant through the module, so the patch reaches the schedule)."""
+    from p4model import program as program_constants
+    monkeypatch.setattr(program_constants, "FLOW_HASH_LEVEL", 3)
     with open(_PROBE + ".json", encoding="utf-8") as handle:
         p4c = json.load(handle)
     assert len(p4c) == 6

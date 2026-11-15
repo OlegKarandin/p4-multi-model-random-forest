@@ -372,4 +372,16 @@ def test_other_encodings_replay_as_before(tmp_path, encoding):
     if (encoding, seed) in _OPTION_B_2026_11_14:
       recorded = recorded[:2] + (_OPTION_B_2026_11_14[(encoding, seed)],)
     recorded = _KEY_PRUNING_2026_11_14.get((encoding, seed), recorded)
+    recorded = _after_hash_rewrite(recorded)
     assert (breakdown["stage_depth"], breakdown["blocks"], tables) == recorded, seed
+
+
+def _after_hash_rewrite(recorded):
+  """A record taken under the 3-stage hash prologue, as the model gives it since the
+  symmetric 12-bit hash (review A1, 2026-11-15: program.FLOW_HASH_LEVEL 3 -> 1): every
+  table and the stage depth 2 stages earlier, blocks and table order unchanged."""
+  from p4model.program import FLOW_HASH_LEVEL
+  shift = 3 - FLOW_HASH_LEVEL
+  depth, blocks, tables = recorded
+  return (depth - shift, blocks,
+          re.sub(r"@(\d+)", lambda m: "@%d" % (int(m.group(1)) - shift), tables))

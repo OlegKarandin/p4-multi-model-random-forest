@@ -23,8 +23,9 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 @pa_no_overlay("ingress", "ig_md.code_fwd_packet_length_max")
 @pa_container_size("ingress", "ig_md.code_fwd_packet_length_max", 8)
 @pa_container_size("ingress", "ig_md.flow_current_iat", 16)
+@pa_solitary("ingress", "ig_md.now_pseudo_us")
 struct metadata_t {
-    bit<32> flow_hash;
+    bit<12> flow_hash;
     bit<1>  fwd;
     bit<16> now_pseudo_us;
 
@@ -93,26 +94,30 @@ control SwitchIngress(
         inout ingress_intrinsic_metadata_for_deparser_t ig_dprsr_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_tm_md) {
 
-	Hash<bit<32>>(HashAlgorithm_t.CRC32) flow_hash_calc;
-	Register<bit<32>, bit<32>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS) flow_last_arrival_time_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS) flow_iat_max_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS) fwd_packet_length_max_reg;
+	@symmetric("hdr.ipv4.src_addr", "hdr.ipv4.dst_addr")
+	@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")
+	Hash<bit<12>>(HashAlgorithm_t.CRC32) flow_hash_calc;
+	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) flow_last_arrival_time_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) flow_iat_max_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_packet_length_max_reg;
 
 
 	action calc_flow_hash() {
 		meta.flow_hash = flow_hash_calc.get({
-			hdr.ipv4.src_addr ^ hdr.ipv4.dst_addr,
+			hdr.ipv4.src_addr,
+			hdr.ipv4.dst_addr,
 			hdr.ipv4.protocol,
-			hdr.tcp.src_port ^ hdr.tcp.dst_port
-		}) & 0xFFF;
+			hdr.tcp.src_port,
+			hdr.tcp.dst_port
+		});
 	}
 
 	action calc_timestamp() {
 		meta.now_pseudo_us = (bit<16>)(ig_prsr_md.global_tstamp >> 10);
 	}
 
-	RegisterAction<bit<32>, bit<32>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
+	RegisterAction<bit<32>, bit<12>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
 		void apply(inout bit<32> value, out bit<1> rv) {
 			if (value == 0) {
 				value = hdr.ipv4.src_addr;
@@ -121,14 +126,14 @@ control SwitchIngress(
 		}
 	};
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(flow_last_arrival_time_reg) flow_last_arrival_time_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(flow_last_arrival_time_reg) flow_last_arrival_time_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			rv = meta.now_pseudo_us - value;
 			value = meta.now_pseudo_us;
 		}
 	};
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(flow_iat_max_reg) flow_iat_max_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(flow_iat_max_reg) flow_iat_max_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.flow_current_iat > value) {
 				value = meta.flow_current_iat;
@@ -137,7 +142,7 @@ control SwitchIngress(
 		}
 	};
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(fwd_packet_length_max_reg) fwd_packet_length_max_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_packet_length_max_reg) fwd_packet_length_max_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 1 && hdr.ipv4.total_len > value) {
 				value = hdr.ipv4.total_len;

@@ -41,7 +41,7 @@ const bit<32> MAX_NUM_FLOWS = 4096;
 @pa_no_overlay("ingress", "ig_md.code_packet_length_mean")
 @pa_container_size("ingress", "ig_md.code_packet_length_mean", 16, 32)
 struct metadata_t {
-    bit<32> flow_hash;
+    bit<12> flow_hash;
     bit<1>  fwd;
     bit<16> now_pseudo_us;
 
@@ -123,26 +123,30 @@ control SwitchIngress(
         inout ingress_intrinsic_metadata_for_deparser_t ig_dprsr_md,
         inout ingress_intrinsic_metadata_for_tm_t ig_tm_md) {
 
-	Hash<bit<32>>(HashAlgorithm_t.CRC32) flow_hash_calc;
-	Register<bit<32>, bit<32>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS) bwd_packet_length_max_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS) bwd_packet_length_mean_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS, 65535) bwd_packet_length_min_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS) fwd_packet_length_max_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS) fwd_packet_length_mean_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS, 65535) fwd_packet_length_min_reg;
-	Register<bit<16>, bit<32>>(MAX_NUM_FLOWS) packet_length_mean_reg;
+	@symmetric("hdr.ipv4.src_addr", "hdr.ipv4.dst_addr")
+	@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")
+	Hash<bit<12>>(HashAlgorithm_t.CRC32) flow_hash_calc;
+	Register<bit<32>, bit<12>>(MAX_NUM_FLOWS) flow_forward_srcaddr_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) bwd_packet_length_max_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) bwd_packet_length_mean_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) bwd_packet_length_min_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_packet_length_max_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) fwd_packet_length_mean_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS, 65535) fwd_packet_length_min_reg;
+	Register<bit<16>, bit<12>>(MAX_NUM_FLOWS) packet_length_mean_reg;
 
 
 	action calc_flow_hash() {
 		meta.flow_hash = flow_hash_calc.get({
-			hdr.ipv4.src_addr ^ hdr.ipv4.dst_addr,
+			hdr.ipv4.src_addr,
+			hdr.ipv4.dst_addr,
 			hdr.ipv4.protocol,
-			hdr.tcp.src_port ^ hdr.tcp.dst_port
-		}) & 0xFFF;
+			hdr.tcp.src_port,
+			hdr.tcp.dst_port
+		});
 	}
 
-	RegisterAction<bit<32>, bit<32>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
+	RegisterAction<bit<32>, bit<12>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
 		void apply(inout bit<32> value, out bit<1> rv) {
 			if (value == 0) {
 				value = hdr.ipv4.src_addr;
@@ -151,7 +155,7 @@ control SwitchIngress(
 		}
 	};
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(bwd_packet_length_max_reg) bwd_packet_length_max_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_packet_length_max_reg) bwd_packet_length_max_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 0 && hdr.ipv4.total_len > value) {
 				value = hdr.ipv4.total_len;
@@ -162,7 +166,7 @@ control SwitchIngress(
 
 	MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) bwd_packet_length_mean_halve_unit;
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(bwd_packet_length_mean_reg) bwd_packet_length_mean_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_packet_length_mean_reg) bwd_packet_length_mean_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 0) {
 				value = bwd_packet_length_mean_halve_unit.execute(value + (bit<16>)hdr.ipv4.total_len);
@@ -171,7 +175,7 @@ control SwitchIngress(
 		}
 	};
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(bwd_packet_length_min_reg) bwd_packet_length_min_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_packet_length_min_reg) bwd_packet_length_min_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 0 && hdr.ipv4.total_len < value) {
 				value = hdr.ipv4.total_len;
@@ -180,7 +184,7 @@ control SwitchIngress(
 		}
 	};
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(fwd_packet_length_max_reg) fwd_packet_length_max_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_packet_length_max_reg) fwd_packet_length_max_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 1 && hdr.ipv4.total_len > value) {
 				value = hdr.ipv4.total_len;
@@ -191,7 +195,7 @@ control SwitchIngress(
 
 	MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) fwd_packet_length_mean_halve_unit;
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(fwd_packet_length_mean_reg) fwd_packet_length_mean_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_packet_length_mean_reg) fwd_packet_length_mean_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 1) {
 				value = fwd_packet_length_mean_halve_unit.execute(value + (bit<16>)hdr.ipv4.total_len);
@@ -200,7 +204,7 @@ control SwitchIngress(
 		}
 	};
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(fwd_packet_length_min_reg) fwd_packet_length_min_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(fwd_packet_length_min_reg) fwd_packet_length_min_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			if (meta.fwd == 1 && hdr.ipv4.total_len < value) {
 				value = hdr.ipv4.total_len;
@@ -211,7 +215,7 @@ control SwitchIngress(
 
 	MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) packet_length_mean_halve_unit;
 
-	RegisterAction<bit<16>, bit<32>, bit<16>>(packet_length_mean_reg) packet_length_mean_action = {
+	RegisterAction<bit<16>, bit<12>, bit<16>>(packet_length_mean_reg) packet_length_mean_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
 			value = packet_length_mean_halve_unit.execute(value + (bit<16>)hdr.ipv4.total_len);
 			rv = value;

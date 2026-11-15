@@ -150,8 +150,9 @@ def _extract_calc_timestamp_body(source):
 
 def _extract_register_declarations(source):
   """Map register base name -> width from `Register<bit<W>,
-  bit<32>>(MAX_NUM_FLOWS) <name>_reg;` declarations in `source`."""
-  pattern = re.compile(r"Register<bit<(\d+)>,\s*bit<32>>\(MAX_NUM_FLOWS\)\s+(\w+)_reg;")
+  bit<I>>(MAX_NUM_FLOWS) <name>_reg;` declarations in `source` (any index
+  width I: the spike indexes by bit<32>, the generator by bit<FLOW_INDEX_BITS>)."""
+  pattern = re.compile(r"Register<bit<(\d+)>,\s*bit<\d+>>\(MAX_NUM_FLOWS\)\s+(\w+)_reg;")
   return {name: int(width) for width, name in pattern.findall(source)}
 
 
@@ -310,14 +311,25 @@ def test_symmetric_hash_bookkeeping_design(m1_generated):
   # truth this codegen change transcribes).
   registers_code, register_actions_code, apply_code, _ = m1_generated
 
-  # Exactly one Hash<> instance now (was two: flow_hash_calc_self/_other).
-  assert registers_code.count("Hash<bit<32>>(HashAlgorithm_t.CRC32)") == 1
+  # Exactly one Hash<> instance now (was two: flow_hash_calc_self/_other),
+  # producing the 12-bit flow index itself (review A1a: no `& 0xFFF`).
+  assert registers_code.count("Hash<bit<12>>(HashAlgorithm_t.CRC32) flow_hash_calc;") == 1
+  assert bps.FLOW_INDEX_BITS == 12 and bps.MAX_NUM_FLOWS == 1 << bps.FLOW_INDEX_BITS
+  assert "0xFFF" not in register_actions_code
   assert "flow_hash_calc_self" not in registers_code
   assert "flow_hash_calc_other" not in registers_code
 
-  # The symmetric XOR-based hash fields.
-  assert "hdr.ipv4.src_addr ^ hdr.ipv4.dst_addr" in register_actions_code
-  assert "hdr.tcp.src_port ^ hdr.tcp.dst_port" in register_actions_code
+  # Symmetric by p4c's @symmetric pairs on the raw header fields (review A1b),
+  # not by an XOR of each pair.
+  assert ('\t@symmetric("hdr.ipv4.src_addr", "hdr.ipv4.dst_addr")\n'
+          '\t@symmetric("hdr.tcp.src_port", "hdr.tcp.dst_port")\n'
+          '\tHash<bit<12>>') in registers_code
+  assert "^" not in register_actions_code.split("action calc_flow_hash")[1].split("}")[0]
+  for field in ("src_addr", "dst_addr", "protocol"):
+    assert "hdr.ipv4.%s," % field in register_actions_code
+  assert "hdr.tcp.src_port,\n\t\t\thdr.tcp.dst_port\n\t\t});" in register_actions_code
+  # Every register is indexed by the 12-bit flow index.
+  assert not re.search(r"Register(Action)?<bit<\d+>, bit<32>", registers_code + register_actions_code)
 
   # The old flows_reg/flows_test_other/flows_set_self design is gone.
   assert "flows_reg" not in registers_code
@@ -455,7 +467,7 @@ def test_mathunit_declaration_emitted_before_register_action(m2_mean_generated):
   mathunit_idx = register_actions_code.index(
       "MathUnit<bit<16>>(MathOp_t.MUL, 1, 2) flow_iat_mean_halve_unit;")
   action_idx = register_actions_code.index(
-      "RegisterAction<bit<16>, bit<32>, bit<16>>(flow_iat_mean_reg) flow_iat_mean_action = {")
+      "RegisterAction<bit<16>, bit<12>, bit<16>>(flow_iat_mean_reg) flow_iat_mean_action = {")
   assert mathunit_idx < action_idx
 
   # The MathUnit<> declaration is specific to "mathunit_ewma"-bodied

@@ -2009,7 +2009,9 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
   declared = set(re.findall(r"bit<\d+> (class_tree_[A-Za-z0-9_]+);", text))
   solitary = _PA_SOLITARY_RE.findall(text)
 
-  assert set(solitary) == declared
+  # ...plus the timestamp, in a program that computes one (review A1b).
+  assert "calc_timestamp();" in text
+  assert set(solitary) == declared | {"now_pseudo_us"}
   assert len(solitary) == len(set(solitary)), "duplicate @pa_solitary is a p4c error"
   assert "classification_app" not in set(solitary)
   assert "classification_ddos" not in set(solitary)

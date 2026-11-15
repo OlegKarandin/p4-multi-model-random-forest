@@ -13,18 +13,23 @@ from typing import Mapping, Optional, Sequence
 FEATURE_VALUE_BIT_WIDTH = 16
 
 # Every per-flow register in this design is indexed by meta.flow_hash, so the
-# hash occupies whole stages ahead of any register touch -- THREE of them, not
-# the one this constant used to claim. Measured over all 121 range tables in
-# the 19 real compiles of results/compiler_calibration/ (see
-# reviews/p4_tofino_reference.md §4.6): every committed placement opens with
-# a metadata-init table at stage 0, tbl_calc_flow_hash$precompute at stage 1
-# and tbl_calc_flow_hash at stage 2, so the first RegisterAction in any
-# feature's chain lands at stage 3. `real_stage - level` had a floor of
-# exactly +2 in every one of the 19 rows under the old value of 1; at 3 the
-# floor is 0, i.e. levels now name the earliest stage the compiler really
-# uses. (Values above the floor are tables the packer legitimately pushed
-# later, which is placement, not origin.)
-FLOW_HASH_LEVEL = 3
+# hash occupies whole stages ahead of any register touch: ONE since the
+# generator's hash rewrite (review A1, 2026-11-15), so the first RegisterAction
+# in any feature's chain lands at stage 1. The generator asks the hash unit for
+# the 12-bit index directly (Hash<bit<12>>, no `& 0xFFF`) and makes it
+# direction-independent with @symmetric on the raw header fields (no XOR of
+# the inputs), so stage 0 holds tbl_calc_flow_hash, the hash itself, and
+# nothing else of the prologue. p4c: stage depth -2 vs the old program on 15/15
+# Task 28 compiles, the model with level 1 exact on all of them
+# (results/encoding_evidence_2026_11/model8/impl/probe_generator_A1_A2.md).
+# The value was 3 before: stage 0 held the XOR of the hash inputs (p4c's
+# $hash_field_argument temporaries -- not a metadata-init table, as this
+# comment used to say), stage 1 the 32-bit CRC (tbl_calc_flow_hash$precompute)
+# and stage 2 the `& 0xFFF` (tbl_calc_flow_hash), measured on every committed
+# placement of results/compiler_calibration/ and of the Task 17b/23 compiles.
+# Read it as program.FLOW_HASH_LEVEL (registers.py and usage.py do), never as a
+# copy, so this is the one place it is set.
+FLOW_HASH_LEVEL = 1
 
 # The vote_app/vote_ddos tables read every tree's class and so always sit one
 # stage past the last classification table. Measured: exactly 1 in all 19

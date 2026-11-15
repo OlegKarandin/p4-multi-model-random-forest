@@ -151,8 +151,9 @@ tracking) as the thing producing meta.flow_hash. The generator no longer emits
 any such register, and the description was wrong about the hash besides: the
 symmetric-hash change (build_p4_script.py:1849-1866) replaced the old two-touch
 direction logic with the single flow_orientation_action touch above, and
-meta.flow_hash comes from the XOR-symmetric calc_flow_hash action, not from a
-register.
+meta.flow_hash comes from the symmetric calc_flow_hash action (an @symmetric
+12-bit CRC32 of the 5-tuple since review A1, an XOR of each address/port pair
+before), not from a register.
 
 register_width_bits has no reader inside the model itself -- its only
 one, register_sram_bits, was dropped in Task 1 -- but it is kept here as

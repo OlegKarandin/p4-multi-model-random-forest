@@ -7,10 +7,10 @@ the physics that produces one) can import it without pulling in the rest of
 the model."""
 from dataclasses import dataclass
 
+from p4model import program
 from p4model.errors import PlacementFailed
 from p4model.packing import crossbar_stages_needed, stage_load_fits
 from p4model.program import (
-    FLOW_HASH_LEVEL,
     PLACEMENT_PRIORITY,
     SHARED_TASK,
     TASKS,
@@ -147,7 +147,7 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
   is ready at 1 + the latest stage of any range table labelled t or
   SHARED_TASK -- never waiting for the OTHER task's range tables, which write
   fields it does not read. A task with no range table at all falls back to
-  FLOW_HASH_LEVEL + 1, the first stage after the flow-hash prologue.
+  program.FLOW_HASH_LEVEL + 1, the first stage after the flow-hash prologue.
 
   range_table_stages : StagePlan.table_stages of the range pool, one stage
                        index per range table.
@@ -211,7 +211,7 @@ def tree_readiness_levels(range_table_stages, range_task, ternary_task, tasks=TA
                        "position outside 0..%d: %s"
                        % (len(range_table_stages) - 1, reads))
     own = (max(range_table_stages[position] for position in reads) + 1
-           if reads else FLOW_HASH_LEVEL + 1)
+           if reads else program.FLOW_HASH_LEVEL + 1)
     levels.append(own if last is None else max(own, last))
   return levels
 

@@ -314,6 +314,9 @@ _VOTE_TABLE = re.compile(r"^vote_(\w+)$")
 _PACKED = "code_pk_"
 _ORIENTATION_ACTION = "flow_orientation_action"
 _PROLOGUE_CALL = "calc_flow_hash"
+# The action writing meta.now_pseudo_us, and that field (its pa_solitary pin, A1b).
+_TIMESTAMP_CALL = "calc_timestamp"
+_TIMESTAMP_FIELD = "now_pseudo_us"
 # The template's two forwarding assignments, the apply block's first steps (Task 17b):
 # the vote actions write ig_tm_md too (decision 1f), so p4c orders these AFTER the votes
 # when they come last and sometimes spends a stage on them, which the model does not price
@@ -343,6 +346,8 @@ def _check_pins(program, pins):
     <chain>_current_iat pa_container_size 16           (G3: IAT scratch fields)
     code_* / code_pk_*  pa_no_overlay, pa_container_size (3.6 / 3.7; none of
                         the latter for a field with no bits)
+    now_pseudo_us       pa_solitary, in a program that computes it
+                        (calc_timestamp; review A1b, 2026-11-15)
 
   Pins dropped at G3 (pa_no_overlay on fwd and class_tree_*, pa_solitary on
   code_*) are refused as unexpected_shape:pin:<pin>:<field>, like any pin this
@@ -362,6 +367,9 @@ def _check_pins(program, pins):
   for field in program.scratch_fields:
     if tuple(need("pa_container_size", field)) != (16,):
       raise ProgramShapeRefused("unexpected_shape:scratch_container:%s" % field)
+  if any(kind == "call" and name == _TIMESTAMP_CALL for kind, name, _, _ in program.apply_steps):
+    if tuple(need("pa_solitary", _TIMESTAMP_FIELD)) != ():
+      raise ProgramShapeRefused("unexpected_shape:pin:pa_solitary:%s" % _TIMESTAMP_FIELD)
   for field in sorted(program.declared):
     bits = program.declared[field]
     if field.endswith("_val") and not field.startswith("code_"):
@@ -497,7 +505,8 @@ def check_program(program):
     gated_register_block         a RegisterAction executed inside `if (meta.fwd ...)`
                                  (every program before decisions 1a / 7.1 option B)
     missing_pin:<pin>:<field>    a pin the generator emits is absent: pa_solitary on
-                                 class_tree_*, pa_container_size 16 on *_val and on
+                                 class_tree_* and (with calc_timestamp) on
+                                 now_pseudo_us, pa_container_size 16 on *_val and on
                                  every <chain>_current_iat, pa_no_overlay and
                                  pa_container_size on code_*, placement_priority on
                                  every tree and range table

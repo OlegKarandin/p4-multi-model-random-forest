@@ -204,21 +204,25 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # @pa_container_size(<chain>_current_iat, 16) per scratch field added after the last PHV
 # pragma (impl/scripts/t23_text_diff.py, 26/26); the shas are now of the whole text (the old
 # ones left the fwd pin out).
+# Re-frozen 2026-11-15 (Task 31, review A1: 12-bit @symmetric flow hash): every text is exactly
+# its old text with Task 28's probe edit a1ab (Hash<bit<12>>, bit<12> flow_hash and register
+# indices, no `& 0xFFF`, @symmetric pairs, raw hash inputs) plus @pa_solitary(now_pseudo_us)
+# before `struct metadata_t` (impl/scripts/t31_text_diff.py, 14/14).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "9ae190379d505bb40354dfe4ae1f2e58b5316d7e7d9eb38d7601e26ba957e1c8",
-    ("disjoint", 0): "40e6a816e0d1a23a15c799e25847f1d350d64d2ee2f6c2c671d16186a9865212",
-    ("per_task", 0): "8a3e66ff2cb14f26e1b0ce56667af7ea88d263e6285bcb79f82715a98cbbb7d0",
-    ("joint", 1): "ee4888cc0b4a843c9bb53e3a29ce9d451c2200ae868fc41d794aa6870fc65592",
-    ("disjoint", 1): "4d44ffe1223d137b9b297abbd209289720ebb00d6a743bc0a3fab289bb85635a",
-    ("per_task", 1): "9d3b038d78547e47fd3cba4b9665cceb8f20e2d7a087401eb079f321873438d2",
-    ("joint", 2): "6eadd2d23e2885acbf32836b86ff3b94f56767ead5af3a7275ba754f8da2a545",
-    ("disjoint", 2): "e448243167a60e5157b2ea505370f32da5f84401046d35261f064ecbc98f5fad",
-    ("per_task", 2): "bcfcb8b3ed18de9b75908ca6fef275fe69ebe43a8f15228610265c6698041386",
-    ("joint", 3): "732b4d781096e74e76df1d915f3a597bfbbdad381a109b1f812244941d3a502c",
-    ("disjoint", 3): "e2386eb98ad26fb3c59574b3eeaa6254f14d628bf605c2a021f8aee149ad5479",
-    ("per_task", 3): "556bf6136fcac60cf1b02687500ee661f03f4e86ad615b43e9f6a2687fed9a49",
-    ("disjoint", "three"): "f7f0a62567ab68faf5bd85609f3697c77ad24c2d1e59fd77ea7a93fa2311022d",
-    ("per_task", "three"): "ff087ae54dff72b2f1be624e0e1585eaa4917680cf393c9f94647e1e1f9b82b1",
+    ("joint", 0): "cc58baacbe4b054fbe1547280d8aef2acca4233e04cc83c4f39ecce0a9db76b8",
+    ("disjoint", 0): "d6f282d1b50f10e77641261cb51269dfb9c5331a8891e8c945fdc66e968b15a6",
+    ("per_task", 0): "b6014ea4edeb4d84451a3a2e0e241ed6aaa975742c861dc674a50b727a6dff90",
+    ("joint", 1): "f76b47d8b2be7c63f4b48ce930b41c9fcef0858336648fc1edbbd73f5538c210",
+    ("disjoint", 1): "6a230e0e2b870cff3384acb5b4eb79aff8474fdb939e438645008cde3e3dfdd9",
+    ("per_task", 1): "c8b418491ba977a132b79c3067f3e07e284d1a41e079a230c8dfd8208eab9e1f",
+    ("joint", 2): "9b32cd4ec90be5a401b28c8faf8b77d7817700ccb9c22903dd911a51e8c36e0d",
+    ("disjoint", 2): "852798fbb1a8dba8e4055b157cdc060f2cd5bc0b73b76cf687da7ddb9d48f2d9",
+    ("per_task", 2): "8a66333ee18defd4f6432cc268bdd2be2bfe0f0b256b6bb1648b83618a9577a3",
+    ("joint", 3): "26275bbd112d12a4a9a24e2f0a3c93fbca81e68a5c028bb8d403a9994bc5962f",
+    ("disjoint", 3): "9f0f788062ca1cee9fd12a78e8702c911575d7a0ce6736518783e3e34c19912d",
+    ("per_task", 3): "7280987a2d0970c16d70e8a8189c6d127e732d6a8b3009d6912168306bf0a5b3",
+    ("disjoint", "three"): "8b102f93c3b8d918a0fd979b5bd4ac0896084209211d9fe559c37b0fb326be1a",
+    ("per_task", "three"): "bc525444a1488f28887bd25a23adce7bdf6fbcbdc6e091500283e34882f07c29",
 }
 
 
@@ -261,8 +265,11 @@ def _g3_pin_set(text):
   """The PHV pin set gate G3 (2026-11-15) fixed, from the program's declarations:
   pa_solitary on every class_tree_*; pa_container_size 16 on every <f>_val and every IAT
   scratch field <chain>_current_iat; pa_no_overlay and pa_container_size on every code
-  field (code_pk_* too). Nothing on meta.fwd."""
+  field (code_pk_* too). Nothing on meta.fwd. Since review A1b, pa_solitary on
+  now_pseudo_us in a program that computes the timestamp (calc_timestamp)."""
   pins = set()
+  if "calc_timestamp();" in text:
+    pins.add(("pa_solitary", "now_pseudo_us", ""))
   for bits, field in _DECLARED.findall(text):
     if field.startswith("class_tree_"):
       pins.add(("pa_solitary", field, ""))
@@ -530,26 +537,29 @@ def test_the_range_pool_is_the_per_task_arms():
 
 # sha256 of json.dumps(model_breakdown(...), sort_keys=True) for the program each other encoding
 # writes for test_per_task_codes' random design of the seed, frozen 2026-11-08 at 64ab25c,
-# before the replay learned per-tree codes.
+# before the replay learned per-tree codes. Re-frozen 2026-11-15 (Task 31, review A1: hash
+# prologue 3 -> 1 stage, program.FLOW_HASH_LEVEL): every breakdown is exactly its old one with
+# every table's stage and the stage depth 2 lower, blocks unchanged (impl/scripts/
+# t31_replay_shas.py, 18/18).
 _OTHER_REPLAY_SHAS = {
-    ("joint", 0): "e9fd593ccdf73ea48e8d280d75b890d89f8161695071c1781f86d20ee59b7a19",  # 2026-11-14 key pruning (2.3): depth 10 -> 9, blocks 36 -> 31
-    ("disjoint", 0): "84a71640e61d60e7e09e356f38fe6297bbc072c81afba97fa0c71c3ce93acf89",  # 2026-11-14 key pruning: same totals (9, 28)
-    ("per_task", 0): "0df851c3acf7b61e1a8bd79f16ad0f9fd0f53807c5a7ef634b0c73925b1f3993",  # 2026-11-14 key pruning: same totals (9, 24)
-    ("joint", 1): "62d1be543bcea0b8242e3c7213f9f82898577b147ab475b8db0df1a8a9760b02",
-    ("disjoint", 1): "dd83f6bc9962048dd56275f8142cbb10e8b4889d7eba877c93ca0ff80a5d4e93",
-    ("per_task", 1): "62d1be543bcea0b8242e3c7213f9f82898577b147ab475b8db0df1a8a9760b02",
-    ("joint", 2): "0056e70905fc70ca91bf79b92d6313d2367347adb61dacfb859360f768dde64a",  # 2026-11-13: joint pool simulated, same totals
-    ("disjoint", 2): "16296479245e1f310425f1b7e388fed3761953cbf424d0d43536d3ad2d51ae39",
-    ("per_task", 2): "57ddde2b9eb72d69671ea259cee648d41def369736a7291a8977b19788bd5a13",
-    ("joint", 3): "d653f8b2df9ee85839c15378ffe683191867be0f4efb9310afc1f068e8316788",
-    ("disjoint", 3): "80649da6da555fcdc4bd5589ee39e14af6a21012e3a9df6c7eb4ca4a28e6e155",
-    ("per_task", 3): "d653f8b2df9ee85839c15378ffe683191867be0f4efb9310afc1f068e8316788",
-    ("joint", 4): "0090942bc443b22f4d69add18e555be29718999f43bb32bf4addfaa71f0013bb",
-    ("disjoint", 4): "5b6f0a75cd2f73b77d489796e1905b508d78073e61a777b8ff0b1f86cb442187",
-    ("per_task", 4): "0090942bc443b22f4d69add18e555be29718999f43bb32bf4addfaa71f0013bb",
-    ("joint", 5): "4a5389c4885dea09e728fcc879bf9ab709c21f944975690133d6ece7ff9a2a1d",  # 2026-11-13: joint pool simulated, same totals
-    ("disjoint", 5): "b3b00aebf004fc1e89bf674d9d9655ca3ea3c3be197fbf4f7568c6e5f1a77748",
-    ("per_task", 5): "4e62db9f47fb3831cead683627f98f2c9b2b2f0bb6c6b1c00c0c6c2a9590943e",
+    ("joint", 0): "136f87205545d86fce24eb52816209e2c2e15e8562baaf5258bb01062bbf0c2f",  # 2026-11-14 key pruning (2.3): depth 10 -> 9, blocks 36 -> 31
+    ("disjoint", 0): "0128bd277eb192835aa7039d6da5b1d779872e4e397d0c3298750c4bad167284",  # 2026-11-14 key pruning: same totals (9, 28)
+    ("per_task", 0): "2d2e77d72089d1ee0a77eed9f81f294acc55118ca8848b85edb2b1f9aa6bb8eb",  # 2026-11-14 key pruning: same totals (9, 24)
+    ("joint", 1): "db3da14cbbf4fbb2817eb8ba19781224bc1bb43e371ab2e88d30fe24569abedf",
+    ("disjoint", 1): "62da9ea31433f0536f1771cd522f2321069ddd041b79e41e38bf3f97d9ac222b",
+    ("per_task", 1): "db3da14cbbf4fbb2817eb8ba19781224bc1bb43e371ab2e88d30fe24569abedf",
+    ("joint", 2): "4524c5c9a816d47c59d4ab2e3d0e026ef87ecddc2be8e94a607e9403cd84046d",  # 2026-11-13: joint pool simulated, same totals
+    ("disjoint", 2): "3e58329a7613978ac00147f2ee666d99e513b2090232fa432c9b782cf79a35ca",
+    ("per_task", 2): "d673a49688a720e7c676909e91e4831bdabcdd94e447a6aad3f2b10ea8823759",
+    ("joint", 3): "e9d857914c702868c4079249d995b5d73e7ccfc2957a5fe5ace564d767b65d1d",
+    ("disjoint", 3): "5d7e19bc29dbd385a154c93a5850e91258f271280bcafeef53ce40310c95bde8",
+    ("per_task", 3): "e9d857914c702868c4079249d995b5d73e7ccfc2957a5fe5ace564d767b65d1d",
+    ("joint", 4): "a9f1ec751c1d9b0fa78d97658db6952b86fae8fe6b5d1dcccfa25eb1ec7c633f",
+    ("disjoint", 4): "a892dc0b270778793dfb359595f8de29201041a97df2c02a30a63a6898a2d90f",
+    ("per_task", 4): "a9f1ec751c1d9b0fa78d97658db6952b86fae8fe6b5d1dcccfa25eb1ec7c633f",
+    ("joint", 5): "7db4a695d130b81c359c7f9e2d0a4a748b32cb41ab4f9a8d3d95c4a18afe200e",  # 2026-11-13: joint pool simulated, same totals
+    ("disjoint", 5): "41890e4495c30f4de8f98629d6c88dfef4671a1399b2aae6a0490e03fdae2ca0",
+    ("per_task", 5): "46737d4ea7610eb82b540632a322b0f87e7bf0e88add9b5fa7cf9fa3081bc7ff",
 }
 
 
