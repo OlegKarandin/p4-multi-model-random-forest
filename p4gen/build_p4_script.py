@@ -848,7 +848,7 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
     "priority": 3,
     "key_fields": {
       "code_flow_iat_max_2_0_": {"value": "0x5", "mask": "0x7"},
-      "code_flow_iat_mean_2_0_": {"value": "0x0", "mask": "0x0"}
+      "code_flow_iat_min_2_0_": {"value": "0x0", "mask": "0x0"}
     },
     "action_params": {"class": "1"}
   }
@@ -2227,11 +2227,14 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   if uses_timestamp(raw_feature_intervals):
     phv_pragmas += '@pa_solitary("ingress", "ig_md.now_pseudo_us")\n'
   # The coarse clock of the durations (Task 38, P3h; calc_timestamp), declared only
-  # when a duration is selected, with the same SPACE pin and for the same hazard as
-  # now_pseudo_us above (a byte shared with ig_tm_md.bypass_egress delays
-  # calc_timestamp a stage). Evidence: Task 37 compiled P3h with this pin (0 errors,
-  # base stage depth and blocks, now_coarse alone in one W container); its unpinned
-  # variant was not compiled in the final clock form. program_checks requires it.
+  # when a duration is selected, with the same SPACE pin as now_pseudo_us above, BY
+  # ANALOGY: the bypass_egress hazard was measured for the B + H + H split of
+  # now_pseudo_us, not for this field (a whole W field). What was measured with the
+  # pin: Task 37's P3h compiles (0 errors, the unedited stage depth and blocks) and its
+  # live tofino-model check, and Task 38's 8 recompiled fixture designs with a duration
+  # (0 errors, model stage depth exact); in each, now_coarse sits alone in one W
+  # container. The unpinned variant was not compiled in the final clock form.
+  # program_checks requires the pin.
   if uses_coarse_clock(raw_feature_intervals):
     metadata_code = "\tbit<32> now_coarse;\n" + metadata_code
     phv_pragmas += '@pa_solitary("ingress", "ig_md.now_coarse")\n'
@@ -2573,8 +2576,9 @@ _REGISTER_ACTION_BODIES = {
   #     variant P3h): p4c compiled exactly this body at the unedited program's stage
   #     depth and blocks (independent_M050_s13_k07 7 / 36, joint-off_M025_s06_k17
   #     8 / 22), prog.bfa `grt.u lo, phv_lo, -lo, -65535` / `alu_a cmplo, hi, 65535` /
-  #     `ssubu !cmplo, hi, phv_lo, lo` / `minu lo, lo, phv_lo` / `output alu_hi` (1
-  #     compare, no MathUnit, no silent rewrite); live on tofino-model an exact
+  #     `ssubu !cmplo, hi, phv_lo, lo` / `minu lo, lo, phv_lo` / `output (cmplo |
+  #     !cmplo), alu_hi` (1 compare, no MathUnit, no silent rewrite; Task 38's
+  #     recompiles gave the same ops); live on tofino-model an exact
   #     emulation of the compiled program matched 64/64 packets and the clamp of a
   #     4.5 s gap. The clock operand must be a plain field: with a sliced / cast clock
   #     the two `rv =` branches are refused ("Incompatible outputs in RegisterAction:

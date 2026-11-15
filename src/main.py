@@ -403,6 +403,8 @@ def remove_correlated_features_both_datasets(df_app, df_ddos, threshold=0.95):
 # (P3h, 2026-11-15) replaced the six Means in place: Fwd/Bwd.Packet.Length.Mean and
 # Packet.Length.Mean -> the *.Packet.Length.Total sums, Flow/Fwd/Bwd.IAT.Mean -> the
 # durations Flow.Duration / Fwd.IAT.Total / Bwd.IAT.Total (dataset.DERIVED_FEATURES).
+# Those three are in COARSE TICKS (65.536 us), NOT the microseconds the CSV columns of
+# the same names hold: dataset.py converts them (see its UNITS note).
 CAMPAIGN_FEATURES = (
     'Fwd.Packet.Length.Max', 'Fwd.Packet.Length.Min', 'Fwd.Packet.Length.Total',
     'Bwd.Packet.Length.Max', 'Bwd.Packet.Length.Min', 'Bwd.Packet.Length.Total',

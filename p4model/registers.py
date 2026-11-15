@@ -50,7 +50,7 @@ def feature_readiness_level(feature_name, catalog=None):
   produces its chain's inter-arrival time (a scratch field of its own), which
   the paired "value" register consumes.
   A register shared between two features (flow_last_arrival_time, executed
-  once for both flow_iat_max and flow_iat_mean) still sits on both features'
+  once for both flow_iat_max and flow_iat_min) still sits on both features'
   critical paths, so it counts for both.
 
   A feature absent from the catalog gets no registers emitted at all

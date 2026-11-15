@@ -716,6 +716,30 @@ def test_read_DDOS_dataset_clips_outliers_to_threshold(monkeypatch):
     assert (result['Feat1'] == threshold).any()
 
 
+def test_the_loader_returns_durations_in_coarse_ticks_not_the_csv_microseconds(monkeypatch):
+    # Task 38: Flow.Duration / Fwd.IAT.Total / Bwd.IAT.Total name both the CSV columns
+    # (us) and the training features (65.536 us ticks); the loader must hand out the
+    # ticks, round to nearest, clipped at 65535, and the length Totals as summed.
+    import pandas as pd
+    from src.training import dataset as dataset_mod
+
+    us = [0, 32, 33, 65535, 1000000, 10 ** 9]          # 33 us rounds up, 32 us down
+    ticks = [0, 0, 1, 1000, 15259, 65535]
+    fake_df = pd.DataFrame({
+        'ProtocolName': ['SKYPE'] * len(us), 'Flow.Duration': us, 'Fwd.IAT.Total': us,
+        'Bwd.IAT.Total': us, 'Total.Length.of.Fwd.Packets': [1, 2, 3, 4, 5, 60000],
+        'Total.Length.of.Bwd.Packets': [10, 20, 30, 40, 50, 60000]})
+    monkeypatch.setattr(dataset_mod.pd, 'read_csv', lambda *a, **k: fake_df.copy())
+    names = ['Flow.Duration', 'Fwd.IAT.Total', 'Bwd.IAT.Total', 'Fwd.Packet.Length.Total',
+             'Packet.Length.Total']
+    result = dataset_mod.read_app_dataset(names, 65535)
+    for name in ('Flow.Duration', 'Fwd.IAT.Total', 'Bwd.IAT.Total'):
+        assert result[name].tolist() == ticks, name
+    assert result['Fwd.Packet.Length.Total'].tolist() == [1, 2, 3, 4, 5, 60000]
+    assert result['Packet.Length.Total'].tolist() == [11, 22, 33, 44, 55, 65535]
+    assert dataset_mod.coarse_ticks(65536 / 1000 * 7).tolist() == 7
+
+
 # ---------------------------------------------------------------------------
 # Task 8: Planter RF_EB-style exact-match resource accounting
 # ---------------------------------------------------------------------------

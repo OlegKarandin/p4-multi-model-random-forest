@@ -209,7 +209,7 @@ def _parse_priorities(text):
 # whose body executes a RegisterAction (`<name>_action.execute(`), which every
 # program generated before decisions 1a / 7.1 option B (2026-11-14) carries.
 # A direction test inside a RegisterAction body (`if (meta.fwd == 1) { value =
-# ..._halve_unit.execute(...); }`) is not one.
+# value |+| hdr.ipv4.total_len; }`) is not one.
 _GATED_BLOCK = re.compile(
     r'if\s*\(\s*meta\.fwd\s*==\s*[01]\s*\)\s*\{[^{}]*?\b\w+_action\.execute\(')
 

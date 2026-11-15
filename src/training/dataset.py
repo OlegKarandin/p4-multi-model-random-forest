@@ -31,6 +31,14 @@ def coarse_ticks(duration_us):
 
 
 # feature name -> (the raw CSV columns it reads, the function of their arrays)
+# UNITS, read this before touching the CSVs directly: Flow.Duration, Fwd.IAT.Total and
+# Bwd.IAT.Total are BOTH the raw CSV columns (MICROSECONDS) and the derived training
+# features of the same name (COARSE TICKS of 65.536 us). derive_features replaces the
+# first by the second, so every frame this module returns, and every forest trained on it,
+# is in ticks. A reader of the raw CSV by these names gets microseconds; the switch
+# would install those thresholds as ticks (these are not IAT features, units.switch_range)
+# and be wrong by a factor of 65.5. No range check can catch it here: both are clipped at
+# 65535. Read the features through read_app_dataset / read_DDOS_dataset only.
 DERIVED_FEATURES = {
 	'Flow.Duration': (('Flow.Duration',), lambda d: coarse_ticks(d)),
 	'Fwd.IAT.Total': (('Fwd.IAT.Total',), lambda d: coarse_ticks(d)),

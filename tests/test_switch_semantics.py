@@ -144,7 +144,6 @@ _MASK = 0xFFFF
 
 def _p4_expr(text):
     text = text.replace("(bit<16>)", "")
-    text = re.sub(r"\w+_halve_unit\.execute\(", "_halve(", text)
     text = re.sub(r"(\w+)_action\.execute\(meta\.flow_hash\)", r'_run("\1")', text)
     # saturating subtraction (C1f's gap): a |-| b = max(a - b, 0)
     text = re.sub(r"([\w.\[\]\"]+) \|-\| ([\w.\[\]\"]+)", r"_ssub(\1, \2)", text)
@@ -214,7 +213,7 @@ class _Switch:
                 "\n".join("  " + line for line in _p4_to_python(body.splitlines()).splitlines()))
             # a pair's members are 32 bits each
             mask = (1 << (32 if word == "dur_pair_t" else int(word[4:-1]))) - 1
-            scope = {"_w": lambda x, mask=mask: x & mask, "_halve": lambda x: (x & _MASK) // 2,
+            scope = {"_w": lambda x, mask=mask: x & mask,
                      "_ssub": lambda a, b: max(a - b, 0),
                      "_sadd": lambda a, b, mask=mask: min(a + b, mask)}
             exec(source, scope)

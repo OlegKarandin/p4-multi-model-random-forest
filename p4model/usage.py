@@ -59,7 +59,7 @@ class ResourceUsage:
                           (register_names_for) the selected feature(s)
                           resolve to, deduplicated by name -- shared
                           dependency registers (e.g. flow_last_arrival_time,
-                          reused by flow_iat_max and flow_iat_mean) are
+                          reused by flow_iat_max and flow_iat_min) are
                           counted once, matching
                           generate_P4_registers_and_apply's own by-name
                           dedup, and deduplicated ACROSS both models too:

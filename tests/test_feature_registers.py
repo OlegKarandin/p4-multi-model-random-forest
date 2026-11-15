@@ -89,7 +89,7 @@ M1_FEATURE_INTERVALS = {
 # (flow_last_arrival_time) -- the shared-dependency dedup scenario M2-B1
 # fixed (with flow_iat_mean then; Task 38 replaced it by flow_duration, which
 # has no dependency register and is here to show that).
-M2_MEAN_FEATURE_INTERVALS = {
+M2_SHARED_DEPENDENCY_FEATURE_INTERVALS = {
     "flow_iat_max": None,
     "flow_iat_min": None,
     "flow_duration": None,
@@ -99,7 +99,7 @@ M2_MEAN_FEATURE_INTERVALS = {
 # together -- confirms flow_last_arrival_time (shared by flow_iat_max +
 # flow_iat_min) and fwd_last_arrival_time (independent, fwd_iat_max only)
 # don't cross-contaminate each other's dedup accounting.
-M2_MEAN_PLUS_FWD_FEATURE_INTERVALS = {
+M2_SHARED_DEPENDENCY_PLUS_FWD_FEATURE_INTERVALS = {
     "flow_iat_max": None,
     "fwd_iat_max": None,
     "flow_iat_min": None,
@@ -154,13 +154,13 @@ def m1_generated():
 
 
 @pytest.fixture(scope="module")
-def m2_mean_generated():
-  return generate_P4_registers_and_apply(M2_MEAN_FEATURE_INTERVALS)
+def m2_shared_dependency_generated():
+  return generate_P4_registers_and_apply(M2_SHARED_DEPENDENCY_FEATURE_INTERVALS)
 
 
 @pytest.fixture(scope="module")
-def m2_mean_plus_fwd_generated():
-  return generate_P4_registers_and_apply(M2_MEAN_PLUS_FWD_FEATURE_INTERVALS)
+def m2_shared_dependency_plus_fwd_generated():
+  return generate_P4_registers_and_apply(M2_SHARED_DEPENDENCY_PLUS_FWD_FEATURE_INTERVALS)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +169,7 @@ def m2_mean_plus_fwd_generated():
 
 def test_catalog_has_exactly_the_eighteen_pool_features():
   # NOTE: this test's assertion has been updated twice now -- Task M2-B1 grew
-  # it from 3 to 4 keys (adding flow_duration), and Task 9 grows it from 4 to
+  # it from 3 to 4 keys (adding flow_iat_mean, which Task 38 replaced by flow_duration), and Task 9 grows it from 4 to
   # all 18 keys of main.py's feature pool (main.py:308-314), its own required
   # deliverable. This is the one pre-existing test whose assertion changes
   # each time the catalog's scope grows; every other M1/M2 test/behavior is
@@ -434,13 +434,13 @@ def test_value_registers_assigned_with_val_suffix(m1_generated):
 # length-Total bodies (P3h).
 # ---------------------------------------------------------------------------
 
-def test_shared_dependency_register_executed_exactly_once(m2_mean_generated):
+def test_shared_dependency_register_executed_exactly_once(m2_shared_dependency_generated):
   # The core dedup fix: flow_iat_max and flow_iat_min both list
   # "flow_last_arrival_time" as a dependency register. Before the fix,
   # _execute_lines emitted one .execute() call per (feature, register)
   # pair -- two calls for one register. After the fix, exactly one call
   # site must appear, regardless of how many features reference it.
-  _, _, apply_code, _ = m2_mean_generated
+  _, _, apply_code, _ = m2_shared_dependency_generated
   assert apply_code.count("flow_last_arrival_time_action.execute(meta.flow_hash)") == 1
 
   # Both features' own "value" registers must still each get their own
@@ -541,14 +541,14 @@ def test_calc_timestamp_writes_only_the_clocks_some_register_reads(features, fin
   assert bps.uses_duration_pair(features) == ("fwd_iat_total" in features)
 
 
-def test_dedup_does_not_cross_contaminate_flow_and_fwd_namespaces(m2_mean_plus_fwd_generated):
+def test_dedup_does_not_cross_contaminate_flow_and_fwd_namespaces(m2_shared_dependency_plus_fwd_generated):
   # flow_iat_max + fwd_iat_max + flow_duration together: flow_last_arrival_time
-  # is shared (flow_iat_max + flow_duration) and deduped to one execute call;
+  # is shared (flow_iat_max + flow_iat_min) and deduped to one execute call;
   # fwd_last_arrival_time is a wholly separate, independently-touched
   # register (only fwd_iat_max references it) -- confirming the dedup fix
   # tracks *register names*, not e.g. a blanket "first dependency only" rule
   # that would incorrectly also swallow fwd's independent dependency.
-  _, _, apply_code, _ = m2_mean_plus_fwd_generated
+  _, _, apply_code, _ = m2_shared_dependency_plus_fwd_generated
   assert apply_code.count("flow_last_arrival_time_action.execute(meta.flow_hash)") == 1
   assert apply_code.count("fwd_last_arrival_time_action.execute(meta.flow_hash)") == 1
   # Two distinct dependency registers (flow_*, fwd_*), each executed once =

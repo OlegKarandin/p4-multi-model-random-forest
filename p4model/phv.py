@@ -43,9 +43,13 @@ _CODE = 'code_'
 # Task 38 (P3h): the coarse clock of the duration registers. p4c keeps the 32-bit
 # meta.now_coarse (pinned @pa_solitary) in a W container of its own and the slice it
 # copies, ig_intr_md.ingress_mac_tstamp[47:16], in another W (its low 16 bits go to a
-# tagalong container, which the ingress count does not include): +2 W on all 3 Task 37
-# compiles that have the field (phv_allocation_summary: W0 / W1, W8 / W9, and W10 /
-# W11 for the one-clock global_tstamp form), whether or not the fine clock exists.
+# tagalong container, which the ingress count does not include). Measured +2 W:
+#   * Task 37, the two P3h (mac_tstamp) compiles, both WITH the fine clock
+#     (phv_allocation_summary: W0 / W1, W8 / W9), and its one-clock global_tstamp form
+#     (W10 / W11);
+#   * Task 38, the shipped mac_tstamp form: all 8 of the 12 recompiled p4c_base_17b
+#     designs that compute the coarse clock (impl/t38), 6 with the fine clock and 2
+#     without it (joint-task_M035_s24_k07, joint-tree_M015_s02_k06).
 COARSE_CLOCK_FIELD = 'now_coarse'
 COARSE_CLOCK_CONTAINERS = (32, 32)
 

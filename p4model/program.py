@@ -110,7 +110,7 @@ VOTE_EXPORT_BITS = {'ig_tm_md.qid': 5, 'ig_tm_md.ingress_cos': 3}
 # trees key on, so every tree waits for it: all of them under 'joint' (one
 # merged interval set), and under 'disjoint' a feature both models split
 # identically -- build_p4_script._resolve_disjoint_feature_plan then emits one
-# un-prefixed table (table_1_bwd_iat_mean) instead of an _app_/_ddos_ pair.
+# un-prefixed table (table_1_bwd_iat_total) instead of an _app_/_ddos_ pair.
 # Never a ternary_task value: every classification tree belongs to one task.
 SHARED_TASK = "shared"
 
