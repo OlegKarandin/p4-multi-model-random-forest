@@ -14,12 +14,18 @@ from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
 SELECTION_RULES = ('balanced', 'tied_cheapest')
 
-# The ONE statement of the forest-size search bounds (decision 9.1, Task 19 sweep): one shared search space for every arm.
+# The ONE statement of the forest-size search bounds (decision 9.1, Task 19 / Task 26 sweeps): one shared search space
+# for every arm.
 # max_depth: feasible share was flat from depth 14 to 20 (and to 32) at fixed ccp_alpha, so 20 is a cap, not a measured edge.
-# n_estimators: odd 1..15 (voting); 15 is the largest odd count with any feasible design over the four encodings (per_tree;
-# joint 7, disjoint/per_task 11) at ccp_alpha 1e-3 -- the tree bound DEPENDS on ccp_alpha (at 1e-4 only 1 tree is feasible).
+# n_estimators: odd 1..7 (voting), user decision 2026-11-15 on results/encoding_evidence_2026_11/model8/impl/bounds_ccp.md
+# (model only): best feasible accuracy peaks at 3-7 trees and is flat or falls after (the largest odd count within 0.5
+# points of the best is joint 3, disjoint/per_task 5, per_tree 7, over the ccp_alpha values shipped models use: p50 1.4e-4,
+# p90 1.7e-3, 11,322 rows of campaigns 2026_11/11d/11e); and the vote table, which the model does not price, has
+# classes**trees entries: at 7 trees app 2,187 (4 SRAM RAMs, 0 TCAM; probe_vote_table.md), at 11 a 177,147-entry table
+# p4c did not finish compiling. (The old cap was 15 trees, chosen as the largest odd count with any feasible design at
+# ccp_alpha 1e-3, which is about the 83rd percentile of shipped models, not their median.)
 # train_model re-exports both for the search and the warm-start jitter.
-SEARCH_MAX_TREES = 15
+SEARCH_MAX_TREES = 7
 SEARCH_MAX_DEPTH = 20
 
 # The arm names `_run_elimination` and the rows' `arm` column use, and the
@@ -107,12 +113,12 @@ class TrainConfig:
         (max_depth - 1) = 104, is attained at the grid's own top corner
         (15, 14).
 
-        Decision 9.1 (2026-11-15 model-only sweep, model8/impl/bounds.md) set the defaults to
-        SEARCH_MAX_TREES = 15 (odd 1..15) and SEARCH_MAX_DEPTH = 20, one search space for every arm: the
-        feasible share is flat in depth from 14 to 32, and 15 trees is the largest odd count with anything
-        feasible over the encodings (per_tree; joint 7, disjoint/per_task 11) at ccp_alpha 1e-3. The tree bound
-        depends on ccp_alpha (at 1e-4 only 1 tree is feasible), which the sweep fixed. The paragraphs above
-        describe the older capacity-ceiling derivation of (7, 14).
+        Decision 9.1 (2026-11-15, model-only sweeps model8/impl/bounds.md and bounds_ccp.md) sets the
+        defaults to SEARCH_MAX_TREES = 7 (odd 1..7) and SEARCH_MAX_DEPTH = 20, one search space for every
+        arm: the feasible share is flat in depth from 14 to 32; accuracy peaks at 3-7 trees and nothing
+        beyond 7 is within 0.5 points of the best at the ccp_alpha values shipped models use (median
+        1.4e-4); and at 7 trees the app vote table is 2,187 entries (4 SRAM RAMs, 0 TCAM). The paragraphs
+        above describe the older capacity-ceiling derivation of (7, 14).
     n_trees_min : inclusive lower bound on the search space for n_trees.
         Defaults to 1, which is `rf_params`'s old hardcoded lower bound.
         Set to n_trees to pin that dimension (the T-pinning mechanism used by
