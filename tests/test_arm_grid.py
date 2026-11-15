@@ -5,22 +5,14 @@ from src import main as m
 from src.training.config import TrainConfig
 
 
-def test_primary_grid_is_three_arms():
-    """independent, joint with alignment OFF, and joint. `off` is a genuine
-    skip of the align_rf_thresholds call, provably prediction-identical to the
-    unaligned models, and it doubles as the ablation the reviewer asked for.
-
-    Until 2026-09-14 the third arm was swept across three overlap thresholds
-    (design §2.4), giving five primary arms; Task 7 (design D4) removed that
-    tunable. Until 2026-09-15 it was additionally the delta = 0 member of a
-    six-value tolerance sweep, so its slug read 'joint-d000'; Track 5 returned
-    delta_helps = FALSE and the sweep is gone, leaving one aligned joint arm
-    whose slug is plain 'joint'.
-    """
+def test_primary_grid_is_two_arms_and_legacy_joint_stays_nameable():
+    """Decision 9.5: the legacy in-search `joint` arm left the preset; alignment
+    is a post-processing twin now. The slug stays selectable by name."""
     slugs = [cfg.arm_slug('disjoint' if arm == 'independent' else 'joint')
              for arm, cfg in m.PRIMARY_ARMS]
-
-    assert slugs == ['independent', 'joint-off', 'joint']
+    assert slugs == ['independent', 'joint-off']
+    [(arm, cfg)] = m.select_arm_slugs(['joint'])
+    assert arm == 'joint' and cfg.alignment_enabled
 
 
 def test_delta_select_is_identical_across_every_arm():
@@ -36,10 +28,9 @@ def test_result_paths_are_self_describing_and_unique_per_arm():
     from src.training.campaign_runner import Job
     paths = {Job(arm, cfg, 25, 0).csv_path('run') for arm, cfg in m.PRIMARY_ARMS}
 
-    assert len(paths) == 3
+    assert len(paths) == 2
     assert any(p.endswith('rf_t7_d14_M025_independent_s00.csv') for p in paths)
     assert any(p.endswith('rf_t7_d14_M025_joint-off_s00.csv') for p in paths)
-    assert any(p.endswith('rf_t7_d14_M025_joint_s00.csv') for p in paths)
 
 
 def test_result_paths_record_the_effective_search_bounds():
@@ -75,8 +66,8 @@ def test_select_arms_returns_the_requested_grid():
         m.select_arms('all')
 
 
-def test_the_grid_is_three_arms_with_three_distinct_slugs():
-    """independent (1) + joint-off (1) + joint (1).
+def test_the_grid_is_two_arms_with_two_distinct_slugs():
+    """independent (1) + joint-off (1).
 
     Until 2026-09-14 the aligned arms were also swept across 3 overlap
     thresholds, and until 2026-09-15 across 6 delta_align tolerances -- 20 arms
@@ -85,11 +76,11 @@ def test_the_grid_is_three_arms_with_three_distinct_slugs():
     from src.main import select_arms
 
     arms = select_arms('primary')
-    assert len(arms) == 3
+    assert len(arms) == 2
 
     slugs = {cfg.arm_slug('joint' if arm == 'joint' else 'disjoint')
              for arm, cfg in arms}
-    assert len(slugs) == 3
+    assert len(slugs) == 2
 
 
 def test_every_campaign_arm_enables_ccp_alpha():
@@ -140,7 +131,7 @@ def test_the_arm_grid_lost_the_overlap_and_delta_axes():
     assert not hasattr(main, 'OVERLAP_THRESHOLDS')
     assert not hasattr(main, 'DELTA_ALIGNS')
     assert not hasattr(main, 'SENSITIVITY_ARMS')
-    assert len(main.PRIMARY_ARMS) == 3
+    assert len(main.PRIMARY_ARMS) == 2
 
     slugs = [cfg.arm_slug('joint' if arm == 'joint' else 'disjoint')
              for arm, cfg in main.select_arms('primary')]

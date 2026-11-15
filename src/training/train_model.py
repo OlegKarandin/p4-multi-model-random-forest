@@ -59,8 +59,19 @@ CCP_ALPHA_MIN = 1e-6
 # overall; restricting further to leaf<=60, 9029 pairs (64.0% of the same
 # 14110) are binding, and the measured p99 of THAT leaf<=60 binding subset is
 # 66.0.
-MIN_SAMPLES_SPLIT_MULT_MIN = 3
+#
+# Decision 9.1 widened both bounds: the multiplier now starts at 2 (a split of
+# exactly 2*leaf is reachable; it is inert as a split bound but the search no
+# longer excludes it) and min_samples_leaf is a log-uniform integer 1..55.
+MIN_SAMPLES_SPLIT_MULT_MIN = 2
 MIN_SAMPLES_SPLIT_MULT_MAX = 66
+# The ONE statement of the leaf bounds: the search (rf_params) and the
+# warm-start jitter (_vary_hyperparams) both read these.
+MIN_SAMPLES_LEAF_MIN = 1
+MIN_SAMPLES_LEAF_MAX = 55
+# Log-space jitter steps for the leaf warm start (natural log; +-0.5 is a factor
+# of ~1.65, the log-scale analogue of the old +-10 step on a linear range).
+_LEAF_JITTER_LOG_STEPS = (-0.5, 0.0, 0.5)
 
 
 def min_samples_split_from_mult(min_samples_leaf, mult):
@@ -92,8 +103,12 @@ def _vary_hyperparams(params: dict, n_trees: int, max_depth: int,
             delta = int(rng.choice([-1, 0, 1]))
             varied[key] = max(2, min(max_depth, varied[key] + delta))
         elif 'min_samples_leaf' in key:
-            delta = int(rng.choice([-10, 0, 10]))
-            varied[key] = max(5, min(55, varied[key] + delta))
+            # The leaf is searched log-uniformly, so it is jittered
+            # multiplicatively (a +-10 step would swamp values near 1).
+            step = float(rng.choice(_LEAF_JITTER_LOG_STEPS))
+            jittered = int(round(varied[key] * float(np.exp(step))))
+            varied[key] = max(MIN_SAMPLES_LEAF_MIN,
+                              min(MIN_SAMPLES_LEAF_MAX, jittered))
         elif 'min_samples_split_mult' in key:
             delta = int(rng.choice([-2, -1, 0, 1, 2]))
             varied[key] = max(MIN_SAMPLES_SPLIT_MULT_MIN,
@@ -313,13 +328,11 @@ def train_multi_RF_Optuna_multi_constrained(
         the two cannot drift. `source` is a trial (during the search) or a plain
         params dict (when refitting the winner)."""
         if hasattr(source, 'suggest_int'):
-            # [5,200] -> [5,60]: the archive puts 44% at the floor and p75 at
-            # 35, with 0% at the cap, so [35,200] was near-unused range that
-            # TPE still had to explore. Reachable set {5,15,25,35,45,55} is a
-            # strict subset of the old one, so this loses no configuration the
-            # search was actually reaching. If a rerun then piles at 55, widen
-            # it -- narrowing is the cheap direction to be wrong in.
-            leaf = source.suggest_int('min_samples_leaf_' + suffix, 5, 60, step=10)
+            # Decision 9.1: log-uniform integer 1..55 (was 5..55 step 10, which
+            # could not express the small leaves the archive piled up at).
+            leaf = source.suggest_int('min_samples_leaf_' + suffix,
+                                      MIN_SAMPLES_LEAF_MIN, MIN_SAMPLES_LEAF_MAX,
+                                      log=True)
             mult = source.suggest_int(
                 'min_samples_split_mult_' + suffix,
                 MIN_SAMPLES_SPLIT_MULT_MIN, MIN_SAMPLES_SPLIT_MULT_MAX)

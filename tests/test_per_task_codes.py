@@ -552,11 +552,11 @@ def test_arm_identity_flows_through_config_row_id_jobs_and_the_loader():
         arm_encoding("joint_task")
 
 
-def test_the_primary_preset_is_unchanged():
+def test_the_primary_preset_is_independent_and_joint_off():
     from src.main import select_arms
     from src.training.config import arm_encoding
     assert [cfg.arm_slug(arm_encoding(arm)) for arm, cfg in select_arms("primary")] == [
-        "independent", "joint-off", "joint"]
+        "independent", "joint-off"]
 
 
 def test_row_artifacts_of_the_arm_replay_to_the_trainings_numbers(tmp_path):

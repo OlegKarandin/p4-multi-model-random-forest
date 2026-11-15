@@ -62,8 +62,12 @@ PRIMARY_ARMS = [
     ('independent', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
     ('joint', TrainConfig(alignment_enabled=False,
                           ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
-    ('joint', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX)),
 ]
+
+# The legacy in-search aligned arm (slug `joint`), out of the 'primary' preset
+# since decision 9.5 (alignment is a post-processing twin, `joint-off-al`). It
+# stays reachable explicitly: --arm-slugs joint.
+LEGACY_JOINT_ARM_ENTRY = ('joint', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
 
 # The per-task encoding (p4model.program.PER_TASK_ENCODING): named by slug
 # (--arm-slugs joint-task), not part of the 'primary' preset, whose three arms
@@ -105,7 +109,8 @@ def select_arm_slugs(slugs):
     rather than the answer.
     """
     catalogue = {}
-    for arm, cfg in PRIMARY_ARMS + [PER_TASK_ARM_ENTRY, PER_TREE_ARM_ENTRY]:
+    for arm, cfg in PRIMARY_ARMS + [LEGACY_JOINT_ARM_ENTRY, PER_TASK_ARM_ENTRY,
+                                    PER_TREE_ARM_ENTRY]:
         catalogue[cfg.arm_slug(arm_encoding(arm))] = (arm, cfg)
 
     chosen = []
@@ -129,9 +134,9 @@ def parse_args(argv=None):
              "today's checked-in new_results=False behavior)")
     parser.add_argument(
         "--arms", choices=["primary"], default="primary",
-        help="which arm grid to run in compute mode. 'primary' is the three "
-             "arms the headline comparison needs (independent, joint@off and "
-             "joint). The 'sensitivity'/'all' grids are gone with the "
+        help="which arm grid to run in compute mode. 'primary' is the two "
+             "arms the headline comparison needs (independent, joint-off; "
+             "aligned twins come from src.training.align_twins). The 'sensitivity'/'all' grids are gone with the "
              "delta_align tolerance axis they swept (2026-09-15)")
     parser.add_argument(
         "--arm-slugs", dest="arm_slugs", type=_parse_arm_slugs, default=None,

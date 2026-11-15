@@ -673,16 +673,44 @@ def test_no_reachable_multiplier_pair_is_inert(leaf):
 
     for mult in range(tm.MIN_SAMPLES_SPLIT_MULT_MIN,
                       tm.MIN_SAMPLES_SPLIT_MULT_MAX + 1):
-        assert tm.min_samples_split_from_mult(leaf, mult) > 2 * leaf
+        assert tm.min_samples_split_from_mult(leaf, mult) >= 2 * leaf
 
 
-def test_multiplier_minimum_is_the_smallest_binding_integer():
-    """mult=2 gives split == 2*leaf, which is exactly the inert boundary."""
+def test_multiplier_bounds_are_two_to_sixty_six():
+    """Decision 9.1: the multiplier starts at 2 (split == 2*leaf is the
+    boundary, reachable); mult=3 is the first that always binds."""
     import src.training.train_model as tm
 
-    assert tm.MIN_SAMPLES_SPLIT_MULT_MIN == 3
-    assert tm.min_samples_split_from_mult(25, 2) == 50  # == 2*leaf, inert
-    assert tm.min_samples_split_from_mult(25, 3) == 75  # > 2*leaf, binds
+    assert (tm.MIN_SAMPLES_SPLIT_MULT_MIN, tm.MIN_SAMPLES_SPLIT_MULT_MAX) == (2, 66)
+    assert tm.min_samples_split_from_mult(25, 2) == 50
+    assert tm.min_samples_split_from_mult(25, 3) == 75
+
+
+def test_search_declares_the_multiplier_range():
+    dist = _search_distributions()['min_samples_split_mult_A']
+    assert (dist.low, dist.high) == (2, 66)
+
+
+def test_leaf_jitter_stays_inside_the_bounds_and_moves_small_values():
+    import numpy as np
+    import src.training.train_model as tm
+
+    lo, hi = tm.MIN_SAMPLES_LEAF_MIN, tm.MIN_SAMPLES_LEAF_MAX
+    seen = set()
+    for start in (1, 2, 5, 30, 55):
+        rng = np.random.default_rng(0)
+        for _ in range(200):
+            out = tm._vary_hyperparams(
+                {'min_samples_leaf_A': start, 'min_samples_split_mult_A': 2,
+                 'n_estimators_A': 3, 'max_depth_A': 5}, 7, 14, rng)
+            assert lo <= out['min_samples_leaf_A'] <= hi
+            assert out['n_estimators_A'] % 2 == 1
+            assert (tm.MIN_SAMPLES_SPLIT_MULT_MIN <= out['min_samples_split_mult_A']
+                    <= tm.MIN_SAMPLES_SPLIT_MULT_MAX)
+            seen.add((start, out['min_samples_leaf_A']))
+    assert (30, 30) in seen and any(s == 30 and v != 30 for s, v in seen)
+    assert (1, 1) in seen and all(v >= 1 for _, v in seen)
+    assert any(s == 55 and v == 55 for s, v in seen)
 
 
 def _search_distributions(cfg=None):
@@ -707,16 +735,11 @@ def _search_distributions(cfg=None):
     return captured['study'].trials[0].distributions
 
 
-def test_min_samples_leaf_range_is_narrowed_to_the_region_the_search_uses():
-    """Archive utilisation: 44% sit at the floor, p75 = 35, 0% at the 200 cap.
-    [35,200] was near-unused, so the top of the range was wasted budget.
-    Reachable set is {5,15,25,35,45,55}, a strict SUBSET of the old reachable
-    set -- nothing previously reachable inside the retained band is lost."""
-    dist = _search_distributions()['min_samples_leaf_A']
-
-    assert (dist.low, dist.high, dist.step) == (5, 55, 10)
-    reachable = list(range(dist.low, dist.high + 1, dist.step))
-    assert reachable == [5, 15, 25, 35, 45, 55]
+def test_min_samples_leaf_is_log_uniform_integer_one_to_fifty_five():
+    """Decision 9.1: was 5..55 step 10."""
+    for name in ('min_samples_leaf_A', 'min_samples_leaf_B'):
+        dist = _search_distributions()[name]
+        assert (dist.low, dist.high, dist.step, dist.log) == (1, 55, 1, True)
 
 
 def test_the_search_declares_a_multiplier_and_no_raw_split():

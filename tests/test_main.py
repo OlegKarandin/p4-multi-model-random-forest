@@ -298,17 +298,17 @@ def test_compute_mode_runs_one_arm_per_job_and_writes_one_file_each(tmp_path):
     calls = []
     _run_compute(_compute_args(tmp_path), calls)
 
-    assert len(calls) == 3 * 2              # 3 primary arms x 2 splits
+    assert len(calls) == 2 * 2              # 2 primary arms x 2 splits
     # Each job carried ITS OWN (arm, cfg) pair -- not the same cfg reused, and
     # not arm/cfg transposed between jobs.
     assert sorted((m.PRIMARY_ARMS.index((arm, cfg)), s)
                   for arm, cfg, _M, s in calls) == \
-        [(i, s) for i in range(3) for s in (0, 1)]
+        [(i, s) for i in range(2) for s in (0, 1)]
     rows_dir = tmp_path / "run" / "rows"
     written = sorted(p.name for p in rows_dir.iterdir())
-    assert len(written) == 6
+    assert len(written) == 4
     assert all(name.endswith('.csv') for name in written)   # no .partial left
-    assert 'rf_t7_d14_M025_joint_s01.csv' in written
+    assert 'rf_t7_d14_M025_joint-off_s01.csv' in written
 
 
 def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp_path):
@@ -316,7 +316,7 @@ def test_independent_arm_rows_do_not_carry_the_joint_arms_alignment_settings(tmp
     value the aligned joint arm uses, so it must be stamped per arm (spec
     A.2/C.1). overlap_threshold and delta_align are no longer written at all."""
     import pandas as pd
-    _run_compute(_compute_args(tmp_path), [])
+    _run_compute(_compute_args(tmp_path, "--arm-slugs", "independent,joint"), [])
     rows_dir = tmp_path / "run" / "rows"
     independent_df = pd.read_csv(rows_dir / 'rf_t7_d14_M025_independent_s00.csv')
     joint_df = pd.read_csv(rows_dir / 'rf_t7_d14_M025_joint_s00.csv')
@@ -335,7 +335,7 @@ def test_a_split_whose_file_already_exists_is_skipped(tmp_path):
     first, second = [], []
     _run_compute(_compute_args(tmp_path), first)
     _run_compute(_compute_args(tmp_path), second)
-    assert len(first) == 6
+    assert len(first) == 4
     assert second == []
 
 
@@ -343,7 +343,7 @@ def test_redo_forces_recomputation(tmp_path):
     first, second = [], []
     _run_compute(_compute_args(tmp_path), first)
     _run_compute(_compute_args(tmp_path, "--redo"), second)
-    assert len(second) == 6
+    assert len(second) == 4
 
 
 def test_redo_is_refused_once_the_run_has_verify_results(tmp_path, capsys):
@@ -369,7 +369,7 @@ def test_without_redo_a_verified_run_still_resumes(tmp_path):
     (verify / "x.json").write_text("{}")
     calls = []
     _run_compute(_compute_args(tmp_path), calls)
-    assert len(calls) == 6
+    assert len(calls) == 4
 
 
 def test_redo_flag_defaults_to_off():
@@ -539,7 +539,7 @@ def test_a_run_manifest_lands_in_the_run_dir_with_the_grid_actually_used(tmp_pat
     assert loaded['M_values'] == [25, 'inf']
     assert loaded['splits'] == [0]
     assert loaded['dataset_rows'] == {'app': 37, 'ddos': 53}
-    assert len(loaded['arms']) == 3
+    assert len(loaded['arms']) == 2
     assert len(loaded['batches']) == 1
     # rows/ holds only split CSVs: the manifest never competes with them.
     assert all(p.name.endswith('.csv') for p in (tmp_path / "run" / "rows").iterdir())
