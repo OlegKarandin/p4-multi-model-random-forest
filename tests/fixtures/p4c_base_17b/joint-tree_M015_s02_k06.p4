@@ -263,12 +263,12 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_0 {
         key = {
-            meta.code_pk_bwd_iat_mean[8:0] : ternary;
-            meta.code_pk_bwd_packet_length_max[31:16] : ternary;
-            meta.code_pk_bwd_packet_length_mean[15:0] : ternary;
-            meta.code_pk_bwd_packet_length_min[2:0] : ternary;
-            meta.code_pk_min_packet_length[1:0] : ternary;
-            meta.code_pk_packet_length_mean[16:0] : ternary;
+            meta.code_pk_bwd_iat_mean[8:0] : ternary @name("code_pk_bwd_iat_mean_8_0_");
+            meta.code_pk_bwd_packet_length_max[31:16] : ternary @name("code_pk_bwd_packet_length_max_31_16_");
+            meta.code_pk_bwd_packet_length_mean[15:0] : ternary @name("code_pk_bwd_packet_length_mean_15_0_");
+            meta.code_pk_bwd_packet_length_min[2:0] : ternary @name("code_pk_bwd_packet_length_min_2_0_");
+            meta.code_pk_min_packet_length[1:0] : ternary @name("code_pk_min_packet_length_1_0_");
+            meta.code_pk_packet_length_mean[16:0] : ternary @name("code_pk_packet_length_mean_16_0_");
         }
         actions = {
             classify_flow_codeword_app_0;        
@@ -279,12 +279,12 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_0 {
         key = {
-            meta.code_pk_bwd_iat_mean[11:9] : ternary;
-            meta.code_pk_bwd_packet_length_max[5:0] : ternary;
-            meta.code_pk_bwd_packet_length_mean[18:16] : ternary;
-            meta.code_pk_bwd_packet_length_min[3:3] : ternary;
-            meta.code_pk_min_packet_length[2:2] : ternary;
-            meta.code_pk_packet_length_mean[31:24] : ternary;
+            meta.code_pk_bwd_iat_mean[11:9] : ternary @name("code_pk_bwd_iat_mean_11_9_");
+            meta.code_pk_bwd_packet_length_max[5:0] : ternary @name("code_pk_bwd_packet_length_max_5_0_");
+            meta.code_pk_bwd_packet_length_mean[18:16] : ternary @name("code_pk_bwd_packet_length_mean_18_16_");
+            meta.code_pk_bwd_packet_length_min[3:3] : ternary @name("code_pk_bwd_packet_length_min_3_3_");
+            meta.code_pk_min_packet_length[2:2] : ternary @name("code_pk_min_packet_length_2_2_");
+            meta.code_pk_packet_length_mean[31:24] : ternary @name("code_pk_packet_length_mean_31_24_");
         }
         actions = {
             classify_flow_codeword_ddos_0;        
@@ -295,11 +295,11 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_1 {
         key = {
-            meta.code_pk_bwd_iat_mean[17:16] : ternary;
-            meta.code_pk_bwd_packet_length_max[12:8] : ternary;
-            meta.code_pk_bwd_packet_length_mean[21:19] : ternary;
-            meta.code_pk_min_packet_length[3:3] : ternary;
-            meta.code_pk_packet_length_mean[23:17] : ternary;
+            meta.code_pk_bwd_iat_mean[17:16] : ternary @name("code_pk_bwd_iat_mean_17_16_");
+            meta.code_pk_bwd_packet_length_max[12:8] : ternary @name("code_pk_bwd_packet_length_max_12_8_");
+            meta.code_pk_bwd_packet_length_mean[21:19] : ternary @name("code_pk_bwd_packet_length_mean_21_19_");
+            meta.code_pk_min_packet_length[3:3] : ternary @name("code_pk_min_packet_length_3_3_");
+            meta.code_pk_packet_length_mean[23:17] : ternary @name("code_pk_packet_length_mean_23_17_");
         }
         actions = {
             classify_flow_codeword_ddos_1;        
@@ -310,12 +310,12 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_2 {
         key = {
-            meta.code_pk_bwd_iat_mean[14:12] : ternary;
-            meta.code_pk_bwd_packet_length_max[39:32] : ternary;
-            meta.code_pk_bwd_packet_length_mean[26:24] : ternary;
-            meta.code_pk_bwd_packet_length_min[4:4] : ternary;
-            meta.code_pk_min_packet_length[4:4] : ternary;
-            meta.code_pk_packet_length_mean[39:32] : ternary;
+            meta.code_pk_bwd_iat_mean[14:12] : ternary @name("code_pk_bwd_iat_mean_14_12_");
+            meta.code_pk_bwd_packet_length_max[39:32] : ternary @name("code_pk_bwd_packet_length_max_39_32_");
+            meta.code_pk_bwd_packet_length_mean[26:24] : ternary @name("code_pk_bwd_packet_length_mean_26_24_");
+            meta.code_pk_bwd_packet_length_min[4:4] : ternary @name("code_pk_bwd_packet_length_min_4_4_");
+            meta.code_pk_min_packet_length[4:4] : ternary @name("code_pk_min_packet_length_4_4_");
+            meta.code_pk_packet_length_mean[39:32] : ternary @name("code_pk_packet_length_mean_39_32_");
         }
         actions = {
             classify_flow_codeword_ddos_2;        

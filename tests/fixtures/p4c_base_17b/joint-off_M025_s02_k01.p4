@@ -147,8 +147,8 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_0 {
         key = {
-            meta.code_bwd_packet_length_mean[63:0] : ternary;
-            meta.code_bwd_packet_length_mean[72:64] : ternary;
+            meta.code_bwd_packet_length_mean[63:0] : ternary @name("code_bwd_packet_length_mean_63_0_");
+            meta.code_bwd_packet_length_mean[72:64] : ternary @name("code_bwd_packet_length_mean_72_64_");
         }
         actions = {
             classify_flow_codeword_app_0;        
@@ -159,8 +159,8 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_0 {
         key = {
-            meta.code_bwd_packet_length_mean[63:0] : ternary;
-            meta.code_bwd_packet_length_mean[72:64] : ternary;
+            meta.code_bwd_packet_length_mean[63:0] : ternary @name("code_bwd_packet_length_mean_63_0_");
+            meta.code_bwd_packet_length_mean[72:64] : ternary @name("code_bwd_packet_length_mean_72_64_");
         }
         actions = {
             classify_flow_codeword_ddos_0;        
@@ -171,8 +171,8 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_1 {
         key = {
-            meta.code_bwd_packet_length_mean[63:0] : ternary;
-            meta.code_bwd_packet_length_mean[72:64] : ternary;
+            meta.code_bwd_packet_length_mean[63:0] : ternary @name("code_bwd_packet_length_mean_63_0_");
+            meta.code_bwd_packet_length_mean[72:64] : ternary @name("code_bwd_packet_length_mean_72_64_");
         }
         actions = {
             classify_flow_codeword_ddos_1;        
@@ -183,8 +183,8 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_2 {
         key = {
-            meta.code_bwd_packet_length_mean[63:0] : ternary;
-            meta.code_bwd_packet_length_mean[72:64] : ternary;
+            meta.code_bwd_packet_length_mean[63:0] : ternary @name("code_bwd_packet_length_mean_63_0_");
+            meta.code_bwd_packet_length_mean[72:64] : ternary @name("code_bwd_packet_length_mean_72_64_");
         }
         actions = {
             classify_flow_codeword_ddos_2;        

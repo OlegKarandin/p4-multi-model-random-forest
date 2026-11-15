@@ -1235,13 +1235,13 @@ def test_generate_P4_code_match_type_exact_propagates_to_generated_p4(tmp_path):
   with open(written_path, "r") as f:
     generated = f.read()
   # The classification table's own field key must be exact...
-  assert "meta.code_flow_iat_max[0:0] : exact;" in generated
+  assert 'meta.code_flow_iat_max[0:0] : exact @name("code_flow_iat_max_0_0_");' in generated
   # ...and no leftover ternary classification key text. (Note:
   # generate_voting_code's vote_ddos table also legitimately uses
   # ": exact;" on meta.class_tree_ddos_0 -- that table is unrelated to
   # match_type and always exact, so this test checks the classification
   # key specifically rather than asserting ": ternary;" is wholly absent.)
-  assert "meta.code_flow_iat_max[0:0] : ternary;" not in generated
+  assert "meta.code_flow_iat_max[0:0] : ternary" not in generated
 
 
 def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
@@ -1257,10 +1257,11 @@ def test_generate_P4_code_default_match_type_still_ternary(tmp_path):
   )
   with open(written_path, "r") as f:
     generated = f.read()
-  assert "meta.code_flow_iat_max[0:0] : ternary;" in generated
+  # B1: every sliced key carries its bf_rt name (bfrt_key_name)
+  assert 'meta.code_flow_iat_max[0:0] : ternary @name("code_flow_iat_max_0_0_");' in generated
   # (generate_voting_code's vote_ddos table legitimately uses ": exact;" on
   # meta.class_tree_ddos_0 regardless of match_type -- see note above.)
-  assert "meta.code_flow_iat_max[0:0] : exact;" not in generated
+  assert "meta.code_flow_iat_max[0:0] : exact" not in generated
 
 
 # ---------------------------------------------------------------------------
@@ -1836,7 +1837,7 @@ def test_generate_P4_code_selected_features_without_flag_changes_only_sizes(tmp_
   def _stripped(text):
     return [l for l in text.splitlines()
             if not re.match(r"size\s*=\s*\d+\s*;", l.strip())
-            and not re.match(r"meta\.code_\w+\[\d+:\d+\] : ternary;", l.strip())]
+            and not re.match(r'meta\.code_\w+\[\d+:\d+\] : ternary @name\("\w+"\);', l.strip())]
   assert _stripped(without) == _stripped(with_lists)
   full, pruned = parse_program_text(without).tables, parse_program_text(with_lists).tables
   assert full.keys() == pruned.keys()
@@ -2525,7 +2526,9 @@ def test_tree_keys_live_slice(tmp_path, encoding):
   plan = _code_plan(encoding, ia, idd)
   # no tree keys a whole code field any more
   assert not re.search(r"meta\.code_\w+ : ternary;", text)
-  keyed = re.findall(r"meta\.(code_\w+)\[(\d+):(\d+)\] : ternary;", text)
+  # each slice named as bf_rt names it (B1): code_<f>_<hi>_<lo>_
+  keyed = re.findall(r'meta\.(code_\w+)\[(\d+):(\d+)\] : ternary @name\("\1_\2_\3_"\);', text)
+  assert len(keyed) == text.count(" : ternary @name(")
   assert keyed
   for field, hi, lo in keyed:
     assert (int(hi), int(lo)) == (len(plan[field[len("code_"):]]) - 2, 0), field
@@ -2558,8 +2561,9 @@ def test_a_live_width_over_64_bits_is_keyed_as_slices_from_bit_0(tmp_path):
   assert "action set_code_%s (bit<72> code) {" % feature in text
   for task in (APP_TASK, DDOS_TASK):
     table = "get_classification_tree_%s_0" % task
-    assert ("meta.code_%s[63:0] : ternary;\n            meta.code_%s[69:64] : ternary;"
-            % (feature, feature)) in text.split("table " + table)[1]
+    assert ('meta.code_%s[63:0] : ternary @name("code_%s_63_0_");\n'
+            '            meta.code_%s[69:64] : ternary @name("code_%s_69_64_");'
+            % (feature, feature, feature, feature)) in text.split("table " + table)[1]
   program = parse_program_text(text)
   assert program.bits["code_" + feature] == 70 and program.widths["code_" + feature] == 9
   assert program.key_slices[("get_classification_tree_app_0", "code_" + feature)] == [

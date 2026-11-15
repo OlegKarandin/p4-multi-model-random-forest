@@ -518,8 +518,8 @@ def test_kickoff_hardware_validation_threads_config_into_generate_P4_code(
     # The generated program declares no default action at all, discount or not.
     assert "default_action" not in text
     # match_type really landed in the generated program.
-    assert re.search(r"meta\.code_\S+ : exact;", text)
-    assert not re.search(r"meta\.code_\S+ : ternary;", text)
+    assert re.search(r"meta\.code_\S+ : exact\b", text)
+    assert not re.search(r"meta\.code_\S+ : ternary\b", text)
 
 
 def test_kickoff_hardware_validation_without_config_is_unchanged(tmp_path):
@@ -543,7 +543,7 @@ def test_kickoff_hardware_validation_without_config_is_unchanged(tmp_path):
 
     text = (tmp_path / "split0_single_k2.p4").read_text()
     assert "const default_action" not in text
-    assert re.search(r"meta\.code_\S+ : ternary;", text)
+    assert re.search(r"meta\.code_\S+ : ternary\b", text)
 
 
 def test_process_single_split_forwards_config_to_kickoff_hardware_validation(tmp_path):

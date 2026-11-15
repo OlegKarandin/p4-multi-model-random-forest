@@ -1519,12 +1519,23 @@ def generate_tables_and_apply(feature_names, task_tables, match_type='ternary',
   # the generated key text, since neither template file declares its own
   # <MATCH_TYPE> marker (match type is baked into <KEYS> here, not read from
   # the template).
+  # A sliced key element carries an explicit @name, the bf_rt name the entry
+  # writer uses (bfrt_key_name, e.g. code_x_19_0_; review B1, 2026-11-15).
+  # Without it p4c strips the slice from the name it gives the driver ("Table
+  # key name not supported. Replacing `meta.code_x[1:0]` with `meta.code_x`"),
+  # so context.json's key names differ from the entry writer's, and two slices
+  # of one field in one table get the same name. p4c (Task 28): with the
+  # annotation all 54 such warnings of the probed program gone, context.json
+  # names unique and equal to bfrt_key_name, bf-rt.json the same names,
+  # resources identical.
   def _classification_keys(names):
     lines = []
     for feature in names:
       if isinstance(feature, tuple):
         feature, slices = feature
-        lines += ["            meta.code_%s[%d:%d] : %s;" % (feature, hi, lo, match_type)
+        lines += ['            meta.code_%s[%d:%d] : %s @name("%s");'
+                  % (feature, hi, lo, match_type,
+                     bfrt_key_name("meta.code_%s[%d:%d]" % (feature, hi, lo)))
                   for hi, lo in slices]
       else:
         lines.append("            meta.code_"+feature+" : "+match_type+";")

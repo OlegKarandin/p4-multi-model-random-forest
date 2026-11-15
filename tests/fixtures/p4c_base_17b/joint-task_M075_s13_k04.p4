@@ -236,16 +236,16 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_0 {
         key = {
-            meta.code_tk_app_bwd_packet_length_max[63:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_max[127:64] : ternary;
-            meta.code_tk_app_bwd_packet_length_max[129:128] : ternary;
-            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[63:0] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[127:64] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[148:128] : ternary;
-            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary;
-            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary;
+            meta.code_tk_app_bwd_packet_length_max[63:0] : ternary @name("code_tk_app_bwd_packet_length_max_63_0_");
+            meta.code_tk_app_bwd_packet_length_max[127:64] : ternary @name("code_tk_app_bwd_packet_length_max_127_64_");
+            meta.code_tk_app_bwd_packet_length_max[129:128] : ternary @name("code_tk_app_bwd_packet_length_max_129_128_");
+            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary @name("code_tk_app_bwd_packet_length_mean_63_0_");
+            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary @name("code_tk_app_bwd_packet_length_mean_99_64_");
+            meta.code_tk_app_fwd_packet_length_max[63:0] : ternary @name("code_tk_app_fwd_packet_length_max_63_0_");
+            meta.code_tk_app_fwd_packet_length_max[127:64] : ternary @name("code_tk_app_fwd_packet_length_max_127_64_");
+            meta.code_tk_app_fwd_packet_length_max[148:128] : ternary @name("code_tk_app_fwd_packet_length_max_148_128_");
+            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary @name("code_tk_app_fwd_packet_length_mean_63_0_");
+            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary @name("code_tk_app_fwd_packet_length_mean_102_64_");
         }
         actions = {
             classify_flow_codeword_app_0;        
@@ -256,16 +256,16 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_1 {
         key = {
-            meta.code_tk_app_bwd_packet_length_max[63:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_max[127:64] : ternary;
-            meta.code_tk_app_bwd_packet_length_max[129:128] : ternary;
-            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[63:0] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[127:64] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[148:128] : ternary;
-            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary;
-            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary;
+            meta.code_tk_app_bwd_packet_length_max[63:0] : ternary @name("code_tk_app_bwd_packet_length_max_63_0_");
+            meta.code_tk_app_bwd_packet_length_max[127:64] : ternary @name("code_tk_app_bwd_packet_length_max_127_64_");
+            meta.code_tk_app_bwd_packet_length_max[129:128] : ternary @name("code_tk_app_bwd_packet_length_max_129_128_");
+            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary @name("code_tk_app_bwd_packet_length_mean_63_0_");
+            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary @name("code_tk_app_bwd_packet_length_mean_99_64_");
+            meta.code_tk_app_fwd_packet_length_max[63:0] : ternary @name("code_tk_app_fwd_packet_length_max_63_0_");
+            meta.code_tk_app_fwd_packet_length_max[127:64] : ternary @name("code_tk_app_fwd_packet_length_max_127_64_");
+            meta.code_tk_app_fwd_packet_length_max[148:128] : ternary @name("code_tk_app_fwd_packet_length_max_148_128_");
+            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary @name("code_tk_app_fwd_packet_length_mean_63_0_");
+            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary @name("code_tk_app_fwd_packet_length_mean_102_64_");
         }
         actions = {
             classify_flow_codeword_app_1;        
@@ -276,16 +276,16 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_2 {
         key = {
-            meta.code_tk_app_bwd_packet_length_max[63:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_max[127:64] : ternary;
-            meta.code_tk_app_bwd_packet_length_max[129:128] : ternary;
-            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[63:0] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[127:64] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[148:128] : ternary;
-            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary;
-            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary;
+            meta.code_tk_app_bwd_packet_length_max[63:0] : ternary @name("code_tk_app_bwd_packet_length_max_63_0_");
+            meta.code_tk_app_bwd_packet_length_max[127:64] : ternary @name("code_tk_app_bwd_packet_length_max_127_64_");
+            meta.code_tk_app_bwd_packet_length_max[129:128] : ternary @name("code_tk_app_bwd_packet_length_max_129_128_");
+            meta.code_tk_app_bwd_packet_length_mean[63:0] : ternary @name("code_tk_app_bwd_packet_length_mean_63_0_");
+            meta.code_tk_app_bwd_packet_length_mean[99:64] : ternary @name("code_tk_app_bwd_packet_length_mean_99_64_");
+            meta.code_tk_app_fwd_packet_length_max[63:0] : ternary @name("code_tk_app_fwd_packet_length_max_63_0_");
+            meta.code_tk_app_fwd_packet_length_max[127:64] : ternary @name("code_tk_app_fwd_packet_length_max_127_64_");
+            meta.code_tk_app_fwd_packet_length_max[148:128] : ternary @name("code_tk_app_fwd_packet_length_max_148_128_");
+            meta.code_tk_app_fwd_packet_length_mean[63:0] : ternary @name("code_tk_app_fwd_packet_length_mean_63_0_");
+            meta.code_tk_app_fwd_packet_length_mean[102:64] : ternary @name("code_tk_app_fwd_packet_length_mean_102_64_");
         }
         actions = {
             classify_flow_codeword_app_2;        
@@ -296,10 +296,10 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_0 {
         key = {
-            meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary;
+            meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_12_0_");
+            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_22_0_");
+            meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_21_0_");
+            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_24_0_");
         }
         actions = {
             classify_flow_codeword_ddos_0;        
@@ -310,10 +310,10 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_1 {
         key = {
-            meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary;
+            meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_12_0_");
+            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_22_0_");
+            meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_21_0_");
+            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_24_0_");
         }
         actions = {
             classify_flow_codeword_ddos_1;        
@@ -324,10 +324,10 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_2 {
         key = {
-            meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary;
+            meta.code_tk_ddos_bwd_packet_length_max[12:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_12_0_");
+            meta.code_tk_ddos_bwd_packet_length_mean[22:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_22_0_");
+            meta.code_tk_ddos_fwd_packet_length_max[21:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_21_0_");
+            meta.code_tk_ddos_fwd_packet_length_mean[24:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_24_0_");
         }
         actions = {
             classify_flow_codeword_ddos_2;        

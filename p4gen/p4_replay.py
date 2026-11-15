@@ -126,7 +126,9 @@ def _parse_keys(text):
             current = opened.group(1)
             tables[current] = []
             continue
-        key = re.match(r"\s*meta\.(\w+)(?:\[(\d+):(\d+)\])?\s*:\s*(ternary|range)\s*;", line)
+        # A sliced key carries @name("<bf_rt name>") since review B1.
+        key = re.match(r"\s*meta\.(\w+)(?:\[(\d+):(\d+)\])?\s*:\s*(ternary|range)"
+                       r"\s*(?:@name\(\s*\"[^\"]*\"\s*\))?\s*;", line)
         if key and current:
             if key.group(1) not in tables[current]:
                 tables[current].append(key.group(1))

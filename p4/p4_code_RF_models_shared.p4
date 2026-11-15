@@ -180,7 +180,7 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_0 {
         key = {
-            meta.code_app_flow_iat_max[0:0] : ternary;
+            meta.code_app_flow_iat_max[0:0] : ternary @name("code_app_flow_iat_max_0_0_");
         }
         actions = {
             classify_flow_codeword_app_0;        
@@ -191,7 +191,7 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_1 {
         key = {
-            meta.code_app_flow_iat_max[0:0] : ternary;
+            meta.code_app_flow_iat_max[0:0] : ternary @name("code_app_flow_iat_max_0_0_");
         }
         actions = {
             classify_flow_codeword_app_1;        
@@ -202,8 +202,8 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_0 {
         key = {
-            meta.code_ddos_flow_iat_max[0:0] : ternary;
-            meta.code_fwd_packet_length_max[0:0] : ternary;
+            meta.code_ddos_flow_iat_max[0:0] : ternary @name("code_ddos_flow_iat_max_0_0_");
+            meta.code_fwd_packet_length_max[0:0] : ternary @name("code_fwd_packet_length_max_0_0_");
         }
         actions = {
             classify_flow_codeword_ddos_0;        

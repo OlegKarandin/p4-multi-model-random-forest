@@ -50,7 +50,7 @@ def test_tree_keys_are_slices_of_at_most_64_bits_and_trees_do_not_overlap(tmp_pa
   text = _text(tmp_path)
   owner = {}                                     # (feature, bit) -> the tree table keying it
   for table, body in re.findall(r"table (get_classification_tree_\w+) \{(.*?)size = ", text, re.S):
-    for feature, hi, lo in re.findall(r"meta\.code_pk_(\w+)\[(\d+):(\d+)\] : ternary;", body):
+    for feature, hi, lo in re.findall(r'meta\.code_pk_(\w+)\[(\d+):(\d+)\] : ternary @name\("code_pk_\1_\2_\3_"\);', body):
       assert int(hi) - int(lo) < 64
       for bit in range(int(lo), int(hi) + 1):
         assert owner.setdefault((feature, bit), table) == table    # no bit keyed by two trees

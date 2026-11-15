@@ -85,8 +85,8 @@ def test_a_straddling_slice_is_refused(tmp_path):
   name, key = next((table, key) for (table, key), runs in program.key_slices.items()
                    if runs[0][0] - runs[0][1] < 7 and runs[0][1] % 8 < 7)
   hi, lo = program.key_slices[(name, key)][0]
-  moved = text.replace("meta.%s[%d:%d] : ternary;" % (key, hi, lo),
-                       "meta.%s[%d:%d] : ternary;" % (key, 8 * (lo // 8) + 8, 8 * (lo // 8) + 7))
+  moved = text.replace("meta.%s[%d:%d] : ternary @name(" % (key, hi, lo),
+                       "meta.%s[%d:%d] : ternary @name(" % (key, 8 * (lo // 8) + 8, 8 * (lo // 8) + 7))
   assert moved != text
   with pytest.raises(ValueError, match="straddles"):
     tree_key_bytes(parse_program_text(moved), name)

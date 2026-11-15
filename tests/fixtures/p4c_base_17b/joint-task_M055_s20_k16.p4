@@ -557,22 +557,22 @@ control SwitchIngress(
     @placement_priority(1)
     table get_classification_tree_app_0 {
         key = {
-            meta.code_tk_app_bwd_iat_max[1:0] : ternary;
-            meta.code_tk_app_bwd_iat_mean[9:0] : ternary;
-            meta.code_tk_app_bwd_iat_min[2:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_max[18:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_mean[10:0] : ternary;
-            meta.code_tk_app_bwd_packet_length_min[1:0] : ternary;
-            meta.code_tk_app_flow_iat_max[0:0] : ternary;
-            meta.code_tk_app_flow_iat_mean[3:0] : ternary;
-            meta.code_tk_app_flow_iat_min[6:0] : ternary;
-            meta.code_tk_app_fwd_iat_max[2:0] : ternary;
-            meta.code_tk_app_fwd_iat_mean[3:0] : ternary;
-            meta.code_tk_app_fwd_iat_min[4:0] : ternary;
-            meta.code_tk_app_fwd_packet_length_max[12:0] : ternary;
-            meta.code_tk_app_fwd_packet_length_mean[12:0] : ternary;
-            meta.code_tk_app_min_packet_length[0:0] : ternary;
-            meta.code_tk_app_packet_length_mean[10:0] : ternary;
+            meta.code_tk_app_bwd_iat_max[1:0] : ternary @name("code_tk_app_bwd_iat_max_1_0_");
+            meta.code_tk_app_bwd_iat_mean[9:0] : ternary @name("code_tk_app_bwd_iat_mean_9_0_");
+            meta.code_tk_app_bwd_iat_min[2:0] : ternary @name("code_tk_app_bwd_iat_min_2_0_");
+            meta.code_tk_app_bwd_packet_length_max[18:0] : ternary @name("code_tk_app_bwd_packet_length_max_18_0_");
+            meta.code_tk_app_bwd_packet_length_mean[10:0] : ternary @name("code_tk_app_bwd_packet_length_mean_10_0_");
+            meta.code_tk_app_bwd_packet_length_min[1:0] : ternary @name("code_tk_app_bwd_packet_length_min_1_0_");
+            meta.code_tk_app_flow_iat_max[0:0] : ternary @name("code_tk_app_flow_iat_max_0_0_");
+            meta.code_tk_app_flow_iat_mean[3:0] : ternary @name("code_tk_app_flow_iat_mean_3_0_");
+            meta.code_tk_app_flow_iat_min[6:0] : ternary @name("code_tk_app_flow_iat_min_6_0_");
+            meta.code_tk_app_fwd_iat_max[2:0] : ternary @name("code_tk_app_fwd_iat_max_2_0_");
+            meta.code_tk_app_fwd_iat_mean[3:0] : ternary @name("code_tk_app_fwd_iat_mean_3_0_");
+            meta.code_tk_app_fwd_iat_min[4:0] : ternary @name("code_tk_app_fwd_iat_min_4_0_");
+            meta.code_tk_app_fwd_packet_length_max[12:0] : ternary @name("code_tk_app_fwd_packet_length_max_12_0_");
+            meta.code_tk_app_fwd_packet_length_mean[12:0] : ternary @name("code_tk_app_fwd_packet_length_mean_12_0_");
+            meta.code_tk_app_min_packet_length[0:0] : ternary @name("code_tk_app_min_packet_length_0_0_");
+            meta.code_tk_app_packet_length_mean[10:0] : ternary @name("code_tk_app_packet_length_mean_10_0_");
         }
         actions = {
             classify_flow_codeword_app_0;        
@@ -583,19 +583,19 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_0 {
         key = {
-            meta.code_tk_ddos_bwd_iat_max[1:0] : ternary;
-            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_max[6:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_min[2:0] : ternary;
-            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary;
-            meta.code_tk_ddos_flow_iat_min[13:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_max[5:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary;
-            meta.code_tk_ddos_packet_length_mean[13:0] : ternary;
+            meta.code_tk_ddos_bwd_iat_max[1:0] : ternary @name("code_tk_ddos_bwd_iat_max_1_0_");
+            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary @name("code_tk_ddos_bwd_iat_min_9_0_");
+            meta.code_tk_ddos_bwd_packet_length_max[6:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_6_0_");
+            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_10_0_");
+            meta.code_tk_ddos_bwd_packet_length_min[2:0] : ternary @name("code_tk_ddos_bwd_packet_length_min_2_0_");
+            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary @name("code_tk_ddos_flow_iat_mean_13_0_");
+            meta.code_tk_ddos_flow_iat_min[13:0] : ternary @name("code_tk_ddos_flow_iat_min_13_0_");
+            meta.code_tk_ddos_fwd_iat_max[5:0] : ternary @name("code_tk_ddos_fwd_iat_max_5_0_");
+            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary @name("code_tk_ddos_fwd_iat_mean_7_0_");
+            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary @name("code_tk_ddos_fwd_iat_min_11_0_");
+            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_14_0_");
+            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_14_0_");
+            meta.code_tk_ddos_packet_length_mean[13:0] : ternary @name("code_tk_ddos_packet_length_mean_13_0_");
         }
         actions = {
             classify_flow_codeword_ddos_0;        
@@ -606,19 +606,19 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_1 {
         key = {
-            meta.code_tk_ddos_bwd_iat_mean[0:0] : ternary;
-            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_max[6:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_min[2:0] : ternary;
-            meta.code_tk_ddos_flow_iat_max[4:0] : ternary;
-            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary;
-            meta.code_tk_ddos_flow_iat_min[13:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary;
-            meta.code_tk_ddos_packet_length_mean[13:0] : ternary;
+            meta.code_tk_ddos_bwd_iat_mean[0:0] : ternary @name("code_tk_ddos_bwd_iat_mean_0_0_");
+            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary @name("code_tk_ddos_bwd_iat_min_9_0_");
+            meta.code_tk_ddos_bwd_packet_length_max[6:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_6_0_");
+            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_10_0_");
+            meta.code_tk_ddos_bwd_packet_length_min[2:0] : ternary @name("code_tk_ddos_bwd_packet_length_min_2_0_");
+            meta.code_tk_ddos_flow_iat_max[4:0] : ternary @name("code_tk_ddos_flow_iat_max_4_0_");
+            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary @name("code_tk_ddos_flow_iat_mean_13_0_");
+            meta.code_tk_ddos_flow_iat_min[13:0] : ternary @name("code_tk_ddos_flow_iat_min_13_0_");
+            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary @name("code_tk_ddos_fwd_iat_mean_7_0_");
+            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary @name("code_tk_ddos_fwd_iat_min_11_0_");
+            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_14_0_");
+            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_14_0_");
+            meta.code_tk_ddos_packet_length_mean[13:0] : ternary @name("code_tk_ddos_packet_length_mean_13_0_");
         }
         actions = {
             classify_flow_codeword_ddos_1;        
@@ -629,20 +629,20 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_2 {
         key = {
-            meta.code_tk_ddos_bwd_iat_max[1:0] : ternary;
-            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_min[2:0] : ternary;
-            meta.code_tk_ddos_flow_iat_max[4:0] : ternary;
-            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary;
-            meta.code_tk_ddos_flow_iat_min[13:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_max[5:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary;
-            meta.code_tk_ddos_min_packet_length[0:0] : ternary;
-            meta.code_tk_ddos_packet_length_mean[13:0] : ternary;
+            meta.code_tk_ddos_bwd_iat_max[1:0] : ternary @name("code_tk_ddos_bwd_iat_max_1_0_");
+            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary @name("code_tk_ddos_bwd_iat_min_9_0_");
+            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_10_0_");
+            meta.code_tk_ddos_bwd_packet_length_min[2:0] : ternary @name("code_tk_ddos_bwd_packet_length_min_2_0_");
+            meta.code_tk_ddos_flow_iat_max[4:0] : ternary @name("code_tk_ddos_flow_iat_max_4_0_");
+            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary @name("code_tk_ddos_flow_iat_mean_13_0_");
+            meta.code_tk_ddos_flow_iat_min[13:0] : ternary @name("code_tk_ddos_flow_iat_min_13_0_");
+            meta.code_tk_ddos_fwd_iat_max[5:0] : ternary @name("code_tk_ddos_fwd_iat_max_5_0_");
+            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary @name("code_tk_ddos_fwd_iat_mean_7_0_");
+            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary @name("code_tk_ddos_fwd_iat_min_11_0_");
+            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_14_0_");
+            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_14_0_");
+            meta.code_tk_ddos_min_packet_length[0:0] : ternary @name("code_tk_ddos_min_packet_length_0_0_");
+            meta.code_tk_ddos_packet_length_mean[13:0] : ternary @name("code_tk_ddos_packet_length_mean_13_0_");
         }
         actions = {
             classify_flow_codeword_ddos_2;        
@@ -653,18 +653,18 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_3 {
         key = {
-            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_max[6:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary;
-            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary;
-            meta.code_tk_ddos_flow_iat_min[13:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_max[5:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary;
-            meta.code_tk_ddos_min_packet_length[0:0] : ternary;
-            meta.code_tk_ddos_packet_length_mean[13:0] : ternary;
+            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary @name("code_tk_ddos_bwd_iat_min_9_0_");
+            meta.code_tk_ddos_bwd_packet_length_max[6:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_6_0_");
+            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_10_0_");
+            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary @name("code_tk_ddos_flow_iat_mean_13_0_");
+            meta.code_tk_ddos_flow_iat_min[13:0] : ternary @name("code_tk_ddos_flow_iat_min_13_0_");
+            meta.code_tk_ddos_fwd_iat_max[5:0] : ternary @name("code_tk_ddos_fwd_iat_max_5_0_");
+            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary @name("code_tk_ddos_fwd_iat_mean_7_0_");
+            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary @name("code_tk_ddos_fwd_iat_min_11_0_");
+            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_14_0_");
+            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_14_0_");
+            meta.code_tk_ddos_min_packet_length[0:0] : ternary @name("code_tk_ddos_min_packet_length_0_0_");
+            meta.code_tk_ddos_packet_length_mean[13:0] : ternary @name("code_tk_ddos_packet_length_mean_13_0_");
         }
         actions = {
             classify_flow_codeword_ddos_3;        
@@ -675,18 +675,18 @@ control SwitchIngress(
     @placement_priority(2)
     table get_classification_tree_ddos_4 {
         key = {
-            meta.code_tk_ddos_bwd_iat_max[1:0] : ternary;
-            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_max[6:0] : ternary;
-            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary;
-            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary;
-            meta.code_tk_ddos_flow_iat_min[13:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary;
-            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary;
-            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary;
-            meta.code_tk_ddos_min_packet_length[0:0] : ternary;
-            meta.code_tk_ddos_packet_length_mean[13:0] : ternary;
+            meta.code_tk_ddos_bwd_iat_max[1:0] : ternary @name("code_tk_ddos_bwd_iat_max_1_0_");
+            meta.code_tk_ddos_bwd_iat_min[9:0] : ternary @name("code_tk_ddos_bwd_iat_min_9_0_");
+            meta.code_tk_ddos_bwd_packet_length_max[6:0] : ternary @name("code_tk_ddos_bwd_packet_length_max_6_0_");
+            meta.code_tk_ddos_bwd_packet_length_mean[10:0] : ternary @name("code_tk_ddos_bwd_packet_length_mean_10_0_");
+            meta.code_tk_ddos_flow_iat_mean[13:0] : ternary @name("code_tk_ddos_flow_iat_mean_13_0_");
+            meta.code_tk_ddos_flow_iat_min[13:0] : ternary @name("code_tk_ddos_flow_iat_min_13_0_");
+            meta.code_tk_ddos_fwd_iat_mean[7:0] : ternary @name("code_tk_ddos_fwd_iat_mean_7_0_");
+            meta.code_tk_ddos_fwd_iat_min[11:0] : ternary @name("code_tk_ddos_fwd_iat_min_11_0_");
+            meta.code_tk_ddos_fwd_packet_length_max[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_max_14_0_");
+            meta.code_tk_ddos_fwd_packet_length_mean[14:0] : ternary @name("code_tk_ddos_fwd_packet_length_mean_14_0_");
+            meta.code_tk_ddos_min_packet_length[0:0] : ternary @name("code_tk_ddos_min_packet_length_0_0_");
+            meta.code_tk_ddos_packet_length_mean[13:0] : ternary @name("code_tk_ddos_packet_length_mean_13_0_");
         }
         actions = {
             classify_flow_codeword_ddos_4;        

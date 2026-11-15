@@ -211,21 +211,23 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # no vote table for a one-tree task): every text is its pre-A1 text with the A1 edit, then the
 # A2 edit (a one-tree task's tree action writes the export, its vote action / table / apply, class
 # field and class pin removed; the template comment above the forwarding assignments) (14/14).
+# And for review B1: each text the previous one with @name("<bfrt_key_name>") on every sliced
+# key (Task 28's probe edit b1, 14/14).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "244b338f64f0e57a0e564ef317a4e29bec7a80158b25cb1d4c3be7245d6f8627",
-    ("disjoint", 0): "94959d66c67737a71ec8755c04b88bf1094b1f9903e7678bbbf17bf2c998c3c5",
-    ("per_task", 0): "8894d1a7d24f52014622eb62b635b3a6c492f78a95f524f2dc61d1fbb0de7b0f",
-    ("joint", 1): "d1956a18e2ebc93db3d1178f7679041420890ddfb0ad8e9b69a59aee5e1dfd20",
-    ("disjoint", 1): "d6dda199a3895368f68e602ac5b2ac0b381c82a345360fa7788e80e132d67239",
-    ("per_task", 1): "352a65986263b101a953ed3e5df4795a6a2650db7d17d6210abb35bd128f76aa",
-    ("joint", 2): "36d3e4ff7d87bf13966e63777fec3eeaac7e43b2f862381d531722ab8b43b349",
-    ("disjoint", 2): "f39e315cfb49e908f0e3b002a2cfcedcacb65fe127da633baed05d20fccb09a0",
-    ("per_task", 2): "580f6313978a8ee5141d4ca3afb820d052819217592ab84ba846aa1a816e6729",
-    ("joint", 3): "0e92660f7cc804fe159b462443ee51db939882b4c2551e592b17271a08fc4ce5",
-    ("disjoint", 3): "64966c52bfd660d24e14fc9a89911f9310e6783f5ced13411198f2116a8e9df2",
-    ("per_task", 3): "21875152aee5bbecd27677219b3d569bc1abd921a0b833b6811f04a6a4e8592d",
-    ("disjoint", "three"): "259b80e1146a868347b56b703725ac14b5de55b1a09e6fca9e32d4ca2584d810",
-    ("per_task", "three"): "c0b8716744ef30c565280519afb79868bae93ab9495dd8d0661d28f9da2022e2",
+    ("joint", 0): "7e5bf193e3078d4e214f22241af7e061841a648fc36df06cd75e6bf448ab8f10",
+    ("disjoint", 0): "10e868474e31f7158e093db063432ef3654e680d7dbfec6b9e6a5051f6b63235",
+    ("per_task", 0): "dbee559cd1a2f62e7828c7678bdbbece003d5398a55942899aef2cd7347cfd94",
+    ("joint", 1): "677655e83b5af7fefa17d3a7ac390e4eb6fcf21989e3b4539e6a8ef5a506b1db",
+    ("disjoint", 1): "2c1e54f0b118b8af57cfb2357683b970c8d279499249a2415538e1eccc8739ce",
+    ("per_task", 1): "5e2072a5d8f609ee0d60a7a29e49e4af15e54f50d89bb00b50689b6250a373be",
+    ("joint", 2): "bf9da246b7ac4475c5504644af412aa2c931071cdddf11527272db3bcdb1e258",
+    ("disjoint", 2): "f730da0d0f6ad3dbb78e3cbd7e466a03c588fc1885af6248b7fbe5174b339fc6",
+    ("per_task", 2): "6d50e33b3f7970412001d78ba25ba50cde07d0a8e111ed41a7bc59f8c1565c75",
+    ("joint", 3): "c44a7f02396bdd32a35191728e26c8864ddd55ec1886ea9a39eff6649e27ea43",
+    ("disjoint", 3): "fe933d3948a8163c81df41581647adb57a5f1fa89cda249996a2220718e275b3",
+    ("per_task", 3): "d837b0d501b239dc7f2bbe66e707e785fd877a517b35b43e71a798e50fed0349",
+    ("disjoint", "three"): "887612de436429a04d63ce1fe0277f14f5be77ef10d7c195de6f3350f840d52f",
+    ("per_task", "three"): "69675441fb3a08cb76cfd8ebc9428f7b401ccc4d1c89671063c63f8395fcb1cf",
 }
 
 
