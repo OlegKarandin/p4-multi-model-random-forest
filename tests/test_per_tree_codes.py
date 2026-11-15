@@ -215,22 +215,23 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # key (Task 28's probe edit b1, 14/14). And for the review Part C clean-ups: the Tofino-2
 # include and the empty /* CLASSIFICATION */ marker's blank lines gone, the timestamp written
 # `ig_prsr_md.global_tstamp[25:10]` (14/14; each generated text == every edit applied to its
-# pre-A1 text).
+# pre-A1 text). And for @pa_solitary(flow_hash) (Task 32 addendum F3): each text the previous one
+# plus that one pragma line (14/14).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "55ef07fc6fde3492c89b944a7262410b94eee5d47cdb8adab3b18c66fa22b387",
-    ("disjoint", 0): "d2b53846714417c873ce9d302da7c067ec98069cd67ea960d0c497f17531a0cb",
-    ("per_task", 0): "b561bbe64d4221af49979c9272aa27e95080158e4dfa5ea7103ecbeacd69518e",
-    ("joint", 1): "8d0de060d29ad8246b37dbb60b9e9e5598a58cbd974695ee80d6cac0e0dd1f37",
-    ("disjoint", 1): "451e292212c7c1fe70288726111c979c8c441e4c1aa20f4ac20520f9dacb0a7d",
-    ("per_task", 1): "e81d74dd65b8b4154771b255437604e4405e03c0c6c4554e826b827039c4ad98",
-    ("joint", 2): "b7a51aa85fdfb0d97426cebca8521be7370129a118bfc8b36489201af874e99e",
-    ("disjoint", 2): "639d71c503f7951b79a33c2f6ec5425d570e144635f638f74b8945d0eda8effb",
-    ("per_task", 2): "acbc5ac6ebc59726cd7e1b6b3461957ce29a0b5776de8b77ffe43fba31dc5c0e",
-    ("joint", 3): "15436538ae5f16a1bcb5aab05a7b5564d0a07b18b50780cc53a58181c9e35865",
-    ("disjoint", 3): "50941524a02f7d3ec9faff455022101d067df7e6d8adbf0fa17c9f7922f94bcf",
-    ("per_task", 3): "d78e9c0a4d890701c942eb3153abc1a0f754c16c805d12b64bdd0175ab44f196",
-    ("disjoint", "three"): "d90050af7612300246fd743531a6a9c24465811a1cc1088ff34bf6e86b2cf37a",
-    ("per_task", "three"): "4ce0882a5fb4d0645e7e53c0a6f4ce4c0063fa67b8a1f54fd18e86394be9f5e6",
+    ("joint", 0): "a3822c2874ce0527a0b73c6dd80b0dab8163f2a0627b3ea7103275fe01da4731",
+    ("disjoint", 0): "8a6a5f6b8971c8b5eb6038de3aa5d6671b4509ed4502fdd89cf6758b05282684",
+    ("per_task", 0): "517aa6ddab665642a811a0f75d58bad12f87fa4556357e2e9ad0d6b8f073411c",
+    ("joint", 1): "5ea6ed8b620eee15e9fd7279968e41271e803fdfa1354c6c870eb4ffe5c7c985",
+    ("disjoint", 1): "9e596558265cf813ec69b45c897922825fccfa09e8f81c44e351c452534902e7",
+    ("per_task", 1): "fe61a4c935ff6d5b7566cf232db3d717ea00d416e3e0c316b37721d306d315dd",
+    ("joint", 2): "5d873ee48690591df4562811424ba1dd6ad86091eaa6ffbe22fe7292e430d115",
+    ("disjoint", 2): "5a61ffd28cf86ca4090c07e091e12d315b7b48f1bc90809f018f2695e3b701e1",
+    ("per_task", 2): "b113fe5ca59ccfab357c8d8a16d5bd0f082e445c6dd80dde8a9fa4be95422b14",
+    ("joint", 3): "f1aada5debf6eacb493a6e8ff4a1e3651e77aa4359bc8c7acc079ea93a0df91b",
+    ("disjoint", 3): "bbfb0d8f69950cb693ca26b15f7bada486ac17f5d6830298798f2db72d80b612",
+    ("per_task", 3): "97357fc1788d4f45427312b4b2dd9586974c302604bf32a965be2fb340f03205",
+    ("disjoint", "three"): "3495501e9a9b75bfdee7de58410c6ea36e45765deaa8e866e11be4cbd0980cb2",
+    ("per_task", "three"): "ca8edc68ba41f907a39cfd20b0967de497061938b0b0aa7bb9b082ef283c9673",
 }
 
 
@@ -274,8 +275,9 @@ def _g3_pin_set(text):
   pa_solitary on every class_tree_*; pa_container_size 16 on every <f>_val and every IAT
   scratch field <chain>_current_iat; pa_no_overlay and pa_container_size on every code
   field (code_pk_* too). Nothing on meta.fwd. Since review A1b, pa_solitary on
-  now_pseudo_us in a program that computes the timestamp (calc_timestamp)."""
-  pins = set()
+  now_pseudo_us in a program that computes the timestamp (calc_timestamp); since the
+  Task 31 miss, pa_solitary on flow_hash in every program."""
+  pins = {("pa_solitary", "flow_hash", "")}
   if "calc_timestamp();" in text:
     pins.add(("pa_solitary", "now_pseudo_us", ""))
   for bits, field in _DECLARED.findall(text):

@@ -296,12 +296,15 @@ def flow_hash_shape(text):
   width of the Hash instance calc_flow_hash calls (None when there is none), the
   sorted (a, b) pairs of every @symmetric annotation in the text, and the
   operators `&` / `^` found in calc_flow_hash's body (the pre-A1 generator XORed
-  the inputs and masked the 32-bit result `& 0xFFF`). Read by
+  the inputs and masked the 32-bit result `& 0xFFF`); () when the text has no
+  calc_flow_hash action. Read by
   p4_replay.parse_program_text into Program.flow_hash; check_program judges it."""
   text = _strip_comments(text)
   bodies = [text[m.end():_matching(text, m.end() - 1)]
             for m in _FLOW_HASH_ACTION.finditer(text)]
-  body = bodies[0] if bodies else ""
+  if not bodies:
+    return ()          # no calc_flow_hash action: _check_apply's prologue rule refuses it
+  body = bodies[0]
   called = re.search(r"\b(\w+)\.get\s*\(", body)
   bits = None
   for match in _HASH_DECL.finditer(text):
@@ -376,8 +379,8 @@ def _check_pins(program, pins):
                         the latter for a field with no bits)
     now_pseudo_us       pa_solitary, in a program that computes it
                         (calc_timestamp; review A1b, 2026-11-15)
-    flow_hash           pa_solitary, in every program (Task 31 miss,
-                        2026-11-15)
+    flow_hash           pa_solitary, in every program with a calc_flow_hash
+                        action (every generated one; Task 31 miss, 2026-11-15)
 
   Pins dropped at G3 (pa_no_overlay on fwd and class_tree_*, pa_solitary on
   code_*) are refused as unexpected_shape:pin:<pin>:<field>, like any pin this
@@ -394,8 +397,9 @@ def _check_pins(program, pins):
 
   for field in program.class_fields:
     need("pa_solitary", field)
-  if tuple(need("pa_solitary", _FLOW_HASH_FIELD)) != ():
-    raise ProgramShapeRefused("unexpected_shape:pin:pa_solitary:%s" % _FLOW_HASH_FIELD)
+  if program.flow_hash:            # the text has a calc_flow_hash action
+    if tuple(need("pa_solitary", _FLOW_HASH_FIELD)) != ():
+      raise ProgramShapeRefused("unexpected_shape:pin:pa_solitary:%s" % _FLOW_HASH_FIELD)
   for field in program.scratch_fields:
     if tuple(need("pa_container_size", field)) != (16,):
       raise ProgramShapeRefused("unexpected_shape:scratch_container:%s" % field)
@@ -541,7 +545,9 @@ def _check_flow_hash(program):
   `& 0xFFF`) costs p4c 3 stages, so its text is refused, never priced 2 stages
   low."""
   from p4model.program import FLOW_HASH_SYMMETRIC_PAIRS, FLOW_INDEX_BITS
-  bits, pairs, operators = tuple(program.flow_hash) or (None, (), "")
+  if not program.flow_hash:
+    return             # no calc_flow_hash action at all: refused by _check_apply (prologue)
+  bits, pairs, operators = program.flow_hash
   if (bits != FLOW_INDEX_BITS or operators
       or tuple(pairs) != tuple(sorted(FLOW_HASH_SYMMETRIC_PAIRS))):
     raise ProgramShapeRefused("unexpected_shape:flow_hash")

@@ -698,10 +698,10 @@ def test_search_declares_the_multiplier_range():
     assert (dist.low, dist.high) == (2, 66)
 
 
-def test_search_declares_odd_trees_to_15_and_depth_to_20():
-    # decision 9.1: one shared search space for every arm
+def test_search_declares_odd_trees_to_7_and_depth_to_20():
+    # decision 9.1: one shared search space for every arm (trees 1..7 since Task 32)
     trees = _search_distributions()['n_estimators_A']
-    assert (trees.low, trees.high, trees.step) == (1, 15, 2)
+    assert (trees.low, trees.high, trees.step) == (1, 7, 2)
     depth = _search_distributions()['max_depth_A']
     assert (depth.low, depth.high) == (2, 20)
 
