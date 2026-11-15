@@ -13,6 +13,7 @@ from p4model.errors import CrossbarKeyTooWide, RangeEntriesDoNotFit
 from p4model.names import normalise_feature_name
 from p4model.program import FEATURE_VALUE_BIT_WIDTH, per_task_field
 from p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_count
+from p4model.units import installed_intervals
 from p4model.target import (
     ACTION_RAM_WORD_BYTES,
     CODEWORD_KEY_OVERHEAD_BITS,
@@ -29,6 +30,16 @@ def _usable_range_rows(interval_count, key_bit_width):
   return (math.ceil(compiler_range_rows(interval_count, key_bit_width)
                     / TERNARY_MATCHING_ENTRIES_PER_BLOCK)
           * TCAM_USABLE_ROWS_PER_BLOCK)
+
+
+def installed_rows(feature, intervals, nibble_widths):
+  """Physical TCAM rows of one range table's REAL entries: range_entry_count over
+  the bounds the control plane installs (units.installed_intervals -- an IAT
+  feature's bounds in 1.024 us ticks, an interval collapsed onto one tick not
+  installed; any other feature's bounds as they are). `feature` is the table's
+  feature name (its catalog key; the pricing's interval dicts are keyed by it)."""
+  return sum(range_entry_count(lo, hi, nibble_widths)
+             for lo, hi in installed_intervals(feature, intervals))
 
 
 def range_deployment_overflow(feature_intervals,
@@ -54,11 +65,14 @@ def range_deployment_overflow(feature_intervals,
   512: insertion-order fragmentation can strand a few). range_matching_
   resource_usage enforces this (decision 6d) and raises RangeEntriesDoNotFit
   when any table overflows; this function is the oracle it shares with the
-  tests and the review scripts."""
+  tests and the review scripts.
+
+  The rows are those of the bounds the control plane INSTALLS (installed_rows):
+  an IAT feature's in 1.024 us ticks, collapsed intervals left out (Task 34)."""
   nibble_widths = nibble_widths_for(key_bit_width)
   overflow = {}
   for feature, intervals in feature_intervals.items():
-    needed = sum(range_entry_count(lo, hi, nibble_widths) for lo, hi in intervals)
+    needed = installed_rows(feature, intervals, nibble_widths)
     available = _usable_range_rows(len(intervals), key_bit_width)
     if needed > available:
       overflow[feature] = (needed, available)
@@ -69,7 +83,8 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   """Returns (range_entries, range_blocks, range_table_specs).
 
   range_entries is the EXPANDED PHYSICAL TCAM ROW COUNT range_entry_count
-  gives for actually INSERTING every interval -- NOT a count of distinct
+  gives for actually INSERTING every interval (installed_rows: the bounds the
+  control plane writes, an IAT feature's in ticks since Task 34) -- NOT a count of distinct
   [lo, hi] intervals, and NOT the quantity range_blocks is derived from. One
   range interval typically expands to several physical rows (see
   range_entry_count / expand_range()), so range_entries >= the interval
@@ -117,9 +132,8 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   rows_over, overflowing = 0, []
 
   for feature in feature_intervals:
-    total_rows = 0
-    for lo, hi in feature_intervals[feature]:
-      total_rows += range_entry_count(lo, hi, nibble_widths)
+    # the rows of the entries the control plane installs (IAT bounds in ticks, Task 34)
+    total_rows = installed_rows(feature, feature_intervals[feature], nibble_widths)
 
     # Blocks come from the compiler's own compile-time sizing of the DECLARED
     # entry count (build_p4_script writes size = len(intervals)), not from

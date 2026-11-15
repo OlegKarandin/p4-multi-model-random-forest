@@ -2743,6 +2743,74 @@ def test_the_iat_entries_match_the_trees_on_the_switch_equivalent_value():
   assert moved > 40
 
 
+def _tick_flip():
+  """The first random IAT tiling (the Task 34 review's generator, seed 1) whose
+  microsecond rows fit the committed blocks while its installed tick rows do not."""
+  import random
+  from p4model.ranges import range_entry_count
+  from p4model.tables import _usable_range_rows
+  rng = random.Random(1)
+  for _ in range(2000):
+    ts = sorted(set(rng.randint(0, 65534) for _ in range(rng.randint(2, 200))))
+    iv = bps.get_feature_intervals_from_thresholds([("flow_iat_max", t) for t in ts])["flow_iat_max"]
+    us = sum(range_entry_count(lo, hi) for lo, hi in iv)
+    available = _usable_range_rows(len(iv), 16)
+    ticks = sum(range_entry_count(*e) for e in
+                (bps.switch_range("flow_iat_max", interval) for interval in iv) if e[0] <= e[1])
+    if us <= available < ticks:
+      return iv, us, ticks, available
+  raise AssertionError("no flip found")
+
+
+def test_the_range_row_guard_counts_the_installed_tick_rows():
+  """Task 34 review Important 1: range_entries / range_rows_over count the rows of the
+  entries the control plane installs -- an IAT feature's bounds in ticks, collapsed
+  intervals left out -- not the microsecond bounds. The review's example: 501 rows in
+  us (fits 506), 510 in ticks (does not)."""
+  from p4model import tables
+  from p4model.errors import RangeEntriesDoNotFit
+  iv, us, ticks, available = _tick_flip()
+  assert (us, ticks, available) == (501, 510, 506)
+  assert tables.range_deployment_overflow({"flow_iat_max": iv}) == {"flow_iat_max": (510, 506)}
+  with pytest.raises(RangeEntriesDoNotFit) as refused:
+    tables.range_matching_resource_usage({"flow_iat_max": iv})
+  assert refused.value.args[1] == 4
+  # the same intervals on a packet-length feature are counted as they are: 501 fits
+  assert tables.range_matching_resource_usage({"fwd_packet_length_max": iv})[0] == 501
+  # and the guard's rows are the written entries' rows
+  entries = bps._range_table_entries("t", "a", "flow_iat_max_val", iv)
+  from p4model.ranges import range_entry_count
+  assert sum(range_entry_count(int(e["key_fields"]["flow_iat_max_val"]["start"]),
+                               int(e["key_fields"]["flow_iat_max_val"]["end"])) for e in entries) == 510
+
+
+@pytest.mark.parametrize("encoding", ["joint", "disjoint", "per_task", "per_tree"])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_training_range_rows_equal_the_rows_of_the_installed_entries(encoding, seed):
+  """Training's range_entries (evaluation._pool_inputs) == the physical rows of the range
+  entries generate_table_entries writes for the same design (what p4/deploy_table_entries.py
+  installs), in every encoding: both count tick bounds for the IAT features."""
+  from p4gen import evaluation
+  from p4model.ranges import range_entry_count
+  from tests.test_per_task_codes import _own, _rng_design
+  from tests.test_packed_program import _specs
+  app, ddos, names = _rng_design(seed)
+  pool = evaluation._pool_inputs(app, ddos, names, names, encoding)
+  if encoding == "joint":
+    joint = bps.get_joint_feature_intervals(app, names, ddos, names)
+    tasks = _specs(app, ddos, names, names, joint, joint)
+  else:
+    tasks = _specs(app, ddos, names, names)
+  entries = bps.generate_table_entries(tasks, encoding=encoding)
+  rows = 0
+  for entry in entries:
+    if entry["table_name"].startswith("table_"):
+      (span,) = entry["key_fields"].values()
+      rows += range_entry_count(int(span["start"]), int(span["end"]))
+  assert any(bps.is_iat_feature(f) for f in names)
+  assert pool["range_entries"] == rows, (encoding, seed)
+
+
 def test_a_flows_first_packet_is_forward():
   """Task 33b: the orientation body compares the OLD word only, before writing it (the
   live-checked text of impl/probe_first_packet/live_prog_orient); the old body's

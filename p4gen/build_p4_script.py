@@ -26,6 +26,8 @@ from p4model.target import (
     TERNARY_MATCHING_ENTRIES_PER_BLOCK,
 )
 from p4model import lanes, packed
+# The IAT unit rule (Task 34), one statement shared with the model's range-row guard.
+from p4model.units import iat_ticks, is_iat_feature, switch_range  # noqa: F401
 from p4model.errors import NoSplitTree
 from p4model.names import normalise_feature_name
 from p4model.program import (VOTE_EXPORT, VOTE_EXPORT_BITS, APP_TASK, DDOS_TASK, ENCODINGS, JOINT_ENCODING,
@@ -617,27 +619,8 @@ def _per_task_code(interval, own_intervals):
       interval, own_intervals[-1]))
 
 
-def iat_ticks(threshold_us):
-  '''An IAT threshold of the trees (integer microseconds, the CSVs' unit) in the
-  switch's IAT unit (Task 34; user decision 2026-11-15):
-  T = floor((1000 t + 500) / 1024) + 1, capped at INFINITE.
-
-  The switch's clock ticks every 1.024 us (calc_timestamp: global_tstamp[41:10]),
-  and an IAT is the difference of two floored clock readings: a gap of g ns reads
-  floor(g / 1024) or one more, with mean g / 1024, so the tree's `x_us <= t` is
-  matched best by centring on t + 0.5 us -- the ROUND rule floor((1000 t + 500) /
-  1024) (Task 29, impl/probe_timestamp.md: agreement with software 99.98 / 99.97%
-  app, 100.00 / 99.99% ddos on 200 DEV designs, 1 design with two thresholds on one
-  tick; the floor rule collapsed 60). The + 1 is C1f's: the switch holds a real gap
-  of g ticks as g + 1, 0 meaning "no IAT" (_REGISTER_ACTION_BODIES["iat_delta"]).
-  Accuracy elsewhere (switch_semantics) is computed in the software unit.'''
-  return min((1000 * int(threshold_us) + 500) // 1024 + 1, INFINITE)
-
-
-def is_iat_feature(feature, catalog=None):
-  '''Whether a feature's value is an inter-arrival time (its catalog entry has a
-  last-arrival "iat_delta" register): the IAT Max / Min / Mean features.'''
-  return uses_timestamp({feature: None}, catalog)
+# iat_ticks, is_iat_feature, switch_range (the IAT unit rule, Task 34) live in
+# p4model.units, which the model's range-row guard shares; imported at the top.
 
 
 def switch_reading(feature, value):
@@ -661,19 +644,6 @@ def switch_equivalent(feature, value):
   while y > 0 and iat_ticks(y - 1) == iat_ticks(value):
     y -= 1
   return y
-
-
-def switch_range(feature, interval):
-  '''A range table interval [lo, hi] of the trees' units in the switch's: the
-  identity for every feature but an IAT one, whose bounds are thresholds in
-  microseconds (hi = t, lo = previous t + 1) and go through iat_ticks; 0 and
-  INFINITE stay. Two thresholds on one tick leave an empty interval (lo > hi),
-  which _range_table_entries does not install.'''
-  lo, hi = interval
-  if not is_iat_feature(feature):
-    return lo, hi
-  return (0 if lo == 0 else iat_ticks(lo - 1) + 1,
-          INFINITE if hi >= INFINITE else iat_ticks(hi))
 
 
 def _range_table_entries(table_name, action_name, key_field, intervals, writes=None,
@@ -2491,9 +2461,14 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
 # ---------------------------------------------------------------------------
 
 # Symbolic RegisterAction body kinds -> exact atomic read-modify-write P4
-# body, transcribed verbatim from the compiled spike
-# (p4/tofino_spike/tna_m1_flows_iat_spike.p4). Do not reword/"clean up"
-# these -- they are the compiler-validated ground truth.
+# body, each transcribed verbatim from the compile that validated it: the
+# spikes (p4/tofino_spike/tna_m1_flows_iat_spike.p4 and the others named per
+# kind) for the packet-length kinds and running_max_iat; Task 33's C1f compile
+# and Task 33b's live tofino-model check (impl/probe_first_packet/
+# live_prog_orient/prog.p4) for iat_delta, running_min_iat and mathunit_ewma
+# (Task 34). Do not reword/"clean up" these -- they are the compiler-validated
+# ground truth (p4c silently miscompiles some equivalent-looking forms:
+# program_checks._check_stateful_alu).
 _REGISTER_ACTION_BODIES = {
   # A chain's last-arrival register (V1o, Task 34; user decision 2026-11-15).
   #   WHAT: a 32-bit register holding the 32-bit clock now_pseudo_us (calc_timestamp:
@@ -2607,7 +2582,8 @@ _REGISTER_ACTION_BODIES = {
   # constructor. Design (a) from task-7-brief.md, validated by compiling
   # p4/tofino_spike/tna_m3_min_registers_spike.p4 with the real p4c
   # (0 errors) -- design (b) (a first-packet `value == 0` branch) was not
-  # needed. Bodies transcribed verbatim from that compile.
+  # needed. running_min_packet_length is transcribed verbatim from that compile;
+  # running_min_iat's body is C1f's since Task 34 (below).
   #
   # running_min_iat, C1f (Task 34): skips an IAT of 0 (no IAT, see "iat_delta") and
   # stores min - 1, so the register's 65535 start means "no IAT yet"; the call site
@@ -2935,7 +2911,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       hashing has a different (likely worse) collision profile than true
       min/max canonical ordering -- not measured, flagged not fixed,
       consistent with this project's treatment of every other
-      resource-oracle approximation (e.g. the IAT ns->us rescale).
+      resource-oracle approximation (e.g. reading an IAT in 1.024 us ticks,
+      p4model.units.iat_ticks).
     - feature_update_apply_code: the per-packet apply-block snippet: the
       hash-calc and (conditionally) timestamp calls, the single
       flow_orientation_action touch, then each *distinct register name*'s
@@ -3197,8 +3174,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # CAVEAT: a symmetric hash sees each pair only through src XOR dst, so its
   # collision profile differs from (likely worse than) true min/max canonical
   # ordering -- not measured, flagged not fixed, consistent with this project's
-  # treatment of every other resource-oracle approximation (e.g. the IAT ns->us
-  # rescale).
+  # treatment of every other resource-oracle approximation (e.g. reading an IAT
+  # in 1.024 us ticks, p4model.units.iat_ticks).
   # Orientation fix (Task 33b, adopted 2026-11-15 as a pure bug fix). The body was
   # `if (value == 0) { value = src; } rv = (value == src) ? 1 : 0;`, whose P4
   # meaning is rv = (old == 0 || old == src). p4c compiled the compare against the
