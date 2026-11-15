@@ -573,13 +573,15 @@ def _check_key_names(program):
 
 def register_action_bodies(text):
   """{RegisterAction name: the inside of its `void apply(...) {...}`}, comments
-  stripped; {} for a text without RegisterActions. Read by p4_replay.parse_program_text
-  into Program.register_bodies (check_program: _check_stateful_alu)."""
+  stripped; {} for a text without RegisterActions, None for one whose RegisterActions
+  cannot be read (unbalanced braces: _check_stateful_alu refuses it,
+  unexpected_shape:register_body, instead of checking nothing). Read by
+  p4_replay.parse_program_text into Program.register_bodies."""
   text = _strip_comments(text)
   try:
     return {name: _apply_body(body) for name, body in _bodies(text, _REGISTER_ACTION).items()}
   except ValueError:
-    return {}
+    return None
 
 
 def math_unit_names(text):
@@ -590,9 +592,12 @@ def math_unit_names(text):
 # A P4 integer literal: 65535, 0xFFFF, 32w0xFFFFFFFF, 1w1, 8s3.
 _LITERAL = r"(?:\d+[wWsS])?(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|\d[\d_]*)\b"
 # (a) a constant subtracted (or negative) inside a compare: `x - 1 < value`, `x > -3`.
+# Only one instance of the real category -- a compare whose modular P4 meaning differs
+# from the stateful ALU's exact (34-bit) compare -- see _check_stateful_alu.
 _MINUS_CONSTANT = re.compile(r"-\s*" + _LITERAL)
-# A comparison operator, once the `bit<N>` of every cast is taken out.
-_COMPARE = re.compile(r"==|!=|<=|>=|<|>")
+# A comparison operator, once the `bit<N>` of every cast is taken out; a shift (<<, >>)
+# is not one.
+_COMPARE = re.compile(r"==|!=|<=|>=|(?<![<>])<(?![<=])|(?<![<>])>(?![>=])")
 _CAST = re.compile(r"\bbit<\s*\d+\s*>")
 _VALUE = re.compile(r"(?<![\w.])value\b")
 _VALUE_WRITE = re.compile(r"^value\s*=(?!=)")
@@ -606,6 +611,9 @@ _PLAIN_FIELD = re.compile(r"^(?:\(\s*bit<\s*\d+\s*>\s*\)\s*)?(?:value|meta\.\w+|
 # (they stay exactly as they are until it is taken). Remove this exemption with that fix.
 _PENDING_MEAN_FORM = re.compile(
     r"^value\s*\+\s*(?:\(\s*bit<\s*\d+\s*>\s*\)\s*)?(?:meta\.\w+|hdr\.\w+\.\w+)$")
+# ... and only in a Mean register's action (build_p4_script: <feature>_mean_action, the
+# mathunit_ewma / mathunit_ewma_packet_length bodies), so it covers no new body by accident.
+_PENDING_MEAN_ACTION = re.compile(r"^\w+_mean_action$")
 
 
 def _compares(expression):
@@ -624,9 +632,10 @@ def _math_arguments(statement, units):
   return found
 
 
-def _salu_hazard(nodes, units, written=False):
+def _salu_hazard(nodes, units, written=False, mean=False):
   """(pattern, written after the nodes): the first refused pattern in a RegisterAction
-  body, walked in order with `written` = some path so far assigned `value`."""
+  body, walked in order with `written` = some path so far assigned `value`; `mean`: the
+  body is a Mean register's (_PENDING_MEAN_ACTION), where _PENDING_MEAN_FORM is accepted."""
   for node in nodes:
     if node[0] == "if":
       _, cond, then_nodes, else_nodes = node
@@ -635,10 +644,10 @@ def _salu_hazard(nodes, units, written=False):
           return "salu_negative_constant", written
         if written and _VALUE.search(term):
           return "salu_compare_after_write", written
-      found_then, after_then = _salu_hazard(then_nodes, units, written)
+      found_then, after_then = _salu_hazard(then_nodes, units, written, mean)
       if found_then:
         return found_then, after_then
-      found_else, after_else = _salu_hazard(else_nodes, units, written)
+      found_else, after_else = _salu_hazard(else_nodes, units, written, mean)
       if found_else:
         return found_else, after_else
       written = written or after_then or after_else
@@ -651,7 +660,7 @@ def _salu_hazard(nodes, units, written=False):
       if written and _VALUE.search(term):
         return "salu_compare_after_write", written
     for _, argument in _math_arguments(statement, units):
-      if not (_PLAIN_FIELD.match(argument) or _PENDING_MEAN_FORM.match(argument)):
+      if not (_PLAIN_FIELD.match(argument) or (mean and _PENDING_MEAN_FORM.match(argument))):
         return "salu_math_expression", written
     written = written or bool(_VALUE_WRITE.match(statement))
   return None, written
@@ -672,17 +681,27 @@ def _check_stateful_alu(program):
     salu_math_expression:<action>      a MathUnit argument that is not a plain field:
         p4c wraps only the expression's last operand in the math table (Task 33b,
         `halve.execute(value + x)` -> `value + math(x)`). The Mean bodies' own form
-        `value + <field>` is accepted until the Mean decision (_PENDING_MEAN_FORM).
+        `value + <field>` is accepted, in a `<f>_mean_action` only, until the Mean
+        decision (_PENDING_MEAN_FORM / _PENDING_MEAN_ACTION).
 
-  Every body the generator writes passes. A text without parsed bodies (an older
-  Program built by hand) is not checked."""
+  (a) is not the whole category it belongs to: any compare whose modular P4 meaning
+  differs from the ALU's exact 34-bit compare is suspect, e.g. `x + 65535 < value` or a
+  named constant, which these patterns do not see. V1o's accepted `now - value > 65535`
+  is itself one -- its P4 text says 65535 for a first packet, the hardware 0 -- and C1f
+  relies on the exact meaning (Task 33b, live).
+
+  Every body the generator writes passes. A Program built by hand without parsed
+  bodies ({}) is not checked; a text whose RegisterActions cannot be read (None) is
+  refused unexpected_shape:register_body."""
+  if program.register_bodies is None:
+    raise ProgramShapeRefused("unexpected_shape:register_body")
   units = tuple(program.math_units)
   for name in sorted(program.register_bodies):
     try:
       nodes = _parse(program.register_bodies[name])
     except ValueError:
       raise ProgramShapeRefused("unexpected_shape:register_body:%s" % name)
-    pattern, _ = _salu_hazard(nodes, units)
+    pattern, _ = _salu_hazard(nodes, units, mean=bool(_PENDING_MEAN_ACTION.match(name)))
     if pattern:
       raise ProgramShapeRefused("%s:%s" % (pattern, name))
 

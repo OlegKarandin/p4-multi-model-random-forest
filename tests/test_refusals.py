@@ -285,6 +285,26 @@ def test_a_math_unit_argument_that_is_an_expression_is_refused(tmp_path):
             text.replace(mean, "flow_iat_mean_halve_unit.execute(%s)" % argument, 1)))
 
 
+def test_the_pending_mean_form_is_accepted_in_a_mean_action_only(tmp_path):
+    """Task 34 review minors 3-5: `value + <field>` passes only in a <f>_mean_action; a
+    shift is not a compare; unreadable RegisterActions are refused, not skipped."""
+    import dataclasses
+    from p4gen import program_checks
+    text = _iat_text(tmp_path)
+    program = parse_program_text(text)
+    moved = dict(program.register_bodies)
+    moved["flow_iat_min_action"] = moved["flow_iat_mean_action"]
+    with pytest.raises(ProgramShapeRefused) as refused:
+        check_program(dataclasses.replace(program, register_bodies=moved))
+    assert refused.value.reason == "salu_math_expression:flow_iat_min_action"
+    assert program_checks._compares("value >> 1") == []
+    assert program_checks._compares("x << 2 == value") == ["x << 2 == value"]
+    with pytest.raises(ProgramShapeRefused, match="^unexpected_shape:register_body$"):
+        check_program(dataclasses.replace(program, register_bodies=None))
+    assert program_checks.register_action_bodies(
+        "RegisterAction<bit<16>, bit<12>, bit<16>>(r_reg) r_action = { void apply(") is None
+
+
 def test_every_generated_register_body_passes_the_stateful_alu_check():
     """Every body kind, ungated and direction-owned, as the generator writes it."""
     from p4gen.program_checks import _check_stateful_alu
