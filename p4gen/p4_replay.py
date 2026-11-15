@@ -62,7 +62,9 @@ class Program:
     apply_steps (program_checks.apply_steps), flow_hash (program_checks.
     flow_hash_shape: the hash's output bits, @symmetric pairs, operators in
     calc_flow_hash) and key_names ((table, field, hi, lo) -> the @name of that
-    sliced key line, None when it has none)."""
+    sliced key line, None when it has none), register_bodies (RegisterAction name ->
+    its apply body, program_checks.register_action_bodies) and math_units (the
+    MathUnit names) for the stateful-ALU check (Task 34)."""
     tables: dict
     widths: dict
     bits: dict
@@ -84,6 +86,8 @@ class Program:
     apply_steps: tuple = ()
     flow_hash: tuple = ()
     key_names: dict = field(default_factory=dict)
+    register_bodies: dict = field(default_factory=dict)
+    math_units: tuple = ()
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -340,7 +344,9 @@ def parse_program_text(text):
                    gated_register_blocks=carries_gated_register_blocks(text),
                    apply_steps=program_checks.apply_steps(text),
                    flow_hash=program_checks.flow_hash_shape(text),
-                   key_names=names)
+                   key_names=names,
+                   register_bodies=program_checks.register_action_bodies(text),
+                   math_units=program_checks.math_unit_names(text))
 
 
 def parse_program(p4_path):

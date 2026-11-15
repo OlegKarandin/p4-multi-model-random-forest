@@ -226,6 +226,91 @@ def test_a_program_of_another_shape_is_refused_with_its_reason(tmp_path, edit, r
     assert refused.value.reason.startswith(reason), refused.value.reason
 
 
+# Task 34: the three stateful-ALU forms p4c compiles silently wrong, each refused in a
+# minimal body (program_checks._check_stateful_alu); the generator's own bodies pass.
+_MIN_BODY = ("\t\t\tif (meta.flow_current_iat != 0 && meta.flow_current_iat <= value) {\n"
+             "\t\t\t\tvalue = meta.flow_current_iat - 1;\n"
+             "\t\t\t}\n")
+_ORIENTATION_BODY = ("\t\t\tif (value == 0 || value == hdr.ipv4.src_addr) {\n"
+                     "\t\t\t\tvalue = hdr.ipv4.src_addr;\n"
+                     "\t\t\t\trv = 1w1;\n"
+                     "\t\t\t} else {\n"
+                     "\t\t\t\trv = 1w0;\n"
+                     "\t\t\t}\n")
+
+
+@pytest.mark.parametrize("old,new,reason", [
+    # (a) Task 33's C1 Min: `iat - 1 < value` compiled to `lss.u hi, phv_lo, 65535, -lo`
+    (_MIN_BODY, _MIN_BODY.replace("meta.flow_current_iat <= value",
+                                  "meta.flow_current_iat - 1 < value"),
+     "salu_negative_constant:flow_iat_min_action"),
+    (_MIN_BODY, _MIN_BODY.replace("<= value", "<= value - 32w1"),
+     "salu_negative_constant:flow_iat_min_action"),
+    (_MIN_BODY, _MIN_BODY.replace("!= 0", "> -2"), "salu_negative_constant:flow_iat_min_action"),
+    # (b) the pre-Task-33b orientation body: rv compares the word it just wrote
+    (_ORIENTATION_BODY, ("\t\t\tif (value == 0) {\n\t\t\t\tvalue = hdr.ipv4.src_addr;\n\t\t\t}\n"
+                         "\t\t\trv = (value == hdr.ipv4.src_addr) ? 1w1 : 1w0;\n"),
+     "salu_compare_after_write:flow_orientation_action"),
+    (_ORIENTATION_BODY, ("\t\t\tvalue = hdr.ipv4.src_addr;\n"
+                         "\t\t\tif (value == hdr.ipv4.src_addr) {\n\t\t\t\trv = 1w1;\n"
+                         "\t\t\t} else {\n\t\t\t\trv = 1w0;\n\t\t\t}\n"),
+     "salu_compare_after_write:flow_orientation_action"),
+])
+def test_a_silently_miscompiled_stateful_alu_body_is_refused(tmp_path, old, new, reason):
+    text = _iat_text(tmp_path)
+    assert old in text
+    changed = text.replace(old, new, 1)
+    with pytest.raises(ProgramShapeRefused) as refused:
+        check_program(parse_program_text(changed))
+    assert refused.value.reason == reason
+    assert model_breakdown(parse_program_text(changed))["refusal_reason"] == reason
+
+
+def test_a_math_unit_argument_that_is_an_expression_is_refused(tmp_path):
+    """(c) p4c wraps only the last operand of a MathUnit argument in the math table
+    (Task 33b). The Mean bodies' own `value + <field>` is accepted until the Mean
+    decision; any other expression is refused."""
+    text = _iat_text(tmp_path)
+    mean = "flow_iat_mean_halve_unit.execute(value + meta.flow_current_iat)"
+    assert mean in text
+    check_program(parse_program_text(text))
+    for argument in ("value + meta.flow_current_iat + 1", "meta.flow_current_iat >> 1",
+                     "value - meta.flow_current_iat", "(value + meta.flow_current_iat)"):
+        changed = text.replace(mean, "flow_iat_mean_halve_unit.execute(%s)" % argument, 1)
+        with pytest.raises(ProgramShapeRefused) as refused:
+            check_program(parse_program_text(changed))
+        assert refused.value.reason == "salu_math_expression:flow_iat_mean_action", argument
+    for argument in ("value", "meta.flow_current_iat", "(bit<16>)hdr.ipv4.total_len"):
+        check_program(parse_program_text(
+            text.replace(mean, "flow_iat_mean_halve_unit.execute(%s)" % argument, 1)))
+
+
+def test_every_generated_register_body_passes_the_stateful_alu_check():
+    """Every body kind, ungated and direction-owned, as the generator writes it."""
+    from p4gen.program_checks import _check_stateful_alu
+    from p4model.catalog import FEATURE_REGISTER_CATALOG
+    _, actions, _, _ = bps.generate_P4_registers_and_apply(
+        {name: None for name in FEATURE_REGISTER_CATALOG})
+    program = parse_program_text(actions)
+    assert len(program.register_bodies) == 22        # 21 catalog registers + orientation
+    assert len(program.math_units) == 6
+    _check_stateful_alu(program)
+
+
+def _iat_text(tmp_path):
+    """A generated joint program with flow_iat_min, flow_iat_mean and the orientation."""
+    from tests.test_per_task_codes import _forest
+    names = ["flow_iat_min", "flow_iat_mean", "fwd_packet_length_max"]
+    app, ddos = _forest(3, 2, names), _forest(2, 1, names)
+    joint = bps.get_joint_feature_intervals(app, names, ddos, names)
+    path = bps.generate_P4_code(3, 2, app, ddos, feature_intervals_app=joint,
+                                feature_intervals_ddos=joint,
+                                output_dir=str(tmp_path) + os.sep, output_filename="iat.p4",
+                                selected_features_app=names, selected_features_ddos=names)
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
 PRE_A1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "pre_a1")
 
 

@@ -568,6 +568,125 @@ def _check_key_names(program):
         raise ProgramShapeRefused("unexpected_shape:key_name:%s:%s" % (table, expression))
 
 
+# ------------------------------------------------------------------ stateful ALU bodies
+
+
+def register_action_bodies(text):
+  """{RegisterAction name: the inside of its `void apply(...) {...}`}, comments
+  stripped; {} for a text without RegisterActions. Read by p4_replay.parse_program_text
+  into Program.register_bodies (check_program: _check_stateful_alu)."""
+  text = _strip_comments(text)
+  try:
+    return {name: _apply_body(body) for name, body in _bodies(text, _REGISTER_ACTION).items()}
+  except ValueError:
+    return {}
+
+
+def math_unit_names(text):
+  """The names of the program's MathUnit instances (Program.math_units)."""
+  return tuple(sorted(set(_MATH_UNIT.findall(_strip_comments(text)))))
+
+
+# A P4 integer literal: 65535, 0xFFFF, 32w0xFFFFFFFF, 1w1, 8s3.
+_LITERAL = r"(?:\d+[wWsS])?(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|\d[\d_]*)\b"
+# (a) a constant subtracted (or negative) inside a compare: `x - 1 < value`, `x > -3`.
+_MINUS_CONSTANT = re.compile(r"-\s*" + _LITERAL)
+# A comparison operator, once the `bit<N>` of every cast is taken out.
+_COMPARE = re.compile(r"==|!=|<=|>=|<|>")
+_CAST = re.compile(r"\bbit<\s*\d+\s*>")
+_VALUE = re.compile(r"(?<![\w.])value\b")
+_VALUE_WRITE = re.compile(r"^value\s*=(?!=)")
+# (c) a plain field as the MathUnit's argument: `value`, `meta.<f>`, `hdr.<h>.<f>`,
+# optionally cast.
+_PLAIN_FIELD = re.compile(r"^(?:\(\s*bit<\s*\d+\s*>\s*\)\s*)?(?:value|meta\.\w+|hdr\.\w+\.\w+)$")
+# The Mean bodies' form, ACCEPTED FOR NOW (Task 34): `<unit>.execute(value + <field>)`.
+# It is a known miscompile -- p4c (stateful_alu.cpp ~1051) wraps only the LAST operand in
+# the math table, so the register holds value + f(x), a running sum mod 2^16, not the
+# EWMA the text means (Task 33b, live) -- but the Mean registers are a separate decision
+# (they stay exactly as they are until it is taken). Remove this exemption with that fix.
+_PENDING_MEAN_FORM = re.compile(
+    r"^value\s*\+\s*(?:\(\s*bit<\s*\d+\s*>\s*\)\s*)?(?:meta\.\w+|hdr\.\w+\.\w+)$")
+
+
+def _compares(expression):
+  """The comparison terms of an expression (split at && / ||), casts taken out."""
+  bare = _CAST.sub("bit", expression)
+  return [term for term in re.split(r"&&|\|\|", bare) if _COMPARE.search(term)]
+
+
+def _math_arguments(statement, units):
+  """[(unit, argument text)] of every `<unit>.execute(<argument>)` in the statement."""
+  found = []
+  for unit in units:
+    for match in re.finditer(r"\b%s\.execute\s*\(" % re.escape(unit), statement):
+      close = _matching(statement, match.end() - 1, "(", ")")
+      found.append((unit, statement[match.end():close].strip()))
+  return found
+
+
+def _salu_hazard(nodes, units, written=False):
+  """(pattern, written after the nodes): the first refused pattern in a RegisterAction
+  body, walked in order with `written` = some path so far assigned `value`."""
+  for node in nodes:
+    if node[0] == "if":
+      _, cond, then_nodes, else_nodes = node
+      for term in _compares(cond):
+        if _MINUS_CONSTANT.search(term):
+          return "salu_negative_constant", written
+        if written and _VALUE.search(term):
+          return "salu_compare_after_write", written
+      found_then, after_then = _salu_hazard(then_nodes, units, written)
+      if found_then:
+        return found_then, after_then
+      found_else, after_else = _salu_hazard(else_nodes, units, written)
+      if found_else:
+        return found_else, after_else
+      written = written or after_then or after_else
+      continue
+    statement = node[1]
+    rhs = statement.split("=", 1)[1] if re.match(r"^[\w.]+\s*=(?!=)", statement) else statement
+    for term in _compares(rhs):
+      if _MINUS_CONSTANT.search(term):
+        return "salu_negative_constant", written
+      if written and _VALUE.search(term):
+        return "salu_compare_after_write", written
+    for _, argument in _math_arguments(statement, units):
+      if not (_PLAIN_FIELD.match(argument) or _PENDING_MEAN_FORM.match(argument)):
+        return "salu_math_expression", written
+    written = written or bool(_VALUE_WRITE.match(statement))
+  return None, written
+
+
+def _check_stateful_alu(program):
+  """Task 34: refuse the three stateful-ALU forms p4c compiles SILENTLY WRONG (0 errors,
+  wrong instructions in prog.bfa), in every RegisterAction body:
+
+    salu_negative_constant:<action>    a compare with a constant subtracted or negative,
+        e.g. `x - 1 < value`: p4c folds -1 into +65535 and compares exactly (34-bit),
+        `lss.u hi, phv_lo, 65535, -lo`, never true (Task 33, the C1 Min). A subtraction
+        of a FIELD (`now - value > 65535`, V1o) is exact and accepted.
+    salu_compare_after_write:<action>  a compare that reads `value` after the body
+        assigned it (on some path): p4c compares the OLD memory word (Task 33b, the old
+        orientation body `if (value == 0) { value = src; } rv = (value == src) ...`
+        compiled to rv = (old == src); every flow's first packet read bwd).
+    salu_math_expression:<action>      a MathUnit argument that is not a plain field:
+        p4c wraps only the expression's last operand in the math table (Task 33b,
+        `halve.execute(value + x)` -> `value + math(x)`). The Mean bodies' own form
+        `value + <field>` is accepted until the Mean decision (_PENDING_MEAN_FORM).
+
+  Every body the generator writes passes. A text without parsed bodies (an older
+  Program built by hand) is not checked."""
+  units = tuple(program.math_units)
+  for name in sorted(program.register_bodies):
+    try:
+      nodes = _parse(program.register_bodies[name])
+    except ValueError:
+      raise ProgramShapeRefused("unexpected_shape:register_body:%s" % name)
+    pattern, _ = _salu_hazard(nodes, units)
+    if pattern:
+      raise ProgramShapeRefused("%s:%s" % (pattern, name))
+
+
 def check_program(program):
   """Refuse a parsed program (p4_replay.Program) that breaks an assumption the replay
   prices by (decision 8.2; inventory_model Sec 6, A1, A5, A7, A8, A10-A14, A17, and
@@ -588,6 +707,10 @@ def check_program(program):
                                  gate G3 among them); flow_hash: a flow hash other
                                  than the generator's (review A1); key_name:<table>:
                                  <slice>: a sliced key without its bf_rt @name (B1)
+    salu_negative_constant:<action>, salu_compare_after_write:<action>,
+    salu_math_expression:<action>
+                                 a RegisterAction body in a form p4c silently
+                                 miscompiles (_check_stateful_alu, Task 34)
 
   A program the generator writes passes; an archived program of an older generator
   is refused, never priced as if it were current."""
@@ -601,3 +724,4 @@ def check_program(program):
   _check_pins(program, _pins(program))
   _check_priorities(program)
   _check_apply(program)
+  _check_stateful_alu(program)
