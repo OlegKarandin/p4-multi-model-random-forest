@@ -839,8 +839,9 @@ def model_breakdown(program, row_id='', max_blocks=None):
     """Everything the model says about one generated program, per table, by
     the program's own table names -- so spec sec 6.3's per-table comparison with
     p4c's mau.resources.log is a name join, not a mapping. The model side of
-    every campaign verdict (plan O3): the path the 60/60 calibration gate
-    validates, and the one --rescore reruns from a saved program.
+    every campaign verdict (plan O3): the path tests/test_p4c_base_17b.py checks
+    against p4c on programs of the current generator, and the one --rescore
+    reruns from a saved program.
 
     Every refusal is applied here, so training, --rescore, --model-archive and
     outside users share one implementation (decision 8.2): first the program's

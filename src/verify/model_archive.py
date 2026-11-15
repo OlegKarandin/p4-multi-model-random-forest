@@ -21,18 +21,17 @@ from p4gen.p4_replay import model_breakdown, parse_program
 from p4model.target import TOFINO_PIPELINE_STAGES
 from src.verify.verdicts import MODEL_REFUSED_PREFIX
 
-# results/compiler_calibration_pragmas_2026_09_29 under the ternary crossbar
-# port (p4model/xbar.py, 2026-11-13): stage_depth 72/73 (feasible 60/60),
-# blocks feasible 60/60. row -> {metric: (model, p4c)}.
-KNOWN_MISSES = {
-    # Infeasible either way (> 12 stages). Exact since 2026-11-08 (p4c's tie
-    # order for registers and range tables, rule E):
-    # heldout_independent_M150_k15_s16 (was 14 vs 13) and
-    # independent_high_sd12 (was 13 vs 14). Since the port (2026-11-13)
-    # independent_low_sd5's ddos key (27, 52) prices 3 per tree like p4c (the
-    # lane count said 2), so its blocks miss (13 vs 16) left the list.
-    'heldout_independent_M250_k14_s12': {'stage_depth': (15, 16)},
-}
+# row -> {metric: (model, p4c)}: misses the archive is expected to show.
+# EMPTY since Task 18 (2026-11-15). The one calibration archive this gate was
+# run on, results/compiler_calibration_pragmas_2026_09_29 (73 designs), holds
+# programs generated before decisions 1a / 7.1 option B: the replay refuses
+# every one by shape (MODEL_REFUSED:gated_register_block), so it no longer
+# scores the model and its old misses (stage_depth 72/73 under the crossbar
+# port) are history, not expectations. The whole-program check on programs of
+# the CURRENT generator is tests/test_p4c_base_17b.py (12 Task 17b base
+# compiles; 10/12 exact, two named misses); a new archive for this command
+# needs new compiles.
+KNOWN_MISSES = {}
 
 
 def _design(archive_dir, row, known):

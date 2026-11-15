@@ -625,12 +625,13 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
   joint-off-al compiles of campaign_2026_11 price every tree table exactly
   (model7/findings.md Part 4).
 
-  Measured under the ternary crossbar port (2026-11-13) on the 73 designs of
-  results/compiler_calibration_pragmas_2026_09_29/ (python -m src.verify
-  --model-archive): stage_depth feasible 60/60 (all 72/73; the miss,
-  heldout_independent_M250_k14_s12, is infeasible either way) and blocks
-  feasible 60/60; plus the step-2 replay of the 7,650 campaign_2026_11
-  compiles (model7/findings.md Part 4).
+  Measured under the ternary crossbar port (2026-11-13) on the step-2 replay
+  of the 7,650 campaign_2026_11 compiles (model7/findings.md Part 4), and on
+  programs of the current generator by tests/test_p4c_base_17b.py (12 Task 17b
+  base compiles; Task 18, results/encoding_evidence_2026_11/model8/impl/
+  remeasure.md). The older calibration archive
+  (compiler_calibration_pragmas_2026_09_29) predates decisions 1a / 7.1 option
+  B and is refused by shape, so it no longer scores this placement.
 
   THE PACKED CLASSIFICATION POOL (key_bytes given: one lanes.py byte-list
   tuple per table, packed.key_bytes -- spec

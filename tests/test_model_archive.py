@@ -120,9 +120,9 @@ def test_the_shipped_known_misses_are_the_spec_list():
     # are exact under p4c's tie order and rule E, and leave the list.
     # 2026-11-13: independent_low_sd5's blocks are exact under the crossbar
     # port and leave it too.
-    assert model_archive.KNOWN_MISSES == {
-        "heldout_independent_M250_k14_s12": {"stage_depth": (15, 16)},
-    }
+    # 2026-11-15 (Task 18): the list is empty -- the pragmas archive is refused
+    # by shape (below), so heldout_independent_M250_k14_s12 no longer occurs.
+    assert model_archive.KNOWN_MISSES == {}
 
 
 PRAGMAS_ARCHIVE = os.path.join("results", "compiler_calibration_pragmas_2026_09_29")
