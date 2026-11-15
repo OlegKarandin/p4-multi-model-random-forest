@@ -54,6 +54,30 @@ def test_the_coarse_clock_takes_two_32_bit_containers_on_both_paths(tmp_path, en
     assert phv.containers_used(pool) == phv.containers_used(program)
 
 
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_the_fine_clock_takes_two_8_and_four_16_bit_containers_where_it_is_computed(tmp_path, encoding):
+  """Task 39 (Task 38 review minor 4): calc_timestamp writes meta.now_pseudo_us only
+  when an IAT Max / Min keeps a last-arrival register, and p4c then holds it and its
+  global_tstamp[41:10] source in 2 B + 4 H (105 / 105 recompiles). Counted only then, in
+  training and in the replay alike; the template declares the field in every program,
+  so the replay reads calc_timestamp's writes, not the declaration."""
+  base = phv.count(1, 0, 0, ())
+  fine = phv.count(1, 0, 0, (), fine_clock=True)
+  assert (fine[8] - base[8], fine[16] - base[16], fine[32] - base[32]) == (2, 4, 0)
+  assert phv.FINE_CLOCK_CONTAINERS == (8, 8, 16, 16, 16, 16)
+  seen = set()
+  for seed in (0, 3, 14, 1, 2, 4, 5):
+    app, ddos, names, path = _generate(tmp_path, encoding, seed)
+    program = parse_program(path)
+    computed = any(f == "now_pseudo_us" for f, _ in program.timestamp_writes)
+    assert computed == bps.uses_timestamp(names)
+    pool = evaluation._pool_inputs(app, ddos, names, names, encoding)
+    assert pool["phv_fields"]["fine_clock"] == computed
+    assert phv.containers_used(pool) == phv.containers_used(program)
+    seen.add(computed)
+  assert seen == {True, False}, "the seeds must cover a program with and one without the fine clock"
+
+
 def test_check_names_the_size_and_the_shortfall():
   used = {8: 10, 16: PHV_INGRESS_CONTAINERS[16] + 3, 32: PHV_INGRESS_CONTAINERS[32] + 1}
   with pytest.raises(PhvContainersExhausted) as refused:
@@ -77,6 +101,12 @@ def test_phv_count_joint(tmp_path):
   constants = re.findall(r"_action\.execute\(meta\.flow_hash\) \+ 1;", text)
   by_hand[16] += len(vals) + len(scratch) + len(constants)
   by_hand[8] += len(classes)
+  # the fine clock, 2 B + 4 H, when calc_timestamp writes it (Task 39); the coarse one, 2 W
+  if re.search(r"meta\.now_pseudo_us = ig_prsr_md\.global_tstamp", text):
+    by_hand[8] += 2
+    by_hand[16] += 4
+  if re.search(r"meta\.now_coarse = ", text):
+    by_hand[32] += 2
   for bits, name in code:                              # each field sits in its pinned containers
     pin = re.search(r'@pa_container_size\("ingress", "ig_md\.code_%s", ([\d, ]+)\)' % name, text)
     assert int(bits) == sum(int(size) for size in pin.group(1).split(","))

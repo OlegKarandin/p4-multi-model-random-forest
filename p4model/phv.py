@@ -17,6 +17,9 @@ ONE counting function, `count`, fed by two thin adapters: `from_pool` (the pool
     p4c keeps the constant 1 in a PHV container that a hidden stage-0 `$precompute`
     table sets (Task 33, prog.bfa `add H3, <min salu>, H4`; +1 p4c container per
     Min feature, 3 Min features +3);
+  * two 8-bit and four 16-bit containers when the program computes the fine
+    clock of the IAT Max / Min features (FINE_CLOCK_CONTAINERS: meta.now_pseudo_us
+    and its source ig_prsr_md.global_tstamp[41:10]);
   * two 32-bit containers when the program computes the coarse clock of the
     Task 38 durations (COARSE_CLOCK_CONTAINERS: meta.now_coarse and its source
     ig_intr_md.ingress_mac_tstamp[47:16]);
@@ -27,13 +30,9 @@ ONE counting function, `count`, fed by two thin adapters: `from_pool` (the pool
     packed layout's containers for a `code_pk_<f>` field.
 
 The budgets are the ingress counts (target.PHV_INGRESS_CONTAINERS); the template
-counts were measured for decision 6c in Task 31 on the 160 Task 17b base designs
-compiled with the Task 31 generator (target.py has the evidence). Nothing is fitted
-here. NOT counted yet: the 32-bit clock of V1o (Task 34; p4c splits now_pseudo_us
-over B + H + H, +1..+3 containers on Task 29's 3 designs, not one fixed shape), left
-to the template re-measure (target.PHV_TEMPLATE_FIELDS), which also has to take out
-the fine clock's share of the template for a program whose durations left no
-last-arrival register (Task 38: calc_timestamp then writes now_coarse only)."""
+counts and the fine clock's containers were measured in Task 39 on the 160 Task 17b
+base designs compiled with the final generator (target.py and FINE_CLOCK_CONTAINERS
+have the evidence). Nothing is fitted here."""
 from p4model import lanes
 from p4model.errors import PhvContainersExhausted
 from p4model.target import PHV_INGRESS_CONTAINERS, PHV_TEMPLATE_FIELDS
@@ -52,18 +51,33 @@ _CODE = 'code_'
 #     without it (joint-task_M035_s24_k07, joint-tree_M015_s02_k06).
 COARSE_CLOCK_FIELD = 'now_coarse'
 COARSE_CLOCK_CONTAINERS = (32, 32)
+# The fine clock of the IAT Max / Min registers (V1o, Task 34: the 32-bit
+# meta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10], pinned @pa_solitary), written
+# by calc_timestamp only when a last-arrival register remains (build_p4_script
+# uses_timestamp; the template declares the field in every program). p4c splits the
+# field and its source slice over one 8-bit and two 16-bit containers each (B + H + H):
+# on 105 / 105 of the Task 39 recompiles that compute it, the containers holding any
+# slice of the two fields are exactly 2 B + 4 H, and 0 on the 55 that do not
+# (impl/scripts/t39_phv_fields.py). In 46 of the 105 the two B containers also hold a
+# class field p4c overlaid there (dead by then); the count does not net that, as it
+# does not for any class field.
+FINE_CLOCK_FIELD = 'now_pseudo_us'
+FINE_CLOCK_CONTAINERS = (8, 8, 16, 16, 16, 16)
 
 
-def count(n_vals, n_scratch, n_trees, code_containers, n_constants=0, coarse_clock=False):
+def count(n_vals, n_scratch, n_trees, code_containers, n_constants=0, coarse_clock=False,
+          fine_clock=False):
   """{8: n, 16: n, 32: n}: containers the program takes. n_vals value fields,
   n_scratch IAT scratch fields and n_constants call-site constants (16 bits each),
   n_trees class fields (8 bits each), the coarse clock's COARSE_CLOCK_CONTAINERS when
-  `coarse_clock`, and `code_containers`, one tuple of container sizes per code
-  field."""
+  `coarse_clock`, the fine clock's FINE_CLOCK_CONTAINERS when `fine_clock`, and
+  `code_containers`, one tuple of container sizes per code field."""
   used = {size: len(PHV_TEMPLATE_FIELDS[size]) for size in SIZES}
   used[16] += n_vals + n_scratch + n_constants
   used[8] += n_trees
   for size in (COARSE_CLOCK_CONTAINERS if coarse_clock else ()):
+    used[size] += 1
+  for size in (FINE_CLOCK_CONTAINERS if fine_clock else ()):
     used[size] += 1
   for containers in code_containers:
     for size in containers:
@@ -78,26 +92,29 @@ def class_fields(tree_counts):
   return sum(n for n in tree_counts if n > 1)
 
 
-def budgets(n_vals, n_scratch, n_trees, n_constants=0, coarse_clock=False):
+def budgets(n_vals, n_scratch, n_trees, n_constants=0, coarse_clock=False, fine_clock=False):
   """Containers left for code fields, per size, once the program's own fields
   (everything but the code fields) are counted."""
-  own = count(n_vals, n_scratch, n_trees, (), n_constants, coarse_clock)
+  own = count(n_vals, n_scratch, n_trees, (), n_constants, coarse_clock, fine_clock)
   return {size: PHV_INGRESS_CONTAINERS[size] - own[size] for size in SIZES}
 
 
 def from_pool(pool):
   """`count` over the pool's "phv_fields" (evaluation._pool_inputs); a pool built
-  before C1f has no "constants" (0), one built before Task 38 no "coarse_clock"."""
+  before C1f has no "constants" (0), one built before Task 38 no "coarse_clock", one
+  built before Task 39 no "fine_clock" (its template then held the fine clock)."""
   fields = pool['phv_fields']
   return count(fields['vals'], fields['scratch'], fields['trees'], fields['code_containers'],
-               fields.get('constants', 0), fields.get('coarse_clock', False))
+               fields.get('constants', 0), fields.get('coarse_clock', False),
+               fields.get('fine_clock', False))
 
 
 def from_program(program):
   """`count` over a parsed generated program (p4_replay.Program): its value fields
   and class fields by name in the declarations, its IAT scratch fields, its
   call-site constants (Program.call_constants), the coarse clock when the metadata
-  declares now_coarse, and each code field's pin
+  declares now_coarse, the fine clock when calc_timestamp writes now_pseudo_us
+  (Program.timestamp_writes), and each code field's pin
   (Program.containers for a packed field, Program.code_containers for any other); a
   code field with no pin -- one no tree keys -- takes the containers the width rule
   would pin it to."""
@@ -110,7 +127,8 @@ def from_program(program):
   vals = sum(1 for name in program.bits if name.endswith('_val') and not name.startswith(_CODE))
   return count(vals, len(program.scratch_fields), len(program.class_fields), code,
                len(getattr(program, 'call_constants', ())),
-               COARSE_CLOCK_FIELD in getattr(program, 'declared', {}))
+               COARSE_CLOCK_FIELD in getattr(program, 'declared', {}),
+               any(field == FINE_CLOCK_FIELD for field, _ in getattr(program, 'timestamp_writes', ())))
 
 
 def containers_used(source):
