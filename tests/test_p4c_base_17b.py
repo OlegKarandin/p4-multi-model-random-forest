@@ -11,7 +11,9 @@ flow hash (review A1, Task 31; model8/impl/scripts/exp31.py fixture, Codespace /
 text is its old text with that edit (t31_text_diff.py, 12/12), p4c stage depth 2 lower on 12/12, blocks unchanged.
 And again for review A2 (a one-tree task has no vote table; Codespace /workspaces/dr_t31_out/fixA2): p4c stage depth
 1 lower again on the 5 programs whose LAST tree belongs to a one-tree task (3 with one tree per task, 2 with app 1 /
-ddos 3-5 trees), unchanged on the other 7, blocks unchanged; the model's depth exact on 12/12.
+ddos 3-5 trees), unchanged on the other 7, blocks unchanged; the model's depth exact on 12/12. Recompiled once more
+with the @name keys (B1) and the clean-ups (Task 31's 160-design run, /workspaces/dr_t31_out/final, a0cbb9f): every
+p4c number of the 12 identical to the A2 compiles.
 The old calibration archive
 (compiler_calibration_pragmas_2026_09_29) can no longer score the model: every program in it is refused by shape
 (test_model_archive).
