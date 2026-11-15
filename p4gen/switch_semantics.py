@@ -23,7 +23,29 @@ build_p4_script.iat_ticks(t) = floor((1000 t + 500) / 1024) + 1 (Task 34). That
 conversion is not emulated here: on 200 DEV designs (feature-level emulation, Tasks
 29 and 33) the switch with it agrees with this software vote on 99.98 / 99.97% (app,
 k<=8 / k>=9) and 100.00 / 99.99% (ddos) of flows; the residual is +-1 tick of clock
-reading at a threshold. The switch's Mean registers are not the CSV mean (Task 33b).
+reading at a threshold.
+
+THE TASK 38 FEATURES (P3h, replacing the six Means; build_p4_script._REGISTER_ACTION_
+BODIES has the register bodies). Training uses the CSVs' WHOLE-FLOW values, derived
+in the switch's unit by src/training/dataset.py (DERIVED_FEATURES); the switch
+computes each one packet by packet, and a packet is classified on the value AFTER its
+own update:
+  flow_duration, fwd_iat_total, bwd_iat_total: on the switch, min(floor(t_last / T) -
+    floor(t_first / T), 65535) with T = 65.536 us (meta.now_coarse =
+    ingress_mac_tstamp[47:16]) over the flow's packets / the direction's packets so
+    far (0 for one packet; a direction with no packet yet reads 0, also on the other
+    direction's packets, which read the owner's current value). Training:
+    min(round(d / T), 65535), d = the CSV's Flow.Duration / Fwd.IAT.Total /
+    Bwd.IAT.Total of the whole flow; the two differ by at most one tick for the same
+    packets (dataset.py). Thresholds install unchanged (not IAT features,
+    p4model.units).
+  fwd_packet_length_total, bwd_packet_length_total, packet_length_total: on the
+    switch, the saturating 16-bit sum of the IP total lengths of the direction's /
+    flow's packets so far. Training: min(Total.Length.of.Fwd.Packets, 65535), the same
+    for Bwd, min(fwd + bwd, 65535): the CSVs sum payload bytes, not IP lengths
+    (pre-existing for every length feature).
+Not emulated here either: like the IAT features, accuracy is the software vote on the
+CSV values.
 """
 import numpy as np
 from sklearn.metrics import accuracy_score

@@ -64,7 +64,9 @@ class Program:
     calc_flow_hash) and key_names ((table, field, hi, lo) -> the @name of that
     sliced key line, None when it has none), register_bodies (RegisterAction name ->
     its apply body, program_checks.register_action_bodies) and math_units (the
-    MathUnit names) for the stateful-ALU check (Task 34)."""
+    MathUnit names) for the stateful-ALU check (Task 34), timestamp_writes
+    ((field, source) per assignment in calc_timestamp, program_checks.
+    timestamp_writes) for the clock pins (Task 38)."""
     tables: dict
     widths: dict
     bits: dict
@@ -88,6 +90,7 @@ class Program:
     key_names: dict = field(default_factory=dict)
     register_bodies: dict = field(default_factory=dict)
     math_units: tuple = ()
+    timestamp_writes: tuple = ()
 
 
 ReplayPlans = namedtuple('ReplayPlans', 'stage_depth range_plan ternary_plan '
@@ -346,7 +349,8 @@ def parse_program_text(text):
                    flow_hash=program_checks.flow_hash_shape(text),
                    key_names=names,
                    register_bodies=program_checks.register_action_bodies(text),
-                   math_units=program_checks.math_unit_names(text))
+                   math_units=program_checks.math_unit_names(text),
+                   timestamp_writes=program_checks.timestamp_writes(text))
 
 
 def parse_program(p4_path):

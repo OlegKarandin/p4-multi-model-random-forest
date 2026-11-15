@@ -343,9 +343,15 @@ _VOTE_TABLE = re.compile(r"^vote_(\w+)$")
 _PACKED = "code_pk_"
 _ORIENTATION_ACTION = "flow_orientation_action"
 _PROLOGUE_CALL = "calc_flow_hash"
-# The action writing meta.now_pseudo_us, and that field (its pa_solitary pin, A1b).
+# The action writing the clocks, and each clock field with the source the generator
+# copies it from (build_p4_script.generate_P4_registers_and_apply): the fine IAT
+# clock now_pseudo_us (V1o) and, since Task 38, the coarse clock now_coarse of the
+# durations. Each one written carries a pa_solitary pin (A1b; Task 38).
 _TIMESTAMP_CALL = "calc_timestamp"
-_TIMESTAMP_FIELD = "now_pseudo_us"
+_TIMESTAMP_SOURCES = {"now_pseudo_us": "ig_prsr_md.global_tstamp[41:10]",
+                      "now_coarse": "ig_intr_md.ingress_mac_tstamp[47:16]"}
+_TIMESTAMP_ACTION = re.compile(r"\baction\s+%s\s*\(\s*\)\s*\{" % _TIMESTAMP_CALL)
+_TIMESTAMP_WRITE = re.compile(r"\bmeta\.(\w+)\s*=(?!=)\s*([^;]*);")
 # The flow index, pinned pa_solitary in every program (Task 31 miss, 2026-11-15).
 _FLOW_HASH_FIELD = "flow_hash"
 # The template's two forwarding assignments, the apply block's first steps (Task 17b):
@@ -354,6 +360,18 @@ _FLOW_HASH_FIELD = "flow_hash"
 # (7 k=1 under-prices in the Task 17 compile experiment).
 _EGRESS_ASSIGNMENTS = ("ig_tm_md.ucast_egress_port = ig_intr_md.ingress_port",
                        "ig_tm_md.bypass_egress = 1w1")
+
+
+def timestamp_writes(text):
+  """((field, source expression), ...) of every `meta.<field> = <source>;` in the
+  calc_timestamp action, in body order; () when the text has no such action. Read by
+  p4_replay.parse_program_text into Program.timestamp_writes; _check_pins judges it."""
+  text = _strip_comments(text)
+  writes = []
+  for match in _TIMESTAMP_ACTION.finditer(text):
+    body = text[match.end():_matching(text, match.end() - 1)]
+    writes += [(field, " ".join(source.split())) for field, source in _TIMESTAMP_WRITE.findall(body)]
+  return tuple(writes)
 
 
 def _pins(program):
@@ -379,6 +397,8 @@ def _check_pins(program, pins):
                         the latter for a field with no bits)
     now_pseudo_us       pa_solitary, in a program that computes it
                         (calc_timestamp; review A1b, 2026-11-15)
+    now_coarse          pa_solitary, in a program that computes it
+                        (calc_timestamp; Task 38, the durations' clock)
     flow_hash           pa_solitary, in every program with a calc_flow_hash
                         action (every generated one; Task 31 miss, 2026-11-15)
 
@@ -404,8 +424,18 @@ def _check_pins(program, pins):
     if tuple(need("pa_container_size", field)) != (16,):
       raise ProgramShapeRefused("unexpected_shape:scratch_container:%s" % field)
   if any(kind == "call" and name == _TIMESTAMP_CALL for kind, name, _, _ in program.apply_steps):
-    if tuple(need("pa_solitary", _TIMESTAMP_FIELD)) != ():
-      raise ProgramShapeRefused("unexpected_shape:pin:pa_solitary:%s" % _TIMESTAMP_FIELD)
+    # Every clock calc_timestamp writes: one of the generator's, from its source
+    # (another source is another program: Task 37 compiled now_coarse from
+    # global_tstamp[47:16] and p4c could not allocate it beside the fine clock), and
+    # pinned. A calc_timestamp that writes no clock is not the generator's either.
+    writes = program.timestamp_writes
+    if not writes or len({field for field, _ in writes}) != len(writes):
+      raise ProgramShapeRefused("unexpected_shape:timestamp")
+    for field, source in writes:
+      if _TIMESTAMP_SOURCES.get(field) != source:
+        raise ProgramShapeRefused("unexpected_shape:timestamp:%s" % field)
+      if tuple(need("pa_solitary", field)) != ():
+        raise ProgramShapeRefused("unexpected_shape:pin:pa_solitary:%s" % field)
   for field in sorted(program.declared):
     bits = program.declared[field]
     if field.endswith("_val") and not field.startswith("code_"):
@@ -494,6 +524,7 @@ def _check_apply(program):
     raise ProgramShapeRefused("unexpected_shape:orientation_register")
   # Lazy: p4model.registers needs nothing from here, but keep this module's
   # import cost at the stdlib for metadata_reads_before_writes' callers.
+  from p4model.catalog import FEATURE_REGISTER_CATALOG
   from p4model.registers import register_call_order
   features = []
   for name, keys in program.tables.items():
@@ -502,6 +533,14 @@ def _check_apply(program):
         raise ProgramShapeRefused("unexpected_shape:range_key:%s" % name)
       if keys[0][:-len("_val")] not in features:
         features.append(keys[0][:-len("_val")])
+  # A range table on a feature the catalog does not have: the replay would price it
+  # with no registers. The generator refuses such a feature (F2), so the text is an
+  # older generator's -- every program with a Mean feature before Task 38 (the six
+  # Means left the catalog; their MathUnit bodies are refused as well,
+  # _check_stateful_alu, salu_math_expression).
+  for feature in features:
+    if feature not in FEATURE_REGISTER_CATALOG:
+      raise ProgramShapeRefused("unexpected_shape:feature:%s" % feature)
   if tuple(program.register_calls) != tuple(register_call_order(features)):
     raise ProgramShapeRefused("unexpected_shape:register_calls")
   rank, last = None, -1
@@ -600,20 +639,14 @@ _MINUS_CONSTANT = re.compile(r"-\s*" + _LITERAL)
 _COMPARE = re.compile(r"==|!=|<=|>=|(?<![<>])<(?![<=])|(?<![<>])>(?![>=])")
 _CAST = re.compile(r"\bbit<\s*\d+\s*>")
 _VALUE = re.compile(r"(?<![\w.])value\b")
-_VALUE_WRITE = re.compile(r"^value\s*=(?!=)")
+# A write of the register word: `value = ...`, or of one member of a struct word
+# (`value.dur = ...`, the Task 38 duration pair).
+_VALUE_WRITE = re.compile(r"^value(?:\.\w+)?\s*=(?!=)")
 # (c) a plain field as the MathUnit's argument: `value`, `meta.<f>`, `hdr.<h>.<f>`,
-# optionally cast.
+# optionally cast. The Mean bodies' `value + <field>` (the known miscompile, Task 33b)
+# was accepted in a <f>_mean_action until the Mean decision; Task 38 replaced the Means
+# and removed that exemption, so an old Mean body is refused like any other expression.
 _PLAIN_FIELD = re.compile(r"^(?:\(\s*bit<\s*\d+\s*>\s*\)\s*)?(?:value|meta\.\w+|hdr\.\w+\.\w+)$")
-# The Mean bodies' form, ACCEPTED FOR NOW (Task 34): `<unit>.execute(value + <field>)`.
-# It is a known miscompile -- p4c (stateful_alu.cpp ~1051) wraps only the LAST operand in
-# the math table, so the register holds value + f(x), a running sum mod 2^16, not the
-# EWMA the text means (Task 33b, live) -- but the Mean registers are a separate decision
-# (they stay exactly as they are until it is taken). Remove this exemption with that fix.
-_PENDING_MEAN_FORM = re.compile(
-    r"^value\s*\+\s*(?:\(\s*bit<\s*\d+\s*>\s*\)\s*)?(?:meta\.\w+|hdr\.\w+\.\w+)$")
-# ... and only in a Mean register's action (build_p4_script: <feature>_mean_action, the
-# mathunit_ewma / mathunit_ewma_packet_length bodies), so it covers no new body by accident.
-_PENDING_MEAN_ACTION = re.compile(r"^\w+_mean_action$")
 
 
 def _compares(expression):
@@ -632,10 +665,10 @@ def _math_arguments(statement, units):
   return found
 
 
-def _salu_hazard(nodes, units, written=False, mean=False):
+def _salu_hazard(nodes, units, written=False):
   """(pattern, written after the nodes): the first refused pattern in a RegisterAction
-  body, walked in order with `written` = some path so far assigned `value`; `mean`: the
-  body is a Mean register's (_PENDING_MEAN_ACTION), where _PENDING_MEAN_FORM is accepted."""
+  body, walked in order with `written` = some path so far assigned `value` (or a member
+  of it)."""
   for node in nodes:
     if node[0] == "if":
       _, cond, then_nodes, else_nodes = node
@@ -644,10 +677,10 @@ def _salu_hazard(nodes, units, written=False, mean=False):
           return "salu_negative_constant", written
         if written and _VALUE.search(term):
           return "salu_compare_after_write", written
-      found_then, after_then = _salu_hazard(then_nodes, units, written, mean)
+      found_then, after_then = _salu_hazard(then_nodes, units, written)
       if found_then:
         return found_then, after_then
-      found_else, after_else = _salu_hazard(else_nodes, units, written, mean)
+      found_else, after_else = _salu_hazard(else_nodes, units, written)
       if found_else:
         return found_else, after_else
       written = written or after_then or after_else
@@ -660,7 +693,7 @@ def _salu_hazard(nodes, units, written=False, mean=False):
       if written and _VALUE.search(term):
         return "salu_compare_after_write", written
     for _, argument in _math_arguments(statement, units):
-      if not (_PLAIN_FIELD.match(argument) or (mean and _PENDING_MEAN_FORM.match(argument))):
+      if not _PLAIN_FIELD.match(argument):
         return "salu_math_expression", written
     written = written or bool(_VALUE_WRITE.match(statement))
   return None, written
@@ -680,9 +713,9 @@ def _check_stateful_alu(program):
         compiled to rv = (old == src); every flow's first packet read bwd).
     salu_math_expression:<action>      a MathUnit argument that is not a plain field:
         p4c wraps only the expression's last operand in the math table (Task 33b,
-        `halve.execute(value + x)` -> `value + math(x)`). The Mean bodies' own form
-        `value + <field>` is accepted, in a `<f>_mean_action` only, until the Mean
-        decision (_PENDING_MEAN_FORM / _PENDING_MEAN_ACTION).
+        `halve.execute(value + x)` -> `value + math(x)`). This refuses the old Mean
+        bodies (`value + <field>`), accepted until Task 38 replaced the Means; the
+        generator writes no MathUnit since.
 
   (a) is not the whole category it belongs to: any compare whose modular P4 meaning
   differs from the ALU's exact 34-bit compare is suspect, e.g. `x + 65535 < value` or a
@@ -701,7 +734,7 @@ def _check_stateful_alu(program):
       nodes = _parse(program.register_bodies[name])
     except ValueError:
       raise ProgramShapeRefused("unexpected_shape:register_body:%s" % name)
-    pattern, _ = _salu_hazard(nodes, units, mean=bool(_PENDING_MEAN_ACTION.match(name)))
+    pattern, _ = _salu_hazard(nodes, units)
     if pattern:
       raise ProgramShapeRefused("%s:%s" % (pattern, name))
 
@@ -715,8 +748,9 @@ def check_program(program):
     gated_register_block         a RegisterAction executed inside `if (meta.fwd ...)`
                                  (every program before decisions 1a / 7.1 option B)
     missing_pin:<pin>:<field>    a pin the generator emits is absent: pa_solitary on
-                                 class_tree_*, on flow_hash and (with calc_timestamp)
-                                 on now_pseudo_us, pa_container_size 16 on *_val and on
+                                 class_tree_*, on flow_hash and on each clock
+                                 calc_timestamp writes (now_pseudo_us, now_coarse),
+                                 pa_container_size 16 on *_val and on
                                  every <chain>_current_iat, pa_no_overlay and
                                  pa_container_size on code_*, placement_priority on
                                  every tree and range table
@@ -725,7 +759,11 @@ def check_program(program):
                                  the generator does not write (the pins dropped at
                                  gate G3 among them); flow_hash: a flow hash other
                                  than the generator's (review A1); key_name:<table>:
-                                 <slice>: a sliced key without its bf_rt @name (B1)
+                                 <slice>: a sliced key without its bf_rt @name (B1);
+                                 feature:<f>: a range table on a feature the catalog
+                                 does not have (every pre-Task-38 Mean); timestamp
+                                 [:<field>]: a clock calc_timestamp writes that is not
+                                 the generator's, or from another source
     salu_negative_constant:<action>, salu_compare_after_write:<action>,
     salu_math_expression:<action>
                                  a RegisterAction body in a form p4c silently

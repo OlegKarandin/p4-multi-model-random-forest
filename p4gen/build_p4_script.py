@@ -2225,6 +2225,15 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # shifted timestamp must split where its source bits split.)
   if uses_timestamp(raw_feature_intervals):
     phv_pragmas += '@pa_solitary("ingress", "ig_md.now_pseudo_us")\n'
+  # The coarse clock of the durations (Task 38, P3h; calc_timestamp), declared only
+  # when a duration is selected, with the same SPACE pin and for the same hazard as
+  # now_pseudo_us above (a byte shared with ig_tm_md.bypass_egress delays
+  # calc_timestamp a stage). Evidence: Task 37 compiled P3h with this pin (0 errors,
+  # base stage depth and blocks, now_coarse alone in one W container); its unpinned
+  # variant was not compiled in the final clock form. program_checks requires it.
+  if uses_coarse_clock(raw_feature_intervals):
+    metadata_code = "\tbit<32> now_coarse;\n" + metadata_code
+    phv_pragmas += '@pa_solitary("ingress", "ig_md.now_coarse")\n'
   # SPACE pin, ADDED 2026-11-15 (Task 31 miss, user's free-pin policy) on the flow
   # index, in every program: no other field may share flow_hash's container. On
   # 1 of the 160 Task 31 compiles (joint-task_M015_s13_k14) p4c packed
@@ -2435,6 +2444,14 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
     switch_template = switch_template.replace('/* TABLES */', table_templates)
     switch_template = switch_template.replace('/* FEATURE_UPDATE_APPLY */', feature_update_apply_code)
     switch_template = switch_template.replace('/* APPLY */', apply_templates)
+    # The {first, dur} pair of the Fwd / Bwd duration registers (Task 38), declared
+    # after metadata_t and before the parser, where Task 37 compiled it (not between
+    # the PHV pragmas and metadata_t, whose annotations they are).
+    if uses_duration_pair(raw_feature_intervals):
+      parser = '\nparser SwitchIngressParser('
+      if switch_template.count(parser) != 1:
+        raise RuntimeError("the template must declare SwitchIngressParser exactly once")
+      switch_template = switch_template.replace(parser, '\n' + DURATION_PAIR_STRUCT + parser)
 
   ensure_directory_exists(output_dir)
   written_path = output_dir + output_filename
@@ -2465,8 +2482,9 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
 # spikes (p4/tofino_spike/tna_m1_flows_iat_spike.p4 and the others named per
 # kind) for the packet-length kinds and running_max_iat; Task 33's C1f compile
 # and Task 33b's live tofino-model check (impl/probe_first_packet/
-# live_prog_orient/prog.p4) for iat_delta, running_min_iat and mathunit_ewma
-# (Task 34). Do not reword/"clean up" these -- they are the compiler-validated
+# live_prog_orient/prog.p4) for iat_delta and running_min_iat (Task 34); Task
+# 37's P3h compile and live check (impl/probe_p3c.md) for the durations and length
+# Totals (Task 38). Do not reword/"clean up" these -- they are the compiler-validated
 # ground truth (p4c silently miscompiles some equivalent-looking forms:
 # program_checks._check_stateful_alu).
 _REGISTER_ACTION_BODIES = {
@@ -2530,47 +2548,58 @@ _REGISTER_ACTION_BODIES = {
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
-  # M2: mean/EWMA folding via Tofino's MathUnit<> hardware primitive.
-  # Transcribed verbatim from p4/tofino_spike/tna_m2_mean_spike.p4's
-  # flow_iat_mean_ewma_action (the working "take 3" design -- see that
-  # spike's header comment for why the two earlier, simpler-looking designs
-  # both failed against the real Tofino compiler). Computes
-  # new_mean = (old_mean + current_iat) / 2 -- an alpha=0.5 EWMA -- as one
-  # division of a sum, in a single register touch. References
-  # `{name}_halve_unit`, a MathUnit<> instance that _EXTRA_ACTION_DECLARATIONS
-  # (below) causes to be declared immediately before this RegisterAction.
-  #
-  # C1f (Task 34): the update is guarded by `meta.{iat} != 0`, so a chain's first
-  # packet (IAT 0 = no IAT, see "iat_delta") is not folded in. Only this guard
-  # changed: the Mean body itself is NOT fixed here (a separate decision). Known
-  # defect, pre-existing: p4c compiles `halve.execute(value + x)` as `value +
-  # math(x)` (Task 33b, prog.bfa `add cmplo, lo, lo, math_table(phv_lo)`), a running
-  # sum of halves mod 2^16, not this EWMA; program_checks accepts this one form for
-  # now (_PENDING_MEAN_FORM). Evidence for the guard: Task 33's C1f compile
-  # (`neq lo, phv_lo` / `add cmplo, ...`, 1 compare unit, no stage or block cost) and
-  # its live check (Task 33b: a chain's first packet leaves its Mean unchanged).
-  "mathunit_ewma": (
+  # The flow duration (Task 38, P3h; user decision 2026-11-15), replacing the IAT
+  # Mean (whose MathUnit body p4c miscompiled into a running sum of halves, Task
+  # 33b; no Mean is computable on a Tofino-1 stateful ALU, probe_mean.md).
+  #   WHAT: a 32-bit register holding the flow's FIRST arrival on the coarse clock
+  #     meta.now_coarse (65.536 us ticks, calc_timestamp), initial 0xFFFFFFFF
+  #     (_REGISTER_INITIAL_VALUES). Every packet returns now - first, clamped at
+  #     65535 (4.3 s), as bit<32> (the call site casts it to the 16-bit _val,
+  #     _CALL_SITE_PREFIX, as iat_delta), and keeps first = min(first, now). On the
+  #     flow's first packet `now - 0xFFFFFFFF > 65535` is false in the ALU's exact
+  #     (34-bit) compare and `now |-| 0xFFFFFFFF` is 0, so it reads 0 and stores now:
+  #     the duration of a one-packet flow is 0, CICFlowMeter's. No "+1" (C1f's): 0 is
+  #     a real duration here, never a "no IAT" marker. No dependency register: the
+  #     flow's last-arrival register is emitted only for the IAT Max / Min.
+  #   WHY: training reads the CSV's Flow.Duration in the same ticks (dataset.py:
+  #     round(d / 65.536 us), at most one tick from the switch's floor difference), so
+  #     the control plane installs every threshold unchanged. The coarse clock
+  #     reaches 4.3 s before the clamp, where the 1.024 us IAT clock clamps at 67 ms
+  #     (mean_options_accuracy.md: P3c, app +1.6 / +0.4 points over the software
+  #     Means at k<=8 / k>=9, before the Task 38 re-measure).
+  #   EVIDENCE: Task 37 (results/encoding_evidence_2026_11/model8/impl/probe_p3c.md,
+  #     variant P3h): p4c compiled exactly this body at the unedited program's stage
+  #     depth and blocks (independent_M050_s13_k07 7 / 36, joint-off_M025_s06_k17
+  #     8 / 22), prog.bfa `grt.u lo, phv_lo, -lo, -65535` / `alu_a cmplo, hi, 65535` /
+  #     `ssubu !cmplo, hi, phv_lo, lo` / `minu lo, lo, phv_lo` / `output alu_hi` (1
+  #     compare, no MathUnit, no silent rewrite); live on tofino-model an exact
+  #     emulation of the compiled program matched 64/64 packets and the clamp of a
+  #     4.5 s gap. The clock operand must be a plain field: with a sliced / cast clock
+  #     the two `rv =` branches are refused ("Incompatible outputs in RegisterAction:
+  #     alu_hi and alu_hi", Task 37 P3f / P3g).
+  "coarse_duration": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tif (meta.{iat} != 0) {{\n"
-      "\t\t\t\tvalue = {name}_halve_unit.execute(value + meta.{iat});\n"
+      "\t\t\tif (meta.now_coarse - value > 65535) {{\n"
+      "\t\t\t\trv = 65535;\n"
+      "\t\t\t}} else {{\n"
+      "\t\t\t\trv = meta.now_coarse |-| value;\n"
       "\t\t\t}}\n"
-      "\t\t\trv = value;\n"
+      "\t\t\tvalue = min(value, meta.now_coarse);\n"
       "\t\t}}\n"
   ),
-  # Task 8: the packet-length equivalent of mathunit_ewma, for the three
-  # packet-length-mean features (fwd_packet_length_mean,
-  # bwd_packet_length_mean, packet_length_mean). Folds hdr.ipv4.total_len
-  # (a header field, not meta.{iat}) into the same MathUnit<>-based
-  # alpha=0.5 EWMA. A separate body kind rather than parameterising
-  # mathunit_ewma's operand, per task-8-brief.md: _REGISTER_ACTION_BODIES is
-  # a table of compiler-validated literals, one entry per validated program
-  # text. Transcribed verbatim from the compile of
-  # p4/tofino_spike/tna_m3_packet_length_mean_spike.p4 (0 errors) -- the cast
-  # `(bit<{width}>)hdr.ipv4.total_len` compiled as-is, no metadata
-  # intermediary needed.
-  "mathunit_ewma_packet_length": (
+  # The flow's length Total (Task 38, replacing packet_length_mean): a saturating
+  # 16-bit sum of the IP total lengths, `value |+| total_len` (65535 at most).
+  #   WHY: the length Mean's MathUnit body was miscompiled like the IAT Mean's (Task
+  #     33b); training reads the CSV's total lengths clipped at 65535 (dataset.py), the
+  #     switch's saturation (mean_options_accuracy.md: the length Totals recover about
+  #     two thirds of what dropping the Means costs).
+  #   EVIDENCE: Task 36 (body T16) and Task 37 (P3h): prog.bfa `saddu lo, lo, phv_lo` /
+  #     `output alu_lo`, no MathUnit, at no stage or block cost; live on tofino-model
+  #     the register read the sum of the IP total lengths, saturated at 65535 (Task 37,
+  #     sequence D: 72,000 bytes sent).
+  "saturating_total_packet_length": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
-      "\t\t\tvalue = {name}_halve_unit.execute(value + (bit<{width}>)hdr.ipv4.total_len);\n"
+      "\t\t\tvalue = value |+| hdr.ipv4.total_len;\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
@@ -2664,22 +2693,58 @@ _DIRECTION_READ_BODIES = {
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
-  # C1f (Task 34): a direction-owned IAT Mean or Min needs no meta.fwd test. Its
-  # chain's dependency register returns 0 in the other direction (iat_delta above),
-  # and the literal body skips an IAT of 0 already, so the literal body is the
-  # direction-read body. Same compare-unit count as before (Mean 1, Min 2); evidence:
-  # Task 33's C1f compile and live check (Task 33b: each direction's chain unmoved by
-  # the other direction's packets).
-  "mathunit_ewma": _REGISTER_ACTION_BODIES["mathunit_ewma"],
-  "mathunit_ewma_packet_length": (
+  # The Fwd / Bwd duration (Task 38, P3h; replacing fwd_iat_mean / bwd_iat_mean).
+  #   WHAT: a 64-bit PAIR register {first, dur} (dur_pair_t, _REGISTER_VALUE_TYPES;
+  #     initial {0xFFFFFFFF, 0}). In the owner's direction it updates both halves as
+  #     the flow's body does (dur = clamp(now_coarse - first) at 65535, first =
+  #     min(first, now_coarse)); in the other nothing changes. EVERY packet returns
+  #     dur (as bit<32>, cast at the call site), so the feature holds the owner's
+  #     duration on the other direction's packets too, and a direction without a
+  #     packet reads 0 (CICFlowMeter's value for fewer than two packets). No "+1",
+  #     no dependency register (see "coarse_duration").
+  #   WHY a pair: a register holding only the first arrival (the brief's 32-bit form)
+  #     can give the duration only on the owner's packets; on the other direction's
+  #     it has no last owner arrival to subtract (Task 37, P3c_brief).
+  #   EVIDENCE: Task 37 (probe_p3c.md, P3h): p4c compiled exactly this body at no
+  #     stage or block cost (+1 SRAM block per pair register), prog.bfa `equ lo,
+  #     phv_hi(0..7)[, -1]` / `grt.u hi, phv_lo, -lo, -65535` / `alu_a (cmphi &
+  #     cmplo), hi, 65535` / `ssubu (!cmphi & cmplo), hi, phv_lo, lo` / `minu cmplo,
+  #     lo, lo, phv_lo` / `output alu_hi`: 2 compares (Tofino-1's limit), 3 ALU ops, 1
+  #     unpredicated output (in the read direction no ALU fires and alu_hi passes the
+  #     stored dur through). Live on tofino-model: exact emulation 64/64 packets, 5/5
+  #     snapshots pair member by member, the bwd chain starting mid-flow read 0, a 4.5
+  #     s gap clamped and the fwd value kept 65535 on bwd packets.
+  "coarse_duration_pair": (
+      "\t\tvoid apply(inout dur_pair_t value, out bit<32> rv) {{\n"
+      "\t\t\tif (meta.fwd == {owner}) {{\n"
+      "\t\t\t\tif (meta.now_coarse - value.first > 65535) {{\n"
+      "\t\t\t\t\tvalue.dur = 65535;\n"
+      "\t\t\t\t}} else {{\n"
+      "\t\t\t\t\tvalue.dur = meta.now_coarse |-| value.first;\n"
+      "\t\t\t\t}}\n"
+      "\t\t\t\tvalue.first = min(value.first, meta.now_coarse);\n"
+      "\t\t\t}}\n"
+      "\t\t\trv = value.dur;\n"
+      "\t\t}}\n"
+  ),
+  # The Fwd / Bwd length Total (Task 38): "saturating_total_packet_length" in the
+  # owner's direction, read only in the other. Evidence as that body (Task 36 T16 /
+  # Task 37 P3h: `saddu cmplo, lo, lo, phv_lo` after the meta.fwd compare).
+  "saturating_total_packet_length": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.fwd == {owner}) {{\n"
-      "\t\t\t\tvalue = {name}_halve_unit.execute(value + (bit<{width}>)hdr.ipv4.total_len);\n"
+      "\t\t\t\tvalue = value |+| hdr.ipv4.total_len;\n"
       "\t\t\t}}\n"
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
-  "running_min_iat": _REGISTER_ACTION_BODIES["running_min_iat"],     # C1f, as mathunit_ewma
+  # C1f (Task 34): a direction-owned IAT Min needs no meta.fwd test. Its chain's
+  # dependency register returns 0 in the other direction (iat_delta above), and the
+  # literal body skips an IAT of 0 already, so the literal body is the direction-read
+  # body. Same compare-unit count as before (2); evidence: Task 33's C1f compile and
+  # live check (Task 33b: each direction's chain unmoved by the other direction's
+  # packets).
+  "running_min_iat": _REGISTER_ACTION_BODIES["running_min_iat"],
   "running_min_packet_length": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.fwd == {owner} && hdr.ipv4.total_len < value) {{\n"
@@ -2706,17 +2771,23 @@ _DIRECTION_OWNER = {"fwd": 1, "bwd": 0}
 #     a PHV container set by a hidden stage-0 `$precompute` table (Task 33, prog.bfa
 #     `add H3, <min salu>, H4`): one 16-bit container per Min feature, counted by
 #     p4model.phv (MIN_READ_CONSTANT).
-_CALL_SITE_PREFIX = {"iat_delta": "(bit<16>) "}
+#   coarse_duration / coarse_duration_pair, prefix `(bit<16>) `: Task 38, the same
+#     reason as iat_delta (the duration is clamped at 65535 inside the RegisterAction,
+#     which returns bit<32>; Task 37 compiled exactly this call site).
+_CALL_SITE_PREFIX = {"iat_delta": "(bit<16>) ", "coarse_duration": "(bit<16>) ",
+                     "coarse_duration_pair": "(bit<16>) "}
 _CALL_SITE_SUFFIX = {"running_min_iat": " + 1"}
 
-# Register-action body kinds that require an extra hardware-primitive
-# declaration (e.g. a MathUnit<> instance) emitted immediately before their
-# RegisterAction block. Maps body kind -> declaration template, parallel in
-# spirit to _REGISTER_ACTION_BODIES above.
-_EXTRA_ACTION_DECLARATIONS = {
-    "mathunit_ewma": "\tMathUnit<bit<{width}>>(MathOp_t.MUL, 1, 2) {name}_halve_unit;\n",
-    "mathunit_ewma_packet_length": "\tMathUnit<bit<{width}>>(MathOp_t.MUL, 1, 2) {name}_halve_unit;\n",
-}
+# The value type and the RegisterAction's return type of a body kind whose
+# register is not a plain bit<width> (every other kind: bit<width> for both).
+# coarse_duration_pair (Task 38): the {first, dur} pair, returning dur.
+_REGISTER_VALUE_TYPES = {"coarse_duration_pair": ("dur_pair_t", "bit<32>")}
+# The pair's declaration, emitted once before the parser when some register
+# uses it (generate_p4_program; Task 37 compiled it there).
+DURATION_PAIR_STRUCT = ("struct dur_pair_t {\n"
+                        "    bit<32> first;\n"
+                        "    bit<32> dur;\n"
+                        "}\n")
 
 # Body kinds whose backing register must NOT start at 0. A running minimum
 # folded into a zero-initialised register stays 0 forever (min(0, x) == 0),
@@ -2727,10 +2798,16 @@ _EXTRA_ACTION_DECLARATIONS = {
 # (32w0xFFFFFFFF for the 32-bit clock): C1f, see _REGISTER_ACTION_BODIES
 # ["iat_delta"] -- the saturating gap of a chain's first packet is then 0. Since C1f
 # a running_min_iat register's 65535 means "no IAT yet" (it stores min - 1).
+# Task 38: a duration register holds the first arrival, so it starts at all ones
+# too (a first packet then reads 0 and stores now, _REGISTER_ACTION_BODIES
+# ["coarse_duration"]); the pair's dur half starts at 0, the value a direction with
+# no packet reads.
 _REGISTER_INITIAL_VALUES = {
     "running_min_iat": INFINITE,
     "running_min_packet_length": INFINITE,
     "iat_delta": lambda width: "%dw0x%X" % (width, (1 << width) - 1),
+    "coarse_duration": lambda width: "%dw0x%X" % (width, (1 << width) - 1),
+    "coarse_duration_pair": "{32w0xFFFFFFFF, 32w0}",
 }
 
 
@@ -2786,44 +2863,64 @@ def call_site_constants(feature_intervals, catalog=None):
   return names
 
 
-def uses_timestamp(feature_intervals, catalog=None):
-  """Whether generate_P4_registers_and_apply emits calc_timestamp for these
-  features (it writes meta.now_pseudo_us): some selected feature has an
-  iat_delta register."""
+def _uses_body(feature_intervals, bodies, catalog=None):
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
-  return any(reg["body"] == "iat_delta"
+  return any(reg["body"] in bodies
              for feature in (name.lower() for name in feature_intervals)
              for reg in catalog.get(feature, {}).get("registers", ()))
 
 
-def _register_declaration(name, width, initial_value=None):
+def uses_timestamp(feature_intervals, catalog=None):
+  """Whether calc_timestamp writes the fine IAT clock meta.now_pseudo_us for
+  these features: some selected feature has an iat_delta (last-arrival)
+  register."""
+  return _uses_body(feature_intervals, ("iat_delta",), catalog)
+
+
+def uses_coarse_clock(feature_intervals, catalog=None):
+  """Whether calc_timestamp writes the coarse clock meta.now_coarse (Task 38)
+  for these features: some selected feature is a duration."""
+  return _uses_body(feature_intervals, ("coarse_duration", "coarse_duration_pair"), catalog)
+
+
+def uses_duration_pair(feature_intervals, catalog=None):
+  """Whether the program declares DURATION_PAIR_STRUCT: some selected feature's
+  register is a {first, dur} pair (fwd_iat_total / bwd_iat_total, Task 38)."""
+  return _uses_body(feature_intervals, ("coarse_duration_pair",), catalog)
+
+
+def _register_types(body_kind, width):
+  """(value type, RegisterAction return type) of a body kind's register."""
+  return _REGISTER_VALUE_TYPES.get(body_kind, ("bit<%d>" % width, "bit<%d>" % width))
+
+
+def _register_declaration(name, width, initial_value=None, body_kind=None):
   # Indexed by meta.flow_hash, FLOW_INDEX_BITS wide (A1a).
+  value_type = _register_types(body_kind, width)[0]
   if initial_value is None:
-    return "\tRegister<bit<{width}>, bit<{index}>>(MAX_NUM_FLOWS) {name}_reg;\n".format(
-        width=width, index=FLOW_INDEX_BITS, name=name)
-  return "\tRegister<bit<{width}>, bit<{index}>>(MAX_NUM_FLOWS, {init}) {name}_reg;\n".format(
-      width=width, index=FLOW_INDEX_BITS, name=name, init=initial_value)
+    return "\tRegister<{type}, bit<{index}>>(MAX_NUM_FLOWS) {name}_reg;\n".format(
+        type=value_type, index=FLOW_INDEX_BITS, name=name)
+  return "\tRegister<{type}, bit<{index}>>(MAX_NUM_FLOWS, {init}) {name}_reg;\n".format(
+      type=value_type, index=FLOW_INDEX_BITS, name=name, init=initial_value)
 
 
 def _register_action_declaration(name, width, body_kind, owner=None, iat=None):
-  # `name=name` is only consumed by body kinds that reference an
-  # extra-declaration identifier of their own (e.g. "mathunit_ewma"'s
-  # `{name}_halve_unit`); body kinds that don't reference `{name}` simply
-  # ignore the extra format() kwarg. owner: None for the literal body (an
-  # ungated register), else the owner direction's meta.fwd value
-  # (_DIRECTION_READ_BODIES). iat: the scratch field (iat_field_name) the
-  # chain's dependency register writes, for the body kinds that read one.
+  # owner: None for the literal body (an ungated register), else the owner
+  # direction's meta.fwd value (_DIRECTION_READ_BODIES). iat: the scratch field
+  # (iat_field_name) the chain's dependency register writes, for the body kinds
+  # that read one.
   template = (_REGISTER_ACTION_BODIES if owner is None else _DIRECTION_READ_BODIES)[body_kind]
   if "{iat}" in template and iat is None:
     raise ValueError("register {!r} (body {!r}) reads an inter-arrival time, but its "
                      "feature lists no dependency register before it".format(name, body_kind))
   body = template.format(width=width, name=name, owner=owner, iat=iat)
+  value_type, return_type = _register_types(body_kind, width)
   return (
-      "\tRegisterAction<bit<{width}>, bit<{index}>, bit<{width}>>({name}_reg) {name}_action = {{\n"
+      "\tRegisterAction<{type}, bit<{index}>, {rv}>({name}_reg) {name}_action = {{\n"
       "{body}"
       "\t}};\n"
-  ).format(width=width, index=FLOW_INDEX_BITS, name=name, body=body)
+  ).format(type=value_type, rv=return_type, index=FLOW_INDEX_BITS, name=name, body=body)
 
 
 def generate_P4_registers_and_apply(feature_intervals, catalog=None):
@@ -2884,15 +2981,11 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       catalog-driven or routed through the register_order/_note_touch dedup
       machinery.
     - register_actions_code: the plain calc_flow_hash action (and
-      calc_timestamp, only emitted when an included register actually needs
-      meta.now_pseudo_us), plus one `RegisterAction<...> <name>_action =
-      {...};` block per resolved register, using the exact bodies from
-      _REGISTER_ACTION_BODIES. Body kinds listed in
-      _EXTRA_ACTION_DECLARATIONS (currently "mathunit_ewma" and
-      "mathunit_ewma_packet_length") get one
-      extra hardware-primitive declaration line (e.g.
-      `MathUnit<bit<W>>(MathOp_t.MUL, 1, 2) <name>_halve_unit;`) emitted
-      immediately before that register's RegisterAction block. Flow
+      calc_timestamp, only emitted when an included register reads a clock:
+      it writes meta.now_pseudo_us for a last-arrival register and
+      meta.now_coarse for a duration, Task 38), plus one `RegisterAction<...>
+      <name>_action = {...};` block per resolved register, using the exact
+      bodies from _REGISTER_ACTION_BODIES (no MathUnit since Task 38). Flow
       direction/first-seen bookkeeping (validated against the real Tofino
       compiler this session: p4/tofino_spike/tna_m2_symmetric_hash_spike.p4,
       and the real M2 program with this swap,
@@ -2937,7 +3030,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       Deduplicated by register name, not one call site per (feature,
       register) pair: when two or more selected features' catalog entries
       reference the SAME register name (e.g. flow_iat_max and
-      flow_iat_mean both depend on "flow_last_arrival_time"), only the
+      flow_iat_min both depend on "flow_last_arrival_time"), only the
       first-encountered feature (in feature_intervals iteration order)
       gets an `.execute()` call site for that register; every later
       feature that references the same name reuses the value the first
@@ -2961,8 +3054,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       IS recorded once, the first time any feature references it,
       regardless of how many further features also list it as a
       dependency -- e.g. flow_last_arrival_time reports exactly 1 real
-      touch for M2's feature set (flow_iat_max + flow_iat_mean sharing
-      it), matching the single real `.execute()` call site _execute_lines
+      touch for flow_iat_max + flow_iat_min sharing
+      it, matching the single real `.execute()` call site _execute_lines
       actually emits for it. The cross-gate register-sharing hazard guard
       (below) is what actually protects this property across gate classes
       -- see its comment for what it catches and why.
@@ -3005,17 +3098,18 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   matched_features = [f for f in (name.lower() for name in feature_intervals.keys()) if f in catalog]
 
   # NOTE: there used to be a guard here raising ValueError if "flow_iat_mean"
-  # was selected without "flow_iat_max", on the theory that flow_iat_mean's
-  # shared "flow_last_arrival_time" dependency register would otherwise never
-  # be .execute()d. That was never true of this generator: each catalog
-  # entry (flow_iat_mean's included) lists its OWN dependency register in its
-  # own "registers" list, so resolving flow_iat_mean alone still emits
+  # (flow_duration since Task 38, which has no dependency register) was
+  # selected without "flow_iat_max", on the theory that its shared
+  # "flow_last_arrival_time" dependency register would otherwise never be
+  # .execute()d. That was never true of this generator: each catalog entry
+  # lists its OWN dependency register in its own "registers" list, so
+  # resolving flow_iat_min alone still emits
   # flow_last_arrival_time_action.execute(meta.flow_hash) before
-  # meta.flow_iat_mean_val = ... -- see _execute_lines below, which walks
+  # meta.flow_iat_min_val = ... -- see _execute_lines below, which walks
   # feature_registers[feature] (the feature's own registers list) regardless
   # of which other features are selected. The guard was deleted (Task 9) once
   # this was proven by
-  # test_resolving_flow_iat_mean_alone_auto_executes_its_dependency in
+  # test_resolving_flow_iat_min_alone_auto_executes_its_dependency in
   # tests/test_feature_registers.py; see that test for the exact ordering
   # assertion.
 
@@ -3040,7 +3134,11 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
                              "iat": iat}
 
   feature_registers = {}  # feature -> ordered list of its catalog register dicts
-  needs_timestamp = False
+  # The two clocks calc_timestamp writes (Task 38): the fine IAT clock for a
+  # last-arrival register, the coarse clock for a duration.
+  needs_fine_clock = uses_timestamp(matched_features, catalog)
+  needs_coarse_clock = uses_coarse_clock(matched_features, catalog)
+  needs_timestamp = needs_fine_clock or needs_coarse_clock
 
   for feature in matched_features:
     entry = catalog[feature]
@@ -3059,8 +3157,6 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       _note_touch(reg["name"], width=reg["width"], body=reg["body"], gated_by=gated_by,
                   iat=None if reg["role"] == "dependency" else iat)
       regs.append(reg)
-      if reg["body"] == "iat_delta":
-        needs_timestamp = True
     feature_registers[feature] = regs
 
   # ---- Cross-gate register-sharing hazard guard ----
@@ -3131,7 +3227,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   ).format(index=FLOW_INDEX_BITS)
   for name in register_order:
     initial_value = _register_initial_value(register_info[name]["body"], register_info[name]["width"])
-    registers_code += _register_declaration(name, register_info[name]["width"], initial_value=initial_value)
+    registers_code += _register_declaration(name, register_info[name]["width"], initial_value=initial_value,
+                                            body_kind=register_info[name]["body"])
 
   # ---- /* REGISTER_ACTIONS */ ----
 
@@ -3155,14 +3252,32 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # clamp the gap at 65535 (_REGISTER_ACTION_BODIES["iat_delta"]). A 32-bit
   # @pa_container_size pin on it is refused by p4c (Task 29 V1p, 3/3: the
   # shifted slice must split where its source bits split), so it keeps only
-  # the @pa_solitary pin (generate_p4_program).
+  # the @pa_solitary pin (generate_p4_program). Written only when a last-arrival
+  # register remains (an IAT Max / Min is selected) since Task 38.
+  # The 32-bit COARSE clock (Task 38, P3h): bits 47..16 of the MAC timestamp, units
+  # of 65.536 us (it wraps every 78 h, as the 48-bit timestamp does), read by the
+  # duration registers (_REGISTER_ACTION_BODIES["coarse_duration"]).
+  #   WHY ingress_mac_tstamp and not global_tstamp[47:16]: p4c's PHV allocation
+  #     fails whenever the fine clock is also cut from global_tstamp (Task 37,
+  #     probe_p3c.md: 4/4 designs). Every other second view of that timestamp failed
+  #     too -- the SALU reading the slice directly, a byte-aligned [47:18] copy,
+  #     slices [31:6] / [31:8] of now_pseudo_us (8 variants). The MAC timestamp is a
+  #     separate intrinsic field, so it has containers of its own.
+  #   EVIDENCE: Task 37 P3h, p4c 0 errors with a binary on both designs that also
+  #     have the fine clock, at their unedited stage depth and blocks; prog.bfa keeps
+  #     ingress_mac_tstamp[47:16] in one W container and now_coarse in another (+2
+  #     32-bit containers, p4model.phv COARSE_CLOCK_CONTAINERS). On tofino-model the
+  #     two timestamps carry the same bytes (equal on 61/64 packets, one 1 ms model
+  #     timer step apart on 3); a duration is a difference of readings of ONE source.
+  #     Not verified on hardware (there is none): that the MAC and parser timestamps
+  #     come from one timer on a real Tofino-1.
   if needs_timestamp:
-    register_actions_code += (
-        "\n"
-        "\taction calc_timestamp() {\n"
-        "\t\tmeta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];\n"
-        "\t}\n"
-    )
+    register_actions_code += "\n\taction calc_timestamp() {\n"
+    if needs_fine_clock:
+      register_actions_code += "\t\tmeta.now_pseudo_us = ig_prsr_md.global_tstamp[41:10];\n"
+    if needs_coarse_clock:
+      register_actions_code += "\t\tmeta.now_coarse = ig_intr_md.ingress_mac_tstamp[47:16];\n"
+    register_actions_code += "\t}\n"
 
   # Symmetric-hash flow bookkeeping (Part G.6 in reviews/t11_tofino_port_and_env.md,
   # first validated with the XOR form against the real Tofino compiler:
@@ -3209,9 +3324,6 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
 
   for name in register_order:
     info = register_info[name]
-    extra_declaration = _EXTRA_ACTION_DECLARATIONS.get(info["body"])
-    if extra_declaration is not None:
-      register_actions_code += "\n" + extra_declaration.format(width=info["width"], name=name)
     owner = _DIRECTION_OWNER.get(info["gated_by"])
     register_actions_code += "\n" + _register_action_declaration(
         name, info["width"], info["body"], owner=owner, iat=info["iat"])
@@ -3236,7 +3348,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # per call) -- this is the
   # shared-dependency dedup fix: a register (e.g. flow_last_arrival_time)
   # referenced by more than one selected feature's catalog entry (e.g. both
-  # flow_iat_max and flow_iat_mean) must still be .execute()'d exactly once
+  # flow_iat_max and flow_iat_min) must still be .execute()'d exactly once
   # per packet. Whichever feature reaches that register name first (in
   # matched_features order) emits its call site and produces the value
   # (its own scratch field, iat_field_name, for a "dependency" register); every later feature
