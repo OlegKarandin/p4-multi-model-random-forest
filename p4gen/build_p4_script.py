@@ -2394,7 +2394,6 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
     switch_template = switch_template.replace('/* TABLES */', table_templates)
     switch_template = switch_template.replace('/* FEATURE_UPDATE_APPLY */', feature_update_apply_code)
     switch_template = switch_template.replace('/* APPLY */', apply_templates)
-    switch_template = switch_template.replace('/* CLASSIFICATION */', "")
 
   ensure_directory_exists(output_dir)
   written_path = output_dir + output_filename
@@ -2412,14 +2411,12 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
 # ---------------------------------------------------------------------------
 # TNA (Tofino Native Architecture) register + apply-block generation.
 #
-# Unlike the rest of this file (which emits v1model P4 for
-# resources/p4_template.p4 via generate_P4_code above), this generator
-# targets the TNA architecture validated in
-# p4/tofino_spike/tna_m1_flows_iat_spike.p4 (compiled successfully this
-# session with the real Tofino compiler: `p4c -b tofino -a tna`, 0 errors).
-# It is called from generate_P4_code() to resolve selected features
-# to the TNA registers, RegisterActions, and per-packet update logic needed for
-# Milestone 1's flow- and IAT-tracking design.
+# Like the rest of this file (the whole program is TNA, resources/
+# p4_template.p4), this part targets the architecture first validated in
+# p4/tofino_spike/tna_m1_flows_iat_spike.p4 (real Tofino compiler, `p4c -b
+# tofino -a tna`, 0 errors). generate_p4_program calls it to resolve the
+# selected features to the TNA registers, RegisterActions and per-packet
+# update logic of the flow- and IAT-tracking design.
 # ---------------------------------------------------------------------------
 
 # Symbolic RegisterAction body kinds -> exact atomic read-modify-write P4
@@ -2691,7 +2688,7 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   Resolve a selected feature set to the TNA registers, RegisterActions, and
   per-packet update logic needed for Milestone 1's flow- and IAT-tracking
   design (ground truth: p4/tofino_spike/tna_m1_flows_iat_spike.p4, compiled
-  with the real Tofino p4c). Called from generate_P4_code() to resolve
+  with the real Tofino p4c). Called from generate_p4_program to resolve
   selected features and wire output into resources/p4_template.p4.
 
   Parameters:
@@ -2998,11 +2995,15 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
       "\t}\n"
   )
 
+  # The 16-bit pseudo-microsecond clock: bits 25..10 of the 48-bit nanosecond
+  # timestamp (units of 1.024 us), written as the slice it is (review Part C
+  # item 4; it was `(bit<16>)(global_tstamp >> 10)`, the same bits, which
+  # prog.bfa already compiled as two bit moves).
   if needs_timestamp:
     register_actions_code += (
         "\n"
         "\taction calc_timestamp() {\n"
-        "\t\tmeta.now_pseudo_us = (bit<16>)(ig_prsr_md.global_tstamp >> 10);\n"
+        "\t\tmeta.now_pseudo_us = ig_prsr_md.global_tstamp[25:10];\n"
         "\t}\n"
     )
 

@@ -2584,3 +2584,22 @@ def test_a_live_width_over_64_bits_is_keyed_as_slices_from_bit_0(tmp_path):
     got = _switch_tree_classes(entries, dict(zip(_PRUNE_FEATURES, row)))
     assert got["get_classification_tree_app_0"] == per_tree_class_indices(app, X)[0][s]
     assert got["get_classification_tree_ddos_0"] == per_tree_class_indices(ddos, X)[0][s]
+
+
+def test_the_resources_hold_only_what_the_program_uses():
+  """Review Part C items 1-5 (Task 31): Tofino-1 TNA only, the headers the parser
+  extracts and nothing else, no unused util controls, no empty template marker; the
+  timestamp written as the slice it is."""
+  template = pathlib.Path(bps.PATH_P4_CODE_TEMPLATE_INPUT).read_text()
+  assert "t2na" not in template and "__TARGET_TOFINO__" not in template
+  assert "#include <tna.p4>" in template
+  assert "/* CLASSIFICATION */" not in template
+  headers = (pathlib.Path(bps.PATH) / "p4_headers.p4").read_text()
+  assert re.findall(r"^header (\w+)", headers, re.M) == ["ethernet_h", "ipv4_h", "tcp_h"]
+  assert re.search(r"struct header_t \{\s*ethernet_h ethernet;\s*ipv4_h ipv4;\s*tcp_h tcp;\s*\}",
+                   headers)
+  util = (pathlib.Path(bps.PATH) / "p4_util.p4").read_text()
+  assert "BypassEgress" not in util and "TofinoEgressParser" not in util
+  _, actions, _, _ = bps.generate_P4_registers_and_apply({"flow_iat_max": None})
+  assert "meta.now_pseudo_us = ig_prsr_md.global_tstamp[25:10];" in actions
+  assert ">> 10" not in actions

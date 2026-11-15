@@ -212,22 +212,25 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # A2 edit (a one-tree task's tree action writes the export, its vote action / table / apply, class
 # field and class pin removed; the template comment above the forwarding assignments) (14/14).
 # And for review B1: each text the previous one with @name("<bfrt_key_name>") on every sliced
-# key (Task 28's probe edit b1, 14/14).
+# key (Task 28's probe edit b1, 14/14). And for the review Part C clean-ups: the Tofino-2
+# include and the empty /* CLASSIFICATION */ marker's blank lines gone, the timestamp written
+# `ig_prsr_md.global_tstamp[25:10]` (14/14; each generated text == every edit applied to its
+# pre-A1 text).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "7e5bf193e3078d4e214f22241af7e061841a648fc36df06cd75e6bf448ab8f10",
-    ("disjoint", 0): "10e868474e31f7158e093db063432ef3654e680d7dbfec6b9e6a5051f6b63235",
-    ("per_task", 0): "dbee559cd1a2f62e7828c7678bdbbece003d5398a55942899aef2cd7347cfd94",
-    ("joint", 1): "677655e83b5af7fefa17d3a7ac390e4eb6fcf21989e3b4539e6a8ef5a506b1db",
-    ("disjoint", 1): "2c1e54f0b118b8af57cfb2357683b970c8d279499249a2415538e1eccc8739ce",
-    ("per_task", 1): "5e2072a5d8f609ee0d60a7a29e49e4af15e54f50d89bb00b50689b6250a373be",
-    ("joint", 2): "bf9da246b7ac4475c5504644af412aa2c931071cdddf11527272db3bcdb1e258",
-    ("disjoint", 2): "f730da0d0f6ad3dbb78e3cbd7e466a03c588fc1885af6248b7fbe5174b339fc6",
-    ("per_task", 2): "6d50e33b3f7970412001d78ba25ba50cde07d0a8e111ed41a7bc59f8c1565c75",
-    ("joint", 3): "c44a7f02396bdd32a35191728e26c8864ddd55ec1886ea9a39eff6649e27ea43",
-    ("disjoint", 3): "fe933d3948a8163c81df41581647adb57a5f1fa89cda249996a2220718e275b3",
-    ("per_task", 3): "d837b0d501b239dc7f2bbe66e707e785fd877a517b35b43e71a798e50fed0349",
-    ("disjoint", "three"): "887612de436429a04d63ce1fe0277f14f5be77ef10d7c195de6f3350f840d52f",
-    ("per_task", "three"): "69675441fb3a08cb76cfd8ebc9428f7b401ccc4d1c89671063c63f8395fcb1cf",
+    ("joint", 0): "55ef07fc6fde3492c89b944a7262410b94eee5d47cdb8adab3b18c66fa22b387",
+    ("disjoint", 0): "d2b53846714417c873ce9d302da7c067ec98069cd67ea960d0c497f17531a0cb",
+    ("per_task", 0): "b561bbe64d4221af49979c9272aa27e95080158e4dfa5ea7103ecbeacd69518e",
+    ("joint", 1): "8d0de060d29ad8246b37dbb60b9e9e5598a58cbd974695ee80d6cac0e0dd1f37",
+    ("disjoint", 1): "451e292212c7c1fe70288726111c979c8c441e4c1aa20f4ac20520f9dacb0a7d",
+    ("per_task", 1): "e81d74dd65b8b4154771b255437604e4405e03c0c6c4554e826b827039c4ad98",
+    ("joint", 2): "b7a51aa85fdfb0d97426cebca8521be7370129a118bfc8b36489201af874e99e",
+    ("disjoint", 2): "639d71c503f7951b79a33c2f6ec5425d570e144635f638f74b8945d0eda8effb",
+    ("per_task", 2): "acbc5ac6ebc59726cd7e1b6b3461957ce29a0b5776de8b77ffe43fba31dc5c0e",
+    ("joint", 3): "15436538ae5f16a1bcb5aab05a7b5564d0a07b18b50780cc53a58181c9e35865",
+    ("disjoint", 3): "50941524a02f7d3ec9faff455022101d067df7e6d8adbf0fa17c9f7922f94bcf",
+    ("per_task", 3): "d78e9c0a4d890701c942eb3153abc1a0f754c16c805d12b64bdd0175ab44f196",
+    ("disjoint", "three"): "d90050af7612300246fd743531a6a9c24465811a1cc1088ff34bf6e86b2cf37a",
+    ("per_task", "three"): "4ce0882a5fb4d0645e7e53c0a6f4ce4c0063fa67b8a1f54fd18e86394be9f5e6",
 }
 
 

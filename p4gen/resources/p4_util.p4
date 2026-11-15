@@ -42,34 +42,6 @@ parser TofinoIngressParser(
     }
 }
 
-parser TofinoEgressParser(
-        packet_in pkt,
-        out egress_intrinsic_metadata_t eg_intr_md) {
-    state start {
-        pkt.extract(eg_intr_md);
-        transition accept;
-    }
-}
-
-// Skip egress
-control BypassEgress(inout ingress_intrinsic_metadata_for_tm_t ig_tm_md) {
-
-    action set_bypass_egress() {
-        ig_tm_md.bypass_egress = 1w1;
-    }
-
-    table bypass_egress {
-        actions = {
-            set_bypass_egress();
-        }
-        const default_action = set_bypass_egress;
-    }
-
-    apply {
-        bypass_egress.apply();
-    }
-}
-
 // Empty egress parser/control blocks
 parser EmptyEgressParser(
         packet_in pkt,

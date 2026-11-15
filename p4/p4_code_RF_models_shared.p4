@@ -1,10 +1,8 @@
 /* -*- P4_16 -*- */
 #include <core.p4>
-#if __TARGET_TOFINO__ == 2
-#include <t2na.p4>
-#else
+// Tofino-1 TNA only: the resource model's constants (p4model/target.py) and the
+// export widths (program.VOTE_EXPORT_BITS) are Tofino-1's.
 #include <tna.p4>
-#endif
 
 #include "p4_headers.p4"
 #include "p4_util.p4"
@@ -112,7 +110,7 @@ control SwitchIngress(
 	}
 
 	action calc_timestamp() {
-		meta.now_pseudo_us = (bit<16>)(ig_prsr_md.global_tstamp >> 10);
+		meta.now_pseudo_us = ig_prsr_md.global_tstamp[25:10];
 	}
 
 	RegisterAction<bit<32>, bit<12>, bit<1>>(flow_forward_srcaddr_reg) flow_orientation_action = {
@@ -299,8 +297,6 @@ control SwitchIngress(
 
 			get_classification_tree_ddos_0.apply();
 			vote_app.apply();
-
-
 
 
         }

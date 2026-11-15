@@ -1,10 +1,8 @@
 /* -*- P4_16 -*- */
 #include <core.p4>
-#if __TARGET_TOFINO__ == 2
-#include <t2na.p4>
-#else
+// Tofino-1 TNA only: the resource model's constants (p4model/target.py) and the
+// export widths (program.VOTE_EXPORT_BITS) are Tofino-1's.
 #include <tna.p4>
-#endif
 
 #include "p4_headers.p4"
 #include "p4_util.p4"
@@ -484,8 +482,6 @@ control SwitchIngress(
 			get_classification_tree_ddos_2.apply();
 			vote_app.apply();
 			vote_ddos.apply();
-
-
 
 
         }
