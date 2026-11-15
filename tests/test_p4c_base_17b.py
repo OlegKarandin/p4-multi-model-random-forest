@@ -33,11 +33,17 @@ duration / Total body equals Task 37's probed bfa; the model's register stage eq
 The old calibration archive
 (compiler_calibration_pragmas_2026_09_29) can no longer score the model: every program in it is refused by shape
 (test_model_archive).
+The three per-tree programs were regenerated at d48dd70 (2026-11-15: every per-tree code in bytes of its own, a
+one-nibble key byte padded where its alignment class is mixed, p4model.packed) and recompiled on the Codespace with
+the 160 base designs (impl/pta/final160): p4c stage depth unchanged (6 / 9 / 8), tree-table blocks 7 -> 7, 22 -> 23,
+27 -> 30; the nine other texts are unchanged and keep their rows.
 
 model_breakdown must give p4c's stage depth and blocks, and p4c's stage and blocks for every table it prices, on
-every program; the one named miss is pinned (Task 18, impl/remeasure.md):
-  * joint-tree_M075_s02_k07 (k<=8): blocks 33 vs p4c 34; get_classification_tree_app_1 7 vs 8 (a per-tree block
-    under-price, unchanged since Task 17).
+every program. No miss is pinned any more:
+  * joint-tree_M075_s02_k07 (k<=8), pinned from Task 17 to Task 39 at blocks 33 vs p4c 34
+    (get_classification_tree_app_1 7 vs 8, a per-tree block under-price), was a table sharing key bytes with a tree
+    placed before it in its stage, where p4c's block count follows its PHV container numbers
+    (impl/per_tree_accuracy.md); under the own-bytes layout the model is exact (37 vs 37).
 independent_M015_s06_k04 (k<=8), a pinned miss until Task 23 (model 9 vs p4c 10: p4c packed fwd_current_iat and
 bwd_current_iat into one 32-bit container and ran the second last-arrival register a stage late), is exact since
 the scratch fields are pinned to 16-bit containers (p4c 10 -> 9 stages).
@@ -60,10 +66,7 @@ KNOWN_MISSES = {
     # (independent_M050_s13_k07's pinned register-ALU tie, model stage 4 vs p4c 3 for both fwd_packet_length_max
     # range tables since review A2, is gone with Task 38: the bwd_last_arrival_time register in that tie is no
     # longer emitted, its chain's Mean being a duration now.)
-    "joint-tree_M075_s02_k07": {
-        "blocks": (33, 34),
-        "get_classification_tree_app_1": {"blocks": (7, 8)},
-    },
+    # (joint-tree_M075_s02_k07's pinned block under-price, 33 vs 34, is gone with the own-bytes layout, d48dd70.)
 }
 
 
