@@ -183,7 +183,7 @@ def parse_table_entry_count(log_dir: str, table_name: str) -> Optional[int]:
     constant-fold a compile-time-known range down to a trivial encoding
     (tried 2026-08-02/03: predicted 6 rows, compiler allocated 1), which has
     nothing to do with what happens when a real threshold value is installed
-    at runtime. This project's actual production tables (resources/table.p4)
+    at runtime. This project's actual production tables (the generated range tables)
     declare only `size = <SIZE>` and are populated via runtime control-plane
     insertion (the `bf_rt` API), not `const entries` -- so the real
     validation instead used a live `tofino_model` + `bfshell` "fill-until-

@@ -52,7 +52,7 @@ PATH_TABLE_CLASSIFICATION_TEMPLATE_P4 = PATH + 'table_classification.p4'
 # Task 8: Planter RF_EB-style exact-match code/decision tables. The two
 # templates are currently byte-identical -- table_classification.p4 has no
 # <MATCH_TYPE>-style marker of its own; match type is baked into <KEYS>,
-# which generate_P4_tables_and_apply builds directly in Python (see
+# which generate_tables_and_apply builds directly in Python (see
 # classification_keys below), not read from either template file. A
 # separate file still exists (rather than reusing one path for both modes)
 # so the two modes have independent templates to diverge from later, and so
@@ -63,26 +63,18 @@ PATH_P4_CODE_TEMPLATE_INPUT = PATH + 'p4_template.p4'
 
 # Task 19 (R6): read every P4 table/action template exactly once, here, at
 # module import, instead of re-opening the same file once per tree and once
-# per feature inside generate_P4_tables_and_apply (and, before this task,
-# once per generate_P4_actions call for action.p4). A missing/unreadable
+# per feature inside generate_tables_and_apply (and, before this task,
+# once per generate_actions call for action.p4). A missing/unreadable
 # template now fails at import time rather than as a per-call surprise --
 # the intended behaviour, matching Task 2's F9 fix for the action template.
 #
-# table.p4 and table_classification.p4 (see the comment above
-# PATH_TABLE_CLASSIFICATION_EXACT_TEMPLATE_P4) differ only in their <KEYS>
-# line: a single `meta.<FEATURE_NAME>: <MATCH_TYPE>;` line for the
-# range-matching feature tables vs one `meta.code_<feature> : <match_type>;`
-# line per classification key, already built in Python (see
-# _classification_keys) -- plus one purely cosmetic trailing-whitespace
-# difference on the final closing "}" line (table.p4 has 3 trailing spaces
-# there that table_classification.p4 does not; confirmed with a direct byte
-# diff of the two files during Task 19). generate_P4_tables_and_apply now
-# reads a SINGLE shared template, _TABLE_TEMPLATE (table_classification.p4's
-# content), for both the range-matching feature tables and the ternary
-# classification tables, building each one's own one-line/multi-line <KEYS>
-# text in Python; the range-table path additionally re-adds table.p4's 3
-# trailing spaces itself (see the comment at its call site) so its emitted
-# bytes stay byte-for-byte identical to every caller before this task.
+# The range-matching feature tables and the ternary classification tables
+# share ONE template, _TABLE_TEMPLATE (table_classification.p4's content);
+# each builds its own one-line/multi-line <KEYS> text in Python. The range
+# path's own template, table.p4 (deleted in the final review; it differed only
+# in its <KEYS> line and in 3 trailing spaces on its closing "}" line), is
+# reproduced by the range-table path, which re-adds those 3 spaces itself (see
+# the comment at its call site) so its emitted bytes stay identical.
 _TABLE_TEMPLATE = Path(PATH_TABLE_CLASSIFICATION_TEMPLATE_P4).read_text()
 _ACTION_TEMPLATE = Path(PATH_ACTION_TEMPLATE_P4).read_text()
 # table_classification_exact.p4 is byte-identical to table_classification.p4
@@ -125,10 +117,10 @@ def dt_thresholds_float_to_int(clf):
             # moves one down.
             #
             # For an integer x and any real t, `x <= t` and `x <= floor(t)` are
-            # the same test, so floor is exact on integer-valued features. It is
-            # not exact on this dataset's *.Mean features, which are genuine
-            # means and take fractional values -- but it stays 3-8x closer to
-            # the fitted model than round does (measured per-tree predictions
+            # the same test, so floor is exact on integer-valued features. It was
+            # not exact on the *.Mean features (genuine means, fractional values;
+            # they left the catalog in Task 38) -- but it stayed 3-8x closer to
+            # the fitted model than round there (measured per-tree predictions
             # changed: 24 vs 185 at 3 trees, 48 vs 316 at 7).
             tree_obj.threshold[i] = math.floor(tree_obj.threshold[i])
   return clf
@@ -805,7 +797,7 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
   that majority class, which the control plane installs as the table's
   default action at deploy time (see p4/deploy_table_entries.py -- the
   generated P4 itself declares no default action, see
-  generate_P4_tables_and_apply). False (the default) writes every leaf as an
+  generate_tables_and_apply). False (the default) writes every leaf as an
   explicit entry and emits no default-action record at all.
 
   RECORD FORMAT. A flat list of table-entry records covering both the feature
@@ -831,7 +823,7 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
    - action_params: {<action data field name>: <decimal str>}. These names are fixed
      literals of this generator's own templates -- `code` for every set_code_* action
      (resources/action.p4) and `class` for every classify_flow_codeword_* action
-     (generate_P4_actions).
+     (generate_actions).
    - is_default_action: True for the at-most-one-per-classification-table record that
      carries the discounted majority class. Such a record has NO key concept at all
      (bf_rt's set_default_with_<action> takes only data fields), so its key_fields is
@@ -1283,7 +1275,8 @@ def code_field_container_sizes(resolved_plan, tasks):
 
 
 def generate_P4_actions(feature_intervals, num_trees_app, num_trees_ddos, bit_per_classes_app, bit_per_classes_ddos):
-  """The two-task form of generate_actions (app's actions, then ddos')."""
+  """The two-task form of generate_actions (app's actions, then ddos'). No production
+  caller; kept for tests/test_build_p4_script_tna.py, which drives it."""
   return generate_actions(feature_intervals,
                           [(APP_TASK, num_trees_app, bit_per_classes_app),
                            (DDOS_TASK, num_trees_ddos, bit_per_classes_ddos)])
@@ -1335,7 +1328,7 @@ def generate_actions(feature_intervals, task_trees, per_task_writes=None,
   # reviews/t11_tofino_port_and_env.md Part G.2). Since each tree already
   # gets its own physical classification table
   # (get_classification_tree_app_0/_1/_2/..., built in
-  # generate_P4_tables_and_apply below), there is no need for a single
+  # generate_tables_and_apply below), there is no need for a single
   # shared, tree-parameterized action at all: each tree's table binds to its
   # own dedicated action that unconditionally writes only its own field. No
   # `tree` parameter, no conditional, no Mux -- this generalizes uniformly to
@@ -1392,7 +1385,9 @@ def generate_P4_tables_and_apply(feature_names, num_trees_app, num_trees_ddos,
   """The two-task form of generate_tables_and_apply: app's trees, then
   ddos', at program.PLACEMENT_PRIORITY. classification_table_sizes is keyed
   by the old global tree id (0..num_trees_app-1 app, then ddos); the other
-  arguments are documented on generate_tables_and_apply."""
+  arguments are documented on generate_tables_and_apply. No production caller
+  (it emits whole-field tree keys without slices or @name, a form no entry
+  writer uses); kept for tests/test_build_p4_script_tna.py, which drives it."""
   feature_names = list(feature_names)
   task_tables = []
   for task, n_trees, names, first in (
@@ -1809,9 +1804,10 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   (generate_table_entries) are written beside it under that name; None
   writes the program only. Per task: get_classification_tree_<task>_<i> /
   classify_flow_codeword_<task>_<i> / meta.class_tree_<task>_<i> for its
-  tree i (ids per task, from 0), and one vote_<task> table; a task with one
-  tree has neither the class field nor the vote table, its tree action writes
-  the task's export field (review A2). Registers stay
+  tree i (ids per task, from 0), and, for a task with two or more trees, one
+  vote_<task> table; a task with one tree has neither the class field nor the
+  vote table, its tree action writes the task's export field (review A2).
+  Registers stay
   one per distinct raw feature across all tasks; codeword fields follow
   resolve_feature_plan.
 
@@ -1847,10 +1843,6 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
     before anything is written. Under joint, disjoint and per-task codes a task
     passed without its feature list keys all of its fields on every tree.
 
-  The parameter notes below were written for the two-task form: read
-  clf_<task> / feature_intervals_<task> / selected_features_<task> as that
-  TaskSpec's trees / intervals / features.
-
   match_type: passed straight through to
   generate_tables_and_apply. 'ternary' (the default) switches
   classification tables to resources/table_classification.p4 with ternary
@@ -1863,53 +1855,35 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   individual `match_type` / `use_default_action_discount` keyword arguments
   above (which remain the source of truth when `config` is None).
 
-  use_default_action_discount, selected_features_app, selected_features_ddos:
-  the live path that produces the Planter-style default-action discount.
-  When the flag is True (passed
-  directly or via `config`), this function recomputes each model's codewords
-  internally; every leaf carrying its tree's majority class then comes off
-  that classification table's declared `size` here, and off its explicit
-  entries in table_entries.json, where `generate_table_entries` instead writes ONE
-  `is_default_action` record per tree carrying that majority class. The
-  generated P4 itself declares NO default action either way (see
-  generate_P4_tables_and_apply's docstring for the real-compile evidence
-  behind that, and p4/deploy_table_entries.py for the control-plane call that
-  installs the default class at deploy time -- Planter's own architecture).
-  When the flag is False -- the default -- every leaf stays an explicit entry
-  and no is_default_action record is written at all. (Codewords themselves
-  are computed whenever `selected_features_*` is supplied, discount or not,
-  because the table sizing below needs them -- see TABLE SIZING.)
+  use_default_action_discount: the Planter-style default-action discount. When
+  the flag is True (passed directly or via `config`), every leaf carrying its
+  tree's majority class comes off that classification table's declared `size`
+  here, and off its explicit entries in table_entries.json, where
+  `generate_table_entries` instead writes ONE `is_default_action` record per
+  tree carrying that majority class. The generated P4 itself declares NO
+  default action either way (p4/deploy_table_entries.py installs the default
+  class at deploy time -- Planter's own architecture). When the flag is False
+  -- the default -- every leaf stays an explicit entry and no
+  is_default_action record is written at all.
 
-  Codewords are computed PER MODEL, against that model's OWN
-  feature_intervals_app / feature_intervals_ddos: under genuine disjoint
-  encoding the two models' intervals for a shared feature name can differ,
-  so one combined call would produce wrong codewords for one side. Each
-  task's codewords are keyed by that task's own tree id.
-
-  Doing that requires each model's ORIGINAL ORDERED training-feature-name
-  list, which is why `selected_features_app`/`selected_features_ddos` exist
-  and cannot be replaced by `feature_intervals_*.keys()`:
-  `get_feature_thresholds` sorts alphabetically by feature name, whereas
-  `get_nodes(estimator, feature_names)` names a node's feature
-  `feature_names[estimator.tree_.feature[node]]`, so `feature_names[i]` must
-  be training column `i`. Raises ValueError when the flag is True and an active
-  model's list is missing -- silently guessing an order would produce
-  wrong-but-plausible codewords.
+  Codewords are computed PER TASK, against that TaskSpec's OWN intervals: under
+  disjoint encoding two tasks' intervals for a shared feature name can differ,
+  so one combined call would produce wrong codewords for one side. Each task's
+  codewords are keyed by that task's own tree id. Doing that requires the
+  task's ORIGINAL ORDERED training-feature-name list (TaskSpec.features), which
+  cannot be replaced by the intervals' keys: `get_feature_thresholds` sorts
+  alphabetically by feature name, whereas `get_nodes(estimator, feature_names)`
+  names a node's feature `feature_names[estimator.tree_.feature[node]]`, so
+  `feature_names[i]` must be training column `i`. Raises ValueError when the
+  flag is True and a task with trees has no feature list -- silently guessing
+  an order would produce wrong-but-plausible codewords.
 
   TABLE SIZING: every table this function emits is sized from its REAL entry
-  count, not the fixed SIZE_FEATURE_TABLE=200 / SIZE_CLASSIFICATION_TABLE=400
-  literals generate_P4_tables_and_apply used to stamp everywhere -- range-matching
-  feature tables from their interval count, classification tables from their
-  codeword count (minus the entries use_default_action_discount folds into
-  the default action). Because computing codewords needs the ordered
-  training-feature-name lists, `selected_features_app`/`selected_features_ddos`
-  are now consulted for SIZING too, not only for the discount; when a model's
-  list is absent, that model's tables fall back to `estimator.get_n_leaves()`
-  -- a real structural count that is always >= the codeword count, so a size
-  is never underestimated. This means callers that pass neither list see
-  their tables' `size = ` values change from the old literals to real
-  (usually much smaller) numbers; nothing else about the generated text
-  changes.
+  count -- range-matching feature tables from their interval count,
+  classification tables from their codeword count (minus the entries
+  use_default_action_discount folds into the default action); a task without
+  a feature list falls back to `estimator.get_n_leaves()`, a structural count
+  that is always >= the codeword count, so a size is never underestimated.
 
   KNOWN LIMITATION of that sizing: with match_type='exact' it still uses the
   ternary codeword/leaf count, NOT the real Cartesian-product-expanded
@@ -1928,26 +1902,17 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   exact-match entries for those wildcarded codewords still need to be
   generated as follow-on work before 'exact' output can actually be loaded.
 
-  feature_intervals_app / feature_intervals_ddos are each model's OWN,
-  independently-derived feature_intervals dict (raw feature name -> interval
-  list). A task with no active model passes {} for its side (e.g. an
-  App-only or DDoS-only run passes {} for the other model's feature_intervals,
-  exactly mirroring clf_app/clf_ddos=None for "no task"). A joint-encoded
-  caller (both models sharing one discretization) passes the SAME dict for both
-  parameters.
-
-  Internally this resolves both dicts, once, via
-  _resolve_disjoint_feature_plan: a feature both models select with
-  IDENTICAL intervals shares ONE discretization table/field; a feature both
-  models select with DIFFERING intervals gets two independent, namespaced
-  (app_/ddos_ prefixed) discretization tables/fields -- while the
-  underlying RAW feature-value register/computation always stays shared,
-  since a raw counter value is model-independent regardless of who
-  discretizes it (see _resolve_disjoint_feature_plan's own docstring for
-  the full design).
+  Each TaskSpec's intervals are that task's OWN, independently derived
+  feature_intervals dict (raw feature name -> interval list); a joint-encoded
+  caller passes the SAME dict for every task. Under joint / disjoint codes
+  resolve_feature_plan resolves them once: a feature every selecting task
+  discretizes IDENTICALLY shares ONE table/field; otherwise each task gets its
+  own namespaced (<task>_ prefixed) table/field -- while the RAW
+  feature-value register always stays shared, since a raw counter value is
+  task-independent regardless of who discretizes it.
 
   Also raises AssertionError (F2; R10, an invariant) when any DISTINCT raw feature name across
-  BOTH feature_intervals_app and feature_intervals_ddos has no
+  every task's intervals has no
   FEATURE_REGISTER_CATALOG entry -- checked right after this function calls
   generate_P4_registers_and_apply (see that call site's own inline comment
   for the full rationale). Without this, such a feature would still get a
@@ -2098,7 +2063,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       # normalise_feature_name here, NOT raw_feature_name verbatim: every
       # READER of this field lowercases it first -- _execute_lines' target
       # (below, via matched_features' name.lower()) and the range table's
-      # <KEYS> substitution (generate_P4_tables_and_apply, raw_name.lower())
+      # <KEYS> substitution (generate_tables_and_apply, raw_name.lower())
       # both do. A mixed-case-but-catalogued raw name (e.g. "Flow_IAT_Max",
       # not dotted, so it clears the F2 "no catalog entry" check below,
       # which is deliberately case-insensitive) used to declare
@@ -2299,7 +2264,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
         "read 0 for every packet. Add the feature to FEATURE_REGISTER_CATALOG "
         "(p4gen/feature_registers.py) or drop it from the feature set.".format(missing))
 
-  # generate_P4_actions only needs resolved_name -> intervals: it writes
+  # generate_actions only needs resolved_name -> intervals: it writes
   # meta.code_<resolved_name>, one action per resolved entry, and is
   # already agnostic to whether a name is "raw" or "resolved"/namespaced --
   # no change needed to that function itself, only to what it's fed here.
@@ -2523,7 +2488,7 @@ _REGISTER_ACTION_BODIES = {
   #   WHY: with V1o alone the first packet measured its gap from time 0, so it read 65535
   #     and every *IAT.Max feature became 65535 (emulated app k>=9 0.6954 vs software
   #     0.7263). C1f equals CICFlowMeter's Max/Min/Mean semantics including "no IAT -> 0"
-  #     (Mean still an EWMA): emulated on 200 DEV designs = the ideal switch 200/200 (app
+  #     (the Means, an EWMA then, left in Task 38): emulated on 200 DEV designs = the ideal switch 200/200 (app
   #     0.7327 / 0.7263, ddos 0.9602 / 0.9771 at k<=8 / k>=9).
   #   EVIDENCE: Task 33 (impl/probe_first_packet.md): exactly this body compiled on
   #     joint-off_M025_s06_k17 (all three chains) at 9 / 22 = V1o, every register in
@@ -2531,8 +2496,8 @@ _REGISTER_ACTION_BODIES = {
   #     `ssubu !cmplo, hi, phv_lo, lo` / `add lo, phv_lo, 4294967295` / `output alu_hi`.
   #     The compare is exact (34-bit), not modulo 2^32 as the P4 text reads, which is why
   #     the first packet gives 0: confirmed live on tofino-model (Task 33b: every chain's
-  #     first packet 0, later packets min(gap + 1, 65535), every non-Mean register exact
-  #     against an emulation of prog.bfa). A first-packet test by compare (C2, sentinel
+  #     first packet 0, later packets min(gap + 1, 65535), every register but the
+  #     then Means exact against an emulation of prog.bfa). A first-packet test by compare (C2, sentinel
   #     65535 + `value == 0`) needs 3 compare units on a direction-owned chain: refused.
   "iat_delta": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
@@ -3146,21 +3111,10 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
   # Preserves feature_intervals' iteration order.
   matched_features = [f for f in (name.lower() for name in feature_intervals.keys()) if f in catalog]
 
-  # NOTE: there used to be a guard here raising ValueError if "flow_iat_mean"
-  # (flow_duration since Task 38, which has no dependency register) was
-  # selected without "flow_iat_max", on the theory that its shared
-  # "flow_last_arrival_time" dependency register would otherwise never be
-  # .execute()d. That was never true of this generator: each catalog entry
-  # lists its OWN dependency register in its own "registers" list, so
-  # resolving flow_iat_min alone still emits
-  # flow_last_arrival_time_action.execute(meta.flow_hash) before
-  # meta.flow_iat_min_val = ... -- see _execute_lines below, which walks
-  # feature_registers[feature] (the feature's own registers list) regardless
-  # of which other features are selected. The guard was deleted (Task 9) once
-  # this was proven by
-  # test_resolving_flow_iat_min_alone_auto_executes_its_dependency in
-  # tests/test_feature_registers.py; see that test for the exact ordering
-  # assertion.
+  # Each catalog entry lists its OWN dependency register, so a feature selected
+  # alone (flow_iat_min without flow_iat_max) still executes its chain's
+  # last-arrival register first (_execute_lines;
+  # test_resolving_flow_iat_min_alone_auto_executes_its_dependency).
 
   if not matched_features:
     return "", "", "", set()

@@ -73,7 +73,7 @@ table_entries.sort(key=lambda e: -_row_cost(e))
 
 def _data_kwargs(action_params):
     # Every classify_flow_codeword_* P4 action has a single parameter literally named
-    # "class" (see build_p4_script.generate_P4_actions). "class" is a Python keyword, so
+    # "class" (see build_p4_script.generate_actions). "class" is a Python keyword, so
     # bfrtcli's own generated add_with_<action>/set_default_with_<action> methods cannot
     # have a parameter literally named "class" (that would be a SyntaxError in the exec'd
     # def). bfrtcli's validate_p4_entity_name/add_prefix_to_entry (see bfrtcli.py) detects
