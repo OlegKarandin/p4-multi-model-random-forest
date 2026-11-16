@@ -161,7 +161,14 @@ def parse_args(argv=None):
         "--splits", dest="splits", type=_parse_splits,
         default=campaign_run.parse_splits(DEFAULT_SPLITS),
         help="which CV splits to run, e.g. '0-9', '0,3,5' or '0-2,7'. "
-             "Defaults to 0-9. Each split's data seed is 42 + split")
+             "Defaults to 0-9. Each split's data seed is 42 + split. Splits "
+             "from {} on are reserved for held-out checks and are refused in "
+             "compute mode unless --allow-heldout-splits is given".format(
+                 campaign_run.FIRST_HELDOUT_SPLIT))
+    parser.add_argument(
+        "--allow-heldout-splits", dest="allow_heldout_splits", action="store_true",
+        help="in compute mode, allow splits >= {} (held-out draws only)".format(
+            campaign_run.FIRST_HELDOUT_SPLIT))
     parser.add_argument(
         "--M", dest="M", type=_parse_M_grid, default=list(DEFAULT_M_GRID),
         help="comma-separated TCAM block budgets to sweep in compute mode, "
@@ -198,6 +205,11 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.mode == "compute" and args.run is None:
         parser.error("--run <dir> is required in compute mode")
+    heldout = sorted(s for s in args.splits if s >= campaign_run.FIRST_HELDOUT_SPLIT)
+    if args.mode == "compute" and heldout and not args.allow_heldout_splits:
+        parser.error("--splits {} are held-out splits (>= {}); pass "
+                     "--allow-heldout-splits to run them".format(
+                         ','.join(map(str, heldout)), campaign_run.FIRST_HELDOUT_SPLIT))
     return args
 
 

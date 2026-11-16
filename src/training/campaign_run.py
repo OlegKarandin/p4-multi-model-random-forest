@@ -14,6 +14,9 @@ from pathlib import Path
 INF = float('inf')
 DEFAULT_M_GRID = (15, 25, 35, 50, 75, INF)
 DEVELOPMENT_SPLITS = frozenset({10, 11, 12, 13})
+# Splits >= this are reserved for held-out checks (heldout9 used 25-27); compute
+# mode refuses them without --allow-heldout-splits (final review src minor 8).
+FIRST_HELDOUT_SPLIT = 25
 
 
 def m_token(M):

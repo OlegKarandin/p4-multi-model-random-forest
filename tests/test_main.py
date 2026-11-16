@@ -418,6 +418,18 @@ def test_n_splits_is_removed_and_the_error_names_splits(capsys):
     assert '--splits' in capsys.readouterr().err
 
 
+def test_compute_mode_refuses_heldout_splits_without_the_flag(capsys):
+    # Final review src minor 8: splits >= 25 are held-out draws.
+    with pytest.raises(SystemExit):
+        m.parse_args(["--mode", "compute", "--run", "r", "--splits", "20-26"])
+    assert "--allow-heldout-splits" in capsys.readouterr().err
+    args = m.parse_args(["--mode", "compute", "--run", "r", "--splits", "25-27",
+                         "--allow-heldout-splits"])
+    assert args.splits == [25, 26, 27]
+    assert m.parse_args(["--mode", "compute", "--run", "r", "--splits", "0-24"]).splits \
+        == list(range(25))
+
+
 def test_splits_defaults_to_0_to_9():
     assert m.parse_args([]).splits == list(range(10))
 
