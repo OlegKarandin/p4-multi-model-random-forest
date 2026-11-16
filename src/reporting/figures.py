@@ -1256,7 +1256,7 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
     * `family='robustness'` -- directly under it, the same tests re-run by
       `claims.paired_tests_robustness` on its extra subsets, labelled by the
       `subset` column: `no_flagged` (without unverified rows; only when any
-      row is flagged) and `heldout_splits` (without the development splits).
+      row is flagged) and `non_dev_splits` (without the development splits).
       Checks on the headline, not families of their own: each is
       Holm-corrected over what it ran and none is held to the family size.
       A subset with no rows is skipped, and the markdown says so.
@@ -1336,7 +1336,7 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
     expected_subsets = []
     if _flagged(df).any():
         expected_subsets.append('no_flagged')
-    expected_subsets.append('heldout_splits')
+    expected_subsets.append('non_dev_splits')
     ran_subsets = set(table.loc[table['family'] == 'robustness', 'subset'])
     skipped_subsets = [name for name in expected_subsets
                        if name not in ran_subsets]
@@ -1516,7 +1516,8 @@ def appendix_6_capacity_ceiling(ceiling_csv=DEFAULT_CEILING_CSV,
     # Imported inside the function: `scripts/` is a script directory, not a
     # dependency of the reporting path, and its import pulls in
     # p4gen.build_p4_script (sklearn).
-    from scripts.capacity_ceiling import per_cell, report
+    from scripts.capacity_ceiling import MAX_CODEWORD_LENGTH, per_cell, report
+    from src.training.config import SEARCH_MAX_DEPTH, SEARCH_MAX_TREES
 
     frame = pd.read_csv(ceiling_csv)
     cells = per_cell(frame)
@@ -1530,11 +1531,16 @@ def appendix_6_capacity_ceiling(ceiling_csv=DEFAULT_CEILING_CSV,
         'inclusive search bounds, not fixed hyperparameters, and were '
         'previously justified only as "chosen manually because larger values '
         'gave overly long codewords". The tables below locate where a '
-        '512-bit codeword limit (since removed from the model, decision 6b) '
-        'binds, over a grid of bounds, at '
-        'both ends of the regularisation range the search also explores, and '
-        'apply the adoption rule to the measurement. Adopted: n_trees = {}, '
-        'max_depth = {}.'.format(ceiling_csv, n_trees, max_depth))
+        '{}-bit codeword yardstick (the script\'s own; the model\'s codeword '
+        'limit was removed in decision 6b) binds, over a grid of bounds, at '
+        'both ends of the regularisation range the script measured, and '
+        'apply its historical adoption rule, which gives n_trees = {}, '
+        'max_depth = {}. HISTORY: the shipped search bounds are n_trees <= {} '
+        'and max_depth <= {} (decision 9.1), not set by this rule; the grid '
+        'stops at depth 14 and the corners use min_samples_leaf 5 / 55, while '
+        'the search now starts at 1.'.format(
+            ceiling_csv, MAX_CODEWORD_LENGTH, n_trees, max_depth,
+            SEARCH_MAX_TREES, SEARCH_MAX_DEPTH))
 
     return _write(Deliverable(
         number=6, slug='capacity_ceiling',

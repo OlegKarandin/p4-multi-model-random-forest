@@ -42,7 +42,8 @@ def split_csv_name(n_trees, max_depth, M, arm_slug, split):
     """Return the CSV filename for one (arm, M, split).
 
     Format: rf_t{n_trees}_d{max_depth}_M{m_token}_{arm_slug}_s{split:02d}.csv
-    Example: rf_t7_d14_M035_joint_s07.csv
+    Example: rf_t7_d20_M035_joint-off_s07.csv (n_trees / max_depth are the
+    search bounds: 7 and 20 since decision 9.1)
     """
     return 'rf_t{}_d{}_M{}_{}_s{:02d}.csv'.format(
         n_trees, max_depth, m_token(M), arm_slug, split

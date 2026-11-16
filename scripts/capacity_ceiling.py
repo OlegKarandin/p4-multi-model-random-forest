@@ -153,9 +153,10 @@ SELECTED_FEATURES = list(CAMPAIGN_FEATURES)
 N_TREES_GRID = (1, 3, 5, 7, 9, 11, 15)
 MAX_DEPTH_GRID = (2, 4, 6, 8, 10, 12, 14)
 
-# The campaign's own first three splits: feature_selection.py submits
-# split_idx in range(10, 10 + n_splits) and each worker seeds its splits with
-# random_state + split_idx (feature_selection.py:447, 580) at random_state=42.
+# Splits 10-12, the first three of the (historical) feature_selection.py
+# campaigns; their data seed is 42 + split, the same rule campaign_runner uses
+# (DATA_RANDOM_STATE + split). The line references to feature_selection.py
+# that used to sit here are gone with that module.
 SPLIT_INDICES = (10, 11, 12)
 SPLIT_RANDOM_STATE = 42
 

@@ -87,7 +87,11 @@ def port_price(widths):
     """lanes.table_blocks of an iterable of field widths: one tree key's
     per-word block price, CrossbarKeyTooWide where production refuses the key
     (p4c's two checks: the live bits of the real widths, then the crossbar fit
-    of their port_width stand-ins, lanes.crossbar_blocks)."""
+    of their port_width stand-ins, lanes.crossbar_blocks). Not monotone in the
+    widths near 65-66-byte keys: a key one bit narrower than a priced one can be
+    refused (the ported allocator's greedy midbyte choice, final review p4model
+    M5), so a caller pricing shrunk keys must expect the refusal
+    (align_twins.build_twin turns it into a refused twin row)."""
     widths = [int(w) for w in widths if w > 0]
     check_key_bits(sum(widths))
     return crossbar_blocks(tuple(sorted(port_width(w) for w in widths)))

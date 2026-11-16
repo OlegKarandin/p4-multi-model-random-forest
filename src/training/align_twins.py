@@ -27,6 +27,7 @@ from sklearn.metrics import accuracy_score
 from p4gen.evaluation import accuracy_metrics, multi_model_memory_evaluation
 from p4gen.switch_semantics import switch_predict
 from p4model.refusals import REFUSAL_ERRORS
+from src.reporting.campaign_data import TWIN_MODEL_REFUSED_PREFIX, TWIN_VIOLATION_PREFIX
 from src.training.campaign_run import INF, atomic_write_text, run_paths, split_csv_name
 from src.training.campaign_run import row_id as make_row_id
 from src.training.row_artifacts import RowContext, load_forests, write_row_artifacts
@@ -40,7 +41,7 @@ CAMPAIGN_RANDOM_STATE = 42          # campaign_runner.DATA_RANDOM_STATE
 # prefix, so the R11 count (campaign_data.count_twin_invariant_violations)
 # counts only twins that cost more than their source. Refused twins have their
 # own count (campaign_data.count_twin_model_refusals).
-MODEL_REFUSED_PREFIX = 'ModelRefused'
+MODEL_REFUSED_PREFIX = TWIN_MODEL_REFUSED_PREFIX     # 'ModelRefused', one literal
 SOURCE_ARM_SLUG = 'joint-off'
 TWIN_ARM_SLUG = 'joint-off-al'
 _ROW_ID = re.compile(r'^(?P<arm>.+)_M(?P<M>\d{3}|inf)_s(?P<split>\d+)_k(?P<k>\d+)$')
@@ -126,8 +127,9 @@ def build_twin(ctx, source, forests, data, write_artifacts=True):
 
     src_blocks, src_depth = int(source['blocks']), int(source['stage_depth'])
     if usage.blocks > src_blocks or usage.stage_depth > src_depth:
-        row['infeasible'] = ('TwinInvariantViolation: blocks {} > {} or stage_depth {} > {}'
-                             .format(usage.blocks, src_blocks, usage.stage_depth, src_depth))
+        row['infeasible'] = ('{}: blocks {} > {} or stage_depth {} > {}'
+                             .format(TWIN_VIOLATION_PREFIX, usage.blocks, src_blocks,
+                                     usage.stage_depth, src_depth))
         row['twin_identical'] = ''
         return row
 

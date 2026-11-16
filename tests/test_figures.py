@@ -838,7 +838,7 @@ def test_deliverable_4_is_exactly_the_holm_corrected_table_claims_produced(tmp_p
 
     assert set(deliverable.data['unit']) == {'pair', 'split'}
     # Task 14 adds the superiority family's robustness lines under it (here
-    # `heldout_splits`: splits 0-2 are all held out); they are labelled
+    # `non_dev_splits`: splits 0-2 are all held out); they are labelled
     # `family='robustness'` so the two pre-registered families stay exactly
     # these two.
     assert set(deliverable.data['family']) == {'superiority', 'noninferiority',
@@ -1055,7 +1055,8 @@ def test_deliverable_6_renders_the_ceiling_appendix_without_remeasuring(
                     encoding='utf-8').read()
     assert 'Adopted' in markdown
     assert 'cardinality' in markdown
-    assert '512' in markdown
+    # the script's own yardstick (520 since decision 6a), not the old 512 (src minor 10)
+    assert str(capacity_ceiling.MAX_CODEWORD_LENGTH) + '-bit' in markdown
 
 
 def test_deliverable_6_persists_the_markdown_the_script_only_ever_printed(tmp_path):
@@ -1498,7 +1499,7 @@ def test_deliverable_4_adds_the_robustness_subsets_as_labelled_lines(tmp_path):
     deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
     data = deliverable.data
     robustness = data[data['family'] == 'robustness']
-    assert set(robustness['subset']) == {'no_flagged', 'heldout_splits'}
+    assert set(robustness['subset']) == {'no_flagged', 'non_dev_splits'}
     # the main family is exactly paired_tests' own output, untouched
     superiority = data[data['family'] == 'superiority']
     assert set(superiority['subset']) == {'all'}
@@ -1513,7 +1514,7 @@ def test_deliverable_4_adds_the_robustness_subsets_as_labelled_lines(tmp_path):
         i for i, f in enumerate(families) if f == 'superiority')
     markdown = open([p for p in deliverable.paths if p.endswith('.md')][0],
                     encoding='utf-8').read()
-    assert 'no_flagged' in markdown and 'heldout_splits' in markdown
+    assert 'no_flagged' in markdown and 'non_dev_splits' in markdown
 
 
 def test_deliverable_4_renders_when_every_split_is_a_development_split(tmp_path):
@@ -1523,7 +1524,7 @@ def test_deliverable_4_renders_when_every_split_is_a_development_split(tmp_path)
     df['split'] = df['split'] + 10
     df['flagged'] = False
     deliverable = figures.table_4_paired_tests(df, output_dir=str(tmp_path))
-    assert 'heldout_splits' not in set(deliverable.data['subset'].dropna())
+    assert 'non_dev_splits' not in set(deliverable.data['subset'].dropna())
 
 
 def test_ordered_arms_puts_the_twin_arm_third_and_a_legacy_joint_arm_last():

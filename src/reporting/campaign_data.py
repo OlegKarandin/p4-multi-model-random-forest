@@ -682,7 +682,7 @@ def _coerce_M(series):
 TWIN_VIOLATION_PREFIX = 'TwinInvariantViolation'
 
 
-# align_twins.MODEL_REFUSED_PREFIX (not imported: that module pulls in training).
+# The two twin-row prefixes, stated once: align_twins imports them.
 TWIN_MODEL_REFUSED_PREFIX = 'ModelRefused'
 
 

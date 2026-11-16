@@ -92,7 +92,8 @@ class TrainConfig:
         campaign-design decision.
     n_trees, max_depth : inclusive search bounds -- per-axis and independent,
         so `rf_params` may suggest either maximum without suggesting both at
-        once. No -1 sentinel (F10i). Rederived from the measured capacity
+        once. No -1 sentinel (F10i). HISTORY (the earlier defaults (7, 14);
+        superseded by decision 9.1 below): rederived from the measured capacity
         ceiling: `scripts/capacity_ceiling.py` fits both models over a
         n_trees x max_depth grid on 3 splits at the full feature set and
         records where a 512-bit codeword limit (the model's until decision

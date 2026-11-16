@@ -1450,8 +1450,12 @@ def paired_tests_robustness(df, **paired_kwargs):
     * `'all'` -- every row; the only subset held to `expected_family_size`.
     * `'no_flagged'` -- without `flagged` rows (unverified designs carrying
       the model's numbers); run only when any row is flagged.
-    * `'heldout_splits'` -- only splits not used during development
-      (`split not in DEVELOPMENT_SPLITS`, i.e. excluding 10-13).
+    * `'non_dev_splits'` -- only splits outside DEVELOPMENT_SPLITS
+      (excluding 10-13). NOT a held-out set: on the design-review branch
+      splits 0-4 (feature pool choice) and 0, 7, 14 (bounds sweep) also fed
+      decisions, and every split 0-24 is development data (the held-out
+      draws are splits >= campaign_run.FIRST_HELDOUT_SPLIT). Named
+      'heldout_splits' before the final review.
 
     The two robustness subsets are checks on the headline result, not new
     families, so `expected_family_size` is dropped for them; each is still
@@ -1465,7 +1469,7 @@ def paired_tests_robustness(df, **paired_kwargs):
         flagged = _as_bool(df['flagged'])
         if flagged.any():
             subsets.append(('no_flagged', df[~flagged]))
-    subsets.append(('heldout_splits', df[~df['split'].isin(DEVELOPMENT_SPLITS)]))
+    subsets.append(('non_dev_splits', df[~df['split'].isin(DEVELOPMENT_SPLITS)]))
 
     robustness_kwargs = {key: value for key, value in paired_kwargs.items()
                          if key != 'expected_family_size'}

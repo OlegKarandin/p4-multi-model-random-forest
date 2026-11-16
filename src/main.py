@@ -70,8 +70,9 @@ PRIMARY_ARMS = [
 LEGACY_JOINT_ARM_ENTRY = ('joint', TrainConfig(ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
 
 # The per-task encoding (p4model.program.PER_TASK_ENCODING): named by slug
-# (--arm-slugs joint-task), not part of the 'primary' preset, whose three arms
-# are the archived campaigns' grid. alignment_enabled=False because alignment
+# (--arm-slugs joint-task), not part of the 'primary' preset, whose two trained
+# arms (independent, joint-off; twins come from align_twins) are the archived
+# campaigns' grid. alignment_enabled=False because alignment
 # reduces the union of thresholds and a per-task key does not depend on the
 # union (identical bits on source and twin in 100% of pairs measured); it also
 # keeps the arm's config equal to joint-off's on every other field.
@@ -195,13 +196,16 @@ def parse_args(argv=None):
     parser.add_argument(
         "--allow-partial-family", dest="allow_partial_family",
         action="store_true",
-        help="in plot mode, render even when the campaign does not yet "
-             "cover the full 3-arm design (e.g. a single-M pilot). The "
-             "default requires the complete pre-registered Holm families "
-             "(2 joint arms x 5 tests, and their non-inferiority and "
-             "substitution companions) and raises otherwise, so a partial "
-             "campaign never silently applies a weaker multiplicity "
-             "correction than the one pre-registered in spec C.3")
+        help="in plot mode, render even when the campaign is not exactly "
+             "the pre-registered 3-arm family (independent, joint-off, "
+             "joint-off-al), e.g. a single-M pilot, or a run that also holds "
+             "joint-task / joint-tree (whose extra contrasts change the family "
+             "size; see claims.REPORTED_JOINT_ARM_SLUGS). The default requires "
+             "the pre-registered Holm families (2 joint arms x 5 tests, and "
+             "their non-inferiority and substitution companions) and raises "
+             "otherwise, so a partial campaign never silently applies a weaker "
+             "multiplicity correction than the one pre-registered in spec C.3. "
+             "The flag also turns off the missing-arm check")
     args = parser.parse_args(argv)
     if args.mode == "compute" and args.run is None:
         parser.error("--run <dir> is required in compute mode")
@@ -544,7 +548,9 @@ def run_plot_mode(results_dir='results', output_dir=None,
     `claims.PRE_REGISTERED_FAMILY_SIZE`), `claims.noninferiority_tests`
     (D13's non-inferiority family, Task 19), and
     `claims.substitution_test_all_arms` (the substitution family, Task 23)
-    -- sized from the 3-arm design's two joint arms -- all default their
+    -- sized from the 3-arm design's two joint arms (joint-off and its
+    twins; a run with joint-task / joint-tree has more contrasts and renders
+    only with allow_partial_family) -- all default their
     `expected_family_size` to None, which lets Holm-Bonferroni quietly
     correct over however many contrasts happen to be present -- a weaker
     correction than the pre-registered size on any campaign that has not

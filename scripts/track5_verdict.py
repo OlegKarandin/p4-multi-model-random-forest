@@ -35,6 +35,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 
+# Track 5's run predates decision 9.1 (search bounds 7 / 20): its files carry
+# the old d14 bound in their names, so this glob is right for that run.
 DEFAULT_RESULTS_GLOB = 'results/rf_t7_d14_M*_joint-*.csv'
 DEFAULT_OUT = 'results/track5_verdict.csv'
 _D000 = 'joint-d000'

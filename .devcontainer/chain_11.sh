@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# OBSOLETE (final review 2026-11-15, src minor 11): this launched the archived
+# campaign_2026_11 (two arms, older dataset row counts). Kept for the record of
+# how that run was produced; it refuses to run. The final campaign uses
+# run_campaign.sh / run_verify.sh / run_twins.sh with the five-arm grid.
+echo "chain_11.sh is obsolete (it launched results/campaign_2026_11); see its header" >&2
+exit 2
 # Two-arm compiler-verified campaign, spec 2026-10-06 (alignment twins and the
 # two-arm campaign), section 4: train `independent` + `joint-off` on 25 splits,
 # then verify every design. Runs under nohup so it survives a disconnect or a

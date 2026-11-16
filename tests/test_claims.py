@@ -1452,12 +1452,12 @@ def _robustness_frame(flagged_split=None):
     return df
 
 
-def test_paired_tests_robustness_runs_heldout_splits_and_omits_no_flagged_when_clean():
+def test_paired_tests_robustness_runs_non_dev_splits_and_omits_no_flagged_when_clean():
     table = paired_tests_robustness(
         _robustness_frame(), expected_family_size=PRE_REGISTERED_FAMILY_SIZE)
 
-    assert set(table['subset']) == {'all', 'heldout_splits'}
-    heldout = table[table['subset'] == 'heldout_splits']
+    assert set(table['subset']) == {'all', 'non_dev_splits'}
+    heldout = table[table['subset'] == 'non_dev_splits']
     assert len(heldout) == PRE_REGISTERED_FAMILY_SIZE
     assert heldout['n_splits'].eq(12).all()        # 16 splits minus 10-13
     assert table[table['subset'] == 'all']['n_splits'].eq(16).all()
@@ -1466,7 +1466,7 @@ def test_paired_tests_robustness_runs_heldout_splits_and_omits_no_flagged_when_c
 def test_paired_tests_robustness_adds_no_flagged_when_any_row_is_flagged():
     table = paired_tests_robustness(_robustness_frame(flagged_split=3))
 
-    assert set(table['subset']) == {'all', 'no_flagged', 'heldout_splits'}
+    assert set(table['subset']) == {'all', 'no_flagged', 'non_dev_splits'}
     assert table[table['subset'] == 'no_flagged']['n_splits'].eq(15).all()
 
 
@@ -1478,7 +1478,7 @@ def test_paired_tests_robustness_holds_only_all_to_the_family_size():
 
 
 def test_paired_tests_robustness_skips_an_empty_subset_instead_of_crashing():
-    """Task 14: a run holding only development splits leaves `heldout_splits`
+    """Task 14: a run holding only development splits leaves `non_dev_splits`
     empty, and a run with every row flagged leaves `no_flagged` empty. An
     empty robustness subset has nothing to test; it is skipped (absent from
     `subset`), never allowed to crash the headline `all` family."""
