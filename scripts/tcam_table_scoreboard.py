@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """The per-table regression gate (2026-09-20 rewrite design Sec 6.4).
 
 WHY THIS EXISTS. scripts/validation_table.py scores DESIGN totals, where a +1

@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """HISTORICAL: the cap this sweep tested was retired 2026-09-29 (spec
 2026-09-29-overlay-and-layout-pragmas-design.md Sec 5.2); the summary now checks
 the model's in-stage price instead (packing.stage_key_prices: the lane price

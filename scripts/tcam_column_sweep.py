@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """Mechanism C: does a Tofino stage hold a FLAT 24 TCAM blocks, or 2 columns
 of 12 rows with a wide table's blocks chained inside one column?
 

@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """Does FIELD COUNT really decide whether a non-isolatable nibble tail pays?
 
 WHY THIS EXISTS. `scripts/tcam_phv_slice_sweep.py` measured, over 24 compiles

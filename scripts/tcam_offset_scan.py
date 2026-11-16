@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """M1/M2 -- can a spacer ever land a probe key at a genuine, UNAMBIGUOUS ODD
 crossbar group offset? (docs/2026-09-20-version-block-findings.md)
 

@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """Does the version block depend on whether p4c ISOLATES a field's nibble tail?
 
 WHY THIS EXISTS. `scripts/tcam_lane_sweep.py` showed the version charge on a

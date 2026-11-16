@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """Which nibble-clean bytes can actually reach a midbyte? The PHV-lane test.
 
 WHY THIS EXISTS. M3 (scripts/tcam_ledger_divergence_sweep.py) showed clause

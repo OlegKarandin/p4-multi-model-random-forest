@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """The frozen held-out batch (plan Phase 4, audit C6): draw ~30 never-compiled
 campaign designs, predict them with the CURRENT model, write that down, THEN
 compile them with the real p4c and score once.

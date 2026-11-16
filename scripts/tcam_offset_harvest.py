@@ -1,3 +1,4 @@
+# HISTORICAL: does not import at HEAD (deleted p4model names: tables.codeword_to_blocks / crossbar_capacity, target.MAX_KEY_BYTES); they exist at commit c994f10.
 """B1: harvest per-table crossbar offsets from the 19 already-archived p4c
 compiles -- no new compiles are run.
 
