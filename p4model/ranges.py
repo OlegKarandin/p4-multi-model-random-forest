@@ -10,7 +10,6 @@ arithmetic with no imports of its own, so both sides can share this one
 copy instead of duplicating it -- it used to live at p4/range_expansion.py
 for exactly this reason; that separate module is now gone and this is the
 single canonical copy."""
-import math
 
 from p4model.program import FEATURE_VALUE_BIT_WIDTH
 from p4model.target import (

@@ -63,8 +63,11 @@ def feature_readiness_level(feature_name, catalog=None):
   estimates a stage/block count for may be one the generator now refuses to
   emit at all.
 
-  Validated against a real compile: this yields 3/3/3/4 for M2's feature set,
-  matching the compiler's observed stage offsets 0/0/0/1 exactly."""
+  Validated against a real compile when program.FLOW_HASH_LEVEL was 3: this
+  yielded 3/3/3/4 for M2's feature set, matching the compiler's observed stage
+  offsets 0/0/0/1 (history; the numbers move with FLOW_HASH_LEVEL). Reachable
+  only for a feature with no catalog entry or no registers, of which none
+  exists today."""
   if catalog is None:
     catalog = FEATURE_REGISTER_CATALOG
 

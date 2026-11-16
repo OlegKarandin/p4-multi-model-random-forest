@@ -97,6 +97,10 @@ into the apply block.
 
 Scope
 -----
+(History first: the Milestone / Task 9 paragraphs name features and body
+kinds -- the Means, mathunit_ewma_packet_length -- that Task 38 removed; the
+Task 38 paragraph below them is the current state.)
+
 Milestone 1's 3 validated features (and their direct register
 dependencies) are populated here: flow_iat_max, fwd_iat_max,
 fwd_packet_length_max -- the M1 DDoS-only feature set traced against

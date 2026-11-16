@@ -15,7 +15,6 @@ from p4model.program import FEATURE_VALUE_BIT_WIDTH, per_task_field
 from p4model.ranges import compiler_range_rows, nibble_widths_for, range_entry_count
 from p4model.units import installed_intervals
 from p4model.target import (
-    ACTION_RAM_WORD_BYTES,
     CODEWORD_KEY_OVERHEAD_BITS,
     RANGE_KEY_SLOTS_PER_BYTE,
     TCAM_BLOCK_KEY_LENGTH,
@@ -99,7 +98,7 @@ def range_matching_resource_usage(feature_intervals, key_bit_width=FEATURE_VALUE
   belongs; see its own docstring).
 
   Every selected feature gets its OWN independent range-matching P4 table
-  (build_p4_script.py:663-674, keyed on "meta.<feature>_val : range"), so
+  (build_p4_script's table_<n>_<feature>, keyed on "meta.<feature>_val : range"), so
   range_table_specs is one (block_count, byte_width) pair per feature --
   the per-table data crossbar_stages_needed() needs. The aggregate
   range_blocks is still returned for the blocks half of the cost model.
@@ -170,9 +169,9 @@ def codeword_fields_to_bytes(feature_intervals):
   FIELDS in, crossbar BYTES out.)
 
   The classification tables do not key on a single concatenated codeword
-  field: build_p4_script.py:630-635 emits one separate ternary key field
+  field: build_p4_script.py emits one separate ternary key field
   per selected feature ("meta.code_<feature> : ternary"), each declared
-  bit<len(feature_intervals[feature]) - 1> at build_p4_script.py:773-776.
+  bit<len(feature_intervals[feature]) - 1> at build_p4_script.py.
   The match input crossbar allocates per FIELD, so the real byte cost is
   the sum of each field's own byte-rounded width, which is always >=
   ceil(total_bits / 8) on the concatenation (e.g. 3 features x 4 bits:
@@ -221,7 +220,7 @@ def ternary_key_field_bits(feature_intervals):
   """The bit width of every `meta.code_<feature>` field in one classification
   table's key, which is what lanes.table_blocks prices.
 
-  Each field is declared `bit<len(intervals) - 1>` (build_p4_script.py:773-776).
+  Each field is declared `bit<len(intervals) - 1>` (build_p4_script.py).
   Widths are returned SORTED because the price depends only on the multiset
   of field widths, never on the order the generator happens to emit them in --
   the crossbar allocator is free to place fields where it likes, and measurably
@@ -302,7 +301,7 @@ def ternary_matching_resource_usage(codewords, feature_intervals,
   ternary_table_specs).
 
   Each tree gets its own independent classification table
-  (build_p4_script.py:636-659), so ternary_table_specs is one
+  (build_p4_script.py), so ternary_table_specs is one
   (block_count, byte_width) pair per tree, every tree priced on the key of
   feature_intervals. Since decision 2.3 each tree keys only the fields of the
   features it splits on, so evaluation._pruned_trees calls this once per tree
@@ -420,7 +419,7 @@ def range_key_fields_for(feature_intervals, key_bit_width=FEATURE_VALUE_BIT_WIDT
   aligned with range_matching_resource_usage's range_table_specs.
 
   A range table keys on exactly one field, `meta.<raw_feature_name>_val`
-  (build_p4_script.py:1170), and that raw value field is shared across models
+  (build_p4_script.py), and that raw value field is shared across models
   by construction -- _resolve_disjoint_feature_plan's own docstring: "the RAW
   VALUE register/computation is always shared and keyed by raw_feature_name,
   never by resolved_name". So the field id is the normalised raw feature
@@ -449,7 +448,7 @@ def per_task_key_fields(task, feature_intervals):
 def ternary_key_fields(feature_intervals):
   """The ONE frozenset of (field_id, field_bytes) that EVERY classification
   table of a model keys on -- one field per selected feature
-  (`meta.code_<resolved_name> : ternary`, build_p4_script.py:1129), each
+  (`meta.code_<resolved_name> : ternary`, build_p4_script.py), each
   ceil((len(intervals) - 1) / 8) bytes wide. Sums to
   codeword_fields_to_bytes(feature_intervals) by construction, which is the
   invariant crossbar_stages_needed checks.

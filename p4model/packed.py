@@ -26,7 +26,7 @@ model4/scripts/pklib.py `plan(..., exact='big_one_size')`, which the 68 probe de
 were compiled with."""
 from dataclasses import dataclass, field
 
-from p4model import lanes, phv
+from p4model import phv
 from p4model.errors import ActionDataTooWide, NoSplitTree, PhvContainersExhausted
 from p4model.target import (ACTION_DATA_BUS_BYTES, ACTION_RAM_WORD_BYTES,
                             MAX_KEY_SLICE_BITS)
@@ -281,7 +281,8 @@ def bus_bytes(layout, feature):
 
 def range_value(layout, feature, codes):
   """The one value a range entry writes: the OR of each tree's code shifted to its
-  bit offset (codes sharing a byte occupy disjoint bits of it).
+  bit offset (since d48dd70 every code starts on its own byte, so no byte is
+  shared between codes; the OR only combines disjoint bit ranges).
   codes = {(task, tree): int}."""
   value = 0
   for (task, tree), code in codes.items():

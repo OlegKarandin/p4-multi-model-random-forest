@@ -330,7 +330,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   """Fitted-forest frontend for multi_model_memory_evaluation: runs the
   'joint'/'per_task'/'per_tree'/'disjoint' encoding branches on both
   RandomForestClassifiers and pools everything they produce, once converged,
-  into a plain dict under the same 18 names regardless of which branch ran.
+  into a plain dict under the same keys regardless of which branch ran.
   In every encoding a tree keys only the code fields of the features it splits
   on (decision 2.3, the generator's build_p4_script.tree_key_features), so the
   classification side is per tree: each tree's spec, key fields, key bits and
@@ -799,19 +799,16 @@ def multi_model_memory_evaluation(clf_app, clf_ddos, selected_features_app, sele
     (a fourth quantity, `stages_real` -- the REAL compiler's whole-program
     stage count including parsing/bookkeeping overhead this function does
     not model at all -- is NOT returned here; see p4_compile.parse_compile_logs,
-    which stores it. M2 example: 9. `stages` and `stages_real` sit side by
+    which stores it. `stages` and `stages_real` sit side by
     side in the same campaign dataframe row and are NOT the same quantity --
     plotting them together as if they were reads as the model being "67%
     wrong" when they are not even measuring the same thing. `stage_depth` and
-    `stages_real` ARE comparable, and since 2026-09-05 they agree on M2; the
-    residual on the 19-row calibration sample is 0-3 stages, always with
-    stages_real the larger -- unmodelled PHV container conflicts and TCAM
-    column geometry, see scripts/compiler_calibration.replay_stage_depth.)
+    `stages_real` ARE comparable: the verdicts of src.verify compare them
+    on every campaign design; the 2026-09 calibration numbers once quoted
+    here, from before review A1, are history.)
 
   use_default_action_discount: opt-in, threaded down to
-  ternary_matching_resource_usage under BOTH encodings -- directly for
-  'joint' (which does its own ternary accounting on the merged tree set),
-  and via both nested single_model_memory_evaluation calls for 'disjoint'.
+  the ternary accounting of every encoding (_pool_inputs).
   False -- the default -- reproduces every pre-existing caller's numbers
   exactly."""
   usage, _range_plan, _ternary_plan = assemble_usage(_pool_inputs(

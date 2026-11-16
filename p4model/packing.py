@@ -24,7 +24,7 @@ import functools
 import math
 from dataclasses import dataclass
 
-from p4model import lanes, target, xbar
+from p4model import lanes, xbar
 from p4model.errors import CrossbarKeyTooWide, PlacementFailed
 from p4model.tables import word_blocks
 from p4model.target import (

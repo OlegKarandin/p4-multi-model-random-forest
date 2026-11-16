@@ -39,6 +39,9 @@ contents and placement order, the model's key bytes; impl/t39/ties/report_all.tx
     still under when the bytes carry p4c's ACTUAL container numbers (only p4c's numbers with tie='index' reproduce
     p4c on all of them, and on every table of every archive).
 nibble_first and index-on-the-model's-numbering under-price far more often (219 and 69 of the 3,237 programs).
+Since d48dd70 (per-tree codes on their own bytes, half bytes padded where numbers could decide) the per-tree
+layout no longer leaves this tie open, and the four Task 39 under-prices above are closed (160 base designs both
+exact). The paragraph above now describes the other three encodings and hand-made keys only.
 """
 from collections import defaultdict
 import re

@@ -1,6 +1,5 @@
 """These describe the program *this* generator emits, not the chip it targets;
 a reader modelling a different P4 program changes this file, not target.py."""
-import math
 import re
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
