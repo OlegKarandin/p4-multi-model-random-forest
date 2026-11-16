@@ -205,7 +205,7 @@ from scipy import stats
 
 from p4model.target import TCAM_BLOCKS_PER_STAGE, TOFINO_PIPELINE_STAGES
 from src.reporting.campaign_data import (
-    pair_arms, PER_TASK_ARM_SLUG, PER_TREE_ARM_SLUG, TWIN_ARM_SLUG)
+    _P4C_REFUSED_FAILURES, pair_arms, PER_TASK_ARM_SLUG, PER_TREE_ARM_SLUG, TWIN_ARM_SLUG)
 from src.training.campaign_run import DEVELOPMENT_SPLITS
 
 INDEPENDENT_ARM_SLUG = 'independent'
@@ -1350,10 +1350,18 @@ def agreement_table(verification):
       left out of `misses` and counted in `compile_error_model_infeasible`.
       The summary also counts `budget_false_feasible` rows (8.4b).
 
+    Designs are scored by distinct program: a twin whose record was COPIED
+    from its byte-identical source (`copied_from` non-empty) is the source's
+    compile, so it is left out of both frames (deliverable 11 counts it).
+    A `generator_error` row is a design training selected as feasible, so it
+    counts as model-feasible whatever its `model_hw_feasible` says.
+
     Accepts the literal CSV text load_verification keeps ('True'/'False',
     '' for None) or parsed bools and numbers; `M` may be inf.
     """
     frame = verification.copy()
+    if 'copied_from' in frame.columns:
+        frame = frame[frame['copied_from'].fillna('').astype(str) == ''].copy()
     for column in ('model_stage_depth', 'p4c_stage_depth', 'model_blocks',
                    'p4c_blocks'):
         frame[column] = _as_number(frame[column])
@@ -1369,6 +1377,9 @@ def agreement_table(verification):
     model_feasible = _as_bool(frame['model_hw_feasible']) \
         if 'model_hw_feasible' in frame.columns \
         else pd.Series(True, index=frame.index)
+    if 'failure' in frame.columns:
+        model_feasible = model_feasible | (
+            frame['failure'].fillna('').astype(str) == 'generator_error')
     no_compile = frame['verdict'].isin(COMPILE_FAILURE_VERDICTS)
     frame['_ce_feasible'] = no_compile & model_feasible
     frame['_ce_infeasible'] = no_compile & ~model_feasible
@@ -1762,9 +1773,15 @@ def twin_alignment_stats(df):
 
 
 def _p4c_feasible(verification):
+    """The O1 rule of `load_campaign`: FALSE_FEASIBLE, over 12 stages, over M,
+    or a failure p4c itself refused (assembler / p4c errors) is infeasible."""
+    failure = (verification['failure'].fillna('').astype(str)
+               if 'failure' in verification.columns
+               else pd.Series('', index=verification.index))
     return ~((verification['verdict'] == 'FALSE_FEASIBLE')
              | _as_bool(verification['p4c_over_stages'])
-             | _as_bool(verification['p4c_over_budget']))
+             | _as_bool(verification['p4c_over_budget'])
+             | failure.isin(_P4C_REFUSED_FAILURES))
 
 
 def twin_counts(verification):

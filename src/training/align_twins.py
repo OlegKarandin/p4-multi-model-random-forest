@@ -38,7 +38,8 @@ CAMPAIGN_RANDOM_STATE = 42          # campaign_runner.DATA_RANDOM_STATE
 # A twin the model refuses (p4model.refusals.REFUSAL_ERRORS) is written as
 # 'ModelRefused:<constraint>' -- deliberately NOT the TwinInvariantViolation
 # prefix, so the R11 count (campaign_data.count_twin_invariant_violations)
-# counts only twins that cost more than their source.
+# counts only twins that cost more than their source. Refused twins have their
+# own count (campaign_data.count_twin_model_refusals).
 MODEL_REFUSED_PREFIX = 'ModelRefused'
 SOURCE_ARM_SLUG = 'joint-off'
 TWIN_ARM_SLUG = 'joint-off-al'
@@ -91,12 +92,17 @@ def build_twin(ctx, source, forests, data, write_artifacts=True):
     ddos = make_task_splits(X_ddos, y_ddos, seed)
 
     stats = {}
-    model_A, model_B = align_with_policy(
-        copy.deepcopy(forests['app']), copy.deepcopy(forests['ddos']),
-        app.X_val_align[:, cols_app], app.y_val_align,
-        ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
-        align_stats=stats)
+    # The alignment itself prices keys, and the port price is not monotone in
+    # key width near 65-66 bytes: a probe narrower than the source's key can be
+    # refused (CrossbarKeyTooWide) although every source key fits. Such a
+    # refusal makes THIS twin a named refused row, never a crash of its whole
+    # (M, split) (final review src I1).
     try:
+        model_A, model_B = align_with_policy(
+            copy.deepcopy(forests['app']), copy.deepcopy(forests['ddos']),
+            app.X_val_align[:, cols_app], app.y_val_align,
+            ddos.X_val_align[:, cols_ddos], ddos.y_val_align,
+            align_stats=stats)
         usage = _usage(model_A, model_B, names_app, names_ddos)
     except REFUSAL_ERRORS as exc:
         usage, refused = None, exc
@@ -111,7 +117,9 @@ def build_twin(ctx, source, forests, data, write_artifacts=True):
 
     if usage is None:
         # One refused twin must not crash its whole (M, split): the row is
-        # infeasible and nothing is written for it (interim review I2).
+        # infeasible and nothing is written for it (interim review I2). It is
+        # counted from rows/ by campaign_data.count_twin_model_refusals and
+        # shown in deliverables 9 and 11.
         row['infeasible'] = '{}:{}'.format(MODEL_REFUSED_PREFIX, refused.constraint)
         row['twin_identical'] = ''
         return row

@@ -228,7 +228,10 @@ def test_tiny_run_verifies_and_renders_end_to_end(tmp_path, monkeypatch, capsys)
     misses = pd.read_csv(misses_csv[0], keep_default_na=False, dtype=str)
     expected_dropped = {false_feasible} | {
         t for t in twins.row_id if by_id.loc[t, "verdict"] == "FALSE_FEASIBLE"}
-    assert sorted(misses["row_id"]) == sorted(expected_dropped)
+    # Deliverable 9 scores distinct programs: a copied twin is its source's
+    # compile and is not listed again (final review src minor 3).
+    assert sorted(misses["row_id"]) == sorted(
+        r for r in expected_dropped if by_id.loc[r, "copied_from"] == "")
     assert set(misses["verdict"]) == {"FALSE_FEASIBLE"}
 
     frame = load_campaign(run_dir)

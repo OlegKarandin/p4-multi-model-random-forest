@@ -682,17 +682,34 @@ def _coerce_M(series):
 TWIN_VIOLATION_PREFIX = 'TwinInvariantViolation'
 
 
+# align_twins.MODEL_REFUSED_PREFIX (not imported: that module pulls in training).
+TWIN_MODEL_REFUSED_PREFIX = 'ModelRefused'
+
+
+def _count_infeasible_prefix(results_dir, prefix):
+    total = 0
+    for path in sorted(glob.glob(os.path.join(results_dir, 'rows', '*.csv'))):
+        frame = pd.read_csv(path, keep_default_na=False, na_values=[], dtype=str)
+        if 'infeasible' in frame.columns:
+            total += int(frame['infeasible'].str.startswith(prefix).sum())
+    return total
+
+
 def count_twin_invariant_violations(results_dir):
     """Number of aligned twins (joint-off-al) the twin pass rejected with a
     TwinInvariantViolation (R11): the twin used more blocks or stages than its
     source. `load_campaign` drops those rows (infeasible != ''), so they are
     counted here from the raw `rows/` files. 0 for a legacy flat directory."""
-    total = 0
-    for path in sorted(glob.glob(os.path.join(results_dir, 'rows', '*.csv'))):
-        frame = pd.read_csv(path, keep_default_na=False, na_values=[], dtype=str)
-        if 'infeasible' in frame.columns:
-            total += int(frame['infeasible'].str.startswith(TWIN_VIOLATION_PREFIX).sum())
-    return total
+    return _count_infeasible_prefix(results_dir, TWIN_VIOLATION_PREFIX)
+
+
+def count_twin_model_refusals(results_dir):
+    """Number of aligned twins the model refused ('ModelRefused:<constraint>'
+    rows, written by align_twins.build_twin when the alignment or the final
+    pricing raises a refusal): no program is generated for them, so they are
+    in neither verification.csv nor load_campaign's frame and are counted here
+    from the raw `rows/` files. 0 for a legacy flat directory."""
+    return _count_infeasible_prefix(results_dir, TWIN_MODEL_REFUSED_PREFIX)
 
 
 def load_verification(results_dir):

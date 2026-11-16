@@ -1937,7 +1937,7 @@ def _tables_differing_text(tables):
 
 
 def table_9_agreement(verification, output_dir=DEFAULT_FIGURE_DIR,
-                      twin_invariant_violations=None):
+                      twin_invariant_violations=None, twin_model_refusals=None):
     """Model-vs-p4c agreement per arm x M, and every miss -- rendered from
     `claims.agreement_table`, not recomputed (spec section 7.3).
 
@@ -1963,7 +1963,9 @@ def table_9_agreement(verification, output_dir=DEFAULT_FIGURE_DIR,
         'M, over every design of the run p4c was asked to compile ({} rows) '
         '-- including designs the reported frame drops because p4c found '
         'them infeasible: this table is about the model, not about the '
-        'reported designs. `stage_depth_exact` and `blocks_exact` count the '
+        'reported designs. Designs are counted by distinct program: an aligned '
+        'twin byte-identical to its source (record copied) is not counted again. '
+        '`stage_depth_exact` and `blocks_exact` count the '
         'rows whose model number equals p4c\'s exactly; `blocks_na` counts '
         'verified rows where p4c never allocated blocks (over 12 stages), '
         'so blocks agreement reads out of `n - blocks_na` at most. An '
@@ -1981,9 +1983,13 @@ def table_9_agreement(verification, output_dir=DEFAULT_FIGURE_DIR,
                  'exceeding their source): {}'.format(
                      'not recorded' if twin_invariant_violations is None
                      else int(twin_invariant_violations)))
+    refused_line = ('Aligned twins refused by the model (no program generated, '
+                    'not in the table above): {}'.format(
+                        'not recorded' if twin_model_refusals is None
+                        else int(twin_model_refusals)))
     body = '\n'.join([
         _markdown_table(summary) if len(summary) else '(no verified rows)',
-        '', twin_line,
+        '', twin_line, '', refused_line,
         '', '## Misses ({})'.format(len(misses)), '',
         _markdown_table(misses_markdown) if len(misses_markdown)
         else '(none: every verified row is EXACT)'])
@@ -2032,17 +2038,22 @@ def table_10_budget_binding(df, output_dir=DEFAULT_FIGURE_DIR, share=0.9):
 # ---------------------------------------------------------------------------
 
 def table_11_alignment_twins(df, verification, output_dir=DEFAULT_FIGURE_DIR,
-                             confidence=0.95):
+                             confidence=0.95, twin_model_refusals=None):
     """Threshold alignment as a post-selection step: each joint-off design
     against its aligned twin (spec 2026-10-06 section 6). Rendered from
     `claims.twin_effect` (paired deltas per M, per k group and pooled),
     `claims.twin_ladder` (independent -> joint-off -> joint-off-al) and
     `claims.twin_counts` (identical / compiled / rescued twins). A rescued
     twin -- feasible where its source was not -- is counted and never paired.
+    `twin_model_refusals` (campaign_data.count_twin_model_refusals) is the
+    number of twins the model refused, which have no verification record; it
+    is added to the counts as `n_model_refused` (-1 when not recorded).
     """
     effect = claims.twin_effect(df, confidence=confidence)
     ladder = claims.twin_ladder(df, confidence=confidence)
-    counts = pd.DataFrame([claims.twin_counts(verification)])
+    counts = pd.DataFrame([dict(
+        claims.twin_counts(verification),
+        n_model_refused=(-1 if twin_model_refusals is None else int(twin_model_refusals)))])
     alignment = claims.twin_alignment_stats(df)
     c = counts.iloc[0]
     caption = (
@@ -2054,7 +2065,8 @@ def table_11_alignment_twins(df, verification, output_dir=DEFAULT_FIGURE_DIR,
         '{} twins: {} byte-identical to their source (verification record '
         'copied, not compiled), {} compiled ({} EXACT against the cost model), '
         '{} rescued (feasible where the source was not; counted, never paired), '
-        '{} infeasible. The ladder table gives independent -> joint-off -> '
+        '{} infeasible; {} refused by the model (no program generated, so '
+        'neither compiled nor paired). The ladder table gives independent -> joint-off -> '
         'joint-off-al means per M on the cells where all three exist. '
         'p_saves / p_costs are the shares of pairs with a strictly better / worse '
         'delta (for integer blocks and stages, P(saves >= 1 block) and P(costs >= '
@@ -2062,7 +2074,9 @@ def table_11_alignment_twins(df, verification, output_dir=DEFAULT_FIGURE_DIR,
         'what the step did per M: mean intervals removed, mean accepted / attempted '
         'alignments, and the share of twins where none was accepted.'.format(
             confidence, int(c['n_twins']), int(c['n_identical']), int(c['n_compiled']),
-            int(c['n_compiled_exact']), int(c['n_rescued']), int(c['n_twin_infeasible'])))
+            int(c['n_compiled_exact']), int(c['n_rescued']), int(c['n_twin_infeasible']),
+            'an unrecorded number' if twin_model_refusals is None
+            else int(twin_model_refusals)))
     # `group` holds an M on the 'M' rows: print it through `format_M`.
     shown = effect.copy()
     if len(shown):
@@ -2094,7 +2108,8 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
                expected_family_size=None,
                expected_noninferiority_family_size=None,
                expected_substitution_family_size=None,
-               verification=None, twin_invariant_violations=None):
+               verification=None, twin_invariant_violations=None,
+               twin_model_refusals=None):
     """Render every §C.5 deliverable and return them in order.
 
     `verification` is `campaign_data.load_verification`'s frame for a
@@ -2139,9 +2154,11 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
         deliverables.append(
             table_9_agreement(
                 verification, output_dir=output_dir,
-                twin_invariant_violations=twin_invariant_violations))
+                twin_invariant_violations=twin_invariant_violations,
+                twin_model_refusals=twin_model_refusals))
         deliverables.append(table_10_budget_binding(df, output_dir=output_dir))
         if claims.TWIN_ARM_SLUG in set(df['arm_slug']):
             deliverables.append(
-                table_11_alignment_twins(df, verification, output_dir=output_dir))
+                table_11_alignment_twins(df, verification, output_dir=output_dir,
+                                         twin_model_refusals=twin_model_refusals))
     return tuple(sorted(deliverables, key=lambda item: item.number))

@@ -1364,6 +1364,53 @@ def test_count_twin_invariant_violations(tmp_path):
     assert count_twin_invariant_violations(str(tmp_path)) == 2
 
 
+def test_agreement_table_counts_a_copied_twin_once():
+    # Final review src minor 3: a copied twin is its source's compile.
+    lines = [_verification_line('joint-off', 25, 0),
+             dict(_verification_line('joint-off-al', 25, 0, model_blocks=30, p4c_blocks=32,
+                                     verdict='UNDER'), copied_from='joint-off_M025_s00_k05'),
+             _verification_line('joint-off-al', 25, 1)]
+    for line in lines:
+        line.setdefault('copied_from', '')
+    summary, misses = agreement_table(_verification_frame(lines))
+    assert int(summary['n'].sum()) == 2
+    assert len(misses) == 0
+
+
+def test_agreement_table_counts_a_generator_error_as_a_model_feasible_miss():
+    # Final review src minor 2: training selected the design as feasible.
+    line = _verification_line('joint-off', 25, 0, unverified=True, verdict='COMPILE_ERROR')
+    line.update(model_hw_feasible='False', failure='generator_error')
+    summary, misses = agreement_table(_verification_frame([line]))
+    assert int(summary['compile_error_model_feasible'].sum()) == 1
+    assert list(misses['miss_class']) == ['COMPILE_FAILURE_ON_MODEL_FEASIBLE']
+
+
+def test_twin_counts_follows_o1_for_p4c_refused_failures():
+    # Final review src minor 6: an assembler refusal is p4c-infeasible (O1).
+    lines = [_verification_line('joint-off', 25, 0),
+             _verification_line('joint-off-al', 25, 0, unverified=True, verdict='COMPILE_ERROR')]
+    for line in lines:
+        line['copied_from'] = ''
+        line['failure'] = ''
+    lines[1]['failure'] = 'assembler'
+    counts = claims.twin_counts(_verification_frame(lines))
+    assert counts['n_twin_infeasible'] == 1
+
+
+def test_count_twin_model_refusals(tmp_path):
+    # Final review src minor 9: refused twins have no design, so they are
+    # counted from rows/ and never confused with R11's violations.
+    from src.reporting.campaign_data import count_twin_model_refusals
+    rows = tmp_path / 'rows'
+    rows.mkdir()
+    (rows / 'a.csv').write_text(
+        'row_id,infeasible\nx,ModelRefused:key_too_wide\ny,\n'
+        'z,TwinInvariantViolation: blocks 9 > 8 or stage_depth 3 > 3\n'
+        'w,ModelRefused:range_rows_over\n')
+    assert count_twin_model_refusals(str(tmp_path)) == 2
+
+
 def test_agreement_table_accepts_parsed_bools_as_well_as_csv_text():
     lines = [_verification_line('joint', 25, 0),
              _verification_line('joint', 25, 1, unverified=True,

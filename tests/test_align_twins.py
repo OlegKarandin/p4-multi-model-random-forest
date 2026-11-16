@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from p4gen.evaluation import multi_model_memory_evaluation
-from p4model.errors import PlacementFailed, RangeEntriesDoNotFit
+from p4model.errors import CrossbarKeyTooWide, PlacementFailed, RangeEntriesDoNotFit
 from p4model.refusals import CONSTRAINTS
 from src.training import align_twins
 from src.training import row_artifacts as ra
@@ -180,6 +180,22 @@ def test_build_twin_model_refusal_marks_the_row_and_writes_nothing(tmp_path, mon
     assert twin['infeasible'] == 'ModelRefused:' + exc.constraint
     assert exc.constraint in CONSTRAINTS
     assert not twin['infeasible'].startswith('TwinInvariantViolation')
+    assert twin['twin_identical'] == ''
+    assert not os.path.exists(os.path.join(str(tmp_path), 'designs', twin['row_id'] + '.p4'))
+
+
+def test_build_twin_refusal_during_alignment_marks_the_row(tmp_path, monkeypatch):
+    # Final review src I1: the port price is not monotone near 65-66-byte keys,
+    # so the ALIGNMENT can price a narrower key the port refuses. That refusal
+    # is this twin's named row, not a crash of the whole (M, split).
+    exc = CrossbarKeyTooWide('65 crossbar bytes cannot be placed', 518)
+    def refuses(*args, **kwargs):
+        raise exc
+    monkeypatch.setattr(align_twins, 'align_with_policy', refuses)
+    ctx, source = _source(tmp_path)
+    forests = ra.load_forests(os.path.join(str(tmp_path), 'forests', source['row_id'] + '.joblib'))
+    twin = align_twins.build_twin(ctx, source, forests, _synthetic_data())
+    assert twin['infeasible'] == 'ModelRefused:key_too_wide'
     assert twin['twin_identical'] == ''
     assert not os.path.exists(os.path.join(str(tmp_path), 'designs', twin['row_id'] + '.p4'))
 
