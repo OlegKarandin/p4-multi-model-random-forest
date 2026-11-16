@@ -919,8 +919,28 @@ def test_every_gated_body_kind_has_a_direction_read_template():
   assert gated_kinds <= set(bps._DIRECTION_READ_BODIES)
   ungated_kinds = {body for gate, body in _register_gates().values() if gate is None}
   assert ungated_kinds <= set(bps._REGISTER_ACTION_BODIES)
-  assert (set(bps._DIRECTION_READ_BODIES) - set(_OWNED_ONLY_KINDS)
+  # a generator-only kind (bps._GENERATED_BODY, final review I1) is direction-read only
+  generated = set(bps._GENERATED_BODY.values())
+  assert generated <= set(bps._DIRECTION_READ_BODIES)
+  assert (set(bps._DIRECTION_READ_BODIES) - set(_OWNED_ONLY_KINDS) - generated
           | set(_OWNED_ONLY_KINDS.values())) == set(bps._REGISTER_ACTION_BODIES)
+
+
+def test_only_the_bwd_length_min_stores_min_minus_one():
+  """Final review I1 (2026-11-16): the bwd-owned length Min takes C1f's body (store
+  min - 1 from a 65535 start, read `+ 1`), so a flow without a bwd packet reads 0;
+  the flow-wide and fwd-owned length Mins (always a packet) keep the plain body."""
+  _, actions, apply_code, _ = generate_P4_registers_and_apply(_ALL_FEATURES)
+  bwd = _normalize(_extract_action_body(actions, " bwd_packet_length_min_action"))
+  assert bwd[1:-1] == ["if (meta.fwd == 0 && hdr.ipv4.total_len <= value) {",
+                       "value = hdr.ipv4.total_len - 1;", "}", "rv = value;"]
+  assert ("meta.bwd_packet_length_min_val = "
+          "bwd_packet_length_min_action.execute(meta.flow_hash) + 1;") in apply_code
+  for name in ("fwd_packet_length_min", "min_packet_length"):
+    assert "%s_action.execute(meta.flow_hash);" % name in apply_code, name
+    assert "- 1" not in _extract_action_body(actions, " %s_action" % name), name
+  assert bps.call_site_constants({"bwd_packet_length_min": None, "fwd_packet_length_min": None,
+                                  "min_packet_length": None}) == ["bwd_packet_length_min"]
 
 
 def test_the_duration_pair_is_the_flow_body_kept_in_dur():

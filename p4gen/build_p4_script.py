@@ -2759,6 +2759,9 @@ _DIRECTION_READ_BODIES = {
   # live check (Task 33b: each direction's chain unmoved by the other direction's
   # packets).
   "running_min_iat": _REGISTER_ACTION_BODIES["running_min_iat"],
+  # A fwd-owned length Min: its direction always has a packet (a flow's first packet
+  # is fwd since the orientation fix, Task 33b), so the plain "start at 65535" body is
+  # exact on every packet that reads it.
   "running_min_packet_length": (
       "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
       "\t\t\tif (meta.fwd == {owner} && hdr.ipv4.total_len < value) {{\n"
@@ -2767,7 +2770,36 @@ _DIRECTION_READ_BODIES = {
       "\t\t\trv = value;\n"
       "\t\t}}\n"
   ),
+  # A bwd-owned length Min (final review I1, 2026-11-16; _GENERATED_BODY): C1f's trick
+  # (see _REGISTER_ACTION_BODIES["running_min_iat"]). Option B reads the register on
+  # every packet, so before the flow's first bwd packet the plain body read its 65535
+  # start, where training reads the CSV's 0 (Bwd Packet Length Min = 0 on 16.1% of the
+  # app rows, 19.4% of the ddos rows). This body stores min - 1 (65535 = "no bwd packet
+  # yet") and the call site reads it `+ 1` (_CALL_SITE_SUFFIX), 0 before any bwd packet.
+  # `total_len <= value` with value = m - 1 is `total_len < m`, the plain body's
+  # update; total_len - 1 does not wrap for an IPv4 total length (>= 20). The compare
+  # takes no constant and reads value before the write (program_checks
+  # _check_stateful_alu); the - 1 is in the ALU, as in running_min_iat.
+  "running_min_packet_length_m1": (
+      "\t\tvoid apply(inout bit<{width}> value, out bit<{width}> rv) {{\n"
+      "\t\t\tif (meta.fwd == {owner} && hdr.ipv4.total_len <= value) {{\n"
+      "\t\t\t\tvalue = hdr.ipv4.total_len - 1;\n"
+      "\t\t\t}}\n"
+      "\t\t\trv = value;\n"
+      "\t\t}}\n"
+  ),
 }
+
+# The body kind the generator writes for a catalog register, when it is not the
+# catalog's own body: by (catalog body, gated_by). Final review I1: only the
+# bwd-owned length Min can be read before its direction has a packet (a flow-wide or
+# fwd-owned Min always has one -- the flow's first packet is fwd), so only it takes
+# C1f's min - 1 body and its extra PHV container (call_site_constants).
+_GENERATED_BODY = {("running_min_packet_length", "bwd"): "running_min_packet_length_m1"}
+
+
+def _generated_body(body, gated_by):
+  return _GENERATED_BODY.get((body, gated_by), body)
 
 # gated_by -> the meta.fwd value of the owner direction.
 _DIRECTION_OWNER = {"fwd": 1, "bwd": 0}
@@ -2790,7 +2822,7 @@ _DIRECTION_OWNER = {"fwd": 1, "bwd": 0}
 #     which returns bit<32>; Task 37 compiled exactly this call site).
 _CALL_SITE_PREFIX = {"iat_delta": "(bit<16>) ", "coarse_duration": "(bit<16>) ",
                      "coarse_duration_pair": "(bit<16>) "}
-_CALL_SITE_SUFFIX = {"running_min_iat": " + 1"}
+_CALL_SITE_SUFFIX = {"running_min_iat": " + 1", "running_min_packet_length_m1": " + 1"}
 
 # The value type and the RegisterAction's return type of a body kind whose
 # register is not a plain bit<width> (every other kind: bit<width> for both).
@@ -2819,6 +2851,7 @@ DURATION_PAIR_STRUCT = ("struct dur_pair_t {\n"
 _REGISTER_INITIAL_VALUES = {
     "running_min_iat": INFINITE,
     "running_min_packet_length": INFINITE,
+    "running_min_packet_length_m1": INFINITE,
     "iat_delta": lambda width: "%dw0x%X" % (width, (1 << width) - 1),
     "coarse_duration": lambda width: "%dw0x%X" % (width, (1 << width) - 1),
     "coarse_duration_pair": "{32w0xFFFFFFFF, 32w0}",
@@ -2871,8 +2904,10 @@ def call_site_constants(feature_intervals, catalog=None):
     catalog = FEATURE_REGISTER_CATALOG
   names = []
   for feature in (name.lower() for name in feature_intervals):
+    gated_by = catalog.get(feature, {}).get("gated_by")
     for reg in catalog.get(feature, {}).get("registers", ()):
-      if reg["body"] in _CALL_SITE_SUFFIX and reg["name"] not in names:
+      if (_generated_body(reg["body"], gated_by) in _CALL_SITE_SUFFIX
+          and reg["name"] not in names):
         names.append(reg["name"])
   return names
 
@@ -3168,7 +3203,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
     for reg in entry["registers"]:
       if reg["role"] == "dependency":
         iat = iat_field_name(reg["name"])
-      _note_touch(reg["name"], width=reg["width"], body=reg["body"], gated_by=gated_by,
+      _note_touch(reg["name"], width=reg["width"], body=_generated_body(reg["body"], gated_by),
+                  gated_by=gated_by,
                   iat=None if reg["role"] == "dependency" else iat)
       regs.append(reg)
     feature_registers[feature] = regs
@@ -3382,8 +3418,8 @@ def generate_P4_registers_and_apply(feature_intervals, catalog=None):
                   else "meta." + feature + "_val")
         lines.append("{indent}{target} = {prefix}{name}_action.execute(meta.flow_hash){suffix};".format(
             indent=indent, target=target, name=name,
-            prefix=_CALL_SITE_PREFIX.get(reg["body"], ""),
-            suffix=_CALL_SITE_SUFFIX.get(reg["body"], "")))
+            prefix=_CALL_SITE_PREFIX.get(register_info[name]["body"], ""),
+            suffix=_CALL_SITE_SUFFIX.get(register_info[name]["body"], "")))
     return lines
 
   ungated_features = [f for f in matched_features if catalog[f].get("gated_by") is None]

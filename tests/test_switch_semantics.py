@@ -283,7 +283,10 @@ def _expected(feature, history):
     if value_body.startswith("running_max"):
         return max(samples, default=0)
     if value_body.startswith("running_min"):
-        return min(samples, default=0 if value_body == "running_min_iat" else 0xFFFF)
+        # 0 for a direction without a sample, like the CSV (training): C1f's IAT Min
+        # and, since final review I1 (2026-11-16), the bwd length Min too, which read
+        # its 65535 start before. A flow-wide / fwd length Min always has a sample.
+        return min(samples, default=0)
     assert value_body == "saturating_total_packet_length", value_body
     return min(sum(samples), 0xFFFF)
 
@@ -319,3 +322,16 @@ def test_option_b_switch_semantics():
     assert len(directions) == 6  # 3 flows, both directions each
     # the durations reach their clamp (the 4.3 s idle), and read 0 and small values too
     assert {0, 0xFFFF} <= durations and len(durations) > 3
+
+
+def test_bwd_length_min_reads_zero_before_a_bwd_packet():
+    """Final review I1 (2026-11-16): a flow with no backward packet yet reads
+    Bwd Packet Length Min = 0, as the CSV (training) does, not the register's
+    65535 start; after backward packets, their true minimum."""
+    switch = _Switch(["bwd_packet_length_min", "fwd_packet_length_min", "min_packet_length"])
+    a, b = 10, 11
+    reads = [switch.packet({"flow": 0, "src": src, "now": 0, "len": length})
+             for src, length in ((a, 600), (a, 80), (b, 1500), (a, 40), (b, 300), (b, 700))]
+    assert [m["bwd_packet_length_min_val"] for m in reads] == [0, 0, 1500, 1500, 300, 300]
+    assert [m["fwd_packet_length_min_val"] for m in reads] == [600, 80, 80, 40, 40, 40]
+    assert [m["min_packet_length_val"] for m in reads] == [600, 80, 80, 40, 40, 40]
