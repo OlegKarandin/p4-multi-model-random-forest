@@ -9,8 +9,22 @@ Writes, into `figures/campaign_2026_11/paper/`:
 
 Blocks and stages are p4c's (load_campaign substitutes them and drops
 p4c-infeasible designs). Run from the repo root:
-  PYTHONPATH=. python scripts/paper_figures_campaign_2026_11.py
+  PYTHONPATH=. python scripts/paper_figures_campaign_2026_11.py \
+      [--run DIR] [--out DIR] [--figures-dir DIR] [--arms SLUG ...]
+--run defaults to results/campaign_2026_11, --arms to the five-arm family
+(independent, joint-off, joint-off-al, joint-task, joint-tree; an arm the run
+lacks is simply absent). --figures-dir holds the run's rendered deliverables 10
+and 11 (`python -m src.main --mode plot`); a missing CSV there is reported, not
+fatal. The figures compare joint-off-al and joint-off against independent;
+the agreement table and the miss list cover every selected arm.
+
+The miss list (numbers.txt, "Compiler agreement") names EVERY verified design
+whose verdict is not EXACT (decision 8.4): FALSE_FEASIBLE,
+BUDGET_FALSE_FEASIBLE, UNDER, FALSE_INFEASIBLE, OVER, MODEL_REFUSED:<reason>,
+COMPILE_ERROR and TIMEOUT. A twin whose record was copied from its
+byte-identical source is that source's compile and is not counted again.
 """
+import argparse
 import os
 import sys
 
@@ -26,8 +40,10 @@ from src.reporting.campaign_data import load_campaign, load_verification
 from src.reporting.claims import _t_interval, twin_ladder
 
 RUN = 'results/campaign_2026_11'
-OUT = 'figures/campaign_2026_11/paper'
+OUT = 'figures/campaign_2026_11/paper'          # --out; the figure functions write here
+FIGURES = 'figures/campaign_2026_11'            # --figures-dir: deliverables 10, 11
 IND, JOINT, ALIGNED = 'independent', 'joint-off', 'joint-off-al'
+FAMILY = (IND, JOINT, ALIGNED, 'joint-task', 'joint-tree')
 PIPE_BLOCKS = 288  # 24 blocks x 12 stages
 
 # Style of the CNSM figures (pareto_fronts.pdf / other_metrics.pdf).
@@ -278,10 +294,21 @@ def shared_fraction(df):
     return ind.groupby('k')['shared'].describe(percentiles=[0.25, 0.5, 0.75])
 
 
-def agreement(v):
+MISS_COLUMNS = ['row_id', 'verdict', 'failure', 'model_stage_depth', 'p4c_stage_depth',
+                'model_blocks', 'p4c_blocks']
+
+
+def agreement(v, arms=FAMILY):
+    """(per-arm agreement table, every miss): a miss is any verdict but EXACT
+    (decision 8.4); copied twins are left out (scored as their source)."""
+    v = v.copy()
     for c in ('model_stage_depth', 'p4c_stage_depth', 'model_blocks', 'p4c_blocks'):
         v[c] = pd.to_numeric(v[c], errors='coerce')
-    v = v[v['arm_slug'].isin([IND, JOINT, ALIGNED])]
+    v = v[v['arm_slug'].isin(list(arms))]
+    if 'copied_from' in v.columns:
+        v = v[v['copied_from'].fillna('').astype(str) == '']
+    if 'failure' not in v.columns:
+        v['failure'] = ''
     rows = {}
     for arm, part in list(v.groupby('arm_slug')) + [('all', v)]:
         rows[arm] = {
@@ -290,14 +317,34 @@ def agreement(v):
             'blocks_exact': (part['model_blocks'] == part['p4c_blocks']).mean(),
             **{f'verdict_{k}': int(n) for k, n in part['verdict'].value_counts().items()},
         }
-    misses = v[v['verdict'].isin(['UNDER', 'OVER'])]
+    misses = v[v['verdict'] != 'EXACT']
     return pd.DataFrame(rows).T, misses
 
 
-def main():
+def _deliverable_csv(name):
+    path = os.path.join(FIGURES, name)
+    if not os.path.isfile(path):
+        print(f'missing {path}: render the run first (python -m src.main --mode plot)')
+        return None
+    return pd.read_csv(path)
+
+
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--run', default=RUN)
+    ap.add_argument('--out', default=OUT)
+    ap.add_argument('--figures-dir', default=FIGURES)
+    ap.add_argument('--arms', nargs='+', default=list(FAMILY))
+    return ap.parse_args(argv)
+
+
+def main(argv=None):
+    global OUT, FIGURES
+    args = parse_args(argv)
+    run, OUT, FIGURES, arms = args.run, args.out, args.figures_dir, tuple(args.arms)
     os.makedirs(OUT, exist_ok=True)
-    df = load_campaign(RUN)
-    df = df[df['arm_slug'].isin([IND, JOINT, ALIGNED])].copy()
+    df = load_campaign(run)
+    df = df[df['arm_slug'].isin(list(arms))].copy()
     df['acc_avg'] = (df['acc_app'] + df['acc_ddos']) / 2
     df['f1_avg'] = (df['f1_app'] + df['f1_ddos']) / 2
 
@@ -306,12 +353,13 @@ def main():
     lad = ladder_with_total(df)
     fig_effects(df)
     overlap = shared_fraction(df)
-    agree, misses = agreement(load_verification(RUN))
+    agree, misses = agreement(load_verification(run), arms)
 
-    binding = pd.read_csv('figures/campaign_2026_11/10_budget_binding.csv')
-    align = pd.read_csv('figures/campaign_2026_11/11_alignment_twins_alignment_stats.csv')
-    counts = pd.read_csv('figures/campaign_2026_11/11_alignment_twins_counts.csv')
+    binding = _deliverable_csv('10_budget_binding.csv')
+    align = _deliverable_csv('11_alignment_twins_alignment_stats.csv')
+    counts = _deliverable_csv('11_alignment_twins_counts.csv')
     unl = df[np.isinf(df['M'])]
+    shown = lambda frame, fmt: '(not rendered)' if frame is None else fmt(frame)
 
     with open(os.path.join(OUT, 'numbers.txt'), 'w', encoding='utf-8') as f:
         out = lambda *a: print(*a, file=f)
@@ -346,13 +394,17 @@ def main():
             .value_counts().sort_index().to_dict())
         out('miss block error (p4c - model):', (misses['p4c_blocks'] - misses['model_blocks'])
             .describe().round(2).to_dict())
+        out(f'\n== Every miss (verdict not EXACT, decision 8.4): {len(misses)} designs')
+        out(misses['verdict'].value_counts().to_string() if len(misses) else '(none)')
+        if len(misses):
+            out(misses[MISS_COLUMNS].sort_values(['verdict', 'row_id']).to_string(index=False))
         out('\n== Shared features / k, independent arm')
         out(overlap.round(2).to_string())
         out('\n== Budget binding share')
-        out(binding.to_string())
+        out(shown(binding, lambda f: f.to_string()))
         out('\n== Alignment statistics')
-        out(align.round(3).to_string())
-        out(counts.to_string())
+        out(shown(align, lambda f: f.round(3).to_string()))
+        out(shown(counts, lambda f: f.to_string()))
         out('\n== Unlimited budget (M = inf), p4c blocks and stages')
         out(unl.groupby('arm_slug')['blocks'].describe(percentiles=[.25, .5, .75, .95]).round(1).to_string())
         out(unl.groupby('arm_slug')['stage_depth'].describe().round(2).to_string())
