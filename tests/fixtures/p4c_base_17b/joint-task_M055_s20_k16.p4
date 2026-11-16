@@ -332,8 +332,8 @@ control SwitchIngress(
 
 	RegisterAction<bit<16>, bit<12>, bit<16>>(bwd_packet_length_min_reg) bwd_packet_length_min_action = {
 		void apply(inout bit<16> value, out bit<16> rv) {
-			if (meta.fwd == 0 && hdr.ipv4.total_len < value) {
-				value = hdr.ipv4.total_len;
+			if (meta.fwd == 0 && hdr.ipv4.total_len <= value) {
+				value = hdr.ipv4.total_len - 1;
 			}
 			rv = value;
 		}
@@ -978,7 +978,7 @@ control SwitchIngress(
 			meta.bwd_iat_min_val = bwd_iat_min_action.execute(meta.flow_hash) + 1;
 			meta.bwd_iat_total_val = (bit<16>) bwd_iat_total_action.execute(meta.flow_hash);
 			meta.bwd_packet_length_max_val = bwd_packet_length_max_action.execute(meta.flow_hash);
-			meta.bwd_packet_length_min_val = bwd_packet_length_min_action.execute(meta.flow_hash);
+			meta.bwd_packet_length_min_val = bwd_packet_length_min_action.execute(meta.flow_hash) + 1;
 			meta.bwd_packet_length_total_val = bwd_packet_length_total_action.execute(meta.flow_hash);
 
 

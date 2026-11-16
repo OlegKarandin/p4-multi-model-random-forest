@@ -37,6 +37,11 @@ The three per-tree programs were regenerated at d48dd70 (2026-11-15: every per-t
 one-nibble key byte padded where its alignment class is mixed, p4model.packed) and recompiled on the Codespace with
 the 160 base designs (impl/pta/final160): p4c stage depth unchanged (6 / 9 / 8), tree-table blocks 7 -> 7, 22 -> 23,
 27 -> 30; the nine other texts are unchanged and keep their rows.
+The seven programs with a bwd_packet_length_min table were regenerated at 64f0e50 (final review I1, 2026-11-16:
+that register stores min - 1 and its call site reads `+ 1`, so a flow without a bwd packet reads 0) and recompiled
+on the Codespace (final_review/minfix, 8 compiles, 0 errors): every priced table's p4c stage and blocks and every
+stage depth unchanged; p4c adds one hidden stage-0 `$precompute` table (the constant 1) and +1 PHV container on six
+of them (+0 on independent_M035_s11_k13).
 
 model_breakdown must give p4c's stage depth and blocks, and p4c's stage and blocks for every table it prices, on
 every program. No miss is pinned any more:
