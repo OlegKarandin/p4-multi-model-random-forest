@@ -49,6 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from p4gen.p4_replay import (_TREE_TASK, model_breakdown_text,  # noqa: E402
                              parse_program_text, tree_key_bits)
 from p4model import program as program_model  # noqa: E402
+from p4model.refusals import REFUSAL_ERRORS  # noqa: E402
 from p4model.target import (METER_ALUS_PER_STAGE as ALUS_PER_STAGE,  # noqa: E402
                                 TCAM_BLOCK_KEY_LENGTH as TCAM_BITS,
                                 TCAM_BLOCKS_PER_STAGE as BLOCKS_PER_STAGE,
@@ -58,8 +59,12 @@ from p4model.usage import pipeline_depth  # noqa: E402
 
 
 def baseline(text):
-    """(stage_depth, blocks) of the public-specification estimator."""
-    program = parse_program_text(text)
+    """(stage_depth, blocks) of the public-specification estimator; (None, None)
+    for a program the parser refuses (final re-review N4)."""
+    try:
+        program = parse_program_text(text)
+    except REFUSAL_ERRORS:
+        return None, None
     tree_blocks = range_blocks = 0
     tree_tasks = []
     for name, keys in program.tables.items():
@@ -115,17 +120,21 @@ def k_group(row_id):
 
 def load_run(run):
     """One row per distinct compiled design of a run. Skipped and counted (the
-    second value): rows without p4c numbers ('no_p4c': compile error, timeout)
-    and twins whose record was copied from their byte-identical source
-    ('copied', scored once, as the source)."""
+    second value): TIMEOUT rows ('timeout': no p4c verdict) and twins whose
+    record was copied from their byte-identical source ('copied', scored once,
+    as the source). A COMPILE_ERROR row (p4c errors, assembler refusal) is KEPT
+    with p4c_built False: p4c could not build the design, which O1 and
+    claims._p4c_feasible treat as p4c-infeasible (final re-review N1)."""
     out, skipped = [], defaultdict(list)
     with open(os.path.join(run, 'verification.csv'), encoding='utf-8') as fh:
         for r in csv.DictReader(fh):
             if (r.get('copied_from') or '').strip():
                 skipped['copied'].append(r['row_id'])
                 continue
-            if not (r.get('p4c_stage_depth') or '').strip():
-                skipped['no_p4c'].append(r['row_id'])
+            built = bool((r.get('p4c_stage_depth') or '').strip())
+            if not built and r.get('verdict') != 'COMPILE_ERROR':
+                skipped['timeout' if r.get('verdict') == 'TIMEOUT'
+                        else 'no_p4c'].append(r['row_id'])
                 continue
             p4 = os.path.join(run, 'designs', r['row_id'] + '.p4')
             with open(p4, encoding='utf-8', errors='replace') as fh2:
@@ -133,8 +142,10 @@ def load_run(run):
             out.append(dict(row_id=r['row_id'], arm=arm_of(r['row_id']),
                             k_group=k_group(r['row_id']),
                             M=float(r['M']),
-                            p4c_s=int(r['p4c_stage_depth']),
-                            p4c_b=int(r['p4c_blocks']) if r['p4c_blocks'] else None,
+                            p4c_built=built,
+                            p4c_s=int(r['p4c_stage_depth']) if built else None,
+                            p4c_b=(int(r['p4c_blocks'])
+                                   if built and r['p4c_blocks'] else None),
                             # '' on a MODEL_REFUSED:<reason> row (decision 8.2)
                             model_s=(int(r['model_stage_depth'])
                                      if r['model_stage_depth'] else None),
@@ -158,7 +169,7 @@ def load_calibration(directory):
             b_s, b_b = baseline(text)
             out.append(dict(row_id=r['row_id'], arm=arm_of(r['row_id']),
                             k_group=k_group(r['row_id']),
-                            M=float('inf'),
+                            M=float('inf'), p4c_built=True,
                             p4c_s=int(r['stages_real']),
                             p4c_b=(int(float(r['tcam_real']))
                                    if r['allocated'] == 'True' else None),
@@ -191,6 +202,12 @@ def summarise(rows, est):
     refused = sum(r[est + '_s'] is None for r in rows)
     rows = [r for r in rows if r[est + '_s'] is not None]
     n = len(rows)
+    # Designs p4c could not build (COMPILE_ERROR): no error to measure; each
+    # is a false fit when the estimator calls it feasible.
+    unbuilt = [r for r in rows if not r.get('p4c_built', True)]
+    unbuilt_feasible = sum(feasible(r[est + '_s'], r[est + '_b'], r['M'])
+                           for r in unbuilt)
+    rows = [r for r in rows if r.get('p4c_built', True)]
     with_b = [r for r in rows if r['p4c_b'] is not None]
     ds = [r[est + '_s'] - r['p4c_s'] for r in rows]
     db = [r[est + '_b'] - r['p4c_b'] for r in with_b]
@@ -202,7 +219,7 @@ def summarise(rows, est):
             exact += 1
         elif cs < 0 or cb < 0:
             under += 1
-    false_feas = sum(feasible(r[est + '_s'], r[est + '_b'], r['M'])
+    false_feas = unbuilt_feasible + sum(feasible(r[est + '_s'], r[est + '_b'], r['M'])
                      and not feasible(r['p4c_s'], r['p4c_b'] or 0, r['M'])
                      for r in rows)
     false_infeas = sum(not feasible(r[est + '_s'], r[est + '_b'], r['M'])
@@ -212,13 +229,14 @@ def summarise(rows, est):
     return {
         'designs': n,
         'refused (not compared)': refused,
-        'stage exact': pct(sum(d == 0 for d in ds)),
-        'stage within 1': pct(sum(abs(d) <= 1 for d in ds)),
+        'p4c could not build': len(unbuilt),
+        'stage exact': pct(sum(d == 0 for d in ds), len(ds)),
+        'stage within 1': pct(sum(abs(d) <= 1 for d in ds), len(ds)),
         'blocks exact': pct(sum(d == 0 for d in db), len(db)),
         'blocks within 1': pct(sum(abs(d) <= 1 for d in db), len(db)),
         'both exact': pct(exact),
         'under-predicts': pct(under),
-        'over-predicts': pct(n - exact - under),
+        'over-predicts': pct(len(rows) - exact - under),
         'feasible, not by p4c': pct(false_feas),
         'infeasible, feasible by p4c': pct(false_infeas),
         'stage error range': (min(ds), max(ds)) if ds else None,

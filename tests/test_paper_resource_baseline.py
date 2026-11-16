@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 'scripts'))
 from paper_resource_baseline import (arm_of, baseline, grouped, k_group,  # noqa: E402
-                                     load_run)
+                                     load_run, summarise)
 from p4gen.p4_replay import parse_program_text, tree_key_bits  # noqa: E402
 from p4model.target import (TCAM_BLOCK_KEY_LENGTH,  # noqa: E402
                             TERNARY_MATCHING_ENTRIES_PER_BLOCK)
@@ -44,7 +44,8 @@ def test_per_tree_trees_are_charged_their_own_slices():
 
 def _line(row_id, **kw):
     line = {'row_id': row_id, 'M': '75', 'p4c_stage_depth': '9', 'p4c_blocks': '30',
-            'model_stage_depth': '9', 'model_blocks': '30', 'copied_from': ''}
+            'model_stage_depth': '9', 'model_blocks': '30', 'copied_from': '',
+            'verdict': 'EXACT'}
     line.update(kw)
     return line
 
@@ -54,7 +55,10 @@ def test_load_run_skips_unverified_rows_and_counts_a_copied_twin_once(tmp_path):
     designs.mkdir()
     lines = [_line('joint-off_M075_s00_k07'),
              _line('joint-off-al_M075_s00_k07', copied_from='joint-off_M075_s00_k07'),
-             _line('joint-off_M075_s01_k12', p4c_stage_depth='', p4c_blocks=''),
+             _line('joint-off_M075_s01_k12', p4c_stage_depth='', p4c_blocks='',
+                   verdict='TIMEOUT'),
+             _line('joint-off_M075_s02_k12', p4c_stage_depth='', p4c_blocks='',
+                   verdict='COMPILE_ERROR'),
              _line('independent_M075_s00_k07')]
     for line in lines:
         shutil.copy(os.path.join(BASE_17B, 'joint-off_M075_s19_k07.p4'),
@@ -65,11 +69,19 @@ def test_load_run_skips_unverified_rows_and_counts_a_copied_twin_once(tmp_path):
         writer.writerows(lines)
     rows, skipped = load_run(str(tmp_path))
     assert sorted(r['row_id'] for r in rows) == ['independent_M075_s00_k07',
-                                                 'joint-off_M075_s00_k07']
+                                                 'joint-off_M075_s00_k07',
+                                                 'joint-off_M075_s02_k12']
     assert skipped == {'copied': ['joint-off-al_M075_s00_k07'],
-                       'no_p4c': ['joint-off_M075_s01_k12']}
+                       'timeout': ['joint-off_M075_s01_k12']}
     cells = dict(grouped(rows))
     assert [key for key in cells] == [
         ('independent', 'k<=8'), ('independent', 'all'), ('joint-off', 'k<=8'),
-        ('joint-off', 'all'), ('all', 'k<=8'), ('all', 'all')]
-    assert len(cells[('all', 'all')]) == 2
+        ('joint-off', 'k>=9'), ('joint-off', 'all'), ('all', 'k<=8'), ('all', 'k>=9'),
+        ('all', 'all')]
+    assert len(cells[('all', 'all')]) == 3
+    # A design p4c could not build (COMPILE_ERROR) is p4c-infeasible (O1, final
+    # re-review N1): kept, and a false fit for an estimator that calls it feasible.
+    s = summarise(cells[('all', 'all')], 'model')
+    assert s['p4c could not build'] == 1
+    assert round(s['feasible, not by p4c'], 1) == round(100 / 3, 1)
+    assert s['both exact'] + s['under-predicts'] + s['over-predicts'] < 100
