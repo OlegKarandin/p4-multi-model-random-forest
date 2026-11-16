@@ -51,7 +51,10 @@ def main():
     ap.add_argument('--run', default='results/campaign_2026_11')
     args = ap.parse_args()
     # p4c_b is None for designs p4c could not place: no block error exists.
-    rows = [r for r in load_run(args.run) if r['p4c_b'] is not None]
+    # load_run already skips rows with no p4c numbers and copied twins; a
+    # design the model refuses (model_s None) has no model error either.
+    rows, _ = load_run(args.run)
+    rows = [r for r in rows if r['p4c_b'] is not None and r['model_s'] is not None]
 
     fig, axes = plt.subplots(1, 2, figsize=(7, 2.2), sharey=True)
     for ax, est, title in zip(axes, ('model', 'base'), ('a) Resource model', 'b) Baseline')):

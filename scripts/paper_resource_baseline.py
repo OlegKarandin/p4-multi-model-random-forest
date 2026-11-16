@@ -5,7 +5,12 @@ The baseline knows the generated program's dependency chain and the public
 Tofino-1 figures (512 x 44-bit TCAM blocks, 24 blocks and 4 stateful ALUs per
 stage) but none of the rules derived from the compiler:
 
-  tree table   ceil(L / 512) * ceil(sum of code-field bits / 44)
+  tree table   ceil(L / 512) * ceil(live key bits / 44), the live key bits being
+               the bits the tree's key reads (p4_replay.tree_key_bits, the widths
+               p4c's 524-bit key check sums): the code fields' live bits, or under
+               per-tree codes the tree's own slices of the code_pk_ fields (not
+               their declared container bits, which every tree would otherwise be
+               charged in full)
   range table  ceil(declared intervals / 512)
   stage depth  program.FLOW_HASH_LEVEL (the flow-hash prologue) + ceil(registers / 4)
                + ceil(range blocks / 24) + ceil(tree blocks / 24)
@@ -24,7 +29,12 @@ Usage:
       results/compiler_calibration_pragmas_2026_09_29
       (needs <dir>/p4_src/<row_id>.p4 and <dir>.csv; the model side is
       replayed from the program)
-Writes <out>/resource_baseline_rows.csv and prints the summary table.
+Writes <out>/resource_baseline_rows.csv and prints the summary table, per arm
+slug (independent, joint-off, joint-off-al, joint-task, joint-tree, any other
+found) and over all arms, each for k <= 8, k >= 9 and all k (k from the row id).
+A run's rows without p4c numbers (compile error, timeout) are skipped and
+counted, and a twin whose verification record was copied from its
+byte-identical source (`copied_from`) is the source's compile, counted once.
 """
 import argparse
 import csv
@@ -36,7 +46,8 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from p4gen.p4_replay import _TREE_TASK, model_breakdown, parse_program_text  # noqa: E402
+from p4gen.p4_replay import (_TREE_TASK, model_breakdown_text,  # noqa: E402
+                             parse_program_text, tree_key_bits)
 from p4model import program as program_model  # noqa: E402
 from p4model.target import (METER_ALUS_PER_STAGE as ALUS_PER_STAGE,  # noqa: E402
                                 TCAM_BLOCK_KEY_LENGTH as TCAM_BITS,
@@ -56,13 +67,10 @@ def baseline(text):
             continue
         rows = math.ceil(program.sizes[name] / TCAM_ROWS)
         if name.startswith('get_classification_tree'):
-            # Live code bits, except for a packed per-tree program, whose
-            # code_pk_ fields carry their DECLARED container bits here (each tree
-            # keys only its own slices of them; Task 32 review minor 7): the
-            # baseline over-counts those keys. Pre-existing; Table II's
-            # recompute should know.
-            key_bits = sum(program.bits[key] for key in keys)
-            tree_blocks += rows * math.ceil(key_bits / TCAM_BITS)
+            # The bits this tree's key reads (user decision 2026-11-16, final
+            # review src I3): for a packed per-tree program its own slices, not
+            # the code_pk_ fields' declared container bits.
+            tree_blocks += rows * math.ceil(tree_key_bits(program, name) / TCAM_BITS)
             tree_tasks.append(_TREE_TASK.match(name).group(1))
         elif name.startswith('table_'):
             range_blocks += rows
@@ -77,21 +85,53 @@ def baseline(text):
     return stages, range_blocks + tree_blocks
 
 
+# A campaign row id: {arm_slug}_M{token}_s{NN}_k{NN} (campaign_run.row_id).
+_ROW_ID = re.compile(r'^(?P<arm>.+)_M(?:\d{3}|inf)_s\d+_k(?P<k>\d+)$')
+_ANY_K = re.compile(r'_k(\d+)(?:_|$)')
+ARM_ORDER = ('independent', 'joint-off', 'joint-off-al', 'joint-task', 'joint-tree')
+K_GROUPS = ('k<=8', 'k>=9', 'all')
+
+
 def arm_of(row_id):
+    """The row's arm slug. A calibration-archive name (not a campaign row id)
+    falls back to 'independent' / 'joint' by prefix."""
+    m = _ROW_ID.match(row_id)
+    if m:
+        return m.group('arm')
     if row_id.startswith(('independent', 'heldout_independent',
                           'margin_independent')):
         return 'independent'
     return 'joint'
 
 
+def k_group(row_id):
+    """'k<=8' or 'k>=9' from the row id's k token; None when it has none."""
+    m = _ROW_ID.match(row_id) or _ANY_K.search(row_id)
+    if m is None:
+        return None
+    k = int(m.group('k') if m.re is _ROW_ID else m.group(1))
+    return 'k<=8' if k <= 8 else 'k>=9'
+
+
 def load_run(run):
-    out = []
+    """One row per distinct compiled design of a run. Skipped and counted (the
+    second value): rows without p4c numbers ('no_p4c': compile error, timeout)
+    and twins whose record was copied from their byte-identical source
+    ('copied', scored once, as the source)."""
+    out, skipped = [], defaultdict(list)
     with open(os.path.join(run, 'verification.csv'), encoding='utf-8') as fh:
         for r in csv.DictReader(fh):
+            if (r.get('copied_from') or '').strip():
+                skipped['copied'].append(r['row_id'])
+                continue
+            if not (r.get('p4c_stage_depth') or '').strip():
+                skipped['no_p4c'].append(r['row_id'])
+                continue
             p4 = os.path.join(run, 'designs', r['row_id'] + '.p4')
             with open(p4, encoding='utf-8', errors='replace') as fh2:
                 b_s, b_b = baseline(fh2.read())
             out.append(dict(row_id=r['row_id'], arm=arm_of(r['row_id']),
+                            k_group=k_group(r['row_id']),
                             M=float(r['M']),
                             p4c_s=int(r['p4c_stage_depth']),
                             p4c_b=int(r['p4c_blocks']) if r['p4c_blocks'] else None,
@@ -100,7 +140,7 @@ def load_run(run):
                                      if r['model_stage_depth'] else None),
                             model_b=int(r['model_blocks']) if r['model_blocks'] else None,
                             base_s=b_s, base_b=b_b))
-    return out
+    return out, dict(skipped)
 
 
 def load_calibration(directory):
@@ -110,20 +150,35 @@ def load_calibration(directory):
             with open(os.path.join(directory, 'p4_src', r['row_id'] + '.p4'),
                       encoding='utf-8', errors='replace') as fh2:
                 text = fh2.read()
-            model = model_breakdown(parse_program_text(text), r['row_id'])
+            model = model_breakdown_text(text, r['row_id'])
             if model['stage_depth'] is None:
                 # The replay refuses the archived program (decision 8.2, e.g. a
                 # gated register block of an older generator): no model numbers.
                 print('model refuses %s: %s' % (r['row_id'], model['refusal_reason']))
             b_s, b_b = baseline(text)
             out.append(dict(row_id=r['row_id'], arm=arm_of(r['row_id']),
+                            k_group=k_group(r['row_id']),
                             M=float('inf'),
                             p4c_s=int(r['stages_real']),
                             p4c_b=(int(float(r['tcam_real']))
                                    if r['allocated'] == 'True' else None),
                             model_s=model['stage_depth'], model_b=model['blocks'],
                             base_s=b_s, base_b=b_b))
-    return out
+    return out, {}
+
+
+def grouped(rows):
+    """{(arm, k group): rows}: every arm present (ARM_ORDER first) and 'all',
+    each for 'k<=8', 'k>=9' and 'all' (a row with no k token is in 'all' only)."""
+    groups = defaultdict(list)
+    for r in rows:
+        for arm in (r['arm'], 'all'):
+            for kg in ({r.get('k_group'), 'all'} - {None}):
+                groups[(arm, kg)].append(r)
+    arms = [a for a in ARM_ORDER if any(r['arm'] == a for r in rows)]
+    arms += sorted({r['arm'] for r in rows} - set(arms)) + ['all']
+    return [((arm, kg), groups[(arm, kg)]) for arm in arms for kg in K_GROUPS
+            if groups[(arm, kg)]]
 
 
 def feasible(stages, blocks, M):
@@ -166,7 +221,7 @@ def summarise(rows, est):
         'over-predicts': pct(n - exact - under),
         'feasible, not by p4c': pct(false_feas),
         'infeasible, feasible by p4c': pct(false_infeas),
-        'stage error range': (min(ds), max(ds)),
+        'stage error range': (min(ds), max(ds)) if ds else None,
         'block error range': (min(db), max(db)) if db else None,
         'block MAE': sum(abs(d) for d in db) / len(db) if db else None,
     }
@@ -179,7 +234,10 @@ def main():
     g.add_argument('--calibration')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
-    rows = load_run(args.run) if args.run else load_calibration(args.calibration)
+    rows, skipped = (load_run(args.run) if args.run
+                     else load_calibration(args.calibration))
+    for reason, ids in sorted(skipped.items()):
+        print('skipped %d rows (%s): %s' % (len(ids), reason, ', '.join(ids)))
     out = args.out or (args.run or args.calibration.rstrip('/\\') + '_baseline')
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, 'resource_baseline_rows.csv'), 'w',
@@ -187,16 +245,12 @@ def main():
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
-    groups = defaultdict(list)
-    for r in rows:
-        groups[r['arm']].append(r)
-        groups['all'].append(r)
     for est in ('model', 'base'):
         print('==', est)
-        for arm in ('independent', 'joint', 'all'):
-            s = summarise(groups[arm], est)
-            print(' ', arm, {k: (round(v, 1) if isinstance(v, float) else v)
-                             for k, v in s.items()})
+        for (arm, kg), cell in grouped(rows):
+            s = summarise(cell, est)
+            print(' ', arm, kg, {k: (round(v, 1) if isinstance(v, float) else v)
+                                 for k, v in s.items()})
 
 
 if __name__ == '__main__':
