@@ -9,6 +9,7 @@ import pytest
 
 from p4gen import p4_replay as rp
 from p4model import refusals
+from p4model.errors import ProgramShapeRefused
 
 _C1 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "fixtures", "c1_replay_designs.json")
@@ -161,14 +162,14 @@ def test_replay_live_width_from_slice():
 
 
 def test_replay_refuses_slices_that_do_not_hold_the_live_bits_from_bit_0():
-    with pytest.raises(ValueError, match="one run from bit 0"):
+    with pytest.raises(ProgramShapeRefused, match="one_run_from_bit_0"):
         rp.parse_program_text(_FULL_WIDTH.replace("code_tk_app_a[2:0] : ternary;\n        }\n"
                                                   "        size = 4;\n    }\n    table "
                                                   "get_classification_tree_app_1",
                                                   "code_tk_app_a[3:1] : ternary;\n        }\n"
                                                   "        size = 4;\n    }\n    table "
                                                   "get_classification_tree_app_1"))
-    with pytest.raises(ValueError, match="same live bits"):
+    with pytest.raises(ProgramShapeRefused, match="same_live_bits"):
         rp.parse_program_text(_FULL_WIDTH.replace(
             "meta.code_tk_app_a[2:0] : ternary;\n        }\n        size = 4;\n    }\n"
             "    table get_classification_tree_ddos_0",

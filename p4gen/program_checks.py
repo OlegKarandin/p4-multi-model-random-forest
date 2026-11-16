@@ -30,8 +30,11 @@ A form the walk does not understand raises ValueError instead of passing silentl
 condition (`if (t.apply().hit)`), a bare call of an unknown action.
 
 check_program (decision 8.2) checks a parsed program's SHAPE -- the pins, priorities,
-declared widths and apply order the replay assumes -- and refuses one it does not know
-with a named reason (ProgramShapeRefused); p4_replay.model_breakdown calls it first.
+declared widths, key fields and apply order the replay assumes -- and refuses one it does
+not know with a named reason (ProgramShapeRefused); p4_replay.model_breakdown calls it
+first. It recognises THIS generator's output only (the replay prices programs of this
+generator only): an older generator's program is refused, but a hand-edited or
+third-party program can pass and be mispriced (examples in check_program's docstring).
 """
 import re
 
@@ -458,6 +461,22 @@ def _check_pins(program, pins):
       raise ProgramShapeRefused("unexpected_shape:pin:%s:%s" % (pin, field))
 
 
+def _check_key_fields(program):
+  """Every meta key the replay prices is a field it has a width for: a tree table
+  keys declared code_* fields, a range table declared *_val fields (final review
+  p4gen I3: a non-code meta key on a tree table was an uncaught KeyError)."""
+  for name, keys in program.tables.items():
+    if _TREE_TABLE.match(name):
+      prefix_ok = lambda key: key.startswith("code_")
+    elif name.startswith("table_"):
+      prefix_ok = lambda key: key.endswith("_val")
+    else:
+      continue
+    for key in keys:
+      if not prefix_ok(key) or key not in program.widths:
+        raise ProgramShapeRefused("unexpected_shape:key_field:%s:%s" % (name, key))
+
+
 def _check_priorities(program):
   """A4 / A5, the relations the model uses (not the generator's numbers, which
   depend on tasks that may have no trees): every tree carries its task's
@@ -769,8 +788,35 @@ def check_program(program):
                                  a RegisterAction body in a form p4c silently
                                  miscompiles (_check_stateful_alu, Task 34)
 
-  A program the generator writes passes; an archived program of an older generator
-  is refused, never priced as if it were current."""
+    unexpected_shape:key_field:<table>:<field>
+                                 a tree table keying a meta field that is not a
+                                 declared code_* field, or a range table keying one
+                                 that is not a declared *_val field
+    unexpected_shape:packed_code:<table>:<what>
+                                 a packed per-tree key the current layout cannot
+                                 carry (raised while pricing, p4_replay.tree_key_bytes):
+                                 offset (a code not starting on a byte boundary: the
+                                 shared-byte layout of per-tree programs generated
+                                 before d48dd70), no_pin, whole_field, not_contiguous,
+                                 past_containers
+
+  What this check is, and what it is NOT. It recognises the output of THIS generator
+  (p4gen.build_p4_script at the commit that runs it): the replay prices programs of
+  this generator only. A program the generator writes passes, and an archived
+  program of an older generator is refused with a named reason, never priced as if
+  it were current. It is not a validator of arbitrary P4: it checks pins,
+  priorities, the flow hash, clocks, register order and apply order, not the full
+  content of every table or statement, so a hand-edited or third-party program can
+  pass and be priced as if the extra construct were not there. Edits known to be
+  accepted and mispriced (final review 2026-11-15, p4gen I3), each on a generated
+  program priced 8 stages / 28 blocks before and after the edit:
+    - extra header keys on a tree table (`hdr.ipv4.total_len : ternary;`): not priced;
+    - `const default_action = ...` on a tree table (+1 stage per table on p4c);
+    - an extra assignment in the apply block (to meta or to a header);
+    - a second range key (`hdr.ipv4.total_len : range;`) on a range table;
+    - an extra write in a range action's body;
+    - a second control with its own large ternary table.
+  Such programs are out of scope: price them only if they come from the generator."""
   if program.stage_pins:
     raise ProgramShapeRefused("stage_pin")
   if program.gated_register_blocks or any(
@@ -778,6 +824,7 @@ def check_program(program):
     raise ProgramShapeRefused("gated_register_block")
   _check_flow_hash(program)
   _check_key_names(program)
+  _check_key_fields(program)
   _check_pins(program, _pins(program))
   _check_priorities(program)
   _check_apply(program)

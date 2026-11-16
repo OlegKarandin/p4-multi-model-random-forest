@@ -13,11 +13,16 @@ p4c's committed blocks over the tables the model prices. A program the replay
 refuses (an older generator's: @stage pins, gated register blocks, missing pins)
 is reported as a miss MODEL_REFUSED:<reason> instead of stopping the check. Exit 1 on any miss not
 in KNOWN_MISSES with the same numbers, and on any KNOWN_MISSES entry that no
-longer occurs. The archive is not in git, so this is a command, not a test."""
+longer occurs. The archive is not in git, so this is a command, not a test.
+
+The gate is INERT until an archive of the current generator's programs exists:
+the one calibration archive it was run on holds older programs, which the
+replay refuses by shape (KNOWN_MISSES below)."""
 import os
 
 from p4gen.p4_ground_truth import committed_blocks, committed_stages_real
-from p4gen.p4_replay import model_breakdown, parse_program
+from p4gen.p4_replay import model_breakdown, parse_program, refused_breakdown
+from p4model.refusals import REFUSAL_ERRORS
 from p4model.target import TOFINO_PIPELINE_STAGES
 from src.verify.verdicts import MODEL_REFUSED_PREFIX
 
@@ -35,7 +40,12 @@ KNOWN_MISSES = {}
 
 
 def _design(archive_dir, row, known):
-    model = model_breakdown(parse_program(os.path.join(archive_dir, 'p4_src', row + '.p4')), row)
+    try:
+        program = parse_program(os.path.join(archive_dir, 'p4_src', row + '.p4'))
+    except REFUSAL_ERRORS as exc:     # a key the parser refuses: named, not a crash
+        model = refused_breakdown(exc)
+    else:
+        model = model_breakdown(program, row)
     logs = os.path.join(archive_dir, 'compiles', row, 'pipe', 'logs')
     p4c_depth = committed_stages_real(logs)
     feasible = p4c_depth <= TOFINO_PIPELINE_STAGES
@@ -76,10 +86,16 @@ def check(archive_dir, known_misses=None):
             kind = 'over' if model > p4c else 'under'
             print(f"{r['row']}: {metric} model {model} p4c {p4c} ({kind}, {tag})")
     feasible = [r for r in results if r['feasible']]
+
+    def exact(r, metric):
+        # A refused design has no prediction: it is exact on nothing (final
+        # review src minor 1; it used to count as exact on both).
+        return metric not in r['misses'] and 'refusal' not in r['misses']
+
     print(f"designs {len(results)} feasible {len(feasible)}; stage_depth exact all "
-          f"{sum('stage_depth' not in r['misses'] for r in results)}/{len(results)}, "
-          f"feasible {sum('stage_depth' not in r['misses'] for r in feasible)}/{len(feasible)}; "
-          f"blocks exact feasible {sum('blocks' not in r['misses'] for r in feasible)}/{len(feasible)}; "
+          f"{sum(exact(r, 'stage_depth') for r in results)}/{len(results)}, "
+          f"feasible {sum(exact(r, 'stage_depth') for r in feasible)}/{len(feasible)}; "
+          f"blocks exact feasible {sum(exact(r, 'blocks') for r in feasible)}/{len(feasible)}; "
           f"refused by the model {sum('refusal' in r['misses'] for r in results)}")
     return results
 

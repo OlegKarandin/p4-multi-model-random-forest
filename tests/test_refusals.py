@@ -319,6 +319,47 @@ def test_a_pre_task_38_program_with_mean_features_is_refused():
         _check_stateful_alu(old)
 
 
+PRE_D48DD70 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "pre_d48dd70")
+BASE_17B = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "p4c_base_17b")
+
+
+def test_a_pre_d48dd70_per_tree_program_is_a_named_refusal(tmp_path):
+    """Final review p4model I1 / p4gen I2: a per-tree program of the shared-byte layout
+    (decision 4.4; the p4c_base_17b fixture text of joint-tree_M075_s02_k07 at b50cf48^,
+    copied to tests/fixtures/pre_d48dd70) passes check_program, then a code that does not
+    start on a byte boundary is refused by name, not a ValueError, so --rescore and
+    --model-archive complete on older runs."""
+    path = os.path.join(PRE_D48DD70, "joint-tree_M075_s02_k07.p4")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    result = model_breakdown(parse_program_text(text))
+    assert result["refusal"] == "program_shape"
+    assert re.match(r"^unexpected_shape:packed_code:get_classification_tree_\w+_\d+:offset$",
+                    result["refusal_reason"]), result["refusal_reason"]
+    assert result["stage_depth"] is None and result["blocks"] is None
+    # --rescore's path: the refusal reaches the record instead of stopping the rescore.
+    from src.verify import runner
+    paths = type("P", (), {"designs": str(tmp_path)})()
+    (tmp_path / "r.p4").write_text(text, encoding="utf-8")
+    _, refusal = runner._rescored(paths, "r", {"M": 75.0})
+    assert refusal == "program_shape"
+
+
+def test_a_tree_keying_a_non_code_meta_field_is_a_named_refusal():
+    """Final review p4gen I3: a non-code meta key on a tree table was an uncaught
+    KeyError; it is refused as unexpected_shape:key_field."""
+    with open(os.path.join(BASE_17B, "joint-off_M025_s06_k17.p4"), encoding="utf-8") as handle:
+        text = handle.read()
+    anchor = "    table get_classification_tree_app_0 {\n        key = {\n"
+    assert anchor in text
+    edited = text.replace(anchor, anchor + "            meta.now_pseudo_us : ternary;\n", 1)
+    result = model_breakdown(parse_program_text(edited))
+    assert result["refusal"] == "program_shape"
+    assert result["refusal_reason"] == (
+        "unexpected_shape:key_field:get_classification_tree_app_0:now_pseudo_us")
+    assert model_breakdown(parse_program_text(text))["refusal"] is None
+
+
 @pytest.mark.parametrize("old,new,reason", [
     # Task 37: the one-clock P3c form (global_tstamp[47:16]) failed PHV allocation beside the fine clock
     ("meta.now_coarse = ig_intr_md.ingress_mac_tstamp[47:16];",

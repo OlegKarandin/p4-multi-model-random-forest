@@ -34,7 +34,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from p4gen.p4_compile import P4CompileTimeout, compile_p4, read_compilation_succeeded
 from p4gen.p4_ground_truth import (
     committed_blocks, committed_stages_real, p4c_numbers)
-from p4gen.p4_replay import model_breakdown, parse_program
+from p4gen.p4_replay import model_breakdown, parse_program, refused_breakdown
+from p4model.refusals import REFUSAL_ERRORS
 from p4model.target import TOFINO_PIPELINE_STAGES
 from src.reporting.manifest import git_provenance
 from src.training.campaign_run import (
@@ -439,7 +440,12 @@ def _rescored(paths, row_id, model):
     if not os.path.isfile(p4_path):
         raise FileNotFoundError(
             f"{row_id}: cannot rescore, designs/{row_id}.p4 is missing")
-    fresh = model_breakdown(parse_program(p4_path), row_id)
+    try:
+        program = parse_program(p4_path)
+    except REFUSAL_ERRORS as exc:     # a key the parser refuses: named, not a crash
+        fresh = refused_breakdown(exc)
+    else:
+        fresh = model_breakdown(program, row_id)
     model = dict(model)
     # As row_artifacts.write_row_artifacts.
     model.update(replayed_fields(fresh, model.get('training_stage_depth'),

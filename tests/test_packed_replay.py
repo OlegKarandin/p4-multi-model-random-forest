@@ -13,6 +13,7 @@ from p4gen import evaluation
 from p4gen.p4_replay import (model_breakdown, parse_program_text, range_action_bytes,
                              tree_key_bytes)
 from p4model import packed, packing
+from p4model.errors import ProgramShapeRefused
 from p4model.program import (APP_TASK, DDOS_TASK, DISJOINT_ENCODING, JOINT_ENCODING,
                              PER_TASK_ENCODING, PER_TREE_ENCODING)
 from tests.test_packed_program import _specs
@@ -89,7 +90,7 @@ def test_a_code_that_does_not_start_a_byte_is_refused(tmp_path):
   moved = text.replace("meta.%s[%d:%d] : ternary @name(" % (key, hi, lo),
                        "meta.%s[%d:%d] : ternary @name(" % (key, hi + 1, lo + 1))
   assert moved != text
-  with pytest.raises(ValueError, match="does not start on a byte boundary"):
+  with pytest.raises(ProgramShapeRefused, match=r"^unexpected_shape:packed_code:\w+:offset$"):
     tree_key_bytes(parse_program_text(moved), name)
 
 

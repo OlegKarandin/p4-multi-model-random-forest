@@ -129,7 +129,7 @@ def _parse_keys(text):
     # (p4c takes no wider slice): one key entry, the slices' widths summed.
     # The slices must be one run from bit 0 (the code sits in the field's low
     # bits, design review P13) and every table keying the field must key the
-    # same bits; anything else raises ValueError.
+    # same bits; anything else is refused (ProgramShapeRefused).
     # A packed field (code_pk_<f>) is the exception: every tree keys its OWN
     # slices of it, so its slices are no one key's width; they are kept per
     # (table, field) instead (tree_key_bytes) and its declared bits stay the
@@ -157,9 +157,10 @@ def _parse_keys(text):
             continue
         width = _live_width(table, name, runs)
         if live.setdefault(name, (width, table))[0] != width:
-            raise ValueError('%s keys %d bits of %s but %s keys %d; every table must key '
-                             'the same live bits of a code field'
-                             % (table, width, name, live[name][1], live[name][0]))
+            # <table> keys <width> bits of <name> but <other> keys another
+            # count; every table must key the same live bits of a code field.
+            raise ProgramShapeRefused('unexpected_shape:code_slices:same_live_bits:%s:%s'
+                                      % (table, name))
     for name, (width, _) in live.items():
         bits[name] = width
         widths[name] = math.ceil(width / 8)
@@ -168,13 +169,14 @@ def _parse_keys(text):
 
 def _live_width(table, name, runs):
     """The live bits one table keys of a (non-packed) code field: its slices as
-    one contiguous run from bit 0 (low first or in any order), else ValueError."""
+    one contiguous run from bit 0 (low first or in any order), else
+    ProgramShapeRefused (unexpected_shape:code_slices:one_run_from_bit_0:...)."""
     runs = sorted(runs, key=lambda run: run[1])
     expected = 0
     for hi, lo in runs:
         if lo != expected or hi < lo:
-            raise ValueError('%s: the slices of %s are not one run from bit 0 (%s)'
-                             % (table, name, ', '.join('[%d:%d]' % run for run in runs)))
+            raise ProgramShapeRefused('unexpected_shape:code_slices:one_run_from_bit_0:%s:%s'
+                                      % (table, name))
         expected = hi + 1
     return expected
 def _parse_sizes(text):
@@ -325,7 +327,10 @@ def parse_program_text(text):
     (Program.stage_pins, Program.gated_register_blocks) and REFUSED when priced
     (replay_plans, program_checks.check_program), so an archived program is
     replayed at the commit that generated it, never silently priced as if
-    current. Raises ValueError only for a key it cannot read (_parse_keys)."""
+    current. The one exception: code-field key slices it cannot read
+    (_parse_keys) raise ProgramShapeRefused here, at parse time;
+    model_breakdown_text parses inside the refusal handling, and a caller that
+    parses itself turns it into model_breakdown's form with refused_breakdown."""
     tables, widths, bits, slices, names = _parse_keys(text)
     return Program(tables, widths, bits, _parse_sizes(text),
                    _parse_priorities(text),
@@ -523,37 +528,43 @@ def tree_key_bytes(program, table):
     summed: its live bits, or its padded width, packed.Layout.keyed), the
     field's @pa_container_size pin gives its containers, and packed.key_bytes
     reads the Layout those make -- the function the training pool prices from,
-    so the two read one rule. Raises ValueError for a key a packed program
-    cannot carry: a field with no container pin or no slice, slices that are
-    not one contiguous run, a code that does not start on a byte boundary (the
-    shared-byte layout of an older generator, design-review decision 4.4,
-    whose block price depends on p4c's container numbers: packed.py), or a
-    code running past its field's containers."""
+    so the two read one rule. Refuses (ProgramShapeRefused, reason
+    unexpected_shape:packed_code:<table>:<what>) a key a packed program of the
+    current generator cannot carry: a field with no container pin (no_pin) or
+    no slice (whole_field), slices that are not one contiguous run
+    (not_contiguous), a code that does not start on a byte boundary (offset:
+    the shared-byte layout of per-tree programs generated before d48dd70,
+    design-review decision 4.4, whose block price depends on p4c's container
+    numbers: packed.py), or a code running past its field's containers
+    (past_containers). A refusal, not a ValueError, so model_breakdown names it
+    and --rescore / --model-archive complete on older runs (final review
+    p4model I1 / p4gen I2). Raises ValueError only for a table that is not a
+    classification tree (a caller error)."""
     match = _TREE_TASK.match(table)
     if match is None:
         raise ValueError('%s is not a classification tree table' % table)
     task, tree = match.group(1), int(match.group(2))
+
+    def refuse(what):
+        return ProgramShapeRefused('unexpected_shape:packed_code:%s:%s' % (table, what))
+
     containers, place = {}, {}
     for key in program.tables[table]:
         if not key.startswith(_PACKED_FIELD) or key not in program.containers:
-            raise ValueError('%s keys %s, which is not a packed code field with a '
-                             '@pa_container_size pin' % (table, key))
+            # e.g. '<table> keys <key>, which is not a packed code field with a pin'
+            raise refuse('no_pin')
         runs = sorted(program.key_slices.get((table, key), ()), key=lambda run: run[1])
         if not runs:
-            raise ValueError('%s keys all of %s; a packed tree keys slices of it'
-                             % (table, key))
+            raise refuse('whole_field')      # a packed tree keys slices of its codes
         low = runs[0][1]
         for (hi, _), (_, next_lo) in zip(runs, runs[1:]):
             if next_lo != hi + 1:
-                raise ValueError('%s: the slices of %s are not one contiguous run'
-                                 % (table, key))
+                raise refuse('not_contiguous')
         width = runs[-1][0] - low + 1
         if low % 8:
-            raise ValueError("%s: %s[%d:%d] does not start on a byte boundary"
-                             % (table, key, runs[-1][0], low))
+            raise refuse('offset')           # <key>[hi:lo] does not start on a byte boundary
         if low + width > sum(program.containers[key]):
-            raise ValueError("%s: %s[%d:%d] runs past the field's containers"
-                             % (table, key, runs[-1][0], low))
+            raise refuse('past_containers')
         feature = key[len(_PACKED_FIELD):]
         containers[feature] = program.containers[key]
         place[(task, tree, feature)] = (low, width)
@@ -906,8 +917,30 @@ def model_breakdown(program, row_id='', max_blocks=None):
         program_checks.check_program(program)
         result = price_program(program, row_id)
     except refusals.REFUSAL_ERRORS as exc:
-        return {'stage_depth': None, 'blocks': None, 'tables': [],
-                'refusal': exc.constraint, 'refusal_reason': refusals.reason_of(exc)}
+        return refused_breakdown(exc)
+    return _with_numeric_refusal(result, max_blocks)
+
+
+def refused_breakdown(exc):
+    """model_breakdown's result for a refused program (exc one of
+    refusals.REFUSAL_ERRORS). A caller that parses the program itself uses it
+    for a refusal raised by the PARSER (parse_program_text: code-field slices it
+    cannot read), so that refusal is named exactly as model_breakdown names one."""
+    return {'stage_depth': None, 'blocks': None, 'tables': [],
+            'refusal': exc.constraint, 'refusal_reason': refusals.reason_of(exc)}
+
+
+def model_breakdown_text(text, row_id='', max_blocks=None):
+    """model_breakdown of a program TEXT, parsing inside the refusal handling,
+    so a key the parser refuses (parse_program_text) is a named refusal too."""
+    try:
+        program = parse_program_text(text)
+    except refusals.REFUSAL_ERRORS as exc:
+        return refused_breakdown(exc)
+    return model_breakdown(program, row_id, max_blocks)
+
+
+def _with_numeric_refusal(result, max_blocks):
     refusal = ('blocks_over' if refusals.blocks_over(result['blocks'], max_blocks)
                else 'stages_over' if refusals.stages_over(result['stage_depth'])
                else None)
