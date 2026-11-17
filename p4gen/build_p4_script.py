@@ -32,6 +32,7 @@ from p4model.errors import NoSplitTree
 from p4model.names import normalise_feature_name
 from p4model.program import (VOTE_EXPORT, VOTE_EXPORT_BITS, APP_TASK, DDOS_TASK, ENCODINGS, JOINT_ENCODING,
                                  PER_TASK_ENCODING, PER_TREE_ENCODING, PLACEMENT_PRIORITY,
+                                 DISJOINT_PER_TREE_ENCODING, is_packed,
                                  TaskSpec, per_task_field,
                                  placement_priorities, range_table_priority, task_names)
 # The flow-slot count, the flow index width, the hash's @symmetric pairs and the
@@ -1032,13 +1033,81 @@ def resolve_per_tree_plan(tasks):
   return table_plan, field_plan, tree_intervals
 
 
+def resolve_disjoint_per_tree_plan(tasks):
+  '''The disjoint_per_tree encoding's plan (program.DISJOINT_PER_TREE_ENCODING, arm
+  independent-tree; spec 2026-11-17-independent-tree-encoding-design.md):
+  disjoint's range tables and names (resolve_feature_plan over each task's OWN
+  intervals: `f`, or `<task>_f` where the tasks split f differently), each table
+  writing ONE packed field code_pk_<resolved> that holds the per-tree code of every
+  tree of the entry's reader tasks with a threshold on the raw feature, as
+  resolve_per_tree_plan's tables do per raw feature.
+
+  tasks: Sequence[TaskSpec] in TASK order, each with its OWN intervals and, when it
+  has trees, its ordered feature list.
+
+  Returns (table_plan, field_plan, tree_intervals), resolve_per_tree_plan's shapes:
+    table_plan: resolved name -> (the entry's intervals, [(writer '<task>_<i>', code
+      width)]), in resolve_feature_plan's (program) order; writers are the entry's
+      tasks in program order (lowest priority first), then tree index, each tree
+      that splits the raw feature, its code as wide as its own intervals.
+    field_plan: packed_field(resolved) -> (raw feature, the entry's intervals,
+      {reader tasks}).
+    tree_intervals: {task: [{resolved name: that tree's own intervals}, one dict
+      per tree]}: per_tree_intervals(task), each raw feature mapped to the task's
+      entry for it (the one whose raw feature it is and whose readers hold the
+      task), in per_tree_intervals' order.'''
+  resolved = resolve_feature_plan([(task.name, task.intervals) for task in tasks])
+  tree_intervals = {}
+  for task in tasks:
+    entry_of = {raw: name for name, (raw, _, readers) in resolved.items() if task.name in readers}
+    trees = []
+    for i, own in enumerate(per_tree_intervals(task)):
+      unknown = sorted(raw for raw in own if raw not in entry_of)
+      if unknown:
+        raise ValueError("tree %s_%d splits %s, which its task has no range table for: "
+                         "the task's intervals must be its trees' own" % (task.name, i, unknown))
+      trees.append({entry_of[raw]: intervals for raw, intervals in own.items()})
+    tree_intervals[task.name] = trees
+  program_order = [task.name for task in reversed(list(tasks))]
+  table_plan, field_plan = {}, {}
+  for name, (raw, intervals, readers) in resolved.items():
+    written = [("%s_%d" % (task, i), len(own[name]) - 1)
+               for task in program_order if task in readers
+               for i, own in enumerate(tree_intervals[task]) if name in own]
+    table_plan[name] = (intervals, written)
+    field_plan[packed_field(name)] = (raw, intervals, set(readers))
+  return table_plan, field_plan, tree_intervals
+
+
+def packed_program_plan(tasks, encoding):
+  '''(table_plan, field_plan, tree_intervals, layout) of a packed encoding's
+  program (program.is_packed), the one helper the program text and its entries
+  are written from (Ruling R2):
+    PER_TREE_ENCODING: resolve_per_tree_plan + per_tree_layout, as always;
+    DISJOINT_PER_TREE_ENCODING: resolve_disjoint_per_tree_plan + per_tree_layout
+      over the resolved names, its scratch / constant / clock arguments from the
+      RAW features and n_vals = the number of distinct raw features (one `_val`
+      field each, K1).
+  Raises what per_tree_layout raises.'''
+  if encoding == PER_TREE_ENCODING:
+    table_plan, field_plan, tree_intervals = resolve_per_tree_plan(tasks)
+    return table_plan, field_plan, tree_intervals, per_tree_layout(table_plan, tree_intervals, tasks)
+  if encoding != DISJOINT_PER_TREE_ENCODING:
+    raise ValueError("not a packed encoding: %r" % (encoding,))
+  table_plan, field_plan, tree_intervals = resolve_disjoint_per_tree_plan(tasks)
+  raws = list(dict.fromkeys(raw for raw, _, _ in field_plan.values()))
+  layout = per_tree_layout(table_plan, tree_intervals, tasks, n_vals=len(raws),
+                           raw_features=raws)
+  return table_plan, field_plan, tree_intervals, layout
+
+
 def packed_field(feature):
   '''The resolved name of a feature's packed code field: the program declares
   meta.code_pk_<feature> (spec 2026-11-11-packed-codes-stage-pin Sec 3.1).'''
   return "pk_" + feature
 
 
-def per_tree_layout(table_plan, tree_intervals, tasks):
+def per_tree_layout(table_plan, tree_intervals, tasks, n_vals=None, raw_features=None):
   '''The packed layout (p4model.packed.layout_for) of the per-tree program:
   features in table_plan order, tasks in PROGRAM order (lowest priority first,
   the reverse of `tasks`' task order).
@@ -1053,13 +1122,22 @@ def per_tree_layout(table_plan, tree_intervals, tasks):
   tests/test_packed_program.py. Raises what layout_for raises (NoSplitTree,
   ActionDataTooWide, PhvContainersExhausted), and ValueError for a range
   table no tree has a code on (task intervals that are not their trees' own):
-  its action would have no field to write.'''
+  its action would have no field to write.
+
+  Under DISJOINT_PER_TREE_ENCODING (packed_program_plan) table_plan and
+  tree_intervals are keyed by RESOLVED names; `raw_features` then lists the
+  program's raw features (the scratch, constant and clock arguments are computed
+  from them, never from resolved names such as app_flow_iat_max) and `n_vals`
+  their count (packed.layout_for's n_vals, K1). Both None (per_tree): the
+  table_plan keys are the raw features and layout_for is called as always.'''
+  raws = list(table_plan) if raw_features is None else list(raw_features)
+  extra = {} if n_vals is None else {"n_vals": n_vals}
   layout = packed.layout_for(packed.widths_of(tree_intervals), list(table_plan),
                              [task.name for task in reversed(list(tasks))],
-                             len(iat_scratch_fields(list(table_plan))),
-                             len(call_site_constants(list(table_plan))),
-                             uses_coarse_clock(list(table_plan)),
-                             uses_timestamp(list(table_plan)))
+                             len(iat_scratch_fields(raws)),
+                             len(call_site_constants(raws)),
+                             uses_coarse_clock(raws),
+                             uses_timestamp(raws), **extra)
   uncoded = [feature for feature in table_plan if feature not in layout.containers]
   if uncoded:
     raise ValueError("no tree has a code on {}: the tasks' intervals hold thresholds "
@@ -1091,8 +1169,7 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
 
   Refuses what the program refuses, before any entry is written: per_tree_layout's
   NoSplitTree, ActionDataTooWide, PhvContainersExhausted and ValueError.'''
-  table_plan, _, own = resolve_per_tree_plan(tasks)
-  layout = per_tree_layout(table_plan, own, tasks)
+  table_plan, _, own, layout = packed_program_plan(tasks, PER_TREE_ENCODING)
   entries = []
   for index, feature in enumerate(table_plan):
     trees = [(task, i) for task, i, f in layout.place if f == feature]
@@ -1768,7 +1845,8 @@ def generate_P4_code(num_class_app, num_class_ddos, clf_app, clf_ddos,
   clf_app / clf_ddos may be None for "no such task" (its trees are then
   empty); feature_intervals_* are each model's own intervals ({} for a
   missing task, the same dict for both under joint encoding; each model's
-  own, always, under PER_TASK_ENCODING and PER_TREE_ENCODING);
+  own, always, under PER_TASK_ENCODING, PER_TREE_ENCODING and
+  DISJOINT_PER_TREE_ENCODING);
   selected_features_* are the ordered training-feature-name lists. See
   generate_p4_program for everything else, `encoding` included."""
   tasks = [
@@ -1831,6 +1909,12 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       features in the tree's feature order. The layout raises NoSplitTree /
       ActionDataTooWide / PhvContainersExhausted before anything is written.
       Every task with trees needs its ordered feature list.
+    DISJOINT_PER_TREE_ENCODING (arm independent-tree): resolve_disjoint_per_tree_plan,
+      disjoint's tables and resolved names (resolve_feature_plan over each task's
+      OWN intervals), each writing ONE packed field meta.code_pk_<resolved> that
+      holds the per-tree codes of its reader tasks' trees, laid out, pinned and
+      keyed as under PER_TREE_ENCODING (packed_program_plan); the range table of
+      <resolved> keys its raw feature's <raw>_val, one per raw feature.
     In every encoding a tree keys only the code fields of the features it
     splits on (decision 2.3; tree_key_features), so the encodings differ only in
     their code scheme; every code field is still declared, pinned and written by
@@ -1930,7 +2014,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
     raise ValueError("encoding must be one of {}, got {!r}".format(
         ", ".join(repr(name) for name in ENCODINGS), encoding))
   task_codes = encoding == PER_TASK_ENCODING
-  tree_codes = encoding == PER_TREE_ENCODING
+  # Both packed encodings (per_tree, disjoint_per_tree) take the packed path.
+  tree_codes = is_packed(encoding)
 
   order = task_names(tasks)
   priorities = placement_priorities(order)
@@ -1956,11 +2041,11 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # table_plan the one range table per feature that writes them.
   task_intervals = [(task.name, task.intervals) for task in tasks]
   if tree_codes:
-    table_plan, resolved_plan, tree_intervals = resolve_per_tree_plan(tasks)
-    # The packed layout and its refusals (a tree with no split, a field wider
-    # than the action data bus, no PHV container left), before anything is
-    # written.
-    layout = per_tree_layout(table_plan, tree_intervals, tasks)
+    # The plan (resolve_per_tree_plan, or resolve_disjoint_per_tree_plan keyed by
+    # resolved names) and the packed layout and its refusals (a tree with no
+    # split, a field wider than the action data bus, no PHV container left),
+    # before anything is written.
+    table_plan, resolved_plan, tree_intervals, layout = packed_program_plan(tasks, encoding)
   elif task_codes:
     table_plan, resolved_plan = resolve_per_task_plan(task_intervals)
   else:
@@ -2319,9 +2404,14 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
                                 for i, raws in enumerate(keyed)}
       else:
         key_names[task.name] = [sliced(name) for name, _ in order]
-  raw_feature_names = ({feature: feature for feature in table_plan}
-                       if task_codes or tree_codes
-                       else {name: raw for name, (raw, _, _) in resolved_plan.items()})
+  # disjoint_per_tree: the range table of resolved entry <name> keys its RAW
+  # feature's value field, as under disjoint.
+  if encoding == DISJOINT_PER_TREE_ENCODING:
+    raw_feature_names = {name: resolved_plan[packed_field(name)][0] for name in table_plan}
+  else:
+    raw_feature_names = ({feature: feature for feature in table_plan}
+                         if task_codes or tree_codes
+                         else {name: raw for name, (raw, _, _) in resolved_plan.items()})
 
   # Follow-up: the discount's live path. Codewords are recomputed per task
   # against that task's OWN intervals (see this function's docstring), keyed
@@ -2338,10 +2428,14 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       continue
     if tree_codes:
       # each tree against its OWN intervals (per_tree_intervals requires the
-      # feature list, so it is present here)
+      # feature list, so it is present here), keyed by RAW feature: the paths
+      # name raw features (disjoint_per_tree's tree_intervals are keyed by
+      # resolved names, mapped back here in the same order)
+      raw_of = (raw_feature_names if encoding == DISJOINT_PER_TREE_ENCODING else {})
       codewords[task.name] = {
           i: generate_codewords(get_root_to_leaf_paths(tree_nodes_for(_Forest([tree]), task.features)),
-                                tree_intervals[task.name][i])[0]
+                                {raw_of.get(name, name): intervals
+                                 for name, intervals in tree_intervals[task.name][i].items()})[0]
           for i, tree in enumerate(task.trees)}
     elif task.features is not None:
       # each tree's codewords over the features its key reads, as its entries
