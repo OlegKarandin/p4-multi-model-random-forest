@@ -57,6 +57,7 @@ VERIFICATION_COLUMNS = (
     'model_stage_depth', 'model_blocks', 'model_hw_feasible', 'model_budget_feasible',
     'model_training_stage_depth', 'model_training_blocks', 'model_paths_differ',
     'p4c_stage_depth', 'p4c_blocks', 'p4c_sram', 'p4c_map_ram', 'p4c_phv_containers',
+    'p4c_phv_8', 'p4c_phv_16', 'p4c_phv_32',
     'p4c_errors', 'p4c_warnings', 'compile_seconds',
     'verdict', 'p4c_over_budget', 'p4c_over_stages', 'unverified', 'failure',
     'tables_differing', 'copied_from',
@@ -200,6 +201,14 @@ def _compile_with_retry(compile_fn, p4_path, output_dir, timeout, retry_timeout)
     return None, failure, message, seconds
 
 
+def _phv_size(p4c, bits):
+    """Containers p4c occupied at `bits` (8 / 16 / 32): 0 for a size metrics.json has no
+    group for, None when there are no metrics (no compile, or a log set without them)."""
+    if p4c is None or p4c.phv_by_size is None:
+        return None
+    return p4c.phv_by_size.get(bits, 0)
+
+
 def _record(model, row_id, p4_path, verdict, p4c=None, result=None, failure=None,
             compile_seconds=None, provenance=None):
     provenance = provenance or {}
@@ -219,6 +228,9 @@ def _record(model, row_id, p4_path, verdict, p4c=None, result=None, failure=None
         'p4c_sram': None if p4c is None else p4c.sram,
         'p4c_map_ram': None if p4c is None else p4c.map_ram,
         'p4c_phv_containers': None if p4c is None else p4c.phv_containers,
+        'p4c_phv_8': _phv_size(p4c, 8),
+        'p4c_phv_16': _phv_size(p4c, 16),
+        'p4c_phv_32': _phv_size(p4c, 32),
         'p4c_errors': provenance.get('p4c_errors',
                                      None if result is None else result.errors),
         'p4c_warnings': provenance.get('p4c_warnings',

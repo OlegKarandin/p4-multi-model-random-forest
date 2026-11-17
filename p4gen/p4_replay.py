@@ -331,6 +331,17 @@ def parse_program_text(text):
     (_parse_keys) raise ProgramShapeRefused here, at parse time;
     model_breakdown_text parses inside the refusal handling, and a caller that
     parses itself turns it into model_breakdown's form with refused_breakdown."""
+    try:
+        return _parse_program_text(text)
+    except ValueError as exc:
+        # A truncated text (a killed write) makes the brace matcher raise; refuse it by
+        # name like any other shape the replay cannot read (review G-L1, 2026-11-17).
+        if str(exc).startswith('unbalanced'):
+            raise ProgramShapeRefused('unexpected_shape:unbalanced_braces') from exc
+        raise
+
+
+def _parse_program_text(text):
     tables, widths, bits, slices, names = _parse_keys(text)
     return Program(tables, widths, bits, _parse_sizes(text),
                    _parse_priorities(text),

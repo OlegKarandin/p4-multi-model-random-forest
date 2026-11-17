@@ -633,6 +633,23 @@ def test_a_split_file_whose_rows_name_another_split_is_mislabelled(tmp_path):
         load_campaign(run)
 
 
+def test_a_run_carries_p4c_phv_per_size_and_an_older_verification_csv_still_loads(tmp_path):
+    """Handoff 7 T10: p4c_phv_8/16/32 reach the report frame as float64; a verification.csv
+    written before those columns existed loads with NaN there."""
+    run = _write_run(tmp_path, [_run_row(stage_depth=9, blocks=30)],
+                     [_ver('joint_M035_s00_k05', p4c_phv_8=16, p4c_phv_16=29, p4c_phv_32=14)])
+    row = load_campaign(run).iloc[0]
+    assert (row['p4c_phv_8'], row['p4c_phv_16'], row['p4c_phv_32']) == (16, 29, 14)
+
+    old = _write_run(tmp_path, [_run_row(stage_depth=9, blocks=30)],
+                     [_ver('joint_M035_s00_k05')], name='old_run')
+    path = os.path.join(old, 'verification.csv')
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.drop(columns=['p4c_phv_8', 'p4c_phv_16', 'p4c_phv_32']).to_csv(path, index=False)
+    older = load_campaign(old).iloc[0]
+    assert older['p4c_phv_containers'] == 100 and pd.isna(older['p4c_phv_16'])
+
+
 def test_a_run_reports_p4c_numbers_and_keeps_the_model_numbers_beside_them(tmp_path):
     run = _write_run(tmp_path, [_run_row(stage_depth=9, blocks=30)],
                      [_ver('joint_M035_s00_k05', verdict='OVER',

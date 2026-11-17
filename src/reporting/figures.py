@@ -252,7 +252,7 @@ def _log(message):
 # ---------------------------------------------------------------------------
 
 def ordered_arms(df, include_baseline=True,
-                 baseline=claims.INDEPENDENT_ARM_SLUG):
+                 baseline=None):
     """The arm slugs present in `df`, in design order.
 
     Known arms come first in `claims.JOINT_ARM_SLUGS` order (`joint-off`,
@@ -262,6 +262,7 @@ def ordered_arms(df, include_baseline=True,
     campaign that grew an arm should show up in the figure, not vanish from
     it.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     present = list(dict.fromkeys(df['arm_slug'].tolist()))
     known = list(claims.REPORTED_JOINT_ARM_SLUGS)
     if include_baseline:
@@ -472,7 +473,7 @@ def _write(deliverable, output_dir):
 # ---------------------------------------------------------------------------
 
 def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
-                                baseline=claims.INDEPENDENT_ARM_SLUG):
+                                baseline=None):
     """A grid -- the top two rows are the two tasks, a third row is D8's
     trade plane, and columns are odd feature counts k (D7: facet at
     k = 1, 3, 5, ..., 17) -- with every arm overlaid in every panel. Row and
@@ -507,6 +508,7 @@ def figure_1_accuracy_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     There is no averaged accuracy anywhere in this figure, which is part of
     why it has one row per task rather than one panel overall.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     arms = ordered_arms(df, baseline=baseline)
     styles = _arm_styles(arms)
 
@@ -837,7 +839,7 @@ def _relative_error_change(baseline_accuracy, treatment_accuracy):
     return change.where(baseline_error > 0, np.nan)
 
 
-def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
+def paired_delta_frame(df, baseline=None, arms=None):
     """One row per (arm, M, split, k) cell paired against `baseline`, with
     the block delta and the two per-task relative-error changes on BOTH
     accuracy and F1.
@@ -852,6 +854,7 @@ def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
     key with `validate='one_to_one'`, so a duplicated cell fails loudly
     instead of silently multiplying rows.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     require_baseline(df, baseline, 'paired_delta_frame')
     if arms is None:
         arms = ordered_arms(df, include_baseline=False, baseline=baseline)
@@ -885,7 +888,7 @@ def paired_delta_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG, arms=None):
     return claims.attach_delta_columns(long, df)
 
 
-def delta_frontier_table(df, baseline=claims.INDEPENDENT_ARM_SLUG,
+def delta_frontier_table(df, baseline=None,
                          confidence=0.95, arms=None):
     """Mean and confidence interval per (arm, k) for each of figure 2's
     five quantities (`FRONTIER_METRICS`: accuracy and F1 relative-error
@@ -904,6 +907,7 @@ def delta_frontier_table(df, baseline=claims.INDEPENDENT_ARM_SLUG,
     averaged away here -- there is no per-M facet, only per-k -- matching
     the split-level convention `claims.ablation_decomposition` uses.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     long = paired_delta_frame(df, baseline=baseline, arms=arms)
     if len(long) == 0:
         return long
@@ -920,7 +924,7 @@ def delta_frontier_table(df, baseline=claims.INDEPENDENT_ARM_SLUG,
 
 
 def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
-                            baseline=claims.INDEPENDENT_ARM_SLUG,
+                            baseline=None,
                             confidence=0.95):
     """What each joint arm buys against the baseline: block saving and
     per-task relative error change (on accuracy AND F1) per arm, mean +/- CI
@@ -942,6 +946,7 @@ def figure_2_delta_frontier(df, output_dir=DEFAULT_FIGURE_DIR,
     archived frame's delta arms are appended after them, labelled by their
     delta (`joint-dinf` as 'inf').
     """
+    baseline = claims.resolve_baseline(df, baseline)
     table = delta_frontier_table(df, baseline=baseline, confidence=confidence)
     arms = [arm for arm in ordered_arms(df, include_baseline=False,
                                         baseline=baseline)
@@ -1077,7 +1082,7 @@ _QUADRANT_ANCHORS = {
 
 
 def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
-                                  baseline=claims.INDEPENDENT_ARM_SLUG,
+                                  baseline=None,
                                   alpha=0.05, expected_family_size=None):
     """A grid -- the top row is accuracy, a second row is F1 (Task 19 Part
     5), and columns are joint arms -- the paired per-task deltas against
@@ -1119,6 +1124,7 @@ def figure_3_substitution_scatter(df, output_dir=DEFAULT_FIGURE_DIR,
     family shrunk by a missing arm into an error, mirroring deliverable 4's
     two Holm-family gates -- see `claims.substitution_test_all_arms`.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     require_baseline(df, baseline, 'figure_3_substitution_scatter')
     table = claims.substitution_test_all_arms(
         df, baseline=baseline, alpha=alpha,
@@ -1235,7 +1241,7 @@ _PAIRED_TEST_MARKDOWN_COLUMNS = (
 
 
 def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
-                         baseline=claims.INDEPENDENT_ARM_SLUG,
+                         baseline=None,
                          margin=0.0, alpha=0.05, units=('pair', 'split'),
                          expected_family_size=None,
                          expected_noninferiority_family_size=None):
@@ -1305,6 +1311,7 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
     `expected_noninferiority_family_size=claims.NONINFERIORITY_FAMILY_SIZE`
     on the complete campaign to turn either shrunken family into an error.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     superiority_tables, robustness_tables = [], []
     for unit in units:
         stacked = claims.paired_tests_robustness(
@@ -1359,6 +1366,7 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
                      if len(superiority_tables[0]) else 0)
     n_noninferiority = (int(noninferiority_tables[0]['n_comparisons'].iloc[0])
                         if len(noninferiority_tables[0]) else 0)
+    pre_size, pre_noninf_size, _ = claims.expected_family_sizes(df)
     family_note = (
         'TWO INDEPENDENTLY HOLM-CORRECTED FAMILIES are reported below, '
         'discriminated by the `family` column, per D13: non-inferiority is '
@@ -1370,17 +1378,17 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
         'unit; the pre-registered family is {} ({} joint arms x {} accuracy '
         'metrics -- F1 is not retested here, it stays in the superiority '
         'family). {}'.format(
-            n_superiority, claims.PRE_REGISTERED_FAMILY_SIZE,
-            len(claims.JOINT_ARM_SLUGS), len(claims.DEFAULT_METRICS),
+            n_superiority, pre_size,
+            pre_size // len(claims.DEFAULT_METRICS), len(claims.DEFAULT_METRICS),
             'The superiority family is complete.'
-            if n_superiority == claims.PRE_REGISTERED_FAMILY_SIZE else
+            if n_superiority == pre_size else
             'The superiority family is INCOMPLETE, so this correction is '
             'weaker than the pre-registered one and its adjusted p-values '
             'below are correspondingly optimistic.',
-            n_noninferiority, claims.NONINFERIORITY_FAMILY_SIZE,
-            len(claims.JOINT_ARM_SLUGS), len(claims.NONINFERIORITY_METRICS),
+            n_noninferiority, pre_noninf_size,
+            pre_noninf_size // len(claims.NONINFERIORITY_METRICS), len(claims.NONINFERIORITY_METRICS),
             'The non-inferiority family is complete.'
-            if n_noninferiority == claims.NONINFERIORITY_FAMILY_SIZE else
+            if n_noninferiority == pre_noninf_size else
             'The non-inferiority family is INCOMPLETE, so this correction '
             'is weaker than the pre-registered one and its adjusted '
             'p-values below are correspondingly optimistic.'))
@@ -1416,8 +1424,8 @@ def table_4_paired_tests(df, output_dir=DEFAULT_FIGURE_DIR,
         'one-sided in the same direction, against a per-row margin rather '
         'than a flat one. '
         '{} {}'.format(
-            claims.PRE_REGISTERED_FAMILY_SIZE,
-            claims.NONINFERIORITY_FAMILY_SIZE,
+            pre_size,
+            pre_noninf_size,
             'd + {:g}'.format(margin) if margin > 0 else 'd', family_note,
             robustness_note))
 
@@ -1680,7 +1688,7 @@ _ENTRIES_VS_BLOCKS_SUMMARY_COLUMNS = (
     'mean_blocks_saving', 'mean_rounding_loss')
 
 
-def entries_vs_blocks_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG,
+def entries_vs_blocks_frame(df, baseline=None,
                             arms=None):
     """One row per (arm, M, split, k) cell paired against `baseline`: the
     entries and blocks deltas, plus T12's rounding loss between them.
@@ -1704,6 +1712,7 @@ def entries_vs_blocks_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG,
     saving. A baseline of 0 in either denominator yields NaN, never a
     division-by-zero infinity.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     require_baseline(df, baseline, 'entries_vs_blocks_frame')
     if arms is None:
         arms = ordered_arms(df, include_baseline=False, baseline=baseline)
@@ -1760,7 +1769,7 @@ def entries_vs_blocks_frame(df, baseline=claims.INDEPENDENT_ARM_SLUG,
 
 
 def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
-                               baseline=claims.INDEPENDENT_ARM_SLUG):
+                               baseline=None):
     """T12 (reviews/todo.md:487-499): does joint mapping's memory saving
     survive TCAM block quantization, or is it an artifact of rounding?
 
@@ -1785,6 +1794,7 @@ def figure_8_entries_vs_blocks(df, output_dir=DEFAULT_FIGURE_DIR,
     in `.data` and still pooled into the caption's headline sentence, it
     simply gets no row in the printed summary.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     # Imported here, not at module scope: build_p4_script pulls in sklearn
     # at import (`from sklearn.tree import export_text`), which this
     # reporting module otherwise never needs -- the same reason
@@ -2040,6 +2050,30 @@ def table_10_budget_binding(df, output_dir=DEFAULT_FIGURE_DIR, share=0.9):
 
 
 # ---------------------------------------------------------------------------
+# Deliverable 12 -- PHV per arm (reported, never budgeted)
+# ---------------------------------------------------------------------------
+
+def table_12_phv(df, output_dir=DEFAULT_FIGURE_DIR):
+    """Per arm and k group (k <= 8 | k >= 9), the mean PHV containers p4c allocated per
+    container size (8 / 16 / 32 bits) and in total, from `claims.phv_by_arm`."""
+    table = claims.phv_by_arm(df)
+    caption = (
+        'PHV (packet header vector) containers p4c allocated, mean per arm and k group, '
+        'per container size (8, 16 and 32 bits) and in total, from the compiler metrics.json. '
+        'PHV is reported, never a training budget; the generator pins @pa_container_size '
+        'on the code fields and @pa_no_overlay on the tree result fields, which shapes '
+        'these counts (p4gen/GENERATOR.md). Tofino 1 ingress has 48 / 80 / 48 containers '
+        'of 8 / 16 / 32 bits. {} designs have no PHV numbers (no compile, or a run that '
+        'predates the columns) and are not averaged in.'.format(
+            int(len(df) - table['n'].sum()) if len(table) else len(df)))
+    body = _markdown_table(table) if len(table) else '(no rows)'
+    return _write(Deliverable(
+        number=12, slug='phv_per_arm',
+        title='PHV containers per arm and k group',
+        caption=caption, data=table, markdown_body=body), output_dir)
+
+
+# ---------------------------------------------------------------------------
 # Deliverable 11 -- alignment twins (compiler-verified runs with twins only)
 # ---------------------------------------------------------------------------
 
@@ -2110,7 +2144,7 @@ def table_11_alignment_twins(df, verification, output_dir=DEFAULT_FIGURE_DIR,
 
 def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
                ceiling_csv=DEFAULT_CEILING_CSV,
-               baseline=claims.INDEPENDENT_ARM_SLUG,
+               baseline=None,
                expected_family_size=None,
                expected_noninferiority_family_size=None,
                expected_substitution_family_size=None,
@@ -2135,6 +2169,7 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
     substitution family -- see `figure_3_substitution_scatter` and
     `claims.substitution_test_all_arms`.
     """
+    baseline = claims.resolve_baseline(df, baseline)
     deliverables = [
         figure_1_accuracy_vs_blocks(df, output_dir=output_dir,
                                     baseline=baseline),
@@ -2163,6 +2198,9 @@ def render_all(df, output_dir=DEFAULT_FIGURE_DIR,
                 twin_invariant_violations=twin_invariant_violations,
                 twin_model_refusals=twin_model_refusals))
         deliverables.append(table_10_budget_binding(df, output_dir=output_dir))
+        if ('p4c_phv_containers' in df.columns
+                and claims._as_number(df['p4c_phv_containers']).notna().any()):
+            deliverables.append(table_12_phv(df, output_dir=output_dir))
         if claims.TWIN_ARM_SLUG in set(df['arm_slug']):
             deliverables.append(
                 table_11_alignment_twins(df, verification, output_dir=output_dir,

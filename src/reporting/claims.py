@@ -209,6 +209,25 @@ from src.reporting.campaign_data import (
 from src.training.campaign_run import DEVELOPMENT_SPLITS
 
 INDEPENDENT_ARM_SLUG = 'independent'
+# The paper's baseline since 2026-11 is the independent-TREE arm (every tree keys codes of
+# its own, no sharing); `independent` (one code per feature, per task) is the archived
+# campaigns' baseline. A run holds one of them: `resolve_baseline` picks the first present,
+# so every contrast, table and figure reads against the right one without a flag.
+INDEPENDENT_TREE_ARM_SLUG = 'independent-tree'
+BASELINE_ARM_SLUGS = (INDEPENDENT_TREE_ARM_SLUG, INDEPENDENT_ARM_SLUG)
+
+
+def resolve_baseline(df_or_slugs, baseline=None):
+    """`baseline` when given; else the first of BASELINE_ARM_SLUGS present in the frame
+    (or iterable of slugs); `independent` when neither is."""
+    if baseline is not None:
+        return baseline
+    slugs = (set(df_or_slugs['arm_slug'].unique())
+             if hasattr(df_or_slugs, 'columns') else set(df_or_slugs))
+    for slug in BASELINE_ARM_SLUGS:
+        if slug in slugs:
+            return slug
+    return INDEPENDENT_ARM_SLUG
 
 # The compiler-verified campaign's joint arms (spec 2026-09-29 section 7.3),
 # in sweep order: sharing alone, then sharing plus threshold alignment.
@@ -229,6 +248,25 @@ LEGACY_ARM_SLUGS = ('joint',)
 # families above, whose sizes describe the archived grid: a run of either
 # renders with --allow-partial-family.
 REPORTED_JOINT_ARM_SLUGS = JOINT_ARM_SLUGS + (PER_TASK_ARM_SLUG, PER_TREE_ARM_SLUG)
+
+# The paper's four arms (2026-11): the independent-tree baseline against joint-off, its
+# aligned twins and joint-tree. A run whose baseline is `independent-tree` is judged
+# against THIS family (three treatments), not the archived two-arm one: joint-tree is a
+# tested arm there, and the Holm families are sized accordingly (15 / 6 / 3). A missing
+# arm is still an error, exactly as for the archived family.
+PAPER_TREATMENT_ARM_SLUGS = JOINT_ARM_SLUGS + (PER_TREE_ARM_SLUG,)
+
+
+def expected_family_sizes(df):
+    """(superiority, non-inferiority, substitution) family sizes a complete run of `df`'s
+    design has: the paper's four-arm family when the baseline is `independent-tree`, the
+    archived two-arm family otherwise."""
+    if resolve_baseline(df) == INDEPENDENT_TREE_ARM_SLUG:
+        n = len(PAPER_TREATMENT_ARM_SLUGS)
+        return (n * len(DEFAULT_METRICS), n * len(NONINFERIORITY_METRICS), n)
+    return (PRE_REGISTERED_FAMILY_SIZE, NONINFERIORITY_FAMILY_SIZE,
+            SUBSTITUTION_FAMILY_SIZE)
+
 
 # Blocks available to a whole Tofino pipe. The hypervolume reference budget
 # for the unbudgeted cell (M = inf), where `(0.5, M)` would be an infinite
@@ -520,7 +558,7 @@ def _reference_blocks(M):
     return UNBUDGETED_REFERENCE_BLOCKS if np.isinf(M) else M
 
 
-def hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG, arms=None):
+def hypervolume_by_arm(df, baseline=None, arms=None):
     """Per-(arm, M, task) 2-D hypervolume, reported as gain relative to
     `baseline` (D5, amended by A2 -- see the module docstring's
     "`hypervolume_2d` and the per-M reference point" section for the full
@@ -560,6 +598,7 @@ def hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG, arms=None):
     docstring for why that averaging is exactly what this rerun exists to
     undo.
     """
+    baseline = resolve_baseline(df, baseline)
     if len(df) == 0 or 'M' not in df.columns:
         m_values = []
     else:
@@ -612,7 +651,7 @@ def hypervolume_by_arm(df, baseline=INDEPENDENT_ARM_SLUG, arms=None):
 # Pairing
 # ---------------------------------------------------------------------------
 
-def arm_deltas(df, treatment, baseline=INDEPENDENT_ARM_SLUG, metrics=DEFAULT_METRICS):
+def arm_deltas(df, treatment, baseline=None, metrics=DEFAULT_METRICS):
     """Paired treatment-minus-baseline differences, one row per `(M, split,
     k)` cell present in BOTH arms.
 
@@ -625,6 +664,7 @@ def arm_deltas(df, treatment, baseline=INDEPENDENT_ARM_SLUG, metrics=DEFAULT_MET
     signed as `treatment - baseline` throughout -- so on `blocks`, a negative
     delta means the treatment arm SAVED blocks.
     """
+    baseline = resolve_baseline(df, baseline)
     paired = pair_arms(df, treatment, baseline)
     out = pd.DataFrame({
         'M': paired['M'] if len(paired) else pd.Series(dtype='float64'),
@@ -729,7 +769,7 @@ def _quadrant_fractions(d_app, d_ddos):
     }
 
 
-def substitution_test(df, treatment, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05):
+def substitution_test(df, treatment, baseline=None, alpha=0.05):
     """Does one task's gain come at the other's expense in `treatment`?
 
     Correlates the paired per-cell deltas `(d_acc_app, d_acc_ddos)`. A
@@ -767,6 +807,7 @@ def substitution_test(df, treatment, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05):
        anti-conservative -- the same caveat `paired_tests` carries.
        `n_splits` is returned alongside `n_pairs` so the gap is visible.
     """
+    baseline = resolve_baseline(df, baseline)
     deltas = arm_deltas(df, treatment, baseline)
     d_app = deltas['d_acc_app'].to_numpy(dtype='float64')
     d_ddos = deltas['d_acc_ddos'].to_numpy(dtype='float64')
@@ -804,7 +845,7 @@ def substitution_test(df, treatment, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05):
     }
 
 
-def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
+def substitution_test_all_arms(df, baseline=None, arms=None,
                                alpha=0.05, expected_family_size=None):
     """`substitution_test` at EVERY joint arm, one row per arm.
 
@@ -850,6 +891,7 @@ def substitution_test_all_arms(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
     training split, so these p-values are anti-conservative relative to the
     number of independent splits.
     """
+    baseline = resolve_baseline(df, baseline)
     arms = _arms_present(df, arms)
     if expected_family_size is not None and len(arms) != expected_family_size:
         raise ValueError(
@@ -1020,9 +1062,10 @@ def ablation_decomposition(df, metrics=DEFAULT_METRICS, confidence=0.95):
     `median_diff_pairwise` are reported alongside for transparency; they
     differ from `mean_diff_split_level` whenever the design is unbalanced.
     """
-    contrasts = [('sharing', 'joint-off', INDEPENDENT_ARM_SLUG),
-                 ('sharing', PER_TASK_ARM_SLUG, INDEPENDENT_ARM_SLUG),
-                 ('sharing', PER_TREE_ARM_SLUG, INDEPENDENT_ARM_SLUG)]
+    baseline = resolve_baseline(df)
+    contrasts = [('sharing', 'joint-off', baseline),
+                 ('sharing', PER_TASK_ARM_SLUG, baseline),
+                 ('sharing', PER_TREE_ARM_SLUG, baseline)]
     present = set(df['arm_slug'].unique())
     for slug in _arms_present(df, None):
         if slug in ('joint-off', PER_TASK_ARM_SLUG, PER_TREE_ARM_SLUG):
@@ -1106,7 +1149,7 @@ def holm_bonferroni(pvalues):
 # Paired hypothesis tests
 # ---------------------------------------------------------------------------
 
-def default_contrast_family(df=None, arms=None, baseline=INDEPENDENT_ARM_SLUG):
+def default_contrast_family(df=None, arms=None, baseline=None):
     """The pre-registered contrast family: each joint arm
     (`JOINT_ARM_SLUGS`) against `independent`.
 
@@ -1115,6 +1158,7 @@ def default_contrast_family(df=None, arms=None, baseline=INDEPENDENT_ARM_SLUG):
     When `df` is given, only arms actually present in it are returned, so a
     partial campaign yields a smaller -- and explicitly smaller -- family.
     """
+    baseline = resolve_baseline(df if df is not None else (), baseline)
     if arms is not None:
         selected = tuple(arms)
     elif df is None:
@@ -1138,7 +1182,7 @@ def _wilcoxon(differences, alternative):
     return float(result.statistic), float(result.pvalue)
 
 
-def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
+def paired_tests(df, baseline=None, arms=None,
                  metrics=DEFAULT_METRICS, margin=0.0, alpha=0.05,
                  unit='pair', confidence=0.95, expected_family_size=None):
     """Paired Wilcoxon tests over the whole contrast family, Holm-corrected.
@@ -1181,6 +1225,7 @@ def paired_tests(df, baseline=INDEPENDENT_ARM_SLUG, arms=None,
     Raises ValueError if any contrast has no paired cells at all: a contrast
     contributing nothing would shrink the family without the reader noticing.
     """
+    baseline = resolve_baseline(df, baseline)
     if unit not in ('pair', 'split'):
         raise ValueError("paired_tests: unit must be 'pair' or 'split', got {!r}".format(unit))
 
@@ -1316,7 +1361,7 @@ def _as_list(value):
 def _cell_order(frame):
     """(arm_slug, M) cells in reading order: the independent baseline, then
     JOINT_ARM_SLUGS, then any other arm; M ascending (inf last)."""
-    known = [INDEPENDENT_ARM_SLUG] + list(REPORTED_JOINT_ARM_SLUGS)
+    known = list(BASELINE_ARM_SLUGS) + list(REPORTED_JOINT_ARM_SLUGS)
     rank = {slug: i for i, slug in enumerate(known)}
     return frame.assign(
         _arm_rank=frame['arm_slug'].map(lambda a: rank.get(a, len(known)))
@@ -1367,8 +1412,12 @@ def agreement_table(verification):
         frame[column] = _as_number(frame[column])
     unverified = _as_bool(frame['unverified']) if 'unverified' in frame.columns \
         else pd.Series(False, index=frame.index)
-    frame['_stage_exact'] = frame['model_stage_depth'] == frame['p4c_stage_depth']
-    frame['_blocks_exact'] = frame['model_blocks'] == frame['p4c_blocks']
+    # A compile error / timeout is a miss of its own and never an exact row, even when
+    # the verify runner kept p4c's numbers (a p4c_errors failure within 12 stages).
+    no_compile = frame['verdict'].isin(COMPILE_FAILURE_VERDICTS)
+    frame['_stage_exact'] = ((frame['model_stage_depth'] == frame['p4c_stage_depth'])
+                             & ~no_compile)
+    frame['_blocks_exact'] = (frame['model_blocks'] == frame['p4c_blocks']) & ~no_compile
     frame['_blocks_na'] = ~unverified & frame['p4c_blocks'].isna()
     # Decision 8.4: a compile error / timeout on a design the MODEL calls
     # feasible is a miss class of its own; on a model-infeasible design it is
@@ -1380,7 +1429,6 @@ def agreement_table(verification):
     if 'failure' in frame.columns:
         model_feasible = model_feasible | (
             frame['failure'].fillna('').astype(str) == 'generator_error')
-    no_compile = frame['verdict'].isin(COMPILE_FAILURE_VERDICTS)
     frame['_ce_feasible'] = no_compile & model_feasible
     frame['_ce_infeasible'] = no_compile & ~model_feasible
     frame['_budget_ff'] = frame['verdict'] == 'BUDGET_FALSE_FEASIBLE'
@@ -1413,6 +1461,32 @@ def agreement_table(verification):
                                         frame.loc[is_miss, '_ce_feasible'])]
     misses['tables_differing'] = [_as_list(v) for v in misses['tables_differing']]
     return summary, misses.reset_index(drop=True)
+
+
+PHV_SIZE_COLUMNS = ('p4c_phv_8', 'p4c_phv_16', 'p4c_phv_32', 'p4c_phv_containers')
+
+
+def phv_by_arm(df):
+    """Per `(arm_slug, k_group)` (k <= 8 | k >= 9, every claim covers both), the mean of p4c's
+    PHV containers per size and in total, and `n` designs that have them. PHV is REPORTED,
+    never a training budget (Handoff 4); p4c numbers from metrics.json."""
+    frame = df[['arm_slug', 'k'] + list(PHV_SIZE_COLUMNS)].copy()
+    for column in PHV_SIZE_COLUMNS:
+        frame[column] = _as_number(frame[column])
+    frame = frame[frame['p4c_phv_containers'].notna()]
+    frame['k_group'] = np.where(frame['k'] <= 8, 'k<=8', 'k>=9')
+    rows = []
+    for (arm, group), cell in frame.groupby(['arm_slug', 'k_group'], sort=False):
+        row = {'arm_slug': arm, 'k_group': group, 'n': int(len(cell))}
+        row.update({column: float(cell[column].mean()) for column in PHV_SIZE_COLUMNS})
+        rows.append(row)
+    table = pd.DataFrame(rows, columns=['arm_slug', 'k_group', 'n'] + list(PHV_SIZE_COLUMNS))
+    if not len(table):
+        return table
+    known = list(BASELINE_ARM_SLUGS) + list(REPORTED_JOINT_ARM_SLUGS)
+    rank = {slug: i for i, slug in enumerate(known)}
+    table['_rank'] = table['arm_slug'].map(lambda slug: rank.get(slug, len(known)))
+    return table.sort_values(['_rank', 'arm_slug', 'k_group'], kind='stable')         .drop(columns='_rank').reset_index(drop=True)
 
 
 def budget_binding(df, share=0.9):
@@ -1488,7 +1562,7 @@ def paired_tests_robustness(df, **paired_kwargs):
 # Non-inferiority at a per-row relative-error margin (D13)
 # ---------------------------------------------------------------------------
 
-def noninferiority_tests(df, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05,
+def noninferiority_tests(df, baseline=None, alpha=0.05,
                          unit='pair', expected_family_size=None):
     """D13: is each joint arm non-inferior to `independent` on accuracy at a
     margin of 5% of EACH ROW's OWN baseline error?
@@ -1558,6 +1632,7 @@ def noninferiority_tests(df, baseline=INDEPENDENT_ARM_SLUG, alpha=0.05,
     contrast contributing nothing would shrink the family without the
     reader noticing.
     """
+    baseline = resolve_baseline(df, baseline)
     if unit not in ('pair', 'split'):
         raise ValueError(
             "noninferiority_tests: unit must be 'pair' or 'split', got {!r}"
@@ -1668,7 +1743,6 @@ K_GROUPS = (('low 1-5', 1, 5), ('mid 6-11', 6, 11), ('high 12-17', 12, 17))
 TWIN_METRICS = ('blocks', 'stage_depth', 'f1_app', 'f1_ddos')
 # For blocks/stage_depth a negative delta is a saving; for F1 a positive one is.
 _SAVING_SIGN = {'blocks': -1, 'stage_depth': -1, 'f1_app': 1, 'f1_ddos': 1}
-_LADDER_ARMS = (INDEPENDENT_ARM_SLUG, 'joint-off', TWIN_ARM_SLUG)
 
 
 def k_group(k):
@@ -1719,11 +1793,13 @@ def twin_effect(df, confidence=0.95):
 
 
 def twin_ladder(df, confidence=0.95):
-    """independent -> joint-off -> joint-off-al on the cells where all three
+    """baseline -> joint-off -> joint-off-al on the cells where all three
     exist: per-arm means and the two step deltas with split-level t CIs."""
     key = ['M', 'split', 'k']
+    baseline = resolve_baseline(df)
+    ladder_arms = (baseline, 'joint-off', TWIN_ARM_SLUG)
     wide = None
-    for arm in _LADDER_ARMS:
+    for arm in ladder_arms:
         part = df[df['arm_slug'] == arm].set_index(key)[list(TWIN_METRICS)]
         part.columns = [f'{m}__{arm}' for m in TWIN_METRICS]
         wide = part if wide is None else wide.join(part, how='inner')
@@ -1733,9 +1809,9 @@ def twin_ladder(df, confidence=0.95):
         cells = wide if M == 'all' else wide[wide['M'] == M]
         row = {'M': M, 'n_cells': int(len(cells))}
         for metric in TWIN_METRICS:
-            for arm in _LADDER_ARMS:
+            for arm in ladder_arms:
                 row[f'mean_{arm}_{metric}'] = float(cells[f'{metric}__{arm}'].mean())
-            for step, (a, b) in (('sharing', ('joint-off', INDEPENDENT_ARM_SLUG)),
+            for step, (a, b) in (('sharing', ('joint-off', baseline)),
                                  ('alignment', (TWIN_ARM_SLUG, 'joint-off'))):
                 d = cells[f'{metric}__{a}'] - cells[f'{metric}__{b}']
                 _, _, _, low, high = _t_interval(

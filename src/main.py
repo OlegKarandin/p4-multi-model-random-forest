@@ -603,12 +603,13 @@ def run_plot_mode(results_dir='results', output_dir=None,
               f"once, ~10 minutes, to produce it)")
         ceiling_csv = None
 
-    expected_family_size = (
-        None if allow_partial_family else claims.PRE_REGISTERED_FAMILY_SIZE)
+    superiority_size, noninferiority_size, substitution_size = (
+        claims.expected_family_sizes(df))
+    expected_family_size = None if allow_partial_family else superiority_size
     expected_noninferiority_family_size = (
-        None if allow_partial_family else claims.NONINFERIORITY_FAMILY_SIZE)
+        None if allow_partial_family else noninferiority_size)
     expected_substitution_family_size = (
-        None if allow_partial_family else claims.SUBSTITUTION_FAMILY_SIZE)
+        None if allow_partial_family else substitution_size)
 
     deliverables = figures.render_all(
         df, output_dir=output_dir, ceiling_csv=ceiling_csv,

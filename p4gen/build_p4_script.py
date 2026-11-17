@@ -1166,8 +1166,10 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False,
   of its own codes (packed.key_slices, at most 64 bits each), named as bf_rt names
   `meta.code_pk_<f>[hi:lo]` (bfrt_key_name, e.g. code_pk_flow_iat_max_19_8_);
   each slice's value and mask are the codeword's bits hi..lo, counted from the
-  code's own bit 0 (field bit - the code's bit offset). Keys in the program's order: the
-  tree's features in table_plan order (both sorted by name).
+  code's own bit 0 (field bit - the code's bit offset). Keys are written by NAME (bf_rt
+  named keys), so their order is irrelevant on the switch; it follows table_plan order and
+  can differ from the program's key order when one tree keys both a shared and a
+  task-prefixed entry (review G-L2, 2026-11-17; entries unchanged on purpose).
 
   Under DISJOINT_PER_TREE_ENCODING (arm independent-tree) the same, over
   packed_program_plan's RESOLVED names: range table table_<index>_<resolved> keys its

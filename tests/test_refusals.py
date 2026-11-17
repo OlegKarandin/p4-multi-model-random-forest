@@ -173,6 +173,20 @@ def test_each_pin_dropped_at_g3_is_refused_when_present(tmp_path, encoding):
         assert price_program(parse_program_text(added)) == price_program(program)
 
 
+def test_a_truncated_program_text_is_a_named_refusal_not_a_crash():
+    """Review G-L1 (2026-11-17): a half-written .p4 (a killed write) raised a bare
+    ValueError from the brace matcher and would stop --rescore; it is refused by name."""
+    from p4gen.p4_replay import model_breakdown_text
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, 'fixtures', 'p4c_base_17b',
+                           'joint-off_M025_s02_k01.p4'), encoding='utf-8') as handle:
+        text = handle.read()
+    cut = text[:text.index('calc_flow_hash') + 60]
+    result = model_breakdown_text(cut)
+    assert result['refusal'] == 'program_shape'
+    assert 'unbalanced' in result['refusal_reason']
+
+
 def test_a_pre_task_2_program_is_refused_as_a_gated_register_block(tmp_path):
     # Before decisions 1a / 7.1 option B (2026-11-14) direction-owned registers were
     # executed inside `if (meta.fwd == ...)` blocks: wrap one call site that way.

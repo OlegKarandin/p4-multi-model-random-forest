@@ -61,6 +61,8 @@ _DELTA_BY_SLUG = {
     # all, so it parses to NaN like joint-off.
     'joint': (float('nan'), False),
     'joint-off-al': (float('nan'), False),
+    'independent-tree': (float('nan'), False),
+    'joint-tree': (float('nan'), False),
 }
 
 _FEATURES = ('Flow.IAT.Max', 'Flow.IAT.Min', 'Fwd.IAT.Mean',
@@ -1279,6 +1281,22 @@ def test_render_all_produces_the_eight_deliverables_numbered_one_to_eight(tmp_pa
             assert os.path.getsize(path) > 0
 
 
+def test_render_all_renders_the_four_arm_paper_family_with_its_own_family_sizes(tmp_path):
+    """independent-tree baseline + joint-tree + joint-off + joint-off-al, no
+    --allow-partial-family: the baseline resolves, the Holm families are the paper's
+    (3 treatments: 15 / 6 / 3) and every deliverable renders (review S-H1, 2026-11-17)."""
+    from src.reporting import claims
+    df = _spread_campaign(arms=('independent-tree', 'joint-tree', 'joint-off', 'joint-off-al'))
+    superiority, noninferiority, substitution = claims.expected_family_sizes(df)
+    assert (superiority, noninferiority, substitution) == (15, 6, 3)
+    deliverables = figures.render_all(
+        df, output_dir=str(tmp_path), ceiling_csv=None,
+        expected_family_size=superiority,
+        expected_noninferiority_family_size=noninferiority,
+        expected_substitution_family_size=substitution)
+    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 7, 8]
+
+
 def test_render_all_writes_nothing_when_no_output_directory_is_given(tmp_path):
     deliverables = figures.render_all(_spread_campaign(), output_dir=None,
                                       ceiling_csv=None)
@@ -1480,6 +1498,23 @@ def test_deliverable_10_renders_budget_binding(tmp_path):
     pd.testing.assert_frame_equal(deliverable.data, expected)
     assert any(p.endswith('.csv') for p in deliverable.paths)
     assert 'binding_share' in deliverable.markdown_body
+
+
+def test_deliverable_12_reports_p4c_phv_per_arm_and_is_added_only_when_the_run_has_it(tmp_path):
+    df = _unbudgeted_campaign()
+    without = figures.render_all(df, output_dir=None, ceiling_csv=None,
+                                 verification=_verification_for(df))
+    assert 12 not in [d.number for d in without]      # a run that predates the PHV columns
+    df = df.copy()
+    for column, value in (('p4c_phv_8', 10.0), ('p4c_phv_16', 30.0), ('p4c_phv_32', 6.0),
+                          ('p4c_phv_containers', 46.0)):
+        df[column] = value
+    run = figures.render_all(df, output_dir=str(tmp_path), ceiling_csv=None,
+                             verification=_verification_for(df))
+    phv = {d.number: d for d in run}[12]
+    assert phv.slug == 'phv_per_arm'
+    pd.testing.assert_frame_equal(phv.data, claims.phv_by_arm(df))
+    assert 'p4c_phv_16' in phv.markdown_body and 'k<=8' in phv.markdown_body
 
 
 def test_render_all_adds_deliverables_9_and_10_only_for_a_run():

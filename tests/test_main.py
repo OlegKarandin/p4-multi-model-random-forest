@@ -758,7 +758,7 @@ def test_plot_mode_end_to_end_over_a_verified_run_renders_deliverables_9_and_10(
     deliverables = m.run_plot_mode(results_dir=run,
                                    output_dir=str(tmp_path / 'figures'))
 
-    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
+    assert [d.number for d in deliverables] == [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
     for deliverable in deliverables:
         assert deliverable.paths
         for path in deliverable.paths:

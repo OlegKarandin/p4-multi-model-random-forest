@@ -175,7 +175,9 @@ Compiler verification (a run; legacy loads carry NaN / '' / False here)
                           flagged row.
     model_stage_depth, model_blocks   float64, the model's numbers (the
                           CSV's own stage_depth/blocks before substitution).
-    p4c_sram, p4c_map_ram, p4c_phv_containers   float64, NaN when unverified.
+    p4c_sram, p4c_map_ram, p4c_phv_containers, p4c_phv_8, p4c_phv_16, p4c_phv_32
+                          float64, NaN when unverified (the per-size PHV columns also
+                          when the run predates them).
     verdict        str   verification.csv's verdict ('' on legacy loads).
                           Never FALSE_FEASIBLE: p4c-infeasible designs
                           (FALSE_FEASIBLE, p4c_over_stages, p4c_over_budget)
@@ -285,8 +287,9 @@ _VERIFICATION_BOOL_COLUMNS = ('p4c_over_budget', 'p4c_over_stages', 'unverified'
 # Verifier `failure` values that mean p4c does not compile the design: O1 drops
 # them like any other p4c-infeasible design.
 _P4C_REFUSED_FAILURES = ('assembler', 'p4c_errors')
+_PHV_SIZE_COLUMNS = ('p4c_phv_8', 'p4c_phv_16', 'p4c_phv_32')
 _VERIFICATION_NUMERIC_COLUMNS = ('p4c_stage_depth', 'p4c_blocks', 'p4c_sram',
-                                 'p4c_map_ram', 'p4c_phv_containers')
+                                 'p4c_map_ram', 'p4c_phv_containers') + _PHV_SIZE_COLUMNS
 # Provenance fields that must match run_manifest.json's pin.
 _ENVIRONMENT_FIELDS = ('p4c_image', 'open_p4studio_commit')
 
@@ -309,7 +312,7 @@ _FLOAT_COLUMNS = [
     'stages_real', 'tcam_real', 'sram_real', 'map_ram_real',
     'delta_select',
     'model_stage_depth', 'model_blocks', 'p4c_sram', 'p4c_map_ram',
-    'p4c_phv_containers',
+    'p4c_phv_containers', 'p4c_phv_8', 'p4c_phv_16', 'p4c_phv_32',
 ]
 
 # The archive boundary (Task 9): the tuple also holds the 2026-10-04
@@ -634,6 +637,10 @@ def _join_verification(df, results_dir, require_verified):
                                     + list(_VERIFICATION_NUMERIC_COLUMNS))
     else:
         _check_environment(results_dir, verification)
+        # A verification.csv written before the per-size PHV columns existed has none.
+        for col in _PHV_SIZE_COLUMNS:
+            if col not in verification.columns:
+                verification[col] = ''
 
     missing = sorted(set(df['row_id']) - set(verification['row_id']))
     if missing and require_verified:

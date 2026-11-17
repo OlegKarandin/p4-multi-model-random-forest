@@ -92,6 +92,22 @@ def phv_containers(logs_dir):
     return sum(group['containers_occupied'] for group in phv.get('normal', []))
 
 
+def phv_by_size(logs_dir):
+    """{container bits: containers occupied} over metrics.json's phv.normal groups (the
+    same groups phv_containers sums; tagalong excluded). None when metrics.json is
+    absent. Read from metrics.json, never from phv_allocation_summary_0.log."""
+    path = os.path.join(logs_dir, 'metrics.json')
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding='utf-8') as handle:
+        phv = json.load(handle).get('phv', {})
+    sizes = {}
+    for group in phv.get('normal', []):
+        bits = int(group['bit_width'])
+        sizes[bits] = sizes.get(bits, 0) + group['containers_occupied']
+    return sizes
+
+
 @dataclass(frozen=True)
 class P4cNumbers:
     """What one compile committed to. None always means "p4c did not get that
@@ -104,6 +120,7 @@ class P4cNumbers:
     sram: Optional[int]
     map_ram: Optional[int]
     phv_containers: Optional[int]
+    phv_by_size: Optional[dict] = None
 
     @property
     def allocated(self):
@@ -128,4 +145,5 @@ def p4c_numbers(logs_dir):
         blocks=None if table_blocks is None else sum(table_blocks.values()),
         table_blocks=table_blocks,
         sram=totals.sram, map_ram=totals.map_ram,
-        phv_containers=phv_containers(logs_dir))
+        phv_containers=phv_containers(logs_dir),
+        phv_by_size=phv_by_size(logs_dir))

@@ -88,6 +88,17 @@ def test_phv_containers_counts_normal_containers_only(tmp_path):
     assert gt.phv_containers(_logs(tmp_path, metrics=_METRICS)) == 59
 
 
+def test_phv_by_size_reads_each_normal_container_size(tmp_path):
+    """Per-size PHV (8 / 16 / 32 bits) beside the total, from metrics.json (Handoff 7 T10)."""
+    logs = _logs(tmp_path, metrics=_METRICS)
+    assert gt.phv_by_size(logs) == {8: 16, 16: 29, 32: 14}
+    assert gt.p4c_numbers(logs).phv_by_size == {8: 16, 16: 29, 32: 14}
+
+
+def test_phv_by_size_is_none_without_metrics(tmp_path):
+    assert gt.phv_by_size(_logs(tmp_path)) is None
+
+
 def test_p4c_numbers_on_a_compile_that_never_allocated(tmp_path):
     logs = _logs(tmp_path, resources="no allocation\n", summary=_SUMMARY_TWO_ROUNDS)
     numbers = gt.p4c_numbers(logs)

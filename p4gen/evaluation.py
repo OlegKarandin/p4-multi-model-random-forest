@@ -642,8 +642,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     resolved = list(table_plan)
     raw_of = {name: field_plan[packed_field(name)][0] for name in resolved}
     # The plan's tables are disjoint's: the app tables, then the ddos-only ones.
-    assert [raw_of[name] for name in resolved] == (
-        list(feature_intervals_app) + list(ddos_only_intervals)), resolved
+    if [raw_of[name] for name in resolved] != (
+            list(feature_intervals_app) + list(ddos_only_intervals)):
+        raise AssertionError(resolved)
     position = {name: index for index, name in enumerate(resolved)}
     trees = _program_trees(tree_nodes_app, tree_nodes_ddos)
     packed_side = _packed_trees(trees, own, layout, raw_of, position,

@@ -1354,6 +1354,44 @@ def test_agreement_table_names_compile_failures_and_budget_false_feasibles():
         'joint-off_M025_s03_k05': 'BUDGET_FALSE_FEASIBLE'}   # s02: model-infeasible, no miss
 
 
+def test_phv_by_arm_averages_p4c_containers_per_size_for_k_le_8_and_k_ge_9():
+    """Handoff 7 T10: PHV is a reported column, per arm and k cell, p4c's containers per
+    size (8 / 16 / 32) and in total; designs without p4c PHV are not averaged in."""
+    rows = []
+    for arm, base in (('independent-tree', 40), ('joint-tree', 30)):
+        for k, extra in ((3, 0), (5, 2), (9, 10), (12, 14)):
+            rows.append({'arm_slug': arm, 'k': k, 'p4c_phv_8': 10, 'p4c_phv_16': base + extra,
+                         'p4c_phv_32': 6, 'p4c_phv_containers': 16 + base + extra})
+    rows.append({'arm_slug': 'joint-tree', 'k': 4, 'p4c_phv_8': float('nan'),
+                 'p4c_phv_16': float('nan'), 'p4c_phv_32': float('nan'),
+                 'p4c_phv_containers': float('nan')})
+    table = claims.phv_by_arm(pd.DataFrame(rows))
+    cell = table.set_index(['arm_slug', 'k_group'])
+    assert cell.loc[('independent-tree', 'k<=8'), 'n'] == 2
+    assert cell.loc[('independent-tree', 'k<=8'), 'p4c_phv_16'] == 41.0
+    assert cell.loc[('independent-tree', 'k>=9'), 'p4c_phv_16'] == 52.0
+    assert cell.loc[('joint-tree', 'k<=8'), 'n'] == 2          # the NaN row is not counted
+    assert cell.loc[('joint-tree', 'k>=9'), 'p4c_phv_containers'] == 58.0
+    assert list(table['arm_slug'].unique()) == ['independent-tree', 'joint-tree']
+
+
+def test_agreement_table_does_not_count_a_failed_compile_as_exact():
+    """A p4c_errors failure on a program within 12 stages keeps p4c's numbers (verify
+    runner), which here equal the model's; the row is a miss and must not also be
+    counted stage-exact and blocks-exact (review S-M1, 2026-11-17)."""
+    lines = [
+        _verification_line('joint-off', 25, 0, verdict='COMPILE_ERROR'),
+        _verification_line('joint-off', 25, 1),
+    ]
+    for line in lines:
+        line['model_hw_feasible'] = 'True'
+    summary, misses = agreement_table(_verification_frame(lines))
+    cell = summary.iloc[0]
+    assert (cell['n'], cell['stage_depth_exact'], cell['blocks_exact'],
+            cell['compile_error_model_feasible']) == (2, 1, 1, 1)
+    assert list(misses['row_id']) == ['joint-off_M025_s00_k05']
+
+
 def test_count_twin_invariant_violations(tmp_path):
     from src.reporting.campaign_data import count_twin_invariant_violations
     rows = tmp_path / 'rows'
@@ -1502,6 +1540,49 @@ def _three_arm_frame(n_splits=3):
                                  'acc_ddos': 0.9, 'f1_ddos': 0.88,
                                  'blocks': float(M - 2 * arm_index), 'stage_depth': 10.0})
     return pd.DataFrame(rows)
+
+
+def _four_arm_frame(n_splits=3):
+    """The paper family (2026-11): independent-tree baseline, joint-tree, joint-off and its
+    aligned twins, on 2 M x n_splits x k in (3, 9)."""
+    rows = []
+    for arm_index, arm in enumerate(('independent-tree', 'joint-tree', 'joint-off',
+                                     'joint-off-al')):
+        for M in (25, 50):
+            for split in range(n_splits):
+                for k in (3, 9):
+                    rows.append({'arm_slug': arm, 'M': float(M), 'split': split, 'k': k,
+                                 'acc_app': 0.8 + 0.01 * arm_index + 0.001 * split,
+                                 'f1_app': 0.78 + 0.01 * arm_index,
+                                 'acc_ddos': 0.9, 'f1_ddos': 0.88 + 0.001 * split,
+                                 'blocks': float(M - 2 * arm_index - k), 'stage_depth': 10.0})
+    return pd.DataFrame(rows)
+
+
+def test_the_baseline_of_the_four_arm_family_is_independent_tree():
+    df = _four_arm_frame()
+    assert claims.resolve_baseline(df) == 'independent-tree'
+    assert claims.resolve_baseline(_three_arm_frame()) == 'independent'
+    assert claims.resolve_baseline(df, 'joint-off') == 'joint-off'
+
+
+def test_paired_tests_and_the_ablation_use_independent_tree_as_the_baseline():
+    df = _four_arm_frame()
+    tests = claims.paired_tests(df)
+    assert set(tests['baseline']) == {'independent-tree'}
+    assert 'independent-tree' not in set(tests['treatment'])
+    table = claims.ablation_decomposition(df)
+    contrasts = set(table['contrast'])
+    assert {'joint-off - independent-tree', 'joint-tree - independent-tree',
+            'joint-off-al - joint-off'} <= contrasts
+    assert not any(c.startswith('independent-tree -') for c in contrasts)
+
+
+def test_the_hypervolume_table_has_independent_tree_as_the_baseline_not_a_treatment():
+    hv = claims.hypervolume_by_arm(_four_arm_frame())
+    base = hv[hv['arm_slug'] == 'independent-tree']
+    gain = base['hypervolume_gain'].dropna()
+    assert len(gain) and (gain == 1.0).all()
 
 
 def test_joint_arm_slugs_are_sharing_then_twins_and_the_families_keep_their_size():

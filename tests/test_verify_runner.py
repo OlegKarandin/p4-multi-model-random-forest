@@ -138,6 +138,8 @@ def test_a_normal_row_is_exact_kept_logs_tarred_and_merged(tmp_path, monkeypatch
     assert (record["p4c_stage_depth"], record["p4c_blocks"]) == (12, 6)
     assert (record["p4c_sram"], record["p4c_map_ram"], record["p4c_phv_containers"]) \
         == (40, 10, 45)
+    # per-size PHV beside the total (a size with no containers reads 0), Handoff 7 T10
+    assert (record["p4c_phv_8"], record["p4c_phv_16"], record["p4c_phv_32"]) == (16, 29, 0)
     assert (record["p4c_errors"], record["p4c_warnings"]) == (0, 3)
     assert record["unverified"] is False and record["tables_differing"] == []
     assert record["p4c_image"] == "ghcr.io/x/p4c:1"
