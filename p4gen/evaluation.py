@@ -12,6 +12,8 @@ from p4gen.build_p4_script import (
     call_site_constants,
     code_field_container_sizes,
     iat_scratch_fields,
+    packed_field,
+    packed_program_plan,
     plan_key_order,
     resolve_feature_plan,
     resolve_per_task_plan,
@@ -67,7 +69,10 @@ from p4model.program import (
     ENCODINGS,
     PER_TASK_ENCODING,
     PER_TREE_ENCODING,
+    DISJOINT_PER_TREE_ENCODING,
     SHARED_TASK,
+    TaskSpec,
+    is_packed,
     ORIENTATION_REGISTER,
     VOTE_EPILOGUE_STAGES,
     per_task_field,
@@ -206,6 +211,46 @@ def _packed_tree_entries(codewords, key_bits, use_default_action_discount):
   return entries, length
 
 
+def _packed_trees(trees, own, layout, raw_of, position, use_default_action_discount):
+  """The classification side of a packed encoding (program.is_packed), per tree in
+  program order: {ternary_entries, codeword_length, ternary_table_specs,
+  ternary_key_bytes, ternary_task, tree_reads}.
+
+  trees: _program_trees' [(task, index, nodes)]. own: {task: [{field name: that
+  tree's own intervals}]}, keyed as the layout's fields are (raw features under
+  per_tree, resolved names under disjoint_per_tree). raw_of: field name -> raw
+  feature (the tree's paths name raw features). position: field name -> index of
+  the range table writing that field."""
+  out = {"ternary_entries": 0, "codeword_length": 0, "ternary_table_specs": [],
+         "ternary_key_bytes": [], "ternary_task": [], "tree_reads": []}
+  for task, index, nodes in trees:
+    intervals = own[task][index]
+    key = packed.key_bytes(layout, task, index)
+    # The key's bits as the program writes them (padded slices included), which
+    # is what the replay sums from the text (p4_replay.tree_key_bits).
+    key_bits = packed.key_bits(layout, task, index)
+    entries, length = _packed_tree_entries(
+        generate_codewords(get_root_to_leaf_paths({0: nodes}),
+                           {raw_of[name]: iv for name, iv in intervals.items()}),
+        key_bits, use_default_action_discount)
+    out["ternary_entries"] += entries
+    # Independent keys, as under 'disjoint': see ResourceUsage.codeword_length.
+    out["codeword_length"] = max(out["codeword_length"], length)
+    price = packed_alone_blocks(key)
+    if price is None:
+      raise CrossbarKeyTooWide(
+          "tree %s_%d's key of %d bytes cannot be placed in one stage's ternary "
+          "crossbar" % (task, index, len(key)), key_bits)
+    out["ternary_table_specs"].append((price * tree_entries_to_blocks(entries), len(key)))
+    out["ternary_key_bytes"].append(key)
+    out["ternary_task"].append(task)
+    # Rule E (usage.tree_readiness_levels): a tree waits for the range tables
+    # of the fields it keys, which is what the replay maps from a program's
+    # keys (p4_replay.tree_range_reads).
+    out["tree_reads"].append([position[name] for name in intervals])
+  return out
+
+
 def _key_slices(fields):
   """One classification key as packing.crossbar_stages_needed's key_slices
   takes it: (field id, slices) per (field id, bit width) of `fields`, laid
@@ -328,7 +373,7 @@ def _feature_readers(keys, features):
 def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddos, encoding,
                  use_default_action_discount=False):
   """Fitted-forest frontend for multi_model_memory_evaluation: runs the
-  'joint'/'per_task'/'per_tree'/'disjoint' encoding branches on both
+  'joint'/'per_task'/'per_tree'/'disjoint'/'disjoint_per_tree' encoding branches on both
   RandomForestClassifiers and pools everything they produce, once converged,
   into a plain dict under the same keys regardless of which branch ran.
   In every encoding a tree keys only the code fields of the features it splits
@@ -338,9 +383,13 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   table positions it reads (usage.tree_readiness_levels' rule E). A tree with
   no split raises p4model.errors.NoSplitTree in every encoding (R6), before
   any refusal but RangeEntriesDoNotFit (range_matching_resource_usage runs
-  first). 'per_tree' adds "ternary_key_bytes", one packed.key_bytes
-  tuple per tree (ternary_fields and ternary_key_bits are None there), and
-  also raises ActionDataTooWide and PhvContainersExhausted (packed.layout_for).
+  first). The two packed encodings (program.is_packed: 'per_tree' and
+  'disjoint_per_tree') add "ternary_key_bytes", one packed.key_bytes tuple per
+  tree (ternary_fields and ternary_key_bits are None there), and also raise
+  ActionDataTooWide and PhvContainersExhausted (packed.layout_for).
+  'disjoint_per_tree' (arm independent-tree) prices 'disjoint''s range tables,
+  each writing one packed field per resolved name, from the generator's own
+  plan and layout (build_p4_script.packed_program_plan).
 
   This is the Tier 2 ProgramSpec seam (Spec S4.5, finding F6): downstream of
   this function, p4model.usage.assemble_usage takes only this dict and is
@@ -519,33 +568,9 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
                                uses_timestamp(feature_intervals))
 
     position = {feature: index for index, feature in enumerate(feature_intervals)}
-    ternary_entries, codeword_length = 0, 0
-    ternary_table_specs, ternary_key_bytes = [], []
-    ternary_task, tree_reads = [], []
-    for task, index, nodes in trees:
-      intervals = own[task][index]
-      key = packed.key_bytes(layout, task, index)
-      # The key's bits as the program writes them (padded slices included), which
-      # is what the replay sums from the text (p4_replay.tree_key_bits).
-      key_bits = packed.key_bits(layout, task, index)
-      entries, length = _packed_tree_entries(
-          generate_codewords(get_root_to_leaf_paths({0: nodes}), intervals), key_bits,
-          use_default_action_discount)
-      ternary_entries += entries
-      # Independent keys, as under 'disjoint': see ResourceUsage.codeword_length.
-      codeword_length = max(codeword_length, length)
-      price = packed_alone_blocks(key)
-      if price is None:
-        raise CrossbarKeyTooWide(
-            "tree %s_%d's key of %d bytes cannot be placed in one stage's ternary "
-            "crossbar" % (task, index, len(key)), key_bits)
-      ternary_table_specs.append((price * tree_entries_to_blocks(entries), len(key)))
-      ternary_key_bytes.append(key)
-      ternary_task.append(task)
-      # Rule E (usage.tree_readiness_levels): a tree waits for the range tables
-      # of the features it keys, which is what the replay maps from a program's
-      # keys (p4_replay.tree_range_reads).
-      tree_reads.append([position[feature] for feature in intervals])
+    packed_side = _packed_trees(trees, own, layout,
+                                {feature: feature for feature in feature_intervals},
+                                position, use_default_action_discount)
 
     # Readers, the register and range-pool tie orders: a feature is read by
     # every tree with a threshold on it, whichever task.
@@ -571,6 +596,89 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
     # bytes are the bus bytes (the range pool rounds to 16-byte words itself).
     range_action_bytes = [packed.bus_bytes(layout, feature)
                           for feature in feature_intervals]
+
+  elif encoding == DISJOINT_PER_TREE_ENCODING:
+    # Arm independent-tree (spec 2026-11-17-independent-tree-encoding-design.md):
+    # the range pool is 'disjoint''s (each task's own intervals; one table `f` for a
+    # feature both tasks split identically, else app_f / ddos_f, all keying the
+    # shared RAW <f>_val), and each table writes ONE packed field
+    # code_pk_<resolved> holding the per-tree codes of its reader tasks' trees, as
+    # under 'per_tree'.
+    feature_intervals_app = get_feature_intervals(clf_app, selected_features_app)
+    feature_intervals_ddos = get_feature_intervals(clf_ddos, selected_features_ddos)
+    tree_nodes_app = tree_nodes_for(clf_app, selected_features_app)
+    tree_nodes_ddos = tree_nodes_for(clf_ddos, selected_features_ddos)
+    shared_features = {
+        feature for feature, intervals in feature_intervals_ddos.items()
+        if feature_intervals_app.get(feature) == intervals}
+    ddos_only_intervals = {feature: intervals
+                           for feature, intervals in feature_intervals_ddos.items()
+                           if feature not in shared_features}
+    range_entries_app, range_blocks_app, range_table_specs_app = (
+        range_matching_resource_usage(feature_intervals_app))
+    (range_entries_ddos, range_blocks_ddos,
+     range_table_specs_ddos) = range_matching_resource_usage(ddos_only_intervals)
+    range_blocks = range_blocks_app + range_blocks_ddos
+    range_entries = range_entries_app + range_entries_ddos
+    range_table_specs = range_table_specs_app + range_table_specs_ddos
+
+    # The plan and the packed layout are the GENERATOR's own
+    # (build_p4_script.packed_program_plan, the one helper the program text and
+    # its entries are written from), so training cannot build them in another
+    # order: resolved names in resolve_feature_plan's program order, task order
+    # [APP_TASK, DDOS_TASK] for layout_for, ONE layout_for call keyed by resolved
+    # name (two tasks' fields of one raw feature are distinct crossbar identities,
+    # K2) with n_vals = the distinct raw features (one <f>_val each, K1). The
+    # TaskSpecs carry what the plan reads (name, trees, features, intervals);
+    # num_classes is never read by it. Refuses what the generator refuses
+    # (NoSplitTree, ActionDataTooWide, PhvContainersExhausted), after
+    # RangeEntriesDoNotFit as in every encoding.
+    table_plan, field_plan, own, layout = packed_program_plan(
+        [TaskSpec(DDOS_TASK, 0, list(clf_ddos.estimators_), list(selected_features_ddos),
+                  feature_intervals_ddos),
+         TaskSpec(APP_TASK, 0, list(clf_app.estimators_), list(selected_features_app),
+                  feature_intervals_app)],
+        DISJOINT_PER_TREE_ENCODING)
+    resolved = list(table_plan)
+    raw_of = {name: field_plan[packed_field(name)][0] for name in resolved}
+    # The plan's tables are disjoint's: the app tables, then the ddos-only ones.
+    assert [raw_of[name] for name in resolved] == (
+        list(feature_intervals_app) + list(ddos_only_intervals)), resolved
+    position = {name: index for index, name in enumerate(resolved)}
+    trees = _program_trees(tree_nodes_app, tree_nodes_ddos)
+    packed_side = _packed_trees(trees, own, layout, raw_of, position,
+                                use_default_action_discount)
+
+    # Registers are one schedule of the UNION of raw features, as under
+    # 'disjoint'; a raw feature is read by every tree with a code on it,
+    # whichever task and whichever of its tables.
+    emitted_features = list(feature_intervals_app) + list(feature_intervals_ddos)
+    dependents = {feature: sum(feature in (raw_of[name] for name in own[task][index])
+                               for task, index, _ in trees)
+                  for feature in emitted_features}
+    range_levels = (
+        readiness_levels_for(feature_intervals_app, emitted_features=emitted_features,
+                             dependents=dependents) +
+        readiness_levels_for(ddos_only_intervals, emitted_features=emitted_features,
+                             dependents=dependents))
+    range_fields = (range_key_fields_for(feature_intervals_app) +
+                    range_key_fields_for(ddos_only_intervals))
+    register_names = register_names_for(emitted_features)
+    ternary_fields = None
+    ternary_key_bits = None
+    ternary_key_slices = None
+    # Per table: the trees reading it (range_dependents), and their task, or
+    # SHARED_TASK for the one table of a feature both tasks split identically --
+    # p4_replay.table_tasks' rule, read from the trees.
+    readers = [[(task, index) for task, index, _ in trees if name in own[task][index]]
+               for name in resolved]
+    range_dependents = [len(tree_set) for tree_set in readers]
+    range_task = []
+    for tree_set in readers:
+      tasks = {task for task, _ in tree_set}
+      range_task.append(next(iter(tasks)) if len(tasks) == 1 else SHARED_TASK)
+    # Each table's action writes its one packed field whole.
+    range_action_bytes = [packed.bus_bytes(layout, name) for name in resolved]
 
   elif encoding == 'disjoint':
     # Each model keeps its own intervals (get_feature_intervals runs the
@@ -682,8 +790,16 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
         "expected one of {}".format(encoding, ENCODINGS))
 
   # Joint, disjoint and per-task codes: the classification side, per tree, from
-  # _pruned_trees (every tree keys only its own features, decision 2.3).
-  if encoding != PER_TREE_ENCODING:
+  # _pruned_trees (every tree keys only its own features, decision 2.3); the two
+  # packed encodings: from _packed_trees.
+  if is_packed(encoding):
+    ternary_table_specs = packed_side["ternary_table_specs"]
+    ternary_key_bytes = packed_side["ternary_key_bytes"]
+    ternary_task = packed_side["ternary_task"]
+    tree_reads = packed_side["tree_reads"]
+    ternary_entries = packed_side["ternary_entries"]
+    codeword_length = packed_side["codeword_length"]
+  else:
     ternary_table_specs = classification["ternary_table_specs"]
     ternary_fields = classification["ternary_fields"]
     ternary_key_bits = classification["ternary_key_bits"]
@@ -699,7 +815,7 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
   # program text counts with, and refused over the ingress budget in EVERY
   # encoding (PhvContainersExhausted; per-tree's layout already refuses a
   # canonical container it cannot place).
-  if encoding == PER_TREE_ENCODING:
+  if is_packed(encoding):
     code_containers = list(layout.containers.values())
   else:
     code_containers = [tuple(sizes) for sizes in
@@ -745,8 +861,8 @@ def _pool_inputs(clf_app, clf_ddos, selected_features_app, selected_features_ddo
       # does not read them.
       "phv_fields": phv_fields,
   }
-  # Only the per-tree branch: packed keys, placed by their bytes.
-  if encoding == PER_TREE_ENCODING:
+  # Only the packed encodings: packed keys, placed by their bytes.
+  if is_packed(encoding):
     pool["ternary_key_bytes"] = ternary_key_bytes
   return pool
 
