@@ -182,6 +182,8 @@ def test_training_prices_exactly_what_the_generated_program_replays(tmp_path, na
 @pytest.mark.parametrize("make", [lambda: _from_specs(_overlap_design()), _mixed_design])
 def test_two_tasks_on_one_raw_feature_get_distinct_crossbar_identities(make):
   design = make()
+  # Disjointness holds by construction (identities include the resolved name); the real
+  # guards are the pool == replay test and the resolved[field] / reader-task check below.
   pool = _pool(design)
   resolved = _resolved(design)
   n_app = len(design[0].estimators_)

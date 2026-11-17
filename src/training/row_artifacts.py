@@ -44,7 +44,7 @@ def _generate(ctx, row_id, model_app, model_ddos, names_app, names_ddos, encodin
         intervals_app = intervals_ddos = _derive_joint_feature_intervals(
             model_app, model_ddos, names_app, names_ddos)
     else:
-        # Each model's own, for 'disjoint', 'per_task' and 'per_tree' (whose
+        # Each model's own, for 'disjoint', 'per_task', 'per_tree' and 'disjoint_per_tree' (whose
         # generator rebuilds the shared tables' union from them).
         intervals_app = _derive_feature_intervals(model_app, names_app)
         intervals_ddos = _derive_feature_intervals(model_ddos, names_ddos)

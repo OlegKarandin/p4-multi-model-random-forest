@@ -107,7 +107,7 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
     through as feature_intervals_app/feature_intervals_ddos --
     `generate_P4_code` resolves per-feature sharing vs namespacing itself.
 
-    encoding == 'per_task' or 'per_tree': each model's OWN intervals too, with
+    encoding == 'per_task', 'per_tree' or 'disjoint_per_tree': each model's OWN intervals too, with
     `encoding` passed through (`resolve_per_task_plan` / `resolve_per_tree_plan`).
     No encoding gets @stage pins (the crossbar port, spec 2026-11-13).
 
@@ -675,7 +675,7 @@ def _process_single_split(
     actual elimination loop to `_run_elimination` (Task 5) for the single
     `arm` requested. `n_trees`/`max_depth` are gone from the parameter list --
     they live on `cfg` (F10i: no more `-1` sentinel); `arm` selects
-    'independent' (disjoint encoding) or 'joint' encoding.
+    'independent' (disjoint encoding), 'independent-tree' (disjoint_per_tree) or 'joint' encoding.
 
     validate_on_hardware : bool
         When True, each iteration's freshly trained model(s) are also
@@ -784,7 +784,7 @@ def compare_feature_selection_approaches_parallel(
 ):
     """Run ONE arm across n_splits, each split in its own process.
 
-    arm : 'independent', 'joint', 'joint-task' or 'joint-tree'.
+    arm : 'independent', 'independent-tree', 'joint', 'joint-task' or 'joint-tree'.
     cfg : TrainConfig -- the arm definition. Frozen, so it is safe to ship to
         every worker.
 

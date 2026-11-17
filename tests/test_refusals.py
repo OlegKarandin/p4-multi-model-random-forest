@@ -598,11 +598,11 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
     generator itself refuses to write it, the generator -- names the same constraint.
     Limits are moved to make refusals: the key limit to 1 live bit, the 16-bit PHV budget
     to 6 containers (not per-tree: its layout refuses at generation), the budget M
-    to 12 blocks, the action data bus to 1 byte (per-tree only: the program is written
+    to 12 blocks, the action data bus to 1 byte (packed encodings only (per_tree, disjoint_per_tree): the program is written
     under the real bus, then training and the replay meet the moved one); and an app
     forest of stumps (no_split_tree, refused by the generator too)."""
     regimes = (["key", "budget", "no_split"]
-               + (["bus"] if encoding == PER_TREE_ENCODING else ["phv"]))
+               + (["bus"] if is_packed(encoding) else ["phv"]))
     seen = collections.Counter()
     for seed in range(300):
         if sum(seen.values()) >= 20 and len({r for r, _ in seen}) == len(regimes):
@@ -645,7 +645,7 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
     assert sum(seen.values()) >= 20, seen
     assert {regime for regime, _ in seen} == set(regimes), seen
     assert ("no_split", "no_split_tree") in seen, seen
-    if encoding == PER_TREE_ENCODING:
+    if is_packed(encoding):
         assert ("bus", "bus_bytes_over") in seen, seen
 
 

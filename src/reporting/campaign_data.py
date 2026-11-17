@@ -78,7 +78,7 @@ parsing. Downstream modules (P7b `claims.py`, P7c `figures.py`) should treat
 this as the interface:
 
 Identity / provenance
-    arm            str   'independent', 'joint', 'joint-task' or 'joint-tree' -- NOT the full arm
+    arm            str   'independent', 'independent-tree', 'joint', 'joint-task' or 'joint-tree' -- NOT the full arm
                           identity (every joint sensitivity arm shares
                           arm == 'joint'; see arm_slug below).
     method         str   legacy derived duplicate of arm ('single'/'multi').
