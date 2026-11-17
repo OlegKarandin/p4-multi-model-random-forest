@@ -280,6 +280,23 @@ def _rows_of(block_count, per_row):
   return max(1, math.ceil(block_count / per_row))
 
 
+def _word_widths(unit_rows, per_row):
+  """The column-run widths of `unit_rows` 512-row words costing `per_row` blocks each. p4c
+  places each word as ONE run in ONE column and never splits a word across columns (probe
+  2026-11-17, tests/test_p4c_multiword.py: words of 5,5,5 + 4,4 do not share a stage, a
+  lone table of three 7-block words needs two); a word wider than a column spans both, as
+  _stage_shards models it. So the packing sees one run per word, not the table's total."""
+  return [width for _ in range(unit_rows) for width, _ in _stage_shards(per_row, 1)]
+
+
+def _words_per_stage(per_row):
+  """The most words of `per_row` blocks one stage holds alone: floor(12 / per_row) per
+  column, two columns; a word wider than a column takes the stage whole."""
+  if per_row > TCAM_ROWS_PER_STAGE:
+    return 1
+  return TCAM_COLUMNS_PER_STAGE * (TCAM_ROWS_PER_STAGE // per_row)
+
+
 def _row_chunks(idx, rows, per_row, fields, bits, level, priority):
   """One table's _Units: the whole table (`rows` 512-row words, each costing
   `per_row` blocks), or -- charged more than one stage's TCAM_BLOCKS_PER_STAGE --
@@ -296,7 +313,7 @@ def _row_chunks(idx, rows, per_row, fields, bits, level, priority):
   refused."""
   units = []
   remaining_rows = rows
-  rows_per_chunk = max(1, TCAM_BLOCKS_PER_STAGE // per_row)
+  rows_per_chunk = _words_per_stage(per_row)
   chunk = 0
   while True:
     chunk_rows = min(remaining_rows, rows_per_chunk)
@@ -509,8 +526,8 @@ def _crossbar_stage_test(units, seed, mode='packed'):
     return None
   charges = [unit.rows * per_row[unit.table_idx] for unit in units]
   if not alone and not fits_two_columns(
-      list(seed.blocks) + [width for charge in charges
-                           for width, _ in _stage_shards(charge, 1)]):
+      list(seed.blocks) + [width for unit in units
+                           for width in _word_widths(unit.rows, per_row[unit.table_idx])]):
     return None
   return charges
 
@@ -788,8 +805,8 @@ def crossbar_stages_needed(table_specs, readiness_levels=None, key_fields=None,
     for index, placed in by_index.items():
       loads.append(StageLoad(
           index=index,
-          blocks=tuple(width for _, charge in placed
-                       for width, _ in _stage_shards(charge, 1)),
+          blocks=tuple(width for unit, charge in placed
+                       for width in _word_widths(unit.rows, charge // unit.rows)),
           fields=frozenset().union(*(unit.fields for unit, _ in placed)),
           tables=len(placed)))
     return plan(loads, table_stages, charged)

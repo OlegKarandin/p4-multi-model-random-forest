@@ -611,7 +611,8 @@ def test_a_classification_table_wider_than_a_stage_is_split_by_whole_rows():
     # A 30-block table of a 5-block key (6 row words) cannot sit in one
     # stage's 24 blocks. The ordered simulation (two keys here, so it runs)
     # splits it into chunks of whole words that each can -- 4 words (20
-    # blocks, 12 | 8) then 2 (10) -- every chunk keeping the full key; the
+    # blocks, 5+5 | 5+5: each word is one run in one column, tests/
+    # test_p4c_multiword.py) then 2 (10) -- every chunk keeping the full key; the
     # table is done at the later stage. The 1-block second key, placed after
     # the first chunk, finds crossbar slots to spare.
     from p4model.packing import crossbar_stages_needed
@@ -622,7 +623,7 @@ def test_a_classification_table_wider_than_a_stage_is_split_by_whole_rows():
                                   key_field_bits=[(200,), (16,)],
                                   placement_priority=[2, 1])
     assert (plan.occupied, plan.blocks, plan.table_stages) == (2, 31, (1, 0))
-    assert [load.blocks for load in plan.stage_loads] == [(12, 8, 1), (10,)]
+    assert [load.blocks for load in plan.stage_loads] == [(5, 5, 5, 5, 1), (5, 5)]
 
 
 def test_a_classification_table_wider_than_a_column_stays_in_one_stage():
