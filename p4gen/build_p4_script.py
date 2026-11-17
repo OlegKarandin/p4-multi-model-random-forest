@@ -771,7 +771,8 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
     JOINT_ENCODING, DISJOINT_ENCODING: resolve_feature_plan; the tasks'
       intervals decide which fields are shared, as in the program text.
     PER_TASK_ENCODING: resolve_per_task_plan, below.
-    PER_TREE_ENCODING: generate_per_tree_table_entries.
+    PER_TREE_ENCODING, DISJOINT_PER_TREE_ENCODING: generate_per_tree_table_entries
+      (program.is_packed).
 
   Table and field names come from the same resolve_feature_plan the program
   text is built from: one range table per resolved entry, keyed on its raw
@@ -866,9 +867,9 @@ def generate_table_entries(tasks, use_default_action_discount=False, encoding=JO
   if encoding not in ENCODINGS:
     raise ValueError("encoding must be one of {}, got {!r}".format(
         ", ".join(repr(name) for name in ENCODINGS), encoding))
-  if encoding == PER_TREE_ENCODING:
+  if is_packed(encoding):
     return generate_per_tree_table_entries(
-        tasks, use_default_action_discount=use_default_action_discount)
+        tasks, use_default_action_discount=use_default_action_discount, encoding=encoding)
   task_intervals = [(task.name, task.intervals) for task in tasks]
   entries = []
   if encoding == PER_TASK_ENCODING:
@@ -1145,7 +1146,8 @@ def per_tree_layout(table_plan, tree_intervals, tasks, n_vals=None, raw_features
   return layout
 
 
-def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
+def generate_per_tree_table_entries(tasks, use_default_action_discount=False,
+                                    encoding=PER_TREE_ENCODING):
   '''The control-plane entries (generate_table_entries' record format, installed by
   p4/deploy_table_entries.py) of the packed per-tree program generate_p4_program
   emits under PER_TREE_ENCODING (spec 2026-11-11-packed-codes-stage-pin Sec 3.1,
@@ -1167,9 +1169,18 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
   code's own bit 0 (field bit - the code's bit offset). Keys in the program's order: the
   tree's features in table_plan order (both sorted by name).
 
+  Under DISJOINT_PER_TREE_ENCODING (arm independent-tree) the same, over
+  packed_program_plan's RESOLVED names: range table table_<index>_<resolved> keys its
+  RAW feature's value (`<raw>_val`, as the program does), its action writes
+  code_pk_<resolved>, and each tree keys slices of code_pk_<resolved> while its
+  codewords are built over RAW feature names (the paths name raw features).
+
   Refuses what the program refuses, before any entry is written: per_tree_layout's
   NoSplitTree, ActionDataTooWide, PhvContainersExhausted and ValueError.'''
-  table_plan, _, own, layout = packed_program_plan(tasks, PER_TREE_ENCODING)
+  table_plan, field_plan, own, layout = packed_program_plan(tasks, encoding)
+  # resolved entry -> raw feature: itself under per_tree, the field plan's under disjoint_per_tree
+  raw_of = ({name: field_plan[packed_field(name)][0] for name in table_plan}
+            if encoding == DISJOINT_PER_TREE_ENCODING else {name: name for name in table_plan})
   entries = []
   for index, feature in enumerate(table_plan):
     trees = [(task, i) for task, i, f in layout.place if f == feature]
@@ -1179,7 +1190,7 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
           (task, i): int(_per_task_code(interval, own[task][i][feature]), 2)
           for task, i in trees})
     entries += _range_table_entries("table_"+str(index)+"_"+feature, "set_code_"+feature,
-                                    feature.replace(" ","_").lower()+"_val",
+                                    raw_of[feature].replace(" ","_").lower()+"_val",
                                     table_plan[feature][0], value_of=value_of)
   # Program order, lowest priority first, as generate_p4_program lists them.
   for task in reversed(list(tasks)):
@@ -1202,7 +1213,8 @@ def generate_per_tree_table_entries(tasks, use_default_action_discount=False):
       entries += _tree_table_entries(
           "get_classification_tree_"+task.name+"_"+str(i),
           "classify_flow_codeword_"+task.name+"_"+str(i),
-          generate_codewords(paths, intervals)[0], fields, use_default_action_discount)
+          generate_codewords(paths, {raw_of[name]: iv for name, iv in intervals.items()})[0],
+          fields, use_default_action_discount)
   return entries
 
 
