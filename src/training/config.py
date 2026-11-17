@@ -9,7 +9,8 @@ filename is derived from the config that produced it.
 from dataclasses import dataclass
 
 from p4model.program import (DISJOINT_ENCODING, ENCODINGS, JOINT_ENCODING,
-                             PER_TASK_ENCODING, PER_TREE_ENCODING)
+                             PER_TASK_ENCODING, PER_TREE_ENCODING,
+                             DISJOINT_PER_TREE_ENCODING)
 from src.training.threshold_alignment import ALIGN_OBJECTIVES
 
 SELECTION_RULES = ('balanced', 'tied_cheapest')
@@ -33,8 +34,12 @@ SEARCH_MAX_DEPTH = 20
 # `joint-tree` all eliminate ONE shared feature list; they differ in the leaf keys.
 PER_TASK_ARM = 'joint-task'
 PER_TREE_ARM = 'joint-tree'
+# `independent-tree`: each task keeps its OWN features and thresholds (like `independent`)
+# and its trees are keyed by one packed code per tree.
+INDEPENDENT_TREE_ARM = 'independent-tree'
 ARM_ENCODINGS = {'independent': DISJOINT_ENCODING, 'joint': JOINT_ENCODING,
-                 PER_TASK_ARM: PER_TASK_ENCODING, PER_TREE_ARM: PER_TREE_ENCODING}
+                 PER_TASK_ARM: PER_TASK_ENCODING, PER_TREE_ARM: PER_TREE_ENCODING,
+                 INDEPENDENT_TREE_ARM: DISJOINT_PER_TREE_ENCODING}
 
 
 def arm_encoding(arm):
@@ -192,7 +197,8 @@ class TrainConfig:
         `joint-task` (the per-task encoding, 2026-11) deliberately ignores the
         alignment fields too: alignment reduces the union of thresholds, and a
         per-task key does not depend on the union, so the arm never aligns.
-        `joint-tree` (per-tree codes) ignores them for the same reason.
+        `joint-tree` (per-tree codes) and `independent-tree` (disjoint tables, per-tree
+        codes) ignore them for the same reason.
         """
         _validate_encoding(encoding)
         if encoding == DISJOINT_ENCODING:
@@ -201,6 +207,8 @@ class TrainConfig:
             return PER_TASK_ARM
         if encoding == PER_TREE_ENCODING:
             return PER_TREE_ARM
+        if encoding == DISJOINT_PER_TREE_ENCODING:
+            return INDEPENDENT_TREE_ARM
         if not self.alignment_enabled:
             return 'joint-off'
         return 'joint'

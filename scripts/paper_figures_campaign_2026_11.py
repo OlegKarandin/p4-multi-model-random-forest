@@ -43,7 +43,8 @@ RUN = 'results/campaign_2026_11'
 OUT = 'figures/campaign_2026_11/paper'          # --out; the figure functions write here
 FIGURES = 'figures/campaign_2026_11'            # --figures-dir: deliverables 10, 11
 IND, JOINT, ALIGNED = 'independent', 'joint-off', 'joint-off-al'
-FAMILY = (IND, JOINT, ALIGNED, 'joint-task', 'joint-tree')
+FAMILY = (IND, JOINT, ALIGNED, 'joint-task', 'joint-tree',
+          'independent-tree')
 PIPE_BLOCKS = 288  # 24 blocks x 12 stages
 
 # Style of the CNSM figures (pareto_fronts.pdf / other_metrics.pdf).

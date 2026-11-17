@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from src.training.errors import NoFeasibleSolution
-from src.training.config import TrainConfig, arm_encoding
+from src.training.config import INDEPENDENT_TREE_ARM, TrainConfig, arm_encoding
 from src.training.splits import make_task_splits
 from src.training.campaign_run import optuna_seed, row_id
 from src.training.row_artifacts import write_row_artifacts, write_trial_table
@@ -132,7 +132,7 @@ def _kickoff_hardware_validation(validate_on_hardware, hardware_output_dir, spli
             model_app, model_ddos, feature_names_app, feature_names_ddos)
         feature_intervals_app = feature_intervals
         feature_intervals_ddos = feature_intervals
-    elif encoding in ('disjoint', 'per_task', 'per_tree'):
+    elif encoding in ('disjoint', 'per_task', 'per_tree', 'disjoint_per_tree'):
         feature_intervals_app = _derive_feature_intervals(model_app, feature_names_app)
         feature_intervals_ddos = _derive_feature_intervals(model_ddos, feature_names_ddos)
     else:
@@ -382,6 +382,13 @@ def _build_result_row(arm, method, split_idx, k, names_app, names_ddos,
 _RESULT_ROW_KEYS = set(_build_result_row('joint', 'multi', 0, 0, [], []))
 
 
+def eliminates_shared(arm):
+    """True when the arm eliminates ONE feature list for both tasks; False for
+    the arms whose tasks keep their own features ('independent' and
+    'independent-tree')."""
+    return arm not in ('independent', INDEPENDENT_TREE_ARM)
+
+
 def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
                      validate_on_hardware=False, hardware_output_dir=None,
                      config=None, rows=None, row_context=None):
@@ -399,7 +406,9 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
         merged interval pool, so a feature used by only one task widens BOTH
         tasks' codewords), 'joint-task' (per-task encoding: the same one
         shared feature set and threshold tables, keys per task) or
-        'joint-tree' (per-tree encoding: likewise, keys per tree).
+        'joint-tree' (per-tree encoding: likewise, keys per tree) or
+        'independent-tree' (disjoint tables, packed per-tree codes: each task
+        eliminates its own features, like 'independent').
     app, ddos : TaskSplits.
 
     Both arms drop exactly one feature per task per iteration, so the two
@@ -431,7 +440,7 @@ def _run_elimination(arm, split_idx, app, ddos, feature_names, max_blocks, cfg,
     from p4gen.switch_semantics import switch_accuracy_scorer, switch_predict
 
     encoding = arm_encoding(arm)
-    shared = (arm != 'independent')
+    shared = eliminates_shared(arm)
     method = 'multi' if shared else 'single'
 
     remaining_app = list(range(app.X_train.shape[1]))

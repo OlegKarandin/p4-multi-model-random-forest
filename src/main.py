@@ -11,7 +11,7 @@ from p4gen.build_p4_script import (
     tree_nodes_for,
 )
 from p4model.program import JOINT_ENCODING
-from src.training.config import PER_TASK_ARM, PER_TREE_ARM, TrainConfig, arm_encoding
+from src.training.config import INDEPENDENT_TREE_ARM, PER_TASK_ARM, PER_TREE_ARM, TrainConfig, arm_encoding
 from src.training import campaign_run
 from src.training.campaign_runner import plan_jobs, run_jobs
 
@@ -85,6 +85,13 @@ PER_TASK_ARM_ENTRY = (PER_TASK_ARM, TrainConfig(alignment_enabled=False,
 PER_TREE_ARM_ENTRY = (PER_TREE_ARM, TrainConfig(alignment_enabled=False,
                                                 ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
 
+# The independent-tree encoding (p4model.program.DISJOINT_PER_TREE_ENCODING), named
+# by slug (--arm-slugs independent-tree): `independent`'s per-task feature lists
+# and tables with one packed code per tree. Never aligned; config as joint-tree's.
+INDEPENDENT_TREE_ARM_ENTRY = (INDEPENDENT_TREE_ARM,
+                              TrainConfig(alignment_enabled=False,
+                                          ccp_alpha_max=CAMPAIGN_CCP_ALPHA_MAX))
+
 
 def select_arms(which):
     if which == 'primary':
@@ -111,7 +118,7 @@ def select_arm_slugs(slugs):
     """
     catalogue = {}
     for arm, cfg in PRIMARY_ARMS + [LEGACY_JOINT_ARM_ENTRY, PER_TASK_ARM_ENTRY,
-                                    PER_TREE_ARM_ENTRY]:
+                                    PER_TREE_ARM_ENTRY, INDEPENDENT_TREE_ARM_ENTRY]:
         catalogue[cfg.arm_slug(arm_encoding(arm))] = (arm, cfg)
 
     chosen = []

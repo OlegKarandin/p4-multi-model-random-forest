@@ -30,7 +30,7 @@ from p4gen.build_p4_script import dt_thresholds_float_to_int
 from p4gen.evaluation import TOFINO_PIPELINE_STAGES, multi_model_memory_evaluation
 from p4gen.switch_semantics import switch_predict
 from p4model import refusals
-from p4model.program import PER_TREE_ENCODING
+from p4model.program import is_packed
 from src.training.threshold_alignment import align_with_policy
 from src.training import early_stopping
 from src.training import trial_selection
@@ -496,7 +496,7 @@ def train_multi_RF_Optuna_multi_constrained(
             feasible_trials, marks, cfg.select_alpha, k=len(features_A),
             max_blocks=max_blocks, delta_select=cfg.delta_select)
     except NoFeasibleSolution as exc:
-        if encoding == PER_TREE_ENCODING:
+        if is_packed(encoding):
             # A search made only of stumps has no feasible trial, but its stump
             # count is what the pilot check (spec 9.4) reads: hand the table on.
             exc.trial_table = trial_selection.trial_rows(study.trials, [])

@@ -93,7 +93,8 @@ def baseline(text):
 # A campaign row id: {arm_slug}_M{token}_s{NN}_k{NN} (campaign_run.row_id).
 _ROW_ID = re.compile(r'^(?P<arm>.+)_M(?:\d{3}|inf)_s\d+_k(?P<k>\d+)$')
 _ANY_K = re.compile(r'_k(\d+)(?:_|$)')
-ARM_ORDER = ('independent', 'joint-off', 'joint-off-al', 'joint-task', 'joint-tree')
+ARM_ORDER = ('independent', 'joint-off', 'joint-off-al', 'joint-task', 'joint-tree',
+             'independent-tree')
 K_GROUPS = ('k<=8', 'k>=9', 'all')
 
 
@@ -103,7 +104,7 @@ def arm_of(row_id):
     m = _ROW_ID.match(row_id)
     if m:
         return m.group('arm')
-    if row_id.startswith(('independent', 'heldout_independent',
+    if row_id.startswith(('independent_', 'heldout_independent',
                           'margin_independent')):
         return 'independent'
     return 'joint'
