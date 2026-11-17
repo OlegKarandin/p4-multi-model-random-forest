@@ -104,9 +104,12 @@ def test_every_program_in_the_identity_sample_passes_check_program():
                     "or any parent directory")
     names = sorted(name for name in os.listdir(sample) if name.endswith(".p4"))
     assert len(names) > 100
+    # The sample (results/, not in git) was written before the 2026-11-17 overlay-pin
+    # change; overlay_pin_rewrite.current_pins is that change, exactly.
+    from tests.overlay_pin_rewrite import current_pins
     for name in names:
         with open(os.path.join(sample, name), encoding="utf-8") as handle:
-            check_program(parse_program_text(handle.read()))
+            check_program(parse_program_text(current_pins(handle.read())))
 
 
 @pytest.mark.parametrize("encoding", ENCODINGS)
@@ -153,15 +156,15 @@ def test_each_pin_the_generator_emits_is_required(tmp_path, encoding):
 
 @pytest.mark.parametrize("encoding", ENCODINGS)
 def test_each_pin_dropped_at_g3_is_refused_when_present(tmp_path, encoding):
-    """A text carrying a pin gate G3 dropped (3.1 fwd no-overlay, 3.3 class_tree_*
-    no-overlay, 3.5 code_* solitary) is an older generator's program: refused
+    """A text carrying a dropped pin (G3: 3.1 fwd no-overlay, 3.5 code_* solitary;
+    2026-11-17: code_* no-overlay) is an older generator's program: refused
     unexpected_shape:pin:<pin>:<field>, although the pin changes no price."""
     (_, text), = _texts(tmp_path, encoding, 1, min_features=3)
     program = parse_program_text(text)
     first = text.index("@pa_")
-    dropped = [("pa_no_overlay", "fwd"), ("pa_no_overlay", sorted(program.class_fields)[0])]
+    dropped = [("pa_no_overlay", "fwd")]
     codes = sorted(name for name in program.declared if name.startswith("code_"))
-    dropped.append(("pa_solitary", codes[0]))
+    dropped += [("pa_solitary", codes[0]), ("pa_no_overlay", codes[0])]
     for pin, field in dropped:
         added = text[:first] + '@%s("ingress", "ig_md.%s")\n' % (pin, field) + text[first:]
         with pytest.raises(ProgramShapeRefused) as refused:
@@ -299,6 +302,11 @@ def test_a_math_unit_argument_that_is_an_expression_is_refused(tmp_path):
         check_program(parse_program_text(_with_math_unit(text, argument)))
 
 
+# The committed old-generator texts below predate the 2026-11-17 overlay-pin change
+# (tests/overlay_pin_rewrite.py), which check_program now refuses first; each test applies
+# that one edit so the text reaches the check the test is about.
+from tests.overlay_pin_rewrite import current_pins  # noqa: E402
+
 PRE_T38 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "pre_t38")
 
 
@@ -310,7 +318,7 @@ def test_a_pre_task_38_program_with_mean_features_is_refused():
     by the stateful-ALU check on their own."""
     from p4gen.program_checks import _check_stateful_alu
     with open(os.path.join(PRE_T38, "joint-off_M025_s06_k17.p4"), encoding="utf-8") as handle:
-        old = parse_program_text(handle.read())
+        old = parse_program_text(current_pins(handle.read()))
     assert len(old.math_units) == 6
     with pytest.raises(ProgramShapeRefused, match="^unexpected_shape:feature:\\w+_mean$"):
         check_program(old)
@@ -331,7 +339,7 @@ def test_a_pre_d48dd70_per_tree_program_is_a_named_refusal(tmp_path):
     --model-archive complete on older runs."""
     path = os.path.join(PRE_D48DD70, "joint-tree_M075_s02_k07.p4")
     with open(path, encoding="utf-8") as handle:
-        text = handle.read()
+        text = current_pins(handle.read())
     result = model_breakdown(parse_program_text(text))
     assert result["refusal"] == "program_shape"
     assert re.match(r"^unexpected_shape:packed_code:get_classification_tree_\w+_\d+:offset$",
@@ -442,7 +450,7 @@ def test_the_pre_a1_fixture_texts_are_refused_for_their_flow_hash(row_id):
     Hash<bit<32>>, `& 0xFFF`. They are refused now; the current texts of the same
     designs pass."""
     with open(os.path.join(PRE_A1, row_id + ".p4"), encoding="utf-8") as handle:
-        old = parse_program_text(handle.read())
+        old = parse_program_text(current_pins(handle.read()))
     assert old.flow_hash == (32, (), "&^")
     with pytest.raises(ProgramShapeRefused, match="^unexpected_shape:flow_hash$"):
         check_program(old)

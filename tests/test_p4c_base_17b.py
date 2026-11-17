@@ -68,6 +68,28 @@ with open(_FIXTURE + ".json", encoding="utf-8") as _handle:
 
 # row -> {"stage_depth"/"blocks": (model, p4c), table: {"stage"/"blocks": (model, p4c)}}
 KNOWN_MISSES = {
+    # 2026-11-17 (Handoff 6, fairness steps 5-6): @pa_no_overlay left the code fields. Each text was rewritten
+    # by tests/overlay_pin_rewrite.current_pins (12/12) and recompiled locally (WSL open-p4studio 0e81a468):
+    # p4c stage depth and blocks equal the previous compiles on 12/12, every tree's stage and blocks too, but p4c
+    # places 10 range tables in 3 programs 1-2 stages later -- the overlay edge ("every reader of the old field
+    # first") the pin used to remove (Mechanism H). The model keeps the earliest stage; no tree, vote or depth
+    # moves. Accepted: the model prices depth and blocks, both exact.
+    "independent_M035_s11_k13": {
+        "table_11_app_fwd_packet_length_total": {"stage": (4, 6)},
+        "table_13_ddos_bwd_iat_max": {"stage": (4, 5)},
+        "table_14_ddos_bwd_iat_min": {"stage": (4, 5)},
+        "table_7_app_fwd_iat_max": {"stage": (5, 6)},
+        "table_9_app_fwd_iat_total": {"stage": (5, 6)},
+    },
+    "joint-task_M055_s20_k16": {
+        "table_10_fwd_iat_min": {"stage": (4, 5)},
+        "table_12_fwd_packet_length_max": {"stage": (4, 5)},
+        "table_13_fwd_packet_length_total": {"stage": (3, 5)},
+        "table_5_bwd_packet_length_total": {"stage": (3, 5)},
+    },
+    "joint-tree_M055_s00_k13": {
+        "table_5_bwd_packet_length_total": {"stage": (3, 4)},
+    },
     # (independent_M050_s13_k07's pinned register-ALU tie, model stage 4 vs p4c 3 for both fwd_packet_length_max
     # range tables since review A2, is gone with Task 38: the bwd_last_arrival_time register in that tie is no
     # longer emitted, its chain's Mean being a duration now.)

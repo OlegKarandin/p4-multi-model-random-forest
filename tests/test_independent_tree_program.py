@@ -22,6 +22,8 @@ from tests.test_per_task_codes import FEATURES, _forest, _own, _rng_design, _sta
 NEW = "disjoint_per_tree"
 OLD_ENCODINGS = (JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING, PER_TREE_ENCODING)
 IDENTITY = os.path.join(os.path.dirname(__file__), "fixtures", "independent_tree_identity.json")
+# Its four program-text digests were re-frozen 2026-11-17 for the overlay-pin change: each text
+# is tests/overlay_pin_rewrite.current_pins of its previous one (24/24); entries and pools unchanged.
 
 APP_NAMES = ["flow_iat_max", "fwd_packet_length_max", "bwd_iat_total"]
 DDOS_NAMES = ["flow_iat_max", "flow_iat_min", "bwd_packet_length_max"]
@@ -128,7 +130,7 @@ def test_program_passes_check_program_and_pins_every_packed_field(tmp_path, desi
   fields = re.findall(r"bit<(\d+)> code_pk_(\w+);", text)
   assert fields
   for bits, name in fields:
-    assert '@pa_no_overlay("ingress", "ig_md.code_pk_%s")' % name in text
+    assert '@pa_no_overlay("ingress", "ig_md.code_pk_%s")' % name not in text  # removed 2026-11-17
     sizes = re.search(r'@pa_container_size\("ingress", "ig_md\.code_pk_%s", ([\d, ]+)\)'
                       % name, text).group(1)
     assert sum(int(s) for s in sizes.split(", ")) == int(bits)

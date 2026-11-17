@@ -36,7 +36,7 @@ def test_one_code_field_per_feature_and_no_per_tree_field(tmp_path):
   for bits, feature in fields:
     sizes = re.search(r'@pa_container_size\("ingress", "ig_md\.code_pk_%s", ([\d, ]+)\)' % feature, text).group(1)
     assert sum(int(s) for s in sizes.split(", ")) == int(bits)
-    assert '@pa_no_overlay("ingress", "ig_md.code_pk_%s")' % feature in text
+    assert '@pa_no_overlay("ingress", "ig_md.code_pk_%s")' % feature not in text  # removed 2026-11-17
     assert '@pa_solitary("ingress", "ig_md.code_pk_%s")' % feature not in text
 
 

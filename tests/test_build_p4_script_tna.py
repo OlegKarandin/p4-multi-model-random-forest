@@ -2028,7 +2028,8 @@ def test_generate_P4_code_solitary_pragmas_name_only_declared_fields(tmp_path):
 # ---------------------------------------------------------------------------
 # C5 (Phase 3 step 1): @placement_priority on every classification tree
 # table. (C5 also added @pa_no_overlay next to every class_tree_*
-# @pa_solitary; gate G3 dropped it, 3.3: free on 160/160 p4c compiles.)
+# @pa_solitary; gate G3 dropped it, 3.3, and it was restored 2026-11-17 when
+# the code fields' own no-overlay pin was removed: fairness step 6.)
 #
 # The priority pins a deterministic tree order (ddos tables placed ahead
 # of app tables, at the SAME priority within a task), so the packer can
@@ -2102,11 +2103,11 @@ def test_generate_P4_code_placement_priority_pragma_precedes_its_table(tmp_path)
   assert found > 0, "fixture produced no classification tree tables at all"
 
 
-def test_generate_P4_code_pa_no_overlay_on_exactly_the_code_fields(tmp_path):
-  # Gate G3 (2026-11-15): the TIME pin @pa_no_overlay stays on every code_*
-  # field (3.6) and on nothing else -- dropped on meta.fwd (3.1) and on the
-  # class_tree_* fields (3.3), both free on 160/160 p4c compiles. Never
-  # duplicated (a duplicate pragma is a p4c error).
+def test_generate_P4_code_pa_no_overlay_on_exactly_the_class_fields(tmp_path):
+  # 2026-11-17 (Handoff 6, fairness steps 5-6): the TIME pin @pa_no_overlay is
+  # on every class_tree_* field and on nothing else -- removed from the code_*
+  # fields, dropped on meta.fwd at G3 (3.1). Never duplicated (a duplicate
+  # pragma is a p4c error).
   clf_app = _tiny_app_forest()
   clf_ddos = _tiny_ddos_forest()
   app_intervals = {"flow_iat_max": [(0, 50), (51, INFINITE)]}
@@ -2119,22 +2120,23 @@ def test_generate_P4_code_pa_no_overlay_on_exactly_the_code_fields(tmp_path):
   with open(written_path) as f:
     text = f.read()
 
-  declared = set(re.findall(r"bit<\d+> (code_[A-Za-z0-9_]+);", text))
+  declared = set(re.findall(r"bit<\d+> (class_tree_[A-Za-z0-9_]+);", text))
   no_overlay_list = re.findall(
       r'@pa_no_overlay\(\s*"ingress"\s*,\s*"ig_md\.([A-Za-z0-9_]+)"\s*\)', text)
 
-  assert declared
+  # two app trees -> two class fields; the one-tree ddos task has none (A2)
+  assert declared == {"class_tree_app_0", "class_tree_app_1"}
   assert set(no_overlay_list) == declared
   assert len(no_overlay_list) == len(set(no_overlay_list))
   assert '"ig_md.fwd"' not in text
 
 
 # ---------------------------------------------------------------------------
-# Spec 2026-09-29 (overlay and key-layout pragmas): every code_* field gets
-# @pa_no_overlay, and every tree-key code_* field a @pa_container_size pinned
-# to the layout lanes.layout gives it (width rule alone, decision 4.1). Pinning OUR side of any
-# overlay pair blocks every partner, known or not; pinning the layout keeps
-# p4c from choosing a split the model does not price.
+# Spec 2026-09-29 (overlay and key-layout pragmas): every tree-key code_*
+# field gets a @pa_container_size pinned to the layout lanes.layout gives it
+# (width rule alone, decision 4.1); pinning the layout keeps p4c from choosing
+# a split the model does not price. The spec's @pa_no_overlay on code_* fields
+# was removed 2026-11-17 (Handoff 6, fairness step 5).
 # ---------------------------------------------------------------------------
 from p4model import lanes  # noqa: E402
 
@@ -2180,7 +2182,7 @@ def _code_pins(text):
   return dict(pins)
 
 
-def test_every_code_field_gets_exactly_one_pa_no_overlay(tmp_path):
+def test_no_code_field_gets_pa_no_overlay(tmp_path):
   # Disjoint with all three kinds of resolved entry: shared (identical
   # intervals, un-prefixed), namespaced (app_/ddos_), and single-model.
   shared = _intervals_of_width(3)
@@ -2195,7 +2197,7 @@ def test_every_code_field_gets_exactly_one_pa_no_overlay(tmp_path):
                       "code_ddos_fwd_iat_max", "code_bwd_iat_min",
                       "code_fwd_iat_min"}
   no_overlay = [f for f in _PA_NO_OVERLAY_RE.findall(text) if f.startswith("code_")]
-  assert sorted(no_overlay) == sorted(declared)
+  assert no_overlay == []
 
 
 def test_joint_design_pins_each_field_once(tmp_path):
@@ -2206,9 +2208,7 @@ def test_joint_design_pins_each_field_once(tmp_path):
   # One key, (19, 64): plain layout -- W for 19 bits, two W for 64.
   assert _code_pins(text) == {"code_flow_iat_max": [32],
                               "code_fwd_iat_max": [32, 32]}
-  assert sorted(f for f in _PA_NO_OVERLAY_RE.findall(text)
-                if f.startswith("code_")) == ["code_flow_iat_max",
-                                              "code_fwd_iat_max"]
+  assert not [f for f in _PA_NO_OVERLAY_RE.findall(text) if f.startswith("code_")]
 
 
 def test_tree_key_fields_are_pinned_to_the_layout_their_key_prices(tmp_path):
@@ -2239,13 +2239,12 @@ def test_a_tree_less_task_still_pins_every_code_field(tmp_path):
   # No app trees: no key reads a field only the app side selected, but it is
   # declared, so it is pinned like every other code field (decision 8.2: the
   # replay refuses an unpinned code field, and training counts every pinned
-  # field's containers) and gets @pa_no_overlay.
+  # field's containers); no @pa_no_overlay (removed 2026-11-17).
   app = {"fwd_iat_max": _intervals_of_width(5)}
   ddos = {"flow_iat_max": _intervals_of_width(3)}
   text = _generate(tmp_path, "treeless.p4", app, ddos)   # clf_app=None
   assert _code_pins(text) == {"code_flow_iat_max": [8], "code_fwd_iat_max": [8]}
-  assert set(f for f in _PA_NO_OVERLAY_RE.findall(text)
-             if f.startswith("code_")) == {"code_flow_iat_max", "code_fwd_iat_max"}
+  assert not [f for f in _PA_NO_OVERLAY_RE.findall(text) if f.startswith("code_")]
 
 
 def test_container_sizes_depend_on_width_only():
@@ -2501,10 +2500,10 @@ def test_code_field_full_width(tmp_path, encoding):
     field = "code_" + name
     # declared width == the sum of its @pa_container_size values (the plain width rule's)
     assert declared[field] == sum(pins[field]) == sum(lanes.container_sizes(len(intervals) - 1))
-    # the time pin stays; the space pin was dropped at gate G3 (3.5: the declared
-    # width fills the containers, so no other field can share one)
+    # the space pin was dropped at gate G3 (3.5: the declared width fills the
+    # containers, so no other field can share one), the time pin 2026-11-17
     assert '@pa_solitary("ingress", "ig_md.%s")' % field not in text
-    assert '@pa_no_overlay("ingress", "ig_md.%s")' % field in text
+    assert '@pa_no_overlay("ingress", "ig_md.%s")' % field not in text
   # every range action parameter is as wide as the field it writes, so the action
   # writes the field whole (the live code zero-extended)
   actions = _RANGE_ACTION.findall(text)

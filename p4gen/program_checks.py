@@ -393,11 +393,12 @@ def _check_pins(program, pins):
   of gate G3 (2026-11-15; build_p4_script.generate_p4_program documents each pin
   and its evidence): every pin the generator emits is present, and no other --
 
-    class_tree_*        pa_solitary                    (3.2)
+    class_tree_*        pa_solitary (3.2), pa_no_overlay (restored
+                        2026-11-17, fairness step 6)
     <f>_val             pa_container_size 16           (3.4)
     <chain>_current_iat pa_container_size 16           (G3: IAT scratch fields)
-    code_* / code_pk_*  pa_no_overlay, pa_container_size (3.6 / 3.7; none of
-                        the latter for a field with no bits)
+    code_* / code_pk_*  pa_container_size (none for a field with no bits;
+                        pa_no_overlay removed 2026-11-17, fairness step 5)
     now_pseudo_us       pa_solitary, in a program that computes it
                         (calc_timestamp; review A1b, 2026-11-15)
     now_coarse          pa_solitary, in a program that computes it
@@ -405,9 +406,10 @@ def _check_pins(program, pins):
     flow_hash           pa_solitary, in every program with a calc_flow_hash
                         action (every generated one; Task 31 miss, 2026-11-15)
 
-  Pins dropped at G3 (pa_no_overlay on fwd and class_tree_*, pa_solitary on
-  code_*) are refused as unexpected_shape:pin:<pin>:<field>, like any pin this
-  generator does not write: such a text is an older generator's program, whose
+  Pins dropped (at G3: pa_no_overlay on fwd, pa_solitary on code_*; on
+  2026-11-17: pa_no_overlay on code_*) are refused as
+  unexpected_shape:pin:<pin>:<field>, like any pin this generator does not
+  write: such a text is an older generator's program, whose
   PHV p4c allocates under other constraints. Every pinned code field is
   declared at its containers' full width, and (joint / disjoint / per-task, not
   the packed code_pk_ fields) its split is lanes.container_sizes of its live
@@ -420,6 +422,7 @@ def _check_pins(program, pins):
 
   for field in program.class_fields:
     need("pa_solitary", field)
+    need("pa_no_overlay", field)
   if program.flow_hash:            # the text has a calc_flow_hash action
     if tuple(need("pa_solitary", _FLOW_HASH_FIELD)) != ():
       raise ProgramShapeRefused("unexpected_shape:pin:pa_solitary:%s" % _FLOW_HASH_FIELD)
@@ -447,7 +450,6 @@ def _check_pins(program, pins):
       if tuple(need("pa_container_size", field)) != (16,):
         raise ProgramShapeRefused("unexpected_shape:val_container:%s" % field)
     elif field.startswith("code_"):
-      need("pa_no_overlay", field)
       if bits == 0:
         continue
       sizes = need("pa_container_size", field)
@@ -767,11 +769,12 @@ def check_program(program):
     gated_register_block         a RegisterAction executed inside `if (meta.fwd ...)`
                                  (every program before decisions 1a / 7.1 option B)
     missing_pin:<pin>:<field>    a pin the generator emits is absent: pa_solitary on
-                                 class_tree_*, on flow_hash and on each clock
+                                 class_tree_* (and pa_no_overlay), on flow_hash
+                                 and on each clock
                                  calc_timestamp writes (now_pseudo_us, now_coarse),
                                  pa_container_size 16 on *_val and on
-                                 every <chain>_current_iat, pa_no_overlay and
-                                 pa_container_size on code_*, placement_priority on
+                                 every <chain>_current_iat, pa_container_size on
+                                 code_*, placement_priority on
                                  every tree and range table
     unexpected_shape:<what>      a declared width, priority, key or apply order other
                                  than the generator's, or (pin:<pin>:<field>) a PHV pin

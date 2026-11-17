@@ -224,22 +224,24 @@ def test_everything_but_the_codes_matches_the_per_task_program(tmp_path, deep):
 # one (p37_probe.p3c, the coarse clock from ingress_mac_tstamp; the Mean's register becomes the
 # {first, dur} pair, its chain's last-arrival register dropped) with bwd_iat_mean renamed, the
 # now_coarse declaration aside (impl/scripts/t38_refreeze.py, 14/14; seed 3 has no Mean and kept
-# its sha).
+# its sha). Re-frozen 2026-11-17 (Handoff 6, fairness steps 5-6: @pa_no_overlay moved from every
+# code_* field to every class_tree_* field): each text is tests/overlay_pin_rewrite.current_pins of
+# its previous one (14/14, and the identity fixture's 24 program texts and the golden p4 file too).
 _OLD_FLAG_SHAS = {
-    ("joint", 0): "df665d89b4d77b2f0050c101987b4328023f3fce5ce76a34715b14e7c4db4dac",
-    ("disjoint", 0): "cbf4aa67c007ca1b12c3c04dea70bb61ea4f736330933765f6734c366797dbeb",
-    ("per_task", 0): "6b2f91480338cdd0ca4b9038152d19f90cdf2fe2e0c38bbe5a86b23e35ee0b70",
-    ("joint", 1): "8fbcb5e7f55bf3d1671fc49370e6de521988e6eb0fe209a87b6b8b621ffd5843",
-    ("disjoint", 1): "4b8f57fa46baebcd6215a8f0a9b88abf223ff4dcda1cc25f76eeacbb40ecb73f",
-    ("per_task", 1): "d4d6f04b880b4d093027b693423a25cfa596458659ca8138a13bd289f73eea09",
-    ("joint", 2): "ccdb30379aa428b4761e89762f9341d62e1e5158343139efe6545a8a41765988",
-    ("disjoint", 2): "d5a28e07f58bbdd4eea1681fbd7791def0c69a0b9ed1dd630b233b98b0ff1bab",
-    ("per_task", 2): "2e8bbb75102deec840199df1c4f9404396008bf5421593d82bcbac1e3c2969cc",
-    ("joint", 3): "b0d97c21b928b2ea5176d7b9e5aee60f83e17bc0ac3918210ddf2156eca74586",
-    ("disjoint", 3): "72b1cd384fb38005e7e1268b0e036c9cc4740f2cc3990f40f243a50b72fa1833",
-    ("per_task", 3): "45c14308c0e36994d73cf08f45faed79bd94105b98ec1f6673d7ef8f9f2ce15d",
-    ("disjoint", "three"): "ffb811b04b1ef94e8991173d12d8a061c14d19083c33b18d1cca7fe11cfeef48",
-    ("per_task", "three"): "feafa1cc4aedf214bc31b5777dd378d8a71fc06ec86972119e24747f8d4c7a69",
+    ("joint", 0): "e66770ad7fc0b00b6dbd4728ae8234d0c61f107a32eb63c32082f31d5fcdb81a",
+    ("disjoint", 0): "f2578e2b4845511c3d212ee0b5d0850a320f4326fc56bbaa384929d994d9e3e6",
+    ("per_task", 0): "c638ee9de1b8f21d132ca8c8050fdc207e1278fb958a79a050f55ad0888ec69b",
+    ("joint", 1): "ff2c5e964970431c4ed0627df0779a26e61c6fdc5bbcf8a1c63c9382bf0135ca",
+    ("disjoint", 1): "c88a75d9a259a9f17f69f4a34a4235d6746e915ddb445b6fe1a7598a07e83b04",
+    ("per_task", 1): "dc2ee17d53aabf3e29513888956eebeac94184f1b12b303919becdb20d4dd95c",
+    ("joint", 2): "e028890b710f8a0d5c1df132f2ccf7ad9a8a309bdbda6e926cc9baecc97d9a82",
+    ("disjoint", 2): "a84ed02e90c43314c153e9f176e19b67a94074e831be75a3e21b4e599b535720",
+    ("per_task", 2): "f83fc69e1fbbe46c1f8cd5631ab4632c0c11b745677953f8db875512cfc9f6d9",
+    ("joint", 3): "088b0d8199e8e4ed36fbf4aabcd414cd662e9578a4e6e923c3b4b929eadc29b8",
+    ("disjoint", 3): "ee43c2189a42fcc00b16f5c69f00139908a6121505781a9399766e7e8e11d7b9",
+    ("per_task", 3): "ed4a3f469ca396e19550f91fd9d2f26d535347830d4f6f9c98a536fadcd2ea61",
+    ("disjoint", "three"): "48b385ba331f04f8ab107e3d6e240c2a4b34a7d69a8f5af12fe4142c34c6e02c",
+    ("per_task", "three"): "db051c56dcca398b6466b6d7ace9b3ad6f3a88d49f39cd9408a7f596181eb723",
 }
 
 
@@ -281,8 +283,9 @@ _DECLARED = re.compile(r'^\tbit<(\d+)> (\w+);$', re.M)
 def _g3_pin_set(text):
   """The PHV pin set gate G3 (2026-11-15) fixed, from the program's declarations:
   pa_solitary on every class_tree_*; pa_container_size 16 on every <f>_val and every IAT
-  scratch field <chain>_current_iat; pa_no_overlay and pa_container_size on every code
-  field (code_pk_* too). Nothing on meta.fwd. Since review A1b, pa_solitary on
+  scratch field <chain>_current_iat; pa_container_size on every code field (code_pk_* too).
+  Nothing on meta.fwd. Since 2026-11-17 (Handoff 6, fairness steps 5-6) pa_no_overlay is on
+  every class_tree_* field and on no code field. Since review A1b, pa_solitary on
   now_pseudo_us in a program that computes the timestamp (calc_timestamp); since the
   Task 31 miss, pa_solitary on flow_hash in every program; since Task 38, on each clock
   calc_timestamp writes (now_pseudo_us for a last-arrival register, now_coarse for a
@@ -295,10 +298,9 @@ def _g3_pin_set(text):
   for bits, field in _DECLARED.findall(text):
     if field.startswith("class_tree_"):
       pins.add(("pa_solitary", field, ""))
+      pins.add(("pa_no_overlay", field, ""))
     elif field.endswith("_current_iat") or (field.endswith("_val") and not field.startswith("code_")):
       pins.add(("pa_container_size", field, ", 16"))
-    elif field.startswith("code_"):
-      pins.add(("pa_no_overlay", field, ""))
   return pins
 
 
@@ -331,9 +333,9 @@ def test_every_encoding_carries_exactly_the_g3_pin_set(tmp_path, encoding, seed)
   assert bool(scratch) == (seed != 1)
   for field in scratch:
     assert '@pa_container_size("ingress", "ig_md.%s", 16)\n' % field in text
-  # ... and the three pins dropped at G3 are not (3.1, 3.3, 3.5)
+  # ... and the dropped pins are not (G3: 3.1, 3.5; 2026-11-17: no-overlay on code fields)
   assert '"ig_md.fwd"' not in text
-  assert not re.search(r'@pa_no_overlay\("ingress", "ig_md\.class_tree_', text)
+  assert not re.search(r'@pa_no_overlay\("ingress", "ig_md\.code_', text)
   assert not re.search(r'@pa_solitary\("ingress", "ig_md\.code_', text)
   # and the program passes the replay's shape check, which requires exactly this set
   assert model_breakdown(parse_program_text(text))["refusal"] != "program_shape"

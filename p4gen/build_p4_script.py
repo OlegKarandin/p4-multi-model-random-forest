@@ -1915,7 +1915,7 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
       TREE with a threshold on the feature in bytes of its own (p4model.packed; spec
       2026-11-11-packed-codes-stage-pin Sec 3.1; per_tree_layout, the layout
       the training pool prices). The field is declared at its containers'
-      bits, pinned @pa_no_overlay + @pa_container_size (low container first),
+      bits, pinned @pa_container_size (low container first),
       never @pa_solitary; the action takes one `bit<N> code`; each tree keys
       only its own codes, as slices of at most 64 bits (packed.key_slices),
       features in the tree's feature order. The layout raises NoSplitTree /
@@ -2123,11 +2123,22 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
         # exports the winner into ig_tm_md (program.VOTE_EXPORT).
         phv_pragmas += ('@pa_solitary("ingress", "ig_md.class_tree_'
                         + name + "_" + str(i) + '")\n')
-        # DROPPED at G3 (3.3): @pa_no_overlay(class_tree_*). Free on 160/160
-        # p4c compiles (no stage depth or block change after the 17b fix) and
-        # 2.6-3.7 PHV containers cheaper on average. The overlay edge it
-        # prevented only repeats an order that already exists: everything a
-        # class field could overlay is read before the trees run.
+        # TIME pin, RESTORED 2026-11-17 (Handoff 6 step 6, variant q):
+        # @pa_no_overlay(class_tree_*). Dropped at G3 (3.3) while every code
+        # field carried its own no-overlay pin; once that pin went (removed
+        # 2026-11-17, below), p4c put a tree's 1-2-bit result field into the
+        # container of a code field that only the OTHER task's trees read
+        # (independent-tree_M035_s07_k08: class_tree_ddos_0 in B1 with
+        # code_pk_app_bwd_packet_length_total[71:64]), so that tree waited for
+        # every reader of the code: +1 stage on 3 of 40 baseline designs. With
+        # this pin, p4c stage depth equals the shipped one on 160/160 DEV
+        # designs of the four arms and blocks on 159/160 (one +1, not root-
+        # caused); model both exact 39/40 on the baseline, 120/120 on the
+        # rest; it costs 1-3 PHV containers per design against no pin at all
+        # (results/encoding_evidence_2026_11/model8/fairness/
+        # step6_avoid_extra_stage.md).
+        phv_pragmas += ('@pa_no_overlay("ingress", "ig_md.class_tree_'
+                        + name + "_" + str(i) + '")\n')
   # Tier 3 + Task 3: every RESOLVED entry gets its own codeword field
   # (code_<resolved_name>), but the raw tracked-value field (<raw>_val) is
   # declared exactly once per DISTINCT raw feature name -- never twice just
@@ -2186,23 +2197,23 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # every container it gets and no other field can share one: the space pin
   # is redundant. Free on 120/120 p4c compiles (no stage depth or block
   # change, PHV within 1 container).
-  # The two pins each codeword field keeps, pinning p4c to what the resource
+  # REMOVED 2026-11-17 (Handoff 6, user decision; fairness/step5): the TIME
+  # pin @pa_no_overlay on every code_* field (3.6 / 3.7). It was added for
+  # model accuracy only (C6 miss heldout_independent_M150_k14_s13: an
+  # overlay's hidden "all readers of the old field first" placement edge,
+  # phv/add_initialization.cpp). Measured on each arm's 40 DEV designs it cost
+  # 1-9 PHV containers per design, most on the baseline, and changed no stage
+  # or block of the shared arms; its one stage effect, on the baseline, is
+  # answered by the class_tree_* no-overlay pin above
+  # (results/encoding_evidence_2026_11/model8/fairness/
+  # step4_five_constraints.md, step5_twins_constraint1.md,
+  # step6_avoid_extra_stage.md).
+  # The pin each codeword field keeps, pinning p4c to what the resource
   # model assumes rather than modelling p4c's PHV choices (spec 2026-09-29):
-  #   * TIME pin, KEPT (3.6): @pa_no_overlay on EVERY code_* field. p4c may overlay a range table's
-  #     output onto a live field with a disjoint live range; each overlay adds
-  #     a hidden "all readers of the old field first" placement edge
-  #     (phv/add_initialization.cpp), and Tofino-1's backfill snapshot then
-  #     stranded a range table at a stage boundary (C6 miss
-  #     heldout_independent_M150_k14_s13: 11 predicted, 12 real). 125 range
-  #     tables in 65 of 73 archived compiles were delayed this way; with the
-  #     pragma, 0. Pinning OUR side blocks every partner -- pinning the
-  #     partners (*_val, fwd) left residual overlays on flow_hash /
-  #     now_pseudo_us. Not re-tested at G3 (decided KEEP beforehand).
   #   * SIZE pin, KEPT: @pa_container_size on every code_* field, to the layout
   #     lanes.layout gives it (the plain width rule, decision 4.1, unchanged
-  #     at G3). No-overlay alone changes PHV
-  #     pressure and p4c then put some 17-32-bit fields whole in W containers:
-  #     same bytes, worse lanes, +1 block per tree. The model's 62-byte
+  #     at G3). Without it p4c put some 17-32-bit fields whole in W
+  #     containers: same bytes, worse lanes, +1 block per tree. The model's 62-byte
   #     mixed-key refusal was retired on the strength of these pins
   #     (target.py) -- dropping them re-exposes M150_k7_s11. The ternary
   #     crossbar port (xbar.py, 2026-11-13) prices the pinned layouts too,
@@ -2214,17 +2225,13 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # low container first (SIZE pin: without it, stages were worse on 15 of 30
   # k<=8 probe designs, results/encoding_evidence_2026_11/model4, spec Sec
   # 3.4, and the crossbar simulation needs the containers to know each key
-  # byte's lane), plus the TIME pin @pa_no_overlay, KEPT at G3 (3.7) for
-  # uniformity with the other encodings' code fields (3.6): dropping it was
-  # free on 40/40 p4c compiles (same stage depth and blocks, 3-4 PHV
-  # containers fewer) although p4c then moved some tables between stages on
-  # 13/40 (same totals); no @pa_solitary (spec Sec 3.1; the declared width
-  # fills the containers, as for 3.5).
+  # byte's lane); no @pa_no_overlay (removed 2026-11-17, above) and no
+  # @pa_solitary (spec Sec 3.1; the declared width fills the containers, as
+  # for 3.5).
   if tree_codes:
     for feature, containers in layout.containers.items():
       field = "code_" + packed_field(feature)
       metadata_code += "\tbit<"+str(packed.field_bits(layout, feature))+"> "+field+";\n"
-      phv_pragmas += '@pa_no_overlay("ingress", "ig_md.'+field+'")\n'
       phv_pragmas += ('@pa_container_size("ingress", "ig_md.' + field + '", '
                       + ", ".join(str(size) for size in containers) + ')\n')
   # Every declared code field with bits is pinned, also one no tree reads (a task
@@ -2233,8 +2240,8 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   # every field (evaluation._pool_inputs), so the two PHV counts agree.
   code_container_sizes = ({} if tree_codes else code_field_container_sizes(
       resolved_plan, [task.name for task in program_tasks]))
-  # Every other encoding: each field's @pa_no_overlay and @pa_container_size
-  # (no @pa_solitary since G3, 3.5 above).
+  # Every other encoding: each field's @pa_container_size (no @pa_solitary
+  # since G3, 3.5, and no @pa_no_overlay since 2026-11-17, above).
   # Decision 4.3 (uniformity with the packed per-tree field): a pinned field is
   # DECLARED at its containers' full width, its live code in the low bits and 0
   # above (the range action writes it whole), and every tree keys the live bits
@@ -2249,7 +2256,6 @@ def generate_p4_program(tasks, output_dir=OUTPUT_PATH,
   for resolved_name in (resolved_plan if not tree_codes else ()):
     metadata_code += ("\tbit<" + str(code_field_bits[resolved_name]) + "> code_"
                       + resolved_name + ";\n")
-    phv_pragmas += '@pa_no_overlay("ingress", "ig_md.code_'+resolved_name+'")\n'
     if resolved_name in code_container_sizes:
       phv_pragmas += ('@pa_container_size("ingress", "ig_md.code_' + resolved_name + '", '
                       + ", ".join(str(size) for size in code_container_sizes[resolved_name])
