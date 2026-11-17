@@ -187,9 +187,14 @@ PHV_INGRESS_CONTAINERS = {8: 48, 16: 80, 32: 48}
 # t39_phv_fields.py. Re-run them and reset the lengths whenever a generator change moves PHV.
 # Each length is the MEDIAN of p4c's containers of that size minus the model's count of the
 # rest (the clocks included), over the 86 designs with no class field for the 8-bit row --
-# p4c overlays class fields into containers dead by then, which the 8-bit count does not
+# p4c overlaid class fields into containers dead by then, which the 8-bit count does not
 # net, so over all 160 the 8-bit median (2) would only be the overlay -- and over all 160 for
-# the 16- and 32-bit rows: 8-bit 5 (no class field: 5 on 51 of 86, 2..4 on the rest),
+# the 16- and 32-bit rows. (Since 2026-11-17 every class_tree_* field carries @pa_no_overlay
+# and no code field does; the lengths were RE-CHECKED on the 160 variant-q compiles and kept:
+# model minus p4c summed over sizes is never negative (0..16, exact on 20 of 160), and any
+# one length lowered by 1 makes the sum under-price those 20. The model now over-counts the
+# 16-bit row by a median of 4, the overlay of code fields it does not net;
+# results/encoding_evidence_2026_11/model8/fairness/step8_phv_template.md.) As measured: 8-bit 5 (no class field: 5 on 51 of 86, 2..4 on the rest),
 # 16-bit 4 (160: 4 on 103, 2..5), 32-bit 3 (160: 3 on 113, 4..6 on 47). Model minus p4c
 # after, k<=8 | k>=9: 8-bit 0..+8 (exact 36/80, under 0) | 0..+9 (15/80, under 0); 16-bit
 # -1..+1 (54, under 21) | -1..+2 (49, under 3); 32-bit -2..0 (77, under 3) | -3..0 (36,
