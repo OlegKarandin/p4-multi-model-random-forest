@@ -16,7 +16,8 @@ from p4gen.p4_replay import (model_breakdown, parse_program_text, price_program,
 from p4gen.program_checks import check_program
 from p4model import errors, lanes, packed, phv, refusals, target
 from p4model.errors import ProgramShapeRefused
-from p4model.program import ENCODINGS, JOINT_ENCODING, PER_TREE_ENCODING
+from p4model.program import (DISJOINT_PER_TREE_ENCODING, ENCODINGS, JOINT_ENCODING,
+                             PER_TREE_ENCODING)
 from p4model.registers import register_stage_schedule
 from p4model.target import PHV_INGRESS_CONTAINERS
 from src.training import early_stopping
@@ -590,7 +591,13 @@ def _flat_forest(n_features, n_classes):
         n_estimators=2, max_depth=3, random_state=0).fit(X, y))
 
 
-@pytest.mark.parametrize("encoding", ENCODINGS)
+def _pending(encodings):
+    """ENCODINGS parametrization; disjoint_per_tree is xfail(strict) until Tasks 2/4."""
+    return [pytest.param(e, marks=pytest.mark.xfail(strict=True, reason="Task 2/4"))
+            if e == DISJOINT_PER_TREE_ENCODING else e for e in encodings]
+
+
+@pytest.mark.parametrize("encoding", _pending(ENCODINGS))
 def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, encoding,
                                                         _fresh_key_prices):
     """20 designs per encoding that training refuses (design_refusal, the objective's
@@ -649,7 +656,7 @@ def test_training_and_replay_give_the_same_refusal_name(tmp_path, monkeypatch, e
         assert ("bus", "bus_bytes_over") in seen, seen
 
 
-@pytest.mark.parametrize("encoding", [e for e in ENCODINGS if e != PER_TREE_ENCODING])
+@pytest.mark.parametrize("encoding", _pending([e for e in ENCODINGS if e != PER_TREE_ENCODING]))
 def test_a_key_with_no_allocation_is_refused_before_the_phv_count_on_both_paths(
         tmp_path, monkeypatch, encoding, _fresh_key_prices):
     """Interim review minor 1: a design with BOTH a key the crossbar cannot allocate

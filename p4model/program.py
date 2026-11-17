@@ -131,7 +131,19 @@ PER_TASK_ENCODING = "per_task"
 # each in bytes of its own (p4model.packed; spec 2026-11-11-packed-codes-stage-pin;
 # no byte holds two codes: design-review decision 4.4 was taken back 2026-11-15).
 PER_TREE_ENCODING = "per_tree"
-ENCODINGS = (JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING, PER_TREE_ENCODING)
+# 'disjoint_per_tree' (arm independent-tree; spec 2026-11-17-independent-tree-encoding-design.md):
+# per_tree's packed fields, but each task keeps its own threshold tables and feature
+# selection as under 'disjoint', so a code field is named for the resolved feature
+# (f, app_f, ddos_f): code_pk_<resolved>.
+DISJOINT_PER_TREE_ENCODING = "disjoint_per_tree"
+ENCODINGS = (JOINT_ENCODING, DISJOINT_ENCODING, PER_TASK_ENCODING, PER_TREE_ENCODING,
+             DISJOINT_PER_TREE_ENCODING)
+PACKED_ENCODINGS = (PER_TREE_ENCODING, DISJOINT_PER_TREE_ENCODING)
+
+
+def is_packed(encoding):
+  """True for an encoding whose codes sit in packed code_pk_* fields (p4model.packed)."""
+  return encoding in PACKED_ENCODINGS
 
 # The per-task code fields' resolved names, code_<resolved> being the metadata
 # field: tk_<task>_<feature>. The generator, the model's field identities and the

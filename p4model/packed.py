@@ -121,7 +121,7 @@ def _padded_codes(containers, place):
 
 
 def layout_for(widths, features, task_order, n_scratch=0, n_constants=0, coarse_clock=False,
-               fine_clock=False):
+               fine_clock=False, n_vals=None):
   """The packed layout (spec Sec 3.2). Features in `features` order that have a
   code; within a feature the codes in task_order, then tree index (program
   order), each in ceil(bits / 8) bytes of its own, ordered by the lane balancing
@@ -136,7 +136,9 @@ def layout_for(widths, features, task_order, n_scratch=0, n_constants=0, coarse_
   `n_constants` the number of its call-site constants (16-bit containers of its
   own, phv.budgets); `coarse_clock`: the program computes the Task 38 coarse clock
   (two 32-bit containers of its own); `fine_clock`: it computes the fine IAT clock
-  (phv.FINE_CLOCK_CONTAINERS).
+  (phv.FINE_CLOCK_CONTAINERS). `n_vals`: the program's `_val` fields when they are
+  fewer than its code fields (disjoint_per_tree: one per raw feature, K1); None means
+  one per code field.
 
   Lane balancing (spec Sec 3.2 rule 2, design review 3.13): at each byte offset
   take the remaining code whose tree's per-lane key-byte counts stay most even --
@@ -153,7 +155,7 @@ def layout_for(widths, features, task_order, n_scratch=0, n_constants=0, coarse_
                      if feature in tree]
            for feature in features}
   codes = {feature: found for feature, found in codes.items() if found}
-  left = budgets(len(codes), phv.class_fields(len(widths.get(task, [])) for task in task_order),
+  left = budgets(len(codes) if n_vals is None else n_vals, phv.class_fields(len(widths.get(task, [])) for task in task_order),
                  n_scratch, n_constants, coarse_clock, fine_clock)
   lane_count = {}                                   # (task, tree) -> key bytes per lane
   containers, place = {}, {}
